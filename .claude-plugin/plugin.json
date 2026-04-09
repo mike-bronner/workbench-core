@@ -1,7 +1,7 @@
 {
   "name": "core",
   "description": "Core infrastructure for Claude Code: persistent agent identity, session lifecycle hooks, operational memory, and meta skills. Provides a customizable framework where users configure the agent name, memory path, and persona files.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "author": {
     "name": "Mike Bronner",
     "url": "https://github.com/mike-bronner"
@@ -17,7 +17,8 @@
         "MARKDOWN_VAULT_MCP_STATE_PATH": "/Users/mike/.claude-memory-cache/state.json",
         "MARKDOWN_VAULT_MCP_READ_ONLY": "false",
         "MARKDOWN_VAULT_MCP_REQUIRED_FIELDS": "name,type",
-        "MARKDOWN_VAULT_MCP_INDEXED_FIELDS": "name,type,tags,summary,date,scope",
+        "MARKDOWN_VAULT_MCP_INDEXED_FIELDS": "name,type,tags,summary,date,scope,log_files",
+        "MARKDOWN_VAULT_MCP_EXCLUDE": "**/*.log.md",
         "MARKDOWN_VAULT_MCP_SERVER_NAME": "hobbes-memory",
         "EMBEDDING_PROVIDER": "fastembed"
       }

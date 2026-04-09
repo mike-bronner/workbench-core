@@ -26,7 +26,9 @@ After the script runs, read `~/.claude-memory-cache/pending-wrap.json` to find t
 
 ## Step 2 — Write the narrative summary
 
-Read the raw log file. Based on its contents (and your own memory of the current session), write a sibling `.summary.md` file in the same `sessions/YYYY-MM-DD/` directory. Use the `hobbes-memory` MCP to write it so the vault index picks it up.
+Read the raw log file (and any earlier checkpoint logs from the same `session_id` in the same `sessions/YYYY-MM-DD/` directory — a summary should cover all the logs it's based on). Based on the log contents and your own memory of the current session, write a sibling `.summary.md` file in the same directory. Use the `hobbes-memory` MCP to write it so the vault index picks it up.
+
+**Only summaries are indexed.** Raw `.log.md` files are excluded from the vault search index via `MARKDOWN_VAULT_MCP_EXCLUDE=**/*.log.md`. That means when anyone searches memory for "what did we decide about X," they'll land on a summary and follow the `log_files` pointer (or the inline Logs section) to pull the full context from the raw log if needed.
 
 Frontmatter shape (required fields per the memory vault config: `name`, `type`):
 
@@ -39,6 +41,9 @@ date: YYYY-MM-DD
 tags: [session, summary, ...topic-tags]
 session_id: <same as the log file>
 mode: manual
+log_files:
+  - /absolute/path/to/first.log.md
+  - /absolute/path/to/second.log.md  # if multiple checkpoints fed this summary
 summary: |
   One or two sentences that answer "what happened in this segment"
   without opening the body.
@@ -50,7 +55,7 @@ Body structure (tight, not exhaustive):
 - **What happened** — 2–5 bullets, focused on outcomes not steps
 - **What got decided** — explicit decisions with rationale (anything new since the last wrap)
 - **What's still open** — loose ends, next steps, deferred items
-- **Pointers** — path to the raw log file, links to any new decision files
+- **Logs** — explicit list of the raw `.log.md` files this summary covers (same content as the `log_files` frontmatter, but inline for anyone reading the body)
 
 ## Step 3 — Append a BuJo line to today's Apple Notes daily journal
 

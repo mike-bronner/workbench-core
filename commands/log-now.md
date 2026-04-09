@@ -59,7 +59,7 @@ Body structure (tight, not exhaustive):
 
 ## Step 3 — Append a BuJo line to today's Apple Notes daily journal
 
-Use `mcp__Read_and_Write_Apple_Notes__update_note_content`. Find today's daily journal note (title format `YYYY-MM-DD — Weekday`, e.g. `2026-04-09 — Thursday`). Append a single BuJo line in Menlo-Regular monospace, per `~/.claude/CLAUDE.md`:
+Find today's daily journal note (title format `YYYY-MM-DD — Weekday`, e.g. `2026-04-09 — Thursday`). Append a single BuJo line in Menlo-Regular monospace, per `~/.claude/CLAUDE.md`:
 
 ```html
 <div><tt><font face="Menlo-Regular">— {short phrase}. See {log-path}</font></tt></div>
@@ -72,6 +72,14 @@ Use the right BuJo signifier:
 - `!` inspiration / insight
 
 Include a relative pointer to the log file so Mike can open the full detail from the journal if he wants.
+
+**Critical — the Apple Notes MCP has no partial-edit mode.** `mcp__Read_and_Write_Apple_Notes__update_note_content` replaces the ENTIRE note body on every invocation, regardless of parameters. `mode: "append"`, `mode: "replace"`, AND `find_text` + `new_content` all do full-body replacement. To safely add your BuJo line:
+
+1. Call `get_note_content(note_name)` and save the full body in your context
+2. Splice your new `<div>...</div>` line in at the end of the body in-memory
+3. Call `update_note_content` with the **complete new body** as `new_content`
+
+Never skip the read step. A forgotten read destroys the note and the loss is unrecoverable without a prior snapshot.
 
 ## Step 4 — Promote new decisions
 

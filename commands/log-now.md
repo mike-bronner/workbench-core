@@ -22,7 +22,7 @@ EOF
 
 If that heuristic for finding the transcript is wrong in practice (the directory layout changes, the file isn't the newest for legitimate reasons, etc.), fall back to asking the user for the transcript path and running the script with that payload.
 
-After the script runs, read `~/.claude-memory-cache/pending-wrap.json` to find the path of the log file that was just written.
+After the script runs, read `~/.claude-memory-cache/pending-wraps/<session_id>.json` to find the path of the log file that was just written.
 
 ## Step 2 — Write the narrative summary
 
@@ -90,4 +90,4 @@ Tell Mike what you wrote: the log path, the summary path, the BuJo line you appe
 ## Notes
 
 - If the script no-ops (nothing new since the last wrap), tell Mike that and skip the rest. Don't invent content.
-- The pending-wrap marker is only written in `manual` mode as a safety net — since you do the narrative half inline, you should delete it at the end: `rm ~/.claude-memory-cache/pending-wrap.json`. That prevents the next session's warmup from treating this wrap as "pending".
+- The pending-wrap marker is only written in `manual` mode as a safety net — since you do the narrative half inline, you should delete it at the end: `rm ~/.claude-memory-cache/pending-wraps/<session_id>.json`. That prevents the next session's warmup from treating this wrap as "pending". (The marker lives in a per-session file under `pending-wraps/` — don't delete the whole directory, only your own marker.)

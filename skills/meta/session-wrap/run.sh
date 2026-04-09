@@ -16,7 +16,7 @@ set -u
 # TODO: move to userConfig once the plugin system supports it.
 MEMORY_PATH="${HOBBES_MEMORY_PATH:-/Users/mike/Documents/Claude/Memory}"
 CACHE_PATH="${HOBBES_MEMORY_CACHE:-$HOME/.claude-memory-cache}"
-PENDING_WRAP="$CACHE_PATH/pending-wrap.json"
+PENDING_WRAP_DIR="$CACHE_PATH/pending-wraps"
 CHECKPOINT="$CACHE_PATH/wrap-checkpoint.json"
 
 # ──────────── Read hook payload ────────────
@@ -85,7 +85,7 @@ TS=$(date -u +%H%M%SZ)
 SEG_DIR="$MEMORY_PATH/sessions/$TODAY"
 SEG_FILE="$SEG_DIR/${SESSION_ID}-${TS}-${MODE}.log.md"
 mkdir -p "$SEG_DIR" 2>/dev/null || exit 0
-mkdir -p "$CACHE_PATH" 2>/dev/null || exit 0
+mkdir -p "$CACHE_PATH" "$PENDING_WRAP_DIR" 2>/dev/null || exit 0
 
 NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -130,8 +130,15 @@ EOF
 # Checkpoints don't get a pending-wrap marker — they're intermediate and the
 # session is still live. Only final (SessionEnd) and manual (/log-now) produce
 # a marker that the next warmup should pick up.
+#
+# Each marker lives at $PENDING_WRAP_DIR/$SESSION_ID.json so multiple concurrent
+# sessions can all leave markers without clobbering each other. This is the
+# fix for the 2026-04-09 multi-session race where a Claude Code app restart
+# fired SessionEnd in several sessions simultaneously and the single-slot
+# pending-wrap.json lost all but the last writer's marker.
 if [ "$MODE" != "checkpoint" ]; then
-  cat > "$PENDING_WRAP" <<EOF
+  PENDING_WRAP_FILE="$PENDING_WRAP_DIR/${SESSION_ID}.json"
+  cat > "$PENDING_WRAP_FILE" <<EOF
 {
   "session_id": "$SESSION_ID",
   "transcript_path": "$TRANSCRIPT",

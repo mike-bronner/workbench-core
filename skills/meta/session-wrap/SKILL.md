@@ -20,7 +20,7 @@ It does the **mechanical** half of wrapping only. The narrative summary, journal
 4. Tails the transcript from that line to the current end of file.
 5. Writes a raw log file to `~/Documents/Claude/Memory/sessions/YYYY-MM-DD/{session-id}-{timestamp}-{mode}.log.md`. Frontmatter: `name`, `type: session`, `scope: chronological`, `date`, `tags`, `session_id`, `mode`, `event`, `transcript`, `start_line`, `end_line`, `summary: |`.
 6. Updates the checkpoint with the next line to read.
-7. On `final` or `manual` wrap, writes `~/.claude-memory-cache/pending-wrap.json` pointing at the new log file. The next `session-warmup` picks this up.
+7. On `final` or `manual` wrap, writes `~/.claude-memory-cache/pending-wraps/{session-id}.json` pointing at the new log file. The next `session-warmup` scans this directory and surfaces all pending markers. Each session's marker lives in its own file so multiple concurrent sessions can all leave markers without clobbering each other (fix for the 2026-04-09 multi-session race).
 
 ## Why the work is split between shell and model
 

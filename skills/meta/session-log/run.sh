@@ -203,7 +203,7 @@ fi
 #     session ends normally.
 if [ "$MODE" != "checkpoint" ] \
     && [ -n "$PENDING_SUMMARY_FILE" ] \
-    && [ "${WORKBENCH_AUTO_SUMMARIZE:-$(_cfg '.auto_summarize')}" = "1" ] \
+    && [[ "${WORKBENCH_AUTO_SUMMARIZE:-$(_cfg '.auto_summarize')}" =~ ^(1|true)$ ]] \
     && command -v claude >/dev/null 2>&1; then
   SUMMARY_WRITER_LOG="$CACHE_PATH/summary-writer-${SESSION_ID}.log"
   SUMMARY_WRITER_PROMPT="Process pending session summary.

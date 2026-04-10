@@ -81,6 +81,28 @@ Include a relative pointer to the log file so Mike can open the full detail from
 
 Never skip the read step. A forgotten read destroys the note and the loss is unrecoverable without a prior snapshot.
 
+### Apple Notes HTML formatting rules
+
+These rules MUST be followed when writing to Apple Notes or the note will break.
+
+**HTML entities — NO semicolons.** Use `&amp` not `&amp;`. Use `&quot` not `&quot;`. Use `&lt` not `&lt;`. Use `&gt` not `&gt;`. Semicolons after HTML entities break the entire note's formatting. **Exception:** `&nbsp;` (with semicolon) works correctly for leading spaces in BuJo lines.
+
+**Structure — every line in a `<div>`:**
+- Body text: `<div>text</div>`
+- Blank line: `<div><br></div>`
+- Heading: `<div><b><span style="font-size: 24px">Title</span></b></div>` (title), `<div><b><span style="font-size: 18px">Heading</span></b></div>` (section)
+- Bullet list: `<ul><li>item</li></ul>`
+- Numbered list: `<ol><li>item</li></ol>`
+- BuJo monospace: `<div><font face="Menlo-Regular"><tt>signifier text</tt></font></div>`
+
+**Title rule:** When using `update_note_content`, the first element MUST be `<div><b><span style="font-size: 24px">Title</span></b></div>`. Omitting it causes Apple Notes to rename the note to the first content line.
+
+**Folder rule:** Daily journal entries live in the `📓 Journal` folder. Always pass `folder: "📓 Journal"` to Apple Notes MCP calls.
+
+**HTML only — never markdown.** Passing markdown to Apple Notes collapses the note into a single unformatted line. Produce HTML directly.
+
+**Preserve existing patterns exactly.** When reading and rewriting a note, match the existing HTML structure byte-for-byte. Don't "clean up" or normalize the HTML — Apple Notes has specific expectations and normalization breaks things.
+
 ## Step 4 — Promote new decisions
 
 If the segment contained a genuine architectural / tool / process decision — something you'd want to find again via search — write it to `~/Documents/Claude/Memory/decisions/YYYY-MM-DD-slug.md` via `mcp__plugin_workbench_memory__write`. Use the decision file shape (`type: decision`, `scope: topical`, rationale + ruled-out alternatives in the body).

@@ -119,6 +119,13 @@ You don't need to parse every line. Skim for: user prompts (what was asked), fil
 
 **CRITICAL — Apple Notes MCP has no partial-edit mode.** `update_note_content` replaces the ENTIRE note body on every call, regardless of `mode`, `find_text`, or `new_content`. You MUST read-rebuild-write-once.
 
+**Apple Notes HTML rules (must follow or the note breaks):**
+- HTML entities: NO semicolons (`&amp` not `&amp;`, `&quot` not `&quot;`). Exception: `&nbsp;` works with semicolon.
+- Every line in a `<div>`. BuJo: `<div><font face="Menlo-Regular"><tt>signifier text</tt></font></div>`.
+- First element must be the title `<div><b><span style="font-size: 24px">...</span></b></div>` or the note gets renamed.
+- Always pass `folder: "📓 Journal"` to Apple Notes MCP calls.
+- HTML only — never markdown. Preserve existing patterns byte-for-byte.
+
 1. Find today's note. Title format: `YYYY-MM-DD — Weekday` (e.g. `2026-04-09 — Thursday`). Use `mcp__Read_and_Write_Apple_Notes__list_notes` if you need to confirm the title; otherwise pass the title directly.
 
 2. `mcp__Read_and_Write_Apple_Notes__get_note_content` — read the full body into your context.

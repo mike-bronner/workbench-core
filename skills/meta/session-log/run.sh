@@ -23,7 +23,7 @@ MEMORY_PATH="${MEMORY_PATH:-$HOME/Documents/Claude/Memory}"
 CACHE_PATH="${WORKBENCH_MEMORY_CACHE:-$(_cfg '.memory_cache')}"
 CACHE_PATH="${CACHE_PATH:-$HOME/.claude-memory-cache}"
 PENDING_SUMMARIES_DIR="$CACHE_PATH/pending-summaries"
-CHECKPOINT="$CACHE_PATH/log-checkpoint.json"
+CHECKPOINTS_DIR="$CACHE_PATH/log-checkpoints"
 
 # ──────────── Recursion guard ────────────
 # The dispatch block at the bottom of this script spawns a detached claude
@@ -56,6 +56,20 @@ EVENT=$(printf '%s' "$PAYLOAD" | jq -r '.hook_event_name // "SessionEnd"' 2>/dev
 
 if [ -z "$SESSION_ID" ] || [ -z "$TRANSCRIPT" ] || [ ! -r "$TRANSCRIPT" ]; then
   exit 0
+fi
+
+# ──────────── Per-session checkpoint ────────────
+CHECKPOINT="$CHECKPOINTS_DIR/${SESSION_ID}.json"
+
+# Migration: if old single-slot checkpoint exists and matches this session,
+# adopt it into the per-session directory.
+OLD_CHECKPOINT="$CACHE_PATH/log-checkpoint.json"
+if [ ! -f "$CHECKPOINT" ] && [ -f "$OLD_CHECKPOINT" ]; then
+  OLD_SID=$(jq -r '.session_id // empty' "$OLD_CHECKPOINT" 2>/dev/null)
+  if [ "$OLD_SID" = "$SESSION_ID" ]; then
+    mkdir -p "$CHECKPOINTS_DIR" 2>/dev/null
+    mv "$OLD_CHECKPOINT" "$CHECKPOINT" 2>/dev/null
+  fi
 fi
 
 # ──────────── Determine mode ────────────
@@ -100,7 +114,7 @@ TS=$(date -u +%H%M%SZ)
 SEG_DIR="$MEMORY_PATH/sessions/$TODAY"
 SEG_FILE="$SEG_DIR/${SESSION_ID}-${TS}-${MODE}.log.md"
 mkdir -p "$SEG_DIR" 2>/dev/null || exit 0
-mkdir -p "$CACHE_PATH" "$PENDING_SUMMARIES_DIR" 2>/dev/null || exit 0
+mkdir -p "$CACHE_PATH" "$PENDING_SUMMARIES_DIR" "$CHECKPOINTS_DIR" 2>/dev/null || exit 0
 
 NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 

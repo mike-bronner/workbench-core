@@ -16,7 +16,7 @@ It does the **mechanical** half of logging only. The narrative summary, journal 
    - `PreCompact` → `checkpoint`
    - `SessionEnd` → `final`
    - `/log-now` → `manual` (via `WORKBENCH_LOG_MODE` env var)
-3. Finds the last log checkpoint (`~/.claude-memory-cache/log-checkpoint.json`) to know which line in the transcript to start from. Same-session checkpoints are respected; new sessions start fresh.
+3. Finds the per-session checkpoint (`~/.claude-memory-cache/log-checkpoints/<session-id>.json`) to know which line in the transcript to start from. Each session has its own checkpoint file so concurrent sessions don't stomp each other.
 4. Tails the transcript from that line to the current end of file.
 5. Writes a raw log file to `~/Documents/Claude/Memory/sessions/YYYY-MM-DD/{session-id}-{timestamp}-{mode}.log.md`. Frontmatter: `name`, `type: session`, `scope: chronological`, `date`, `tags`, `session_id`, `mode`, `event`, `transcript`, `start_line`, `end_line`, `summary: |`.
 6. Updates the checkpoint with the next line to read.

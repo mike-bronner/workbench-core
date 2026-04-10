@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/skills/meta/session-wrap/run.sh\""
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/skills/meta/session-log/run.sh\""
           }
         ]
       }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/skills/meta/session-wrap/run.sh\""
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/skills/meta/session-log/run.sh\""
           }
         ]
       }

@@ -1,5 +1,5 @@
 {
-  "name": "core",
+  "name": "workbench",
   "description": "Core infrastructure for Claude Code: persistent agent identity, session lifecycle hooks, operational memory, and meta skills. Provides a customizable framework where users configure the agent name, memory path, and persona files.",
   "version": "0.1.5",
   "author": {

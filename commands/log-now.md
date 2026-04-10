@@ -1,17 +1,17 @@
 ---
-description: Wrap the current session segment right now — dump the raw log and write the narrative summary + Apple Notes journal line + any decision promotions inline.
+description: Log the current session segment right now — dump the raw log and write the narrative summary + Apple Notes journal line + any decision promotions inline.
 ---
 
-The user has invoked `/log-now`. Wrap the current session segment immediately.
+The user has invoked `/log-now`. Log the current session segment immediately and write the narrative pieces inline.
 
-Unlike the hook-driven `PreCompact` / `SessionEnd` wraps — which can only do the mechanical half because hooks can't reach MCPs — `/log-now` runs in an active model turn. That means you do both halves yourself: run the shell script to dump the raw log, then write the narrative pieces using the MCPs that are reachable right now.
+Unlike the hook-driven `PreCompact` / `SessionEnd` logs — which can only do the mechanical half because hooks can't reach MCPs — `/log-now` runs in an active model turn. That means you do both halves yourself: run the shell script to dump the raw log, then write the narrative pieces using the MCPs that are reachable right now.
 
 ## Step 1 — Dump the raw log
 
-Run the `session-wrap` shell script in manual mode. You'll need the current session's transcript path and session ID; the hook infrastructure that populates `transcript_path` is not available here, so discover the current session from the filesystem instead.
+Run the `session-log` shell script in manual mode. You'll need the current session's transcript path and session ID; the hook infrastructure that populates `transcript_path` is not available here, so discover the current session from the filesystem instead.
 
 ```bash
-HOBBES_WRAP_MODE=manual bash "${CLAUDE_PLUGIN_ROOT}/skills/meta/session-wrap/run.sh" <<EOF
+WORKBENCH_LOG_MODE=manual bash "${CLAUDE_PLUGIN_ROOT}/skills/meta/session-log/run.sh" <<EOF
 {
   "session_id": "$(ls -t ~/.claude/projects/*/$(ls -t ~/.claude/projects/ | head -1)/*.jsonl 2>/dev/null | head -1 | xargs -I{} basename {} .jsonl)",
   "transcript_path": "$(find ~/.claude/projects -name '*.jsonl' -print0 2>/dev/null | xargs -0 ls -t 2>/dev/null | head -1)",
@@ -22,11 +22,11 @@ EOF
 
 If that heuristic for finding the transcript is wrong in practice (the directory layout changes, the file isn't the newest for legitimate reasons, etc.), fall back to asking the user for the transcript path and running the script with that payload.
 
-After the script runs, read `~/.claude-memory-cache/pending-wraps/<session_id>.json` to find the path of the log file that was just written.
+After the script runs, read `~/.claude-memory-cache/pending-summaries/<session_id>.json` to find the path of the log file that was just written.
 
 ## Step 2 — Write the narrative summary
 
-Read the raw log file (and any earlier checkpoint logs from the same `session_id` in the same `sessions/YYYY-MM-DD/` directory — a summary should cover all the logs it's based on). Based on the log contents and your own memory of the current session, write a sibling `.summary.md` file in the same directory. Use the `hobbes-memory` MCP to write it so the vault index picks it up.
+Read the raw log file (and any earlier checkpoint logs from the same `session_id` in the same `sessions/YYYY-MM-DD/` directory — a summary should cover all the logs it's based on). Based on the log contents and your own memory of the current session, write a sibling `.summary.md` file in the same directory. Use `mcp__plugin_workbench_memory__write` so the vault index picks it up.
 
 **Only summaries are indexed.** Raw `.log.md` files are excluded from the vault search index via `MARKDOWN_VAULT_MCP_EXCLUDE=**/*.log.md`. That means when anyone searches memory for "what did we decide about X," they'll land on a summary and follow the `log_files` pointer (or the inline Logs section) to pull the full context from the raw log if needed.
 
@@ -53,7 +53,7 @@ summary: |
 Body structure (tight, not exhaustive):
 
 - **What happened** — 2–5 bullets, focused on outcomes not steps
-- **What got decided** — explicit decisions with rationale (anything new since the last wrap)
+- **What got decided** — explicit decisions with rationale (anything new since the last summary)
 - **What's still open** — loose ends, next steps, deferred items
 - **Logs** — explicit list of the raw `.log.md` files this summary covers (same content as the `log_files` frontmatter, but inline for anyone reading the body)
 
@@ -62,11 +62,11 @@ Body structure (tight, not exhaustive):
 Find today's daily journal note (title format `YYYY-MM-DD — Weekday`, e.g. `2026-04-09 — Thursday`). Append a single BuJo line in Menlo-Regular monospace, per `~/.claude/CLAUDE.md`:
 
 ```html
-<div><tt><font face="Menlo-Regular">— {short phrase}. See {log-path}</font></tt></div>
+<div><font face="Menlo-Regular"><tt>— {short phrase}. See {log-path}</tt></font></div>
 ```
 
 Use the right BuJo signifier:
-- `—` note (default for wrap summaries)
+- `—` note (default for log summaries)
 - `×` task completed
 - `*` priority / noteworthy
 - `!` inspiration / insight
@@ -83,7 +83,7 @@ Never skip the read step. A forgotten read destroys the note and the loss is unr
 
 ## Step 4 — Promote new decisions
 
-If the segment contained a genuine architectural / tool / process decision — something you'd want to find again via search — write it to `~/Documents/Claude/Memory/decisions/YYYY-MM-DD-slug.md` via the `hobbes-memory` MCP. Use the decision file shape (`type: decision`, `scope: topical`, rationale + ruled-out alternatives in the body).
+If the segment contained a genuine architectural / tool / process decision — something you'd want to find again via search — write it to `~/Documents/Claude/Memory/decisions/YYYY-MM-DD-slug.md` via `mcp__plugin_workbench_memory__write`. Use the decision file shape (`type: decision`, `scope: topical`, rationale + ruled-out alternatives in the body).
 
 Do NOT promote every small choice. The bar: would this surface as a useful answer to "what did we decide about X?" six months from now? If yes, promote. If no, the log and summary are enough.
 
@@ -97,5 +97,5 @@ Tell Mike what you wrote: the log path, the summary path, the BuJo line you appe
 
 ## Notes
 
-- If the script no-ops (nothing new since the last wrap), tell Mike that and skip the rest. Don't invent content.
-- The pending-wrap marker is only written in `manual` mode as a safety net — since you do the narrative half inline, you should delete it at the end: `rm ~/.claude-memory-cache/pending-wraps/<session_id>.json`. That prevents the next session's warmup from treating this wrap as "pending". (The marker lives in a per-session file under `pending-wraps/` — don't delete the whole directory, only your own marker.)
+- If the script no-ops (nothing new since the last log), tell Mike that and skip the rest. Don't invent content.
+- The pending-summary marker is only written in `manual` mode as a safety net — since you do the narrative half inline, you should delete it at the end: `rm ~/.claude-memory-cache/pending-summaries/<session_id>.json`. That prevents the next session's warmup from treating this summary as "pending". (The marker lives in a per-session file under `pending-summaries/` — don't delete the whole directory, only your own marker.)

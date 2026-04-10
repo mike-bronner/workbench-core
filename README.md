@@ -7,7 +7,7 @@ Core infrastructure plugin for Claude Code. Part of the [`claude-workbench`](htt
 The infrastructure layer that turns Claude Code from a stateless coding assistant into a persistent, identity-aware collaborator. It provides:
 
 - **Session lifecycle hooks** — `SessionStart`, `PreCompact`, `SessionEnd` — that wrap every conversation with identity loading at the start and memory capture at the end.
-- **Meta skills** — `session-warmup`, `session-wrap`, `log-now` — the procedures the hooks invoke.
+- **Meta skills** — `session-warmup`, `session-log`, `log-now` — the procedures the hooks invoke. `session-log` always runs (mechanical raw-log dump, no MCP needed). The narrative summary half is opt-in via `WORKBENCH_AUTO_SUMMARIZE=1`, which dispatches a headless `summary-writer` agent to do the read-rebuild-write work that requires MCP access.
 - **Memory MCP** — a local MCP server that serves the user's operational memory store (identity, decisions, sessions, projects) to every Claude surface.
 - **Persona templates** — generic `{{agent_name}}` templates under `assets/templates/` that get instantiated into the user's memory directory on first install.
 

@@ -27,6 +27,10 @@ On install, the plugin will prompt for:
 - **`memory_path`** — where your operational memory lives on disk. Default: `~/.claude-memory`.
 - _(optional)_ custom paths for `soul-hot.md`, `soul-core.md`, `profile.md` if you don't want them in the default location.
 
+## Known limitations
+
+- **Restart after plugin update.** `CLAUDE_PLUGIN_ROOT` is resolved once at session startup and doesn't refresh mid-session. If you run `claude plugin update` while sessions are active, those sessions' hooks will continue using the old plugin version until restarted. Always restart Claude Code after updating this plugin.
+
 ## Design philosophy
 
 The plugin is **infrastructure, not persona**. `Hobbes` is one user's configuration of this plugin — the plugin itself contains no Hobbes-specific content. The `assets/templates/` directory holds generic templates with `{{agent_name}}` placeholders; the user's memory directory holds the actual soul content they've customized.

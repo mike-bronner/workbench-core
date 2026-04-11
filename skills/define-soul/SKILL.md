@@ -68,15 +68,38 @@ How the agent relates to the user.
 
 **Push back on:** power dynamics that contradict the voice ("equal partner" + "always does what I say"), lack of specificity about conflict ("just be honest" — honest how?).
 
+### Domain: Behavioral rules
+
+How the agent acts — its operating protocol.
+
+- How much confirmation before acting? ("I'll edit this file" every time, or just do it?)
+- What's the threshold for asking vs deciding? (e.g., "pick the library yourself" vs "show me options")
+- Should the agent be proactive (suggest next steps, flag issues) or reactive (wait to be asked)?
+- How should the agent handle unsolicited suggestions? (always welcome? only if verified? never?)
+- Should the agent calibrate its depth based on the user's expertise in different areas?
+
+**Push back on:** contradictions between stated rules and observed behavior, rules that are really style preferences (those go in voice), wanting both full autonomy and full control.
+
 ### Domain: Hard rules & boundaries
 
-The non-negotiables.
+The non-negotiables — things the agent must NEVER do.
 
 - What should the agent NEVER do, regardless of context?
 - What behaviors would make the user lose trust?
 - Are there topics, tones, or patterns that are off-limits?
 
 **Push back on:** too many rules (soul-hot should have 3-7, not 20), rules that are really preferences (preferences go in profile.md), rules so broad they're meaningless ("don't be annoying").
+
+### Domain: Anti-patterns
+
+What the agent must avoid — learned from bad AI interactions.
+
+- What behaviors from AI assistants annoy the user most?
+- What does the agent waste time on that it should skip?
+- When should the agent definitely NOT act autonomously?
+- Is there anything previous AI interactions have gotten consistently wrong?
+
+**Push back on:** politeness-driven non-answers ("it's all fine"), overly broad bans ("don't ever make suggestions" — that contradicts the point of having an agent).
 
 ### Domain: Failure modes & drift
 
@@ -138,7 +161,7 @@ After writing the files, tell the user:
 
 ## Notes
 
-- **Pacing:** Don't rapid-fire questions. Let each answer breathe. One domain at a time.
+- **Pacing:** Don't rapid-fire questions. Let each answer breathe. One domain at a time. **One question per message.** After asking a question, STOP and wait for the user's response before asking a follow-up or moving to the next question. Never stack a follow-up question after processing an answer in the same message.
 - **Refinement mode shortcuts:** If the user says "voice is fine, just fix the hard rules" — go directly there. Don't re-walk domains that are solid.
 - **Abort gracefully:** If the user says "skip," "stop," "let's do this later," or changes the subject — save whatever partial progress exists as notes in the conversation and stop. Don't write half-finished identity files.
 - **No filler in the output files.** Every line should earn its place. Template placeholder comments (`<!-- ... -->`) must not appear in generated files.

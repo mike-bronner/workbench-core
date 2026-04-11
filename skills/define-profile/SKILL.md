@@ -1,5 +1,5 @@
 ---
-description: Interactive interview to build or refine the user's profile.md. Asks about role, working style, technical stack, collaboration preferences, and what the user explicitly does NOT need from their agent. Keeps asking until the profile is solid or the user opts out.
+description: Interactive interview to build or refine the user's profile.md. Asks about role, working style, technical stack, and communication preferences. Focuses on facts about the user — agent behavioral rules belong in soul-hot.md via /workbench:define-soul.
 ---
 
 This is an execution-aware skill — check `skills/define-profile.learnings.md` in the vault before proceeding. If it exists, apply accumulated learnings.
@@ -44,22 +44,21 @@ Who the user is and what they're working on.
 How the user thinks and makes decisions.
 
 - Do you plan before coding, or figure it out as you go?
-- When you're stuck, do you want to talk it through or have the agent go investigate?
 - How do you handle scope — do you tend to expand ("while we're here...") or stay narrow?
-- How do you feel about the agent suggesting improvements you didn't ask for?
+- What does your process look like? (Scrum? Kanban? No process? Something homegrown?)
+- When you're stuck, do you talk it through or go investigate alone first?
 
 **Push back on:** idealized self-descriptions ("I always plan thoroughly" — really?), contradictions between stated and revealed preferences (if they've been iterating in this conversation, they're not a planner-first).
 
 ### Domain: Communication preferences
 
-How the user wants to interact.
+How the user communicates — not how the agent should respond (that's soul territory).
 
-- Terse or detailed responses? When does each apply?
-- Should the agent explain its reasoning, or just give the answer?
-- How much confirmation before acting? ("I'll edit this file" every time, or just do it?)
-- What's the threshold for asking vs deciding? (e.g., "pick the library yourself" vs "show me options")
+- Terse or detailed when you communicate? When does each apply?
+- Do you explain your reasoning when you make a request, or just state what you want?
+- How do you signal "I'm done discussing, just do it" vs "let's keep exploring"?
 
-**Push back on:** "it depends" without saying on *what*, unrealistic expectations ("never ask me anything" but then correcting choices), mismatch between stated preferences and how they've actually communicated during this session.
+**Push back on:** "it depends" without saying on *what*, mismatch between stated preferences and how they've actually communicated during this session.
 
 ### Domain: Technical stack
 
@@ -72,34 +71,31 @@ What the user works with.
 
 **Push back on:** listing everything they've ever touched (focus on what they use *now*), claiming expertise without evidence, missing the tools they actually use daily.
 
-### Domain: Collaboration shape
+### Domain: Privacy & external actions
 
-How the user wants to work *with this specific agent*.
+How the user thinks about privacy and the boundary between internal and external actions.
 
-- What does a productive session look like?
-- What makes a session feel frustrating?
-- Should the agent be proactive (suggest next steps, notice issues) or reactive (wait to be asked)?
-- How should the agent handle disagreement? (push back? suggest alternatives? defer?)
-- Are there recurring tasks where the agent should just know the drill?
+- What counts as sensitive in your world? (Code? Contacts? Financial? All external-facing actions?)
+- How do you feel about the agent acting internally — reading files, organizing notes, searching your codebase — without asking?
+- Where's the hard line for external actions? (Sending messages, posting, emailing, sharing)
 
-**Push back on:** abstract ideals ("just be helpful"), preferences that conflict with earlier answers, missing the emotional texture (is frustration about wasted time? wrong assumptions? too many questions?).
+**Push back on:** blanket "ask me everything" (that contradicts wanting an autonomous agent), overly permissive ("do whatever" — until the first unwanted email), not distinguishing internal from external risk.
 
-### Domain: What you DON'T need
+### Domain: What makes a good / bad session
 
-Explicit anti-patterns.
+The user's experience — what success and failure feel like *to them*.
 
-- What behaviors from AI assistants annoy you most?
-- What does the agent waste time on that you wish it would skip?
-- When should the agent definitely NOT act autonomously?
-- Is there anything previous AI interactions have gotten consistently wrong?
+- Think of a time working with an AI went really well. What made it work?
+- Think of a time it went badly. What went wrong?
+- What's the single biggest time-waster in your AI interactions?
 
-**Push back on:** politeness-driven non-answers ("it's all fine"), overly broad bans ("don't ever make suggestions" — that contradicts the point of having an agent).
+**Push back on:** abstract answers ("it was helpful" — *how?*), blaming only the AI without naming what the user wanted differently.
 
 ## Step 3 — Convergence check
 
 When you've covered enough ground (or the user signals they're done), pause and play back what you've heard — not as a list of answers, but as a description of how this person works:
 
-> "Here's what I'm taking away: you're a [role] who works [style]. You want [collaboration shape] and get frustrated when [anti-pattern]. You're deep in [stack] and learning [new thing]. The main thing you don't need is [anti-need]."
+> "Here's what I'm taking away: you're a [role] who works [style]. You communicate [way], your privacy line is [boundary], and a good session for you looks like [description]. You're deep in [stack] and learning [new thing]."
 
 Ask: "Does this sound right? What's missing or wrong?"
 
@@ -110,10 +106,11 @@ Iterate until the user confirms. Don't rush this step.
 Write the profile based on the conversation. Structure:
 
 - **Who I am** — role, background, context (facts, not bio)
-- **How I work** — working style, decision style, communication preferences
+- **How I work** — working style, decision style, process
+- **Communication** — how the user communicates, not how the agent should respond
 - **Technical stack** — what I use, what I'm learning, what I avoid
-- **Preferences for {agent_name}** — specific behavioral requests
-- **What I don't need** — explicit anti-patterns
+- **Privacy & external actions** — what's sensitive, internal vs external comfort level
+- **What makes a good/bad session** — the user's experience of success and failure
 
 Use the frontmatter structure from the template. Replace `{{agent_name}}` with the configured agent name. Set `date` to today.
 
@@ -127,7 +124,7 @@ Tell the user the profile is written and will load on next session start.
 
 ## Notes
 
-- **Pacing:** One domain at a time. Let answers breathe.
+- **Pacing:** One domain at a time. Let answers breathe. **One question per message.** After asking a question, STOP and wait for the user's response before asking a follow-up or moving to the next question. Never stack a follow-up question after processing an answer in the same message.
 - **Refinement shortcuts:** "Stack is fine, just update my preferences" — go directly there.
 - **Abort gracefully:** If the user says "skip" or "enough" — stop. Don't write a half-finished profile.
 - **This is about the user, not the agent.** Don't let the profile become a second soul file. It's facts and preferences, not character.

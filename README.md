@@ -65,6 +65,13 @@ cp assets/templates/skills-protocol.template.md ~/Documents/Claude/Memory/identi
 
 Replace `{{agent_name}}` placeholders with your agent's name, then edit to taste.
 
+Alternatively, use the interactive skills to build these files through a guided interview:
+
+- `/workbench:define-soul` — walks through agent identity, voice, hard rules, and failure modes
+- `/workbench:define-profile` — walks through user role, working style, technical stack, privacy preferences, and session quality
+
+These are the recommended approach — `/workbench:customize` will offer to launch them automatically on first install.
+
 ### Optional: execution-aware skills
 
 The plugin includes a skills protocol (`identity/skills-protocol.md`) that gives any skill persistent memory. When a skill execution results in a correction, failure, or confirmed pattern, a learning is written to `skills/{skill-name}.learnings.md` in the vault. Future runs of that skill read the learnings first.
@@ -214,7 +221,7 @@ Runs on every `startup` warmup:
 |-------|-------------|
 | `/workbench:customize` | Configure agent name, paths, summary model, identity files |
 | `/workbench:define-soul` | Interactive onboarding/refinement for agent identity (soul-hot, soul-core) |
-| `/workbench:define-profile` | Interactive interview to build/refine the user's profile.md |
+| `/workbench:define-profile` | Interactive interview to build/refine the user's profile.md (role, working style, stack, privacy, session quality) |
 | `/workbench:log-now` | Dump the current session log and write a narrative summary inline |
 | `/workbench:summarize-session` | Manually summarize a specific session (or pick from unsummarized) |
 | `/workbench:process-pending-summaries` | Dispatch background agents to clear pending summary markers |

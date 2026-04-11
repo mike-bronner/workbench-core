@@ -175,18 +175,13 @@ cat > "$CHECKPOINT" <<EOF
 }
 EOF
 
-# ──────────── Mark pending-summary on final/manual ────────────
-# Checkpoints don't get a pending-summary marker — they're intermediate and
-# the session is still live. Only final (SessionEnd) and manual (/log-now)
-# produce a marker that the next warmup (or the summary-writer agent) should
-# pick up.
-#
-# Each marker lives at $PENDING_SUMMARIES_DIR/$SESSION_ID.json so multiple
-# concurrent sessions can all leave markers without clobbering each other.
-PENDING_SUMMARY_FILE=""
-if [ "$MODE" != "checkpoint" ]; then
-  PENDING_SUMMARY_FILE="$PENDING_SUMMARIES_DIR/${SESSION_ID}.json"
-  cat > "$PENDING_SUMMARY_FILE" <<EOF
+# ──────────── Mark pending-summary ────────────
+# Every log write (checkpoint, final, manual) gets a marker. With one rolling
+# file per session, each summary-writer invocation reads the full log and
+# writes a complete summary — later runs overwrite earlier ones. The marker
+# uses the session ID as filename so concurrent sessions don't clobber.
+PENDING_SUMMARY_FILE="$PENDING_SUMMARIES_DIR/${SESSION_ID}.json"
+cat > "$PENDING_SUMMARY_FILE" <<EOF
 {
   "session_id": "$SESSION_ID",
   "transcript_path": "$TRANSCRIPT",
@@ -196,34 +191,25 @@ if [ "$MODE" != "checkpoint" ]; then
   "marked_at": "$NOW_ISO"
 }
 EOF
-fi
 
-# ──────────── Dispatch background summary-writer (experimental) ────────────
-# When WORKBENCH_AUTO_SUMMARIZE=1, spawn a detached claude process running
-# the summary-writer agent. It reads the marker + raw log and writes a
-# narrative summary directly to the vault via the memory MCP, then deletes
-# the marker.
+# ──────────── Dispatch background summary-writer ────────────
+# Spawn a detached claude process on every log write. With one rolling file
+# per session, each summary-writer reads the full log and writes a complete
+# summary. Checkpoint summaries get overwritten by the final one — the last
+# writer wins, which is always the most complete.
 #
 # Defense in depth: if the spawn fails or the background claude errors out,
-# the marker stays in place and the next session's warmup hook picks it up
-# just like 0.1.5 without this block.
+# the marker stays in place and the next session's warmup hook picks it up.
 #
 # Safeguards:
-#   - WORKBENCH_SKIP_LOG=1 on the spawn prevents the spawned claude's own
-#     SessionEnd hook from recursing into another summary-writer (handled
-#     by the early-exit guard at the top of this script).
-#   - WORKBENCH_SKIP_WARMUP=1 on the spawn prevents the spawned claude's
-#     SessionStart hook from injecting identity or scanning pending
-#     summaries (it shouldn't touch any work other than its assigned job).
+#   - WORKBENCH_SKIP_LOG=1 prevents the spawned claude's own SessionEnd hook
+#     from recursing into another summary-writer.
+#   - WORKBENCH_SKIP_WARMUP=1 prevents identity injection and pending-summary
+#     scanning in the spawned process.
 #   - --no-session-persistence prevents the spawned claude from leaving a
-#     JSONL transcript behind, which would otherwise become a new pending
-#     summary when its SessionEnd fires.
-#   - nohup + & + disown fully detaches the process so this hook returns
-#     immediately; the summary-writer runs asynchronously while the user's
-#     session ends normally.
-if [ "$MODE" != "checkpoint" ] \
-    && [ -n "$PENDING_SUMMARY_FILE" ] \
-    && [[ "${WORKBENCH_AUTO_SUMMARIZE:-$(_cfg '.auto_summarize')}" =~ ^(1|true)$ ]] \
+#     transcript that would become a new pending summary.
+#   - nohup + & + disown fully detaches so this hook returns immediately.
+if [[ "${WORKBENCH_AUTO_SUMMARIZE:-$(_cfg '.auto_summarize')}" =~ ^(1|true)$ ]] \
     && command -v claude >/dev/null 2>&1; then
   SUMMARY_MODEL="${WORKBENCH_SUMMARY_MODEL:-$(_cfg '.summary_model')}"
   SUMMARY_MODEL="${SUMMARY_MODEL:-haiku}"

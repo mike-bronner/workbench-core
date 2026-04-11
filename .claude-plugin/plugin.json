@@ -18,8 +18,7 @@
         "MARKDOWN_VAULT_MCP_READ_ONLY": "false",
         "MARKDOWN_VAULT_MCP_REQUIRED_FIELDS": "name,type",
         "MARKDOWN_VAULT_MCP_INDEXED_FIELDS": "name,type,tags,summary,date,scope,log_files",
-        "MARKDOWN_VAULT_MCP_EXCLUDE": "**/*.log.md",
-        "MARKDOWN_VAULT_MCP_SERVER_NAME": "workbench-memory",
+                "MARKDOWN_VAULT_MCP_SERVER_NAME": "workbench-memory",
         "EMBEDDING_PROVIDER": "fastembed"
       }
     }

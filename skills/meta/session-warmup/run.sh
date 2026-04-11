@@ -157,14 +157,11 @@ if [ "$SOURCE" != "compact" ]; then
     printf '\n'
 
     cat <<NOTICE
-**Dispatch a background agent to handle these.** Do NOT block the session.
+**Run \`/workbench:process-pending-summaries\` to handle these in the background.**
+Do NOT block the session — the skill dispatches agents and returns immediately.
 
-For each marker, spawn a \`workbench:summary-writer\` agent (subagent_type)
-in the background with the session_id, marker_path, and log_path. Then
-proceed with the user's request normally.
-
-If the Agent tool is unavailable, note the pending summaries and move on.
-They will be picked up by the next session or manual \`/log-now\`.
+If the skill is unavailable, note the pending summaries and move on.
+They will be picked up by the next session or manual \`/workbench:log-now\`.
 NOTICE
     printf '\n'
   fi

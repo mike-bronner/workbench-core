@@ -2,15 +2,15 @@
 description: Log the current session segment right now — dump the raw log and write the narrative summary + any decision promotions inline. Use this when you want to snapshot mid-conversation, or when you want a richer summary than the auto-generated one.
 ---
 
-The user has invoked `/log-now`. This is an execution-aware skill — check `skills/log-now.learnings.md` in the vault before proceeding. If it exists, apply accumulated learnings to this execution.
+This is an execution-aware skill — check `skills/log-now.learnings.md` in the vault before proceeding. If it exists, apply accumulated learnings.
 
-Log the current session segment immediately and write the narrative pieces inline.
+The user has invoked `/log-now`. Log the current session segment immediately and write the narrative pieces inline.
 
-Unlike the hook-driven `PreCompact` / `SessionEnd` logs — which can only do the mechanical half because hooks can't reach MCPs — `/log-now` runs in an active model turn. That means you do both halves yourself: run the shell script to dump the raw log, then write the narrative pieces using the MCPs that are reachable right now.
+Unlike the hook-driven logs — which can only do the mechanical half because hooks can't reach MCPs — `/log-now` runs in an active model turn. You do both halves: run the shell script, then write the narrative.
 
 ## Step 1 — Dump the raw log
 
-Run the `session-log` shell script in manual mode. You'll need the current session's transcript path and session ID; the hook infrastructure that populates `transcript_path` is not available here, so discover the current session from the filesystem instead.
+Run the session-log shell script in manual mode:
 
 ```bash
 WORKBENCH_LOG_MODE=manual bash "${CLAUDE_PLUGIN_ROOT}/skills/meta/session-log/run.sh" <<EOF
@@ -22,55 +22,37 @@ WORKBENCH_LOG_MODE=manual bash "${CLAUDE_PLUGIN_ROOT}/skills/meta/session-log/ru
 EOF
 ```
 
-If that heuristic for finding the transcript is wrong in practice (the directory layout changes, the file isn't the newest for legitimate reasons, etc.), fall back to asking the user for the transcript path and running the script with that payload.
+If the heuristic fails, ask the user for the transcript path.
 
-After the script runs, read `~/.claude-memory-cache/pending-summaries/<session_id>.json` to find the path of the log file that was just written.
+After the script runs, read `~/.claude-memory-cache/pending-summaries/<session_id>.json` to find the log path.
 
 ## Step 2 — Write the narrative summary
 
-Read the raw log file. Based on the log contents and your own memory of the current session, write a sibling `.summary.md` file in the same directory. Use `mcp__plugin_workbench_memory__write` so the vault index picks it up.
+Read the raw log. Based on the log contents AND your own lived memory of this session, write the summary.
 
-Frontmatter shape (required fields per the memory vault config: `name`, `type`):
+Read `${CLAUDE_PLUGIN_ROOT}/references/summary-format.md` for the required shape. Set `mode: manual`. Write via `mcp__plugin_workbench_memory__write`.
 
-```yaml
----
-name: "Session summary — {short-description}"
-type: session
-scope: chronological
-date: YYYY-MM-DD
-tags: [session, summary, ...topic-tags]
-session_id: <same as the log file>
-mode: manual
-log_files:
-  - /absolute/path/to/session.log.md
-summary: |
-  One or two sentences that answer "what happened in this segment"
-  without opening the body.
----
+Because you're in-session, your summary should be richer than what the auto summary-writer produces — you have context the raw JSONL doesn't capture.
+
+## Step 3 — Promote decisions
+
+Read `${CLAUDE_PLUGIN_ROOT}/references/decision-promotion.md` for criteria.
+
+## Step 4 — Update profile if shifted
+
+Read `${CLAUDE_PLUGIN_ROOT}/references/vault-conventions.md` for conventions.
+
+## Step 5 — Clean up and confirm
+
+Delete the pending-summary marker:
+
+```bash
+rm ~/.claude-memory-cache/pending-summaries/<session_id>.json
 ```
 
-Body structure (tight, not exhaustive):
-
-- **What happened** — 2–5 bullets, focused on outcomes not steps
-- **What got decided** — explicit decisions with rationale (anything new since the last summary)
-- **What's still open** — loose ends, next steps, deferred items
-- **Logs** — explicit list of the raw `.log.md` files this summary covers
-
-## Step 3 — Promote new decisions
-
-If the segment contained a genuine architectural / tool / process decision — something you'd want to find again via search — write it to `~/Documents/Claude/Memory/decisions/YYYY-MM-DD-slug.md` via `mcp__plugin_workbench_memory__write`. Use the decision file shape (`type: decision`, `scope: topical`, rationale + ruled-out alternatives in the body).
-
-Do NOT promote every small choice. The bar: would this surface as a useful answer to "what did we decide about X?" six months from now? If yes, promote. If no, the log and summary are enough.
-
-## Step 4 — Update profile if preferences shifted
-
-If the segment revealed a new preference or working-style change from the user, edit `~/Documents/Claude/Memory/identity/profile.md` to reflect it. Small delta, don't rewrite the file.
-
-## Step 5 — Confirm to Mike
-
-Tell the user what you wrote: the log path, the summary path, and any decisions you promoted. Keep it terse — one short block, not a recap.
+Tell the user what you wrote: log path, summary path, any decisions promoted. Keep it terse.
 
 ## Notes
 
-- If the script no-ops (nothing new since the last log), tell Mike that and skip the rest. Don't invent content.
-- The pending-summary marker is only written in `manual` mode as a safety net — since you do the narrative half inline, you should delete it at the end: `rm ~/.claude-memory-cache/pending-summaries/<session_id>.json`. That prevents the next session's warmup from treating this summary as "pending". (The marker lives in a per-session file under `pending-summaries/` — don't delete the whole directory, only your own marker.)
+- If the script no-ops (nothing new since last log), tell the user and skip.
+- Don't delete the whole `pending-summaries/` directory — only your marker.

@@ -10,7 +10,7 @@ The infrastructure layer that turns Claude Code from a stateless coding assistan
 - **Session logging** — every session is captured as a rolling JSONL log, then summarized by a background agent into a searchable narrative.
 - **Operational memory** — a local MCP server (markdown-vault-mcp) fronts a searchable vault of decisions, projects, insights, and session history.
 - **Execution-aware skills** — a behavioral protocol that gives any skill persistent memory via vault-backed learnings files.
-- **Retention management** — automatic cleanup of raw logs (28 days), checkpoints (7 days), and summary-writer logs (7 days).
+- **Retention management** — automatic cleanup of raw logs (28 days) and checkpoints (7 days); summaries and decisions persist indefinitely.
 
 ## Installation
 
@@ -44,13 +44,14 @@ Configuration is stored in `~/.claude/plugins/data/workbench-claude-workbench/co
 
 ### Set up identity files
 
-The plugin expects three identity files in your memory directory:
+The plugin expects identity files in your memory directory:
 
 ```
 {memory_path}/identity/
-├── soul-hot.md     — hard rules, voice constraints, drift test (loaded every session)
-├── soul-core.md    — deep character, values, tensions (loaded on request)
-└── profile.md      — user profile, preferences, working style (loaded every session)
+├── soul-hot.md            — hard rules, voice constraints, drift test (loaded every session)
+├── soul-core.md           — deep character, values, tensions (loaded on request)
+├── profile.md             — user profile, preferences, working style (loaded every session)
+└── skills-protocol.md     — execution-aware skills protocol (loaded every session)
 ```
 
 Templates are provided in `assets/templates/`. Copy them to your memory directory and customize:
@@ -59,6 +60,7 @@ Templates are provided in `assets/templates/`. Copy them to your memory director
 cp assets/templates/soul-hot.template.md ~/Documents/Claude/Memory/identity/soul-hot.md
 cp assets/templates/soul-core.template.md ~/Documents/Claude/Memory/identity/soul-core.md
 cp assets/templates/profile.template.md ~/Documents/Claude/Memory/identity/profile.md
+cp assets/templates/skills-protocol.template.md ~/Documents/Claude/Memory/identity/skills-protocol.md
 ```
 
 Replace `{{agent_name}}` placeholders with your agent's name, then edit to taste.
@@ -67,10 +69,58 @@ Replace `{{agent_name}}` placeholders with your agent's name, then edit to taste
 
 The plugin includes a skills protocol (`identity/skills-protocol.md`) that gives any skill persistent memory. When a skill execution results in a correction, failure, or confirmed pattern, a learning is written to `skills/{skill-name}.learnings.md` in the vault. Future runs of that skill read the learnings first.
 
+The protocol applies to **any** skill — not just workbench skills. Skills opt in implicitly by including the execution-aware preamble in their `SKILL.md`.
+
+When a learnings file exceeds **30 entries**, the protocol flags it for compaction. `/workbench:compact-learnings` walks through each entry interactively:
+
+- **Workbench plugin skills** — learnings can be integrated directly into the SKILL.md (improving the skill definition) or kept/dropped
+- **All other skills** — learnings are compacted (kept, rewritten, or dropped) without touching the SKILL.md
+
 This is automatic — no per-skill configuration needed. Create the directory:
 
 ```bash
 mkdir -p ~/Documents/Claude/Memory/skills
+```
+
+### Shared references
+
+The `references/` directory contains single-source-of-truth documents shared across skills and the summary-writer agent:
+
+| File | Used by | Purpose |
+|------|---------|---------|
+| `summary-format.md` | summary-writer, log-now, summarize-session | Required frontmatter, body structure, JSONL parsing guidance |
+| `decision-promotion.md` | summary-writer, log-now, summarize-session | Promotion criteria, when NOT to promote, decision file template |
+| `vault-conventions.md` | summary-writer, log-now, summarize-session | Vault paths, required frontmatter, write vs edit rules |
+
+These are loaded at execution time via `${CLAUDE_PLUGIN_ROOT}/references/` — not injected at session start.
+
+## Plugin layout
+
+```
+core/
+├── .claude-plugin/
+│   └── plugin.json              — manifest + MCP server config
+├── agents/
+│   └── summary-writer.md       — background narrative agent definition
+├── assets/
+│   └── templates/              — identity + protocol templates
+├── hooks/
+│   ├── hooks.json              — hook → script bindings
+│   ├── session-log.sh          — raw log capture + summary-writer dispatch
+│   └── session-warmup.sh       — identity injection + cleanup + health check
+├── references/
+│   ├── decision-promotion.md   — when and how to promote decisions
+│   ├── summary-format.md       — summary frontmatter + body template
+│   └── vault-conventions.md    — paths, frontmatter rules, write conventions
+├── skills/
+│   ├── compact-learnings/      — review, compact, and integrate skill learnings
+│   ├── customize/              — configure agent name, paths, MCP settings
+│   ├── define-profile/         — interactive user profile interview
+│   ├── define-soul/            — interactive agent identity onboarding
+│   ├── log-now/                — dump + narrate the current session inline
+│   ├── process-pending-summaries/ — dispatch background agents for pending markers
+│   └── summarize-session/      — manually summarize a specific session
+└── README.md
 ```
 
 ## How it works
@@ -154,16 +204,23 @@ Runs on every `startup` warmup:
 |----------|-----------|-----------|
 | Raw `.log.md` files | 28 days | Summaries are the durable record |
 | Checkpoint files | 7 days | Sessions don't resume after that |
-| Summary-writer logs | 7 days | Diagnostic only |
+| Legacy summary-writer logs | Immediate cleanup | No longer generated; remnants deleted on startup |
 | Summary `.summary.md` files | Forever | Searchable session history |
 | Decisions, identity, projects | Forever | Core operational memory |
 
-## Commands
+## Skills
 
-| Command | Description |
-|---------|-------------|
-| `/workbench:log-now` | Dump the current session log and write a narrative summary inline |
+| Skill | Description |
+|-------|-------------|
 | `/workbench:customize` | Configure agent name, paths, summary model, identity files |
+| `/workbench:define-soul` | Interactive onboarding/refinement for agent identity (soul-hot, soul-core) |
+| `/workbench:define-profile` | Interactive interview to build/refine the user's profile.md |
+| `/workbench:log-now` | Dump the current session log and write a narrative summary inline |
+| `/workbench:summarize-session` | Manually summarize a specific session (or pick from unsummarized) |
+| `/workbench:process-pending-summaries` | Dispatch background agents to clear pending summary markers |
+| `/workbench:compact-learnings` | Review and compact accumulated skill learnings; integrate into SKILL.md for workbench skills |
+
+All skills are **execution-aware** — they check for a `skills/{name}.learnings.md` file in the vault before running and apply any accumulated learnings from prior executions.
 
 ## Environment variable overrides
 

@@ -101,25 +101,33 @@ fi
 # the identity may have been shed. On resume, it may have drifted. The cost
 # is ~7KB — small relative to the context window, and essential for maintaining
 # consistent voice and behavior.
-if [ -r "$MEMORY_PATH/identity/soul-hot.md" ]; then
+#
+# Paths resolve from config.json identity_files, falling back to hardcoded defaults.
+SOUL_HOT="$MEMORY_PATH/$(_cfg '.identity_files.soul_hot')"
+SOUL_HOT="${SOUL_HOT:-$MEMORY_PATH/identity/soul-hot.md}"
+PROFILE="$MEMORY_PATH/$(_cfg '.identity_files.profile')"
+PROFILE="${PROFILE:-$MEMORY_PATH/identity/profile.md}"
+SKILLS_PROTOCOL="$MEMORY_PATH/identity/skills-protocol.md"
+
+if [ -r "$SOUL_HOT" ]; then
   printf '## Identity — soul-hot\n\n'
-  cat "$MEMORY_PATH/identity/soul-hot.md"
+  cat "$SOUL_HOT"
   printf '\n\n'
 else
-  printf '_(soul-hot.md not found at %s/identity/soul-hot.md)_\n\n' "$MEMORY_PATH"
+  printf '_(soul-hot.md not found at %s)_\n\n' "$SOUL_HOT"
 fi
 
-if [ -r "$MEMORY_PATH/identity/profile.md" ]; then
-  printf "## User — Mike's profile\n\n"
-  cat "$MEMORY_PATH/identity/profile.md"
+if [ -r "$PROFILE" ]; then
+  printf '## User profile\n\n'
+  cat "$PROFILE"
   printf '\n\n'
 else
-  printf '_(profile.md not found at %s/identity/profile.md)_\n\n' "$MEMORY_PATH"
+  printf '_(profile.md not found at %s)_\n\n' "$PROFILE"
 fi
 
-if [ -r "$MEMORY_PATH/identity/skills-protocol.md" ]; then
+if [ -r "$SKILLS_PROTOCOL" ]; then
   printf '## Skills protocol\n\n'
-  cat "$MEMORY_PATH/identity/skills-protocol.md"
+  cat "$SKILLS_PROTOCOL"
   printf '\n\n'
 fi
 

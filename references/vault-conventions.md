@@ -11,7 +11,7 @@ to the vault root** (configured in `memory_path`, typically
 
 ```
 Good:  sessions/2026-04-09/abc123.summary.md
-Bad:   /Users/mike/Documents/Claude/Memory/sessions/2026-04-09/abc123.summary.md
+Bad:   $HOME/Documents/Claude/Memory/sessions/2026-04-09/abc123.summary.md
 ```
 
 ## Required frontmatter

@@ -110,9 +110,10 @@ Read `plugin.json`, update the env values, write it back.
 If `agent_name` changed from its previous value (or this is a first-time setup):
 
 1. Read the template files from `${CLAUDE_PLUGIN_ROOT}/assets/templates/`:
-   - `soul-hot.md.template`
-   - `soul-core.md.template`
-   - `profile.md.template`
+   - `soul-hot.template.md`
+   - `soul-core.template.md`
+   - `profile.template.md`
+   - `skills-protocol.template.md`
 
 2. Replace all `{{agent_name}}` placeholders with the new agent name.
 
@@ -124,6 +125,7 @@ If `agent_name` changed from its previous value (or this is a first-time setup):
 
 4. **If identity files don't exist:**
    - Write the templatized versions to `{memory_path}/{identity_files.soul_hot}`, etc.
+   - Write `skills-protocol.template.md` to `{memory_path}/identity/skills-protocol.md` (no `{{agent_name}}` substitution needed — it's agent-agnostic). Replace `{{date}}` with today's date.
    - Create parent directories as needed.
 
 5. Update the `memory_mcp_server_name` to reflect the new agent name if the user chose the default derivation (`{agent_name}-memory`).
@@ -134,7 +136,44 @@ Tell the user:
 - Config saved to `{CONFIG_FILE}`
 - plugin.json updated (MCP env vars reflect new paths)
 - Whether identity files were created/updated
-- **Remind them:** "Restart Claude Code for the MCP server changes to take effect."
+
+## Step 5 — User profile interview
+
+Check whether `profile.md` exists at the configured path and has real content (not just a template):
+
+```bash
+if [ -f "{memory_path}/identity/profile.md" ]; then
+  grep -q '<!--' "{memory_path}/identity/profile.md" && echo "TEMPLATE" || echo "EXISTS"
+else
+  echo "MISSING"
+fi
+```
+
+- **Missing or template:** Automatically invoke `/workbench:define-profile`. Tell the user: "No user profile found — let's set one up so the agent knows how you work."
+- **Exists with real content:** Ask: "Your user profile already exists. Want to run `/workbench:define-profile` to review and refine it?" Respect a "no."
+
+## Step 6 — Agent identity setup
+
+Check whether `soul-hot.md` and `soul-core.md` exist at the configured paths and have real content:
+
+```bash
+for f in soul-hot.md soul-core.md; do
+  if [ -f "{memory_path}/identity/$f" ]; then
+    grep -q '<!--' "{memory_path}/identity/$f" && echo "TEMPLATE: $f" || echo "EXISTS: $f"
+  else
+    echo "MISSING: $f"
+  fi
+done
+```
+
+- **Any missing or template:** Automatically invoke `/workbench:define-soul`. Tell the user: "Agent identity files need to be set up — launching the soul definition walkthrough."
+- **Both exist with real content:** Ask: "Agent identity files already exist. Want to run `/workbench:define-soul` to review and refine them?" Respect a "no."
+
+The profile is completed first intentionally — define-soul benefits from knowing the user's working style, communication preferences, and expertise level when shaping the agent's voice and relationship dynamic.
+
+## Step 7 — Restart reminder
+
+After both interviews complete (or are skipped), remind the user: **"Restart Claude Code for the MCP server changes to take effect."**
 
 ## Notes
 

@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 #
-# session-warmup: inject identity essentials at session start.
+# session-warmup: inject identity essentials and handle pending work at session
+# start.
 #
 # Invoked by the `core` plugin's SessionStart hook. Reads the hook payload from
-# stdin, writes identity + pending-summary notice to stdout for Claude Code to
-# inject into the assistant's context.
+# stdin, writes identity + notices to stdout for Claude Code to inject into the
+# assistant's context.
 #
 # Branches on the payload's `source` field:
-#   startup → full warmup: identity + pending-summary check
-#   resume  → minimal: pending-summary check only (identity already in context)
-#   clear   → identity only (a clear follows a summary, so skip the check)
-#   compact → no-op (context just got compressed, don't add more)
+#   startup → full warmup: cleanup + health check + identity + pending-summary
+#   resume  → identity refresh + pending-summary check
+#   clear   → identity refresh + pending-summary check
+#   compact → identity refresh only (re-inject after context compression)
 #
 # Exit code is always 0 — warmup failures must not break the session.
 
@@ -25,6 +26,9 @@ MEMORY_PATH="${MEMORY_PATH:-$HOME/Documents/Claude/Memory}"
 CACHE_PATH="${WORKBENCH_MEMORY_CACHE:-$(_cfg '.memory_cache')}"
 CACHE_PATH="${CACHE_PATH:-$HOME/.claude-memory-cache}"
 PENDING_SUMMARIES_DIR="$CACHE_PATH/pending-summaries"
+CHECKPOINTS_DIR="$CACHE_PATH/log-checkpoints"
+MCP_SERVER_NAME="${WORKBENCH_MCP_SERVER_NAME:-$(_cfg '.memory_mcp_server_name')}"
+MCP_SERVER_NAME="${MCP_SERVER_NAME:-workbench-memory}"
 
 # Read hook payload from stdin. May be empty if invoked outside a hook.
 PAYLOAD=""
@@ -38,11 +42,6 @@ if [ -n "$PAYLOAD" ] && command -v jq >/dev/null 2>&1; then
   SOURCE=$(printf '%s' "$PAYLOAD" | jq -r '.source // "startup"' 2>/dev/null || echo "startup")
 fi
 
-# compact → no-op. We just shed context; adding more is counter-productive.
-if [ "$SOURCE" = "compact" ]; then
-  exit 0
-fi
-
 # Skip guard: the summary-writer spawn from session-log/run.sh sets this env
 # var on its detached claude process. That process doesn't need identity
 # context or pending-summary scanning — it has a single mechanical job
@@ -53,33 +52,58 @@ fi
 
 printf '# Hobbes session warmup (%s)\n\n' "$SOURCE"
 
-# Identity injection: everything except `resume` gets the identity files.
-# On resume the identity is carried over from the prior turn's context.
-if [ "$SOURCE" != "resume" ]; then
-  if [ -r "$MEMORY_PATH/identity/soul-hot.md" ]; then
-    printf '## Identity — soul-hot\n\n'
-    cat "$MEMORY_PATH/identity/soul-hot.md"
-    printf '\n\n'
-  else
-    printf '_(soul-hot.md not found at %s/identity/soul-hot.md)_\n\n' "$MEMORY_PATH"
-  fi
+# ──────────── Retention cleanup (startup only) ────────────
+# Prune stale artifacts on full warmup. Runs before identity injection so it
+# doesn't add latency to the user-visible part of startup. All find commands
+# are fire-and-forget (-delete exits silently on no matches).
+if [ "$SOURCE" = "startup" ]; then
+  # Raw logs older than 28 days — summaries stay forever as the durable record.
+  find "$MEMORY_PATH/sessions" -name "*.log.md" -mtime +28 -delete 2>/dev/null
 
-  if [ -r "$MEMORY_PATH/identity/profile.md" ]; then
-    printf "## User — Mike's profile\n\n"
-    cat "$MEMORY_PATH/identity/profile.md"
-    printf '\n\n'
-  else
-    printf '_(profile.md not found at %s/identity/profile.md)_\n\n' "$MEMORY_PATH"
+  # Per-session checkpoint files older than 7 days — sessions don't resume.
+  [ -d "$CHECKPOINTS_DIR" ] && find "$CHECKPOINTS_DIR" -name "*.json" -mtime +7 -delete 2>/dev/null
+
+  # Summary-writer logs older than 7 days — diagnostic only, not archival.
+  find "$CACHE_PATH" -name "summary-writer-*.log" -mtime +7 -delete 2>/dev/null
+fi
+
+# ──────────── MCP health check (startup only) ────────────
+if [ "$SOURCE" = "startup" ]; then
+  MCP_INDEX="$CACHE_PATH/vault-index.sqlite"
+  if [ ! -f "$MCP_INDEX" ]; then
+    printf '## ⚠ Memory vault index not found\n\n'
+    printf 'Expected FTS index at `%s` but it does not exist.\n' "$MCP_INDEX"
+    printf 'The `%s` MCP may not be running. Memory search and write will fail.\n' "$MCP_SERVER_NAME"
+    printf 'Try `mcp__plugin_workbench_memory__stats` to verify, or check server logs.\n\n'
   fi
 fi
 
-# Pending-summary check: skip on `clear` since clear follows a just-completed
-# summary write.
-#
-# Markers live at $PENDING_SUMMARIES_DIR/<session_id>.json (one per session)
-# so multiple concurrent sessions can all leave markers without clobbering
-# each other.
-if [ "$SOURCE" != "clear" ]; then
+# ──────────── Identity injection (all sources) ────────────
+# Identity files are always re-injected. After context compression (compact),
+# the identity may have been shed. On resume, it may have drifted. The cost
+# is ~7KB — small relative to the context window, and essential for maintaining
+# consistent voice and behavior.
+if [ -r "$MEMORY_PATH/identity/soul-hot.md" ]; then
+  printf '## Identity — soul-hot\n\n'
+  cat "$MEMORY_PATH/identity/soul-hot.md"
+  printf '\n\n'
+else
+  printf '_(soul-hot.md not found at %s/identity/soul-hot.md)_\n\n' "$MEMORY_PATH"
+fi
+
+if [ -r "$MEMORY_PATH/identity/profile.md" ]; then
+  printf "## User — Mike's profile\n\n"
+  cat "$MEMORY_PATH/identity/profile.md"
+  printf '\n\n'
+else
+  printf '_(profile.md not found at %s/identity/profile.md)_\n\n' "$MEMORY_PATH"
+fi
+
+# ──────────── Pending-summary check (all sources except compact) ────────────
+# On compact we just re-injected identity — don't add summary work on top of
+# a context that was just shed. On all other sources, check for unprocessed
+# summaries and tell the model to dispatch a background agent.
+if [ "$SOURCE" != "compact" ]; then
   MARKERS=()
   if [ -d "$PENDING_SUMMARIES_DIR" ]; then
     for m in "$PENDING_SUMMARIES_DIR"/*.json; do
@@ -90,17 +114,9 @@ if [ "$SOURCE" != "clear" ]; then
   MARKER_COUNT=${#MARKERS[@]}
 
   if [ "$MARKER_COUNT" -gt 0 ]; then
-    if [ "$MARKER_COUNT" -eq 1 ]; then
-      printf '## ⚠ Pending session summary\n\n'
-      printf 'The previous session ended (or compacted) without a narrative summary.\n'
-      printf 'The raw log is already on disk at:\n\n'
-    else
-      printf '## ⚠ Pending session summaries (%d found)\n\n' "$MARKER_COUNT"
-      printf 'Previous sessions ended (or compacted) without narrative summaries.\n'
-      printf 'The raw logs are on disk at:\n\n'
-    fi
+    printf '## ⚠ Pending session summaries (%d)\n\n' "$MARKER_COUNT"
+    printf 'Previous sessions ended without narrative summaries. Markers:\n\n'
 
-    # Emit one bullet per marker: log path + session_id + marker path.
     for m in "${MARKERS[@]}"; do
       LOG_PATH=""
       SID=""
@@ -108,60 +124,24 @@ if [ "$SOURCE" != "clear" ]; then
         LOG_PATH=$(jq -r '.log_path // empty' "$m" 2>/dev/null)
         SID=$(jq -r '.session_id // empty' "$m" 2>/dev/null)
       fi
-      if [ -n "$LOG_PATH" ]; then
-        if [ "$MARKER_COUNT" -gt 1 ] && [ -n "$SID" ]; then
-          printf -- '- `%s`\n  (session: `%s`, marker: `%s`)\n' "$LOG_PATH" "$SID" "$m"
-        else
-          printf -- '- `%s`\n' "$LOG_PATH"
-        fi
+      if [ -n "$LOG_PATH" ] && [ -n "$SID" ]; then
+        printf -- '- session `%s` → `%s` (marker: `%s`)\n' "$SID" "$LOG_PATH" "$m"
       else
         printf -- '- _(could not parse marker at `%s`)_\n' "$m"
       fi
     done
     printf '\n'
 
-    if [ "$MARKER_COUNT" -eq 1 ]; then
-      cat <<NOTICE
-**Your first task this session, before any new work:**
+    cat <<NOTICE
+**Dispatch a background agent to handle these.** Do NOT block the session.
 
-1. Read the raw log above.
-2. Write a sibling \`.summary.md\` in the same directory — frontmatter
-   (\`name\`, \`type: session\`, \`scope: chronological\`, \`date\`, \`tags\`,
-   \`summary: |\`) plus a narrative body covering what happened, what got
-   decided, what's still open.
-3. Append a short BuJo line to today's Apple Notes daily journal
-   (\`mcp__Read_and_Write_Apple_Notes__update_note_content\`). Pointer to
-   the log/summary path so Mike can open the detail.
-4. Promote any decisions to \`~/Documents/Claude/Memory/decisions/YYYY-MM-DD-slug.md\`
-   via \`mcp__plugin_workbench_memory__write\`.
-5. Update \`~/Documents/Claude/Memory/identity/profile.md\` if preferences shifted.
-6. Delete the marker file listed above.
+For each marker, spawn a \`workbench:summary-writer\` agent (subagent_type)
+in the background with the session_id, marker_path, and log_path. Then
+proceed with the user's request normally.
 
-Do this proactively. No new work begins until the previous summary is recorded.
+If the Agent tool is unavailable, note the pending summaries and move on.
+They will be picked up by the next session or manual \`/log-now\`.
 NOTICE
-    else
-      cat <<NOTICE
-**Your first task this session, before any new work:**
-
-For EACH of the pending summaries listed above:
-
-1. Read the raw log.
-2. Write a sibling \`.summary.md\` in the same directory — frontmatter
-   (\`name\`, \`type: session\`, \`scope: chronological\`, \`date\`, \`tags\`,
-   \`summary: |\`) plus a narrative body covering what happened, what got
-   decided, what's still open. Thin summaries are fine for trivial or
-   unfamiliar sessions (e.g. cron runs from other projects) — a 2–3 line
-   summary pointing at the log is better than no summary at all.
-3. Append a short BuJo line to today's Apple Notes daily journal.
-4. Promote any decisions to \`~/Documents/Claude/Memory/decisions/YYYY-MM-DD-slug.md\`.
-5. Delete that specific marker file.
-
-Update \`~/Documents/Claude/Memory/identity/profile.md\` once at the end if
-preferences shifted across any of the sessions.
-
-Do this proactively. No new work begins until all pending summaries are recorded.
-NOTICE
-    fi
     printf '\n'
   fi
 fi

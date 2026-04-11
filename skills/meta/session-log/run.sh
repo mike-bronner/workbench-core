@@ -108,40 +108,60 @@ fi
 
 SEG_LINES=$((TOTAL_LINES - START_LINE + 1))
 
-# ──────────── Write the raw log ────────────
+# ──────────── Write the raw log (one file per session) ────────────
+# Instead of creating a new file per hook invocation, we maintain a single
+# rolling log per session. The first invocation writes frontmatter + initial
+# segment. Subsequent invocations (checkpoints) append new segments to the
+# same file. This eliminates the need for the summary-writer to glob and
+# stitch siblings.
 TODAY=$(date -u +%Y-%m-%d)
 TS=$(date -u +%H%M%SZ)
-SEG_DIR="$MEMORY_PATH/sessions/$TODAY"
-SEG_FILE="$SEG_DIR/${SESSION_ID}-${TS}-${MODE}.log.md"
-mkdir -p "$SEG_DIR" 2>/dev/null || exit 0
-mkdir -p "$CACHE_PATH" "$PENDING_SUMMARIES_DIR" "$CHECKPOINTS_DIR" 2>/dev/null || exit 0
-
 NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-{
-  printf -- '---\n'
-  printf 'name: "Session log — %s %s %s"\n' "$SESSION_ID" "$MODE" "$TS"
-  printf 'type: session\n'
-  printf 'scope: chronological\n'
-  printf 'date: %s\n' "$TODAY"
-  printf 'tags: [session, log, %s]\n' "$MODE"
-  printf 'session_id: %s\n' "$SESSION_ID"
-  printf 'mode: %s\n' "$MODE"
-  printf 'event: %s\n' "$EVENT"
-  printf 'transcript: %s\n' "$TRANSCRIPT"
-  printf 'start_line: %s\n' "$START_LINE"
-  printf 'end_line: %s\n' "$TOTAL_LINES"
-  printf 'logged_at: %s\n' "$NOW_ISO"
-  printf 'summary: |\n'
-  printf '  Raw session log segment dumped by session-log (%s).\n' "$MODE"
-  printf '  Awaiting narrative summary (sibling `.summary.md` when written).\n'
-  printf -- '---\n\n'
-  printf '# Raw JSONL segment\n\n'
-  printf 'Lines %s–%s of `%s`.\n\n' "$START_LINE" "$TOTAL_LINES" "$TRANSCRIPT"
-  printf '```jsonl\n'
-  tail -n "+${START_LINE}" "$TRANSCRIPT" | head -n "$SEG_LINES"
-  printf '\n```\n'
-} > "$SEG_FILE" 2>/dev/null || exit 0
+# Check if this session already has a log file from a previous checkpoint.
+EXISTING_LOG=""
+if [ -f "$CHECKPOINT" ]; then
+  EXISTING_LOG=$(jq -r '.last_log_file // empty' "$CHECKPOINT" 2>/dev/null)
+fi
+
+if [ -n "$EXISTING_LOG" ] && [ -f "$EXISTING_LOG" ]; then
+  # Append to existing log file.
+  SEG_FILE="$EXISTING_LOG"
+  {
+    printf '\n---\n\n'
+    printf '## Segment: %s (lines %s–%s, %s)\n\n' "$MODE" "$START_LINE" "$TOTAL_LINES" "$NOW_ISO"
+    printf '```jsonl\n'
+    tail -n "+${START_LINE}" "$TRANSCRIPT" | head -n "$SEG_LINES"
+    printf '\n```\n'
+  } >> "$SEG_FILE" 2>/dev/null || exit 0
+else
+  # First log for this session — create with frontmatter.
+  SEG_DIR="$MEMORY_PATH/sessions/$TODAY"
+  SEG_FILE="$SEG_DIR/${SESSION_ID}.log.md"
+  mkdir -p "$SEG_DIR" 2>/dev/null || exit 0
+  mkdir -p "$CACHE_PATH" "$PENDING_SUMMARIES_DIR" "$CHECKPOINTS_DIR" 2>/dev/null || exit 0
+
+  {
+    printf -- '---\n'
+    printf 'name: "Session log — %s"\n' "$SESSION_ID"
+    printf 'type: session\n'
+    printf 'scope: chronological\n'
+    printf 'date: %s\n' "$TODAY"
+    printf 'tags: [session, log]\n'
+    printf 'session_id: %s\n' "$SESSION_ID"
+    printf 'transcript: %s\n' "$TRANSCRIPT"
+    printf 'start_line: %s\n' "$START_LINE"
+    printf 'logged_at: %s\n' "$NOW_ISO"
+    printf 'summary: |\n'
+    printf '  Raw session log. Awaiting narrative summary (sibling `.summary.md`).\n'
+    printf -- '---\n\n'
+    printf '# Session log — %s\n\n' "$SESSION_ID"
+    printf '## Segment: %s (lines %s–%s, %s)\n\n' "$MODE" "$START_LINE" "$TOTAL_LINES" "$NOW_ISO"
+    printf '```jsonl\n'
+    tail -n "+${START_LINE}" "$TRANSCRIPT" | head -n "$SEG_LINES"
+    printf '\n```\n'
+  } > "$SEG_FILE" 2>/dev/null || exit 0
+fi
 
 # ──────────── Update checkpoint ────────────
 NEXT=$((TOTAL_LINES + 1))
@@ -205,6 +225,8 @@ if [ "$MODE" != "checkpoint" ] \
     && [ -n "$PENDING_SUMMARY_FILE" ] \
     && [[ "${WORKBENCH_AUTO_SUMMARIZE:-$(_cfg '.auto_summarize')}" =~ ^(1|true)$ ]] \
     && command -v claude >/dev/null 2>&1; then
+  SUMMARY_MODEL="${WORKBENCH_SUMMARY_MODEL:-$(_cfg '.summary_model')}"
+  SUMMARY_MODEL="${SUMMARY_MODEL:-haiku}"
   SUMMARY_WRITER_LOG="$CACHE_PATH/summary-writer-${SESSION_ID}.log"
   SUMMARY_WRITER_PROMPT="Process pending session summary.
 
@@ -212,10 +234,11 @@ session_id: ${SESSION_ID}
 marker_path: ${PENDING_SUMMARY_FILE}
 log_path: ${SEG_FILE}
 
-Follow your agent definition. Write the summary, update the daily journal, promote any decisions, delete the marker, and exit."
+Follow your agent definition. Write the summary, promote any decisions, delete the marker, and exit."
   WORKBENCH_SKIP_LOG=1 WORKBENCH_SKIP_WARMUP=1 nohup claude -p \
     --no-session-persistence \
     --permission-mode bypassPermissions \
+    --model "$SUMMARY_MODEL" \
     --agent summary-writer \
     "$SUMMARY_WRITER_PROMPT" \
     > "$SUMMARY_WRITER_LOG" 2>&1 &

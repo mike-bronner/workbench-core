@@ -81,17 +81,17 @@ Four hooks manage the session lifecycle:
 
 | Hook | Script | Purpose |
 |------|--------|---------|
-| `SessionStart` | `session-warmup/run.sh` | Identity injection, retention cleanup, MCP health check, pending-summary dispatch |
-| `PreCompact` | `session-log/run.sh` | Dump raw log checkpoint, spawn summary-writer |
-| `PostCompact` | `session-warmup/run.sh` | Re-inject identity after context compression |
-| `SessionEnd` | `session-log/run.sh` | Dump final log segment, spawn summary-writer |
+| `SessionStart` | `hooks/session-warmup.sh` | Identity injection, retention cleanup, MCP health check, pending-summary dispatch |
+| `PreCompact` | `hooks/session-log.sh` | Dump raw log checkpoint, spawn summary-writer |
+| `PostCompact` | `hooks/session-warmup.sh` | Re-inject identity after context compression |
+| `SessionEnd` | `hooks/session-log.sh` | Dump final log segment, spawn summary-writer |
 
 ### Logging pipeline
 
 ```
 Session event (PreCompact / SessionEnd / manual)
     ↓
-session-log/run.sh
+hooks/session-log.sh
     ├── Load per-session checkpoint (where did I leave off?)
     ├── Extract new JSONL segment from transcript
     ├── Append to rolling log: sessions/YYYY-MM-DD/{session-id}.log.md

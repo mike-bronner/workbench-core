@@ -13,7 +13,7 @@ Unlike the hook-driven logs — which can only do the mechanical half because ho
 Run the session-log shell script in manual mode:
 
 ```bash
-WORKBENCH_LOG_MODE=manual bash "${CLAUDE_PLUGIN_ROOT}/skills/meta/session-log/run.sh" <<EOF
+WORKBENCH_LOG_MODE=manual bash "${CLAUDE_PLUGIN_ROOT}/hooks/session-log.sh" <<EOF
 {
   "session_id": "$(ls -t ~/.claude/projects/*/$(ls -t ~/.claude/projects/ | head -1)/*.jsonl 2>/dev/null | head -1 | xargs -I{} basename {} .jsonl)",
   "transcript_path": "$(find ~/.claude/projects -name '*.jsonl' -print0 2>/dev/null | xargs -0 ls -t 2>/dev/null | head -1)",

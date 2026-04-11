@@ -52,7 +52,7 @@ if [ -n "$PAYLOAD" ] && command -v jq >/dev/null 2>&1; then
   SOURCE=$(printf '%s' "$PAYLOAD" | jq -r '.source // "startup"' 2>/dev/null || echo "startup")
 fi
 
-# Skip guard: the summary-writer spawn from session-log/run.sh sets this env
+# Skip guard: the summary-writer spawn from session-log.sh sets this env
 # var on its detached claude process. That process doesn't need identity
 # context or pending-summary scanning — it has a single mechanical job
 # assigned in its prompt and should not touch anything other than its job.

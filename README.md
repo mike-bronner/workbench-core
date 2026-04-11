@@ -37,8 +37,6 @@ Run `/workbench:customize` to set up your configuration:
 | `memory_path` | Where your operational memory lives on disk | `~/Documents/Claude/Memory` |
 | `memory_cache` | Where indexes and checkpoints are stored | `~/.claude-memory-cache` |
 | `memory_mcp_server_name` | MCP server name for the vault | `workbench-memory` |
-| `journal_folder` | Apple Notes folder for BuJo journal | `📓 Journal` |
-| `daily_note_format` | Title format for daily journal notes | `YYYY-MM-DD — Weekday` |
 | `auto_summarize` | Spawn background summary-writer on session end | `true` |
 | `summary_model` | Model for the background summary-writer | `haiku` |
 
@@ -165,7 +163,7 @@ Runs on every `startup` warmup:
 | Command | Description |
 |---------|-------------|
 | `/workbench:log-now` | Dump the current session log and write a narrative summary inline |
-| `/workbench:customize` | Configure agent name, paths, journal settings, identity files |
+| `/workbench:customize` | Configure agent name, paths, summary model, identity files |
 
 ## Environment variable overrides
 
@@ -185,7 +183,6 @@ All config values can be overridden via environment variables for testing:
 ## Known limitations
 
 - **Restart after plugin update.** `CLAUDE_PLUGIN_ROOT` is resolved once at session startup. After updating, restart Claude Code to pick up changes.
-- **Apple Notes MCP has no partial-edit mode.** If any skill writes to Apple Notes, it must use the read-rebuild-write-once pattern. See the BuJo plugin for details.
 - **Summary-writer race on rapid compactions.** If a session compacts multiple times in quick succession, multiple summary-writers may run concurrently. The last one wins (overwrites the summary), which is always the most complete — but intermediate writers do wasted work.
 
 ## Design philosophy

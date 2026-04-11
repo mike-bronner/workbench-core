@@ -1,5 +1,5 @@
 ---
-description: Log the current session segment right now — dump the raw log and write the narrative summary + Apple Notes journal line + any decision promotions inline.
+description: Log the current session segment right now — dump the raw log and write the narrative summary + any decision promotions inline.
 ---
 
 The user has invoked `/log-now`. Log the current session segment immediately and write the narrative pieces inline.
@@ -26,9 +26,7 @@ After the script runs, read `~/.claude-memory-cache/pending-summaries/<session_i
 
 ## Step 2 — Write the narrative summary
 
-Read the raw log file (and any earlier checkpoint logs from the same `session_id` in the same `sessions/YYYY-MM-DD/` directory — a summary should cover all the logs it's based on). Based on the log contents and your own memory of the current session, write a sibling `.summary.md` file in the same directory. Use `mcp__plugin_workbench_memory__write` so the vault index picks it up.
-
-**Only summaries are indexed.** Raw `.log.md` files are excluded from the vault search index via `MARKDOWN_VAULT_MCP_EXCLUDE=**/*.log.md`. That means when anyone searches memory for "what did we decide about X," they'll land on a summary and follow the `log_files` pointer (or the inline Logs section) to pull the full context from the raw log if needed.
+Read the raw log file. Based on the log contents and your own memory of the current session, write a sibling `.summary.md` file in the same directory. Use `mcp__plugin_workbench_memory__write` so the vault index picks it up.
 
 Frontmatter shape (required fields per the memory vault config: `name`, `type`):
 
@@ -42,8 +40,7 @@ tags: [session, summary, ...topic-tags]
 session_id: <same as the log file>
 mode: manual
 log_files:
-  - /absolute/path/to/first.log.md
-  - /absolute/path/to/second.log.md  # if multiple checkpoints fed this summary
+  - /absolute/path/to/session.log.md
 summary: |
   One or two sentences that answer "what happened in this segment"
   without opening the body.
@@ -55,67 +52,21 @@ Body structure (tight, not exhaustive):
 - **What happened** — 2–5 bullets, focused on outcomes not steps
 - **What got decided** — explicit decisions with rationale (anything new since the last summary)
 - **What's still open** — loose ends, next steps, deferred items
-- **Logs** — explicit list of the raw `.log.md` files this summary covers (same content as the `log_files` frontmatter, but inline for anyone reading the body)
+- **Logs** — explicit list of the raw `.log.md` files this summary covers
 
-## Step 3 — Append a BuJo line to today's Apple Notes daily journal
-
-Find today's daily journal note (title format `YYYY-MM-DD — Weekday`, e.g. `2026-04-09 — Thursday`). Append a single BuJo line in Menlo-Regular monospace, per `~/.claude/CLAUDE.md`:
-
-```html
-<div><font face="Menlo-Regular"><tt>— {short phrase}. See {log-path}</tt></font></div>
-```
-
-Use the right BuJo signifier:
-- `—` note (default for log summaries)
-- `×` task completed
-- `*` priority / noteworthy
-- `!` inspiration / insight
-
-Include a relative pointer to the log file so Mike can open the full detail from the journal if he wants.
-
-**Critical — the Apple Notes MCP has no partial-edit mode.** `mcp__Read_and_Write_Apple_Notes__update_note_content` replaces the ENTIRE note body on every invocation, regardless of parameters. `mode: "append"`, `mode: "replace"`, AND `find_text` + `new_content` all do full-body replacement. To safely add your BuJo line:
-
-1. Call `get_note_content(note_name)` and save the full body in your context
-2. Splice your new `<div>...</div>` line in at the end of the body in-memory
-3. Call `update_note_content` with the **complete new body** as `new_content`
-
-Never skip the read step. A forgotten read destroys the note and the loss is unrecoverable without a prior snapshot.
-
-### Apple Notes HTML formatting rules
-
-These rules MUST be followed when writing to Apple Notes or the note will break.
-
-**HTML entities — NO semicolons.** Use `&amp` not `&amp;`. Use `&quot` not `&quot;`. Use `&lt` not `&lt;`. Use `&gt` not `&gt;`. Semicolons after HTML entities break the entire note's formatting. **Exception:** `&nbsp;` (with semicolon) works correctly for leading spaces in BuJo lines.
-
-**Structure — every line in a `<div>`:**
-- Body text: `<div>text</div>`
-- Blank line: `<div><br></div>`
-- Heading: `<div><b><span style="font-size: 24px">Title</span></b></div>` (title), `<div><b><span style="font-size: 18px">Heading</span></b></div>` (section)
-- Bullet list: `<ul><li>item</li></ul>`
-- Numbered list: `<ol><li>item</li></ol>`
-- BuJo monospace: `<div><font face="Menlo-Regular"><tt>signifier text</tt></font></div>`
-
-**Title rule:** When using `update_note_content`, the first element MUST be `<div><b><span style="font-size: 24px">Title</span></b></div>`. Omitting it causes Apple Notes to rename the note to the first content line.
-
-**Folder rule:** Daily journal entries live in the `📓 Journal` folder. Always pass `folder: "📓 Journal"` to Apple Notes MCP calls.
-
-**HTML only — never markdown.** Passing markdown to Apple Notes collapses the note into a single unformatted line. Produce HTML directly.
-
-**Preserve existing patterns exactly.** When reading and rewriting a note, match the existing HTML structure byte-for-byte. Don't "clean up" or normalize the HTML — Apple Notes has specific expectations and normalization breaks things.
-
-## Step 4 — Promote new decisions
+## Step 3 — Promote new decisions
 
 If the segment contained a genuine architectural / tool / process decision — something you'd want to find again via search — write it to `~/Documents/Claude/Memory/decisions/YYYY-MM-DD-slug.md` via `mcp__plugin_workbench_memory__write`. Use the decision file shape (`type: decision`, `scope: topical`, rationale + ruled-out alternatives in the body).
 
 Do NOT promote every small choice. The bar: would this surface as a useful answer to "what did we decide about X?" six months from now? If yes, promote. If no, the log and summary are enough.
 
-## Step 5 — Update profile if preferences shifted
+## Step 4 — Update profile if preferences shifted
 
 If the segment revealed a new preference or working-style change for Mike, edit `~/Documents/Claude/Memory/identity/profile.md` to reflect it. Small delta, don't rewrite the file.
 
-## Step 6 — Confirm to Mike
+## Step 5 — Confirm to Mike
 
-Tell Mike what you wrote: the log path, the summary path, the BuJo line you appended, and any decisions you promoted. Keep it terse — one short block, not a recap.
+Tell Mike what you wrote: the log path, the summary path, and any decisions you promoted. Keep it terse — one short block, not a recap.
 
 ## Notes
 

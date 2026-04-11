@@ -1,5 +1,5 @@
 ---
-description: Configure the workbench — agent name, memory paths, MCP server name, Apple Notes journal settings, and identity file paths. Writes config to the plugin data directory; re-run after a plugin update to restore your settings.
+description: Configure the workbench — agent name, memory paths, MCP server name, and identity file paths. Writes config to the plugin data directory; re-run after a plugin update to restore your settings.
 ---
 
 The user has invoked `/workbench:customize`. Walk them through configuring all workbench settings interactively.
@@ -38,15 +38,15 @@ Present each field to the user one at a time. Show the current value (from exist
 - **Default:** `{agent_name}-memory` (derived from field 1)
 - **Note:** This is the `MARKDOWN_VAULT_MCP_SERVER_NAME` value.
 
-### 5. `journal_folder`
-- **Prompt:** "Apple Notes journal folder name"
-- **Default:** `📓 Journal`
-- **Note:** This is the `folder` parameter passed to Apple Notes MCP calls.
+### 5. `summary_model`
+- **Prompt:** "Model for background summary-writer agent"
+- **Default:** `haiku`
+- **Note:** The model used when the detached summary-writer processes session logs. Haiku is fast and cheap; use a larger model if summaries need more nuance.
 
-### 6. `daily_note_format`
-- **Prompt:** "Daily note title format"
-- **Default:** `YYYY-MM-DD — Weekday`
-- **Note:** Used to find/create daily journal entries. The format string is evaluated at runtime (e.g., `2026-04-09 — Thursday`).
+### 6. `auto_summarize`
+- **Prompt:** "Auto-summarize sessions on end?"
+- **Default:** `true`
+- **Note:** When true, spawns a background summary-writer on every log write (PreCompact, SessionEnd, /log-now).
 
 ### 7. `identity_files`
 - **Prompt:** "Identity file paths (relative to memory store)"
@@ -69,7 +69,7 @@ If it exists, parse current values with `jq` and use them as defaults. If not, u
 
 Present each field to the user using the AskUserQuestion tool. Show the current value and let them confirm or change it.
 
-After all 7 fields, show the assembled config JSON and ask "Save this configuration? (yes/no)".
+After all fields, show the assembled config JSON and ask "Save this configuration? (yes/no)".
 
 ## Step 2 — Write config and update plugin.json
 
@@ -81,8 +81,8 @@ After all 7 fields, show the assembled config JSON and ask "Save this configurat
   "memory_path": "/Users/mike/Documents/Claude/Memory",
   "memory_cache": "/Users/mike/.claude-memory-cache",
   "memory_mcp_server_name": "hobbes-memory",
-  "journal_folder": "📓 Journal",
-  "daily_note_format": "YYYY-MM-DD — Weekday",
+  "auto_summarize": true,
+  "summary_model": "haiku",
   "identity_files": {
     "soul_hot": "identity/soul-hot.md",
     "soul_core": "identity/soul-core.md",

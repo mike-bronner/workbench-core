@@ -213,7 +213,6 @@ if [[ "${WORKBENCH_AUTO_SUMMARIZE:-$(_cfg '.auto_summarize')}" =~ ^(1|true)$ ]] 
     && command -v claude >/dev/null 2>&1; then
   SUMMARY_MODEL="${WORKBENCH_SUMMARY_MODEL:-$(_cfg '.summary_model')}"
   SUMMARY_MODEL="${SUMMARY_MODEL:-haiku}"
-  SUMMARY_WRITER_LOG="$CACHE_PATH/summary-writer-${SESSION_ID}.log"
   SUMMARY_WRITER_PROMPT="Process pending session summary.
 
 session_id: ${SESSION_ID}
@@ -227,7 +226,7 @@ Follow your agent definition. Write the summary, promote any decisions, delete t
     --model "$SUMMARY_MODEL" \
     --agent summary-writer \
     "$SUMMARY_WRITER_PROMPT" \
-    > "$SUMMARY_WRITER_LOG" 2>&1 &
+    > /dev/null 2>&1 &
   disown 2>/dev/null || true
 fi
 

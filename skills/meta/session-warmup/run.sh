@@ -63,8 +63,8 @@ if [ "$SOURCE" = "startup" ]; then
   # Per-session checkpoint files older than 7 days — sessions don't resume.
   [ -d "$CHECKPOINTS_DIR" ] && find "$CHECKPOINTS_DIR" -name "*.json" -mtime +7 -delete 2>/dev/null
 
-  # Summary-writer logs older than 7 days — diagnostic only, not archival.
-  find "$CACHE_PATH" -name "summary-writer-*.log" -mtime +7 -delete 2>/dev/null
+  # Legacy summary-writer logs — no longer generated, clean up any remaining.
+  find "$CACHE_PATH" -name "summary-writer-*.log" -delete 2>/dev/null
 fi
 
 # ──────────── MCP health check (startup only) ────────────

@@ -21,6 +21,14 @@ set -u
 CONFIG_FILE="$HOME/.claude/plugins/data/workbench-claude-workbench/config.json"
 _cfg() { [ -f "$CONFIG_FILE" ] && command -v jq >/dev/null 2>&1 && jq -r "$1 // empty" "$CONFIG_FILE" 2>/dev/null; }
 
+# Validate config.json if it exists — a malformed file silently falls back to
+# hardcoded defaults, which point to the wrong directories.
+if [ -f "$CONFIG_FILE" ] && command -v jq >/dev/null 2>&1; then
+  if ! jq empty "$CONFIG_FILE" 2>/dev/null; then
+    CONFIG_BROKEN=1
+  fi
+fi
+
 MEMORY_PATH="${WORKBENCH_MEMORY_PATH:-$(_cfg '.memory_path')}"
 MEMORY_PATH="${MEMORY_PATH:-$HOME/Documents/Claude/Memory}"
 CACHE_PATH="${WORKBENCH_MEMORY_CACHE:-$(_cfg '.memory_cache')}"
@@ -29,6 +37,8 @@ PENDING_SUMMARIES_DIR="$CACHE_PATH/pending-summaries"
 CHECKPOINTS_DIR="$CACHE_PATH/log-checkpoints"
 MCP_SERVER_NAME="${WORKBENCH_MCP_SERVER_NAME:-$(_cfg '.memory_mcp_server_name')}"
 MCP_SERVER_NAME="${MCP_SERVER_NAME:-workbench-memory}"
+AGENT_NAME="${WORKBENCH_AGENT_NAME:-$(_cfg '.agent_name')}"
+AGENT_NAME="${AGENT_NAME:-Claude}"
 
 # Read hook payload from stdin. May be empty if invoked outside a hook.
 PAYLOAD=""
@@ -50,7 +60,15 @@ if [ "${WORKBENCH_SKIP_WARMUP:-}" = "1" ]; then
   exit 0
 fi
 
-printf '# Hobbes session warmup (%s)\n\n' "$SOURCE"
+printf '# %s session warmup (%s)\n\n' "$AGENT_NAME" "$SOURCE"
+
+# ──────────── Config validation warning ────────────
+if [ "${CONFIG_BROKEN:-}" = "1" ]; then
+  printf '## ⚠ Malformed config.json\n\n'
+  printf '`%s` exists but is not valid JSON.\n' "$CONFIG_FILE"
+  printf 'All settings are falling back to hardcoded defaults, which may point to wrong directories.\n'
+  printf 'Run `/workbench:customize` to regenerate the config, or fix the JSON manually.\n\n'
+fi
 
 # ──────────── Retention cleanup (startup only) ────────────
 # Prune stale artifacts on full warmup. Runs before identity injection so it

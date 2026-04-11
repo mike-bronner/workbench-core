@@ -27,9 +27,9 @@ The infrastructure layer that turns Claude Code from a stateless coding assistan
 /plugin install core@claude-workbench
 ```
 
-### Configure
+### Configure (required on first install)
 
-Run `/workbench:customize` to set up your configuration:
+The memory MCP server ships unconfigured. Run `/workbench:customize` on first install to set your paths:
 
 | Setting | Description | Default |
 |---------|-------------|---------|
@@ -171,6 +171,7 @@ All config values can be overridden via environment variables for testing:
 
 | Variable | Overrides |
 |----------|-----------|
+| `WORKBENCH_AGENT_NAME` | `agent_name` |
 | `WORKBENCH_MEMORY_PATH` | `memory_path` |
 | `WORKBENCH_MEMORY_CACHE` | `memory_cache` |
 | `WORKBENCH_SUMMARY_MODEL` | `summary_model` |

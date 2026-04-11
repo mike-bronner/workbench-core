@@ -11,14 +11,14 @@
       "command": "markdown-vault-mcp",
       "args": ["serve"],
       "env": {
-        "MARKDOWN_VAULT_MCP_SOURCE_DIR": "/Users/mike/Documents/Claude/Memory",
-        "MARKDOWN_VAULT_MCP_INDEX_PATH": "/Users/mike/.claude-memory-cache/vault-index.sqlite",
-        "MARKDOWN_VAULT_MCP_EMBEDDINGS_PATH": "/Users/mike/.claude-memory-cache/embeddings",
-        "MARKDOWN_VAULT_MCP_STATE_PATH": "/Users/mike/.claude-memory-cache/state.json",
+        "MARKDOWN_VAULT_MCP_SOURCE_DIR": "__RUN_/workbench:customize_TO_CONFIGURE__",
+        "MARKDOWN_VAULT_MCP_INDEX_PATH": "__RUN_/workbench:customize_TO_CONFIGURE__",
+        "MARKDOWN_VAULT_MCP_EMBEDDINGS_PATH": "__RUN_/workbench:customize_TO_CONFIGURE__",
+        "MARKDOWN_VAULT_MCP_STATE_PATH": "__RUN_/workbench:customize_TO_CONFIGURE__",
         "MARKDOWN_VAULT_MCP_READ_ONLY": "false",
         "MARKDOWN_VAULT_MCP_REQUIRED_FIELDS": "name,type",
         "MARKDOWN_VAULT_MCP_INDEXED_FIELDS": "name,type,tags,summary,date,scope,log_files",
-                "MARKDOWN_VAULT_MCP_SERVER_NAME": "workbench-memory",
+        "MARKDOWN_VAULT_MCP_SERVER_NAME": "workbench-memory",
         "EMBEDDING_PROVIDER": "fastembed"
       }
     }

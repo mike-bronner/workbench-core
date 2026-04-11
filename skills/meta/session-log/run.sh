@@ -18,6 +18,13 @@ set -u
 CONFIG_FILE="$HOME/.claude/plugins/data/workbench-claude-workbench/config.json"
 _cfg() { [ -f "$CONFIG_FILE" ] && command -v jq >/dev/null 2>&1 && jq -r "$1 // empty" "$CONFIG_FILE" 2>/dev/null; }
 
+# Warn on malformed config (logged to stderr so it doesn't break hook stdout).
+if [ -f "$CONFIG_FILE" ] && command -v jq >/dev/null 2>&1; then
+  if ! jq empty "$CONFIG_FILE" 2>/dev/null; then
+    echo "session-log: WARNING — config.json is malformed, using defaults" >&2
+  fi
+fi
+
 MEMORY_PATH="${WORKBENCH_MEMORY_PATH:-$(_cfg '.memory_path')}"
 MEMORY_PATH="${MEMORY_PATH:-$HOME/Documents/Claude/Memory}"
 CACHE_PATH="${WORKBENCH_MEMORY_CACHE:-$(_cfg '.memory_cache')}"
@@ -60,17 +67,6 @@ fi
 
 # ──────────── Per-session checkpoint ────────────
 CHECKPOINT="$CHECKPOINTS_DIR/${SESSION_ID}.json"
-
-# Migration: if old single-slot checkpoint exists and matches this session,
-# adopt it into the per-session directory.
-OLD_CHECKPOINT="$CACHE_PATH/log-checkpoint.json"
-if [ ! -f "$CHECKPOINT" ] && [ -f "$OLD_CHECKPOINT" ]; then
-  OLD_SID=$(jq -r '.session_id // empty' "$OLD_CHECKPOINT" 2>/dev/null)
-  if [ "$OLD_SID" = "$SESSION_ID" ]; then
-    mkdir -p "$CHECKPOINTS_DIR" 2>/dev/null
-    mv "$OLD_CHECKPOINT" "$CHECKPOINT" 2>/dev/null
-  fi
-fi
 
 # ──────────── Determine mode ────────────
 MODE="${WORKBENCH_LOG_MODE:-}"
@@ -115,7 +111,6 @@ SEG_LINES=$((TOTAL_LINES - START_LINE + 1))
 # same file. This eliminates the need for the summary-writer to glob and
 # stitch siblings.
 TODAY=$(date -u +%Y-%m-%d)
-TS=$(date -u +%H%M%SZ)
 NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 # Check if this session already has a log file from a previous checkpoint.

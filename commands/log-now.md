@@ -1,8 +1,10 @@
 ---
-description: Log the current session segment right now — dump the raw log and write the narrative summary + any decision promotions inline.
+description: Log the current session segment right now — dump the raw log and write the narrative summary + any decision promotions inline. Use this when you want to snapshot mid-conversation, or when you want a richer summary than the auto-generated one.
 ---
 
-The user has invoked `/log-now`. Log the current session segment immediately and write the narrative pieces inline.
+The user has invoked `/log-now`. This is an execution-aware skill — check `skills/log-now.learnings.md` in the vault before proceeding. If it exists, apply accumulated learnings to this execution.
+
+Log the current session segment immediately and write the narrative pieces inline.
 
 Unlike the hook-driven `PreCompact` / `SessionEnd` logs — which can only do the mechanical half because hooks can't reach MCPs — `/log-now` runs in an active model turn. That means you do both halves yourself: run the shell script to dump the raw log, then write the narrative pieces using the MCPs that are reachable right now.
 
@@ -62,11 +64,11 @@ Do NOT promote every small choice. The bar: would this surface as a useful answe
 
 ## Step 4 — Update profile if preferences shifted
 
-If the segment revealed a new preference or working-style change for Mike, edit `~/Documents/Claude/Memory/identity/profile.md` to reflect it. Small delta, don't rewrite the file.
+If the segment revealed a new preference or working-style change from the user, edit `~/Documents/Claude/Memory/identity/profile.md` to reflect it. Small delta, don't rewrite the file.
 
 ## Step 5 — Confirm to Mike
 
-Tell Mike what you wrote: the log path, the summary path, and any decisions you promoted. Keep it terse — one short block, not a recap.
+Tell the user what you wrote: the log path, the summary path, and any decisions you promoted. Keep it terse — one short block, not a recap.
 
 ## Notes
 

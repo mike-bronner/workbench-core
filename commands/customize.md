@@ -20,7 +20,7 @@ Present each field to the user one at a time. Show the current value (from exist
 
 ### 1. `agent_name`
 - **Prompt:** "Agent name — the persona name used in identity files, templates, and the MCP server name"
-- **Default:** `Hobbes`
+- **Default:** `Claude`
 - **Note:** Changing this triggers re-templatization of identity files (Step 3 below).
 
 ### 2. `memory_path`
@@ -77,10 +77,10 @@ After all fields, show the assembled config JSON and ask "Save this configuratio
 
 ```json
 {
-  "agent_name": "Hobbes",
-  "memory_path": "/Users/mike/Documents/Claude/Memory",
-  "memory_cache": "/Users/mike/.claude-memory-cache",
-  "memory_mcp_server_name": "hobbes-memory",
+  "agent_name": "Claude",
+  "memory_path": "/Users/yourname/Documents/Claude/Memory",
+  "memory_cache": "/Users/yourname/.claude-memory-cache",
+  "memory_mcp_server_name": "claude-memory",
   "auto_summarize": true,
   "summary_model": "haiku",
   "identity_files": {

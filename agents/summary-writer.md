@@ -46,7 +46,7 @@ log:     sessions/2026-04-09/abc-123-4567-8901-abcdef.log.md
 summary: sessions/2026-04-09/abc-123-4567-8901-abcdef.summary.md
 ```
 
-Write it via `mcp__plugin_workbench_memory__write`. Paths passed to the memory MCP are **relative to the vault root** (`~/Documents/Claude/Memory/`), so pass `sessions/2026-04-09/abc-123-180912Z-final.summary.md`, not the absolute path.
+Write it via `mcp__plugin_workbench_memory__write`. Paths passed to the memory MCP are **relative to the vault root** (`~/Documents/Claude/Memory/`), so pass `sessions/2026-04-09/abc-123-4567-8901-abcdef.summary.md`, not the absolute path.
 
 ### Required frontmatter
 
@@ -60,8 +60,7 @@ tags: [session, summary, auto-summary, ...topic-tags]
 session_id: <matches the log>
 mode: auto
 log_files:
-  - /absolute/path/to/log1.log.md
-  - /absolute/path/to/log2.log.md
+  - /absolute/path/to/session.log.md
 summary: |
   One or two sentences answering "what happened in this segment"
   without opening the body. This is the vault search snippet.
@@ -92,8 +91,7 @@ Loose ends, next steps, anything flagged as TODO or blocked. If none, write "Not
 
 ## Logs
 
-- `/absolute/path/to/log1.log.md`
-- `/absolute/path/to/log2.log.md`
+- `/absolute/path/to/session.log.md`
 ```
 
 ### Writing from raw JSONL
@@ -109,7 +107,7 @@ You don't need to parse every line. Skim for: user prompts (what was asked), fil
 
 ## Step 4 — Promote decisions (only if the bar is met)
 
-If the segment contained a genuine architectural / tool / process decision — the kind of thing Mike would want to find by searching "what did we decide about X" six months from now — promote it to `decisions/YYYY-MM-DD-slug.md` via `mcp__plugin_workbench_memory__write`.
+If the segment contained a genuine architectural / tool / process decision — the kind of thing the user would want to find by searching "what did we decide about X" six months from now — promote it to `decisions/YYYY-MM-DD-slug.md` via `mcp__plugin_workbench_memory__write`.
 
 Decision file shape:
 
@@ -159,7 +157,7 @@ Most segments produce zero decisions. Skipping this step is the common case.
 
 ## Step 5 — Update profile.md if preferences shifted
 
-If the segment revealed a new working-style preference or constraint from Mike (not a one-off mood), edit `identity/profile.md` via `mcp__plugin_workbench_memory__edit`. Small delta — add or replace a bullet, don't rewrite the file.
+If the segment revealed a new working-style preference or constraint from the user (not a one-off mood), edit `identity/profile.md` via `mcp__plugin_workbench_memory__edit`. Small delta — add or replace a bullet, don't rewrite the file.
 
 Again: common case is skip. Only act on explicit, repeated signal.
 

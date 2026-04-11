@@ -99,6 +99,12 @@ else
   printf '_(profile.md not found at %s/identity/profile.md)_\n\n' "$MEMORY_PATH"
 fi
 
+if [ -r "$MEMORY_PATH/identity/skills-protocol.md" ]; then
+  printf '## Skills protocol\n\n'
+  cat "$MEMORY_PATH/identity/skills-protocol.md"
+  printf '\n\n'
+fi
+
 # ──────────── Pending-summary check (all sources except compact) ────────────
 # On compact we just re-injected identity — don't add summary work on top of
 # a context that was just shed. On all other sources, check for unprocessed

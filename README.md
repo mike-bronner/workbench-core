@@ -9,7 +9,7 @@ The infrastructure layer that turns Claude Code from a stateless coding assistan
 - **Persistent identity** — persona files (`soul-hot.md`, `profile.md`) injected at session start and re-injected after context compression so the agent never drifts.
 - **Session logging** — every session is captured as a rolling JSONL log, then summarized by a background agent into a searchable narrative.
 - **Operational memory** — a local MCP server (markdown-vault-mcp) fronts a searchable vault of decisions, projects, insights, and session history.
-- **Execution-aware skills** — a behavioral protocol that gives any `claude-workbench` skill persistent memory via vault-backed learnings files.
+- **Execution-aware skills** — a behavioral protocol that gives any skill persistent memory via vault-backed learnings files.
 - **Retention management** — automatic cleanup of raw logs (28 days), checkpoints (7 days), and summary-writer logs (7 days).
 
 ## Installation
@@ -67,7 +67,7 @@ Replace `{{agent_name}}` placeholders with your agent's name, then edit to taste
 
 ### Optional: execution-aware skills
 
-The plugin includes a skills protocol (`identity/skills-protocol.md`) that gives any `claude-workbench` skill persistent memory. When a skill execution results in a correction, failure, or confirmed pattern, a learning is written to `skills/{skill-name}.learnings.md` in the vault. Future runs of that skill read the learnings first.
+The plugin includes a skills protocol (`identity/skills-protocol.md`) that gives any skill persistent memory. When a skill execution results in a correction, failure, or confirmed pattern, a learning is written to `skills/{skill-name}.learnings.md` in the vault. Future runs of that skill read the learnings first.
 
 This is automatic — no per-skill configuration needed. Create the directory:
 

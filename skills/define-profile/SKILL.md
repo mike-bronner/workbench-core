@@ -19,15 +19,35 @@ Adopt a **curious, direct interviewer** persona. You're trying to understand how
 
 Read the existing profile from the vault via `mcp__plugin_workbench_memory__read` for `identity/profile.md`.
 
-**If it exists:** This is a refinement session. Summarize what you see in 2-3 lines. Ask: "What's accurate? What's changed? Or should we walk through everything?"
+Also read `${CLAUDE_PLUGIN_ROOT}/references/guardrails.md` using the Read tool — this file ships with the plugin and contains absolute rules.
 
-**If it doesn't exist:** This is first-time setup. Read the profile template from `${CLAUDE_PLUGIN_ROOT}/assets/templates/profile.template.md` to understand the target structure, but don't show it — keep the conversation natural.
+**If guardrails.md exists:** Tell the user: "Guardrails are active — these are absolute rules that the profile can't contradict." List the rules briefly (one line each). Keep the guardrails in context for the entire interview.
+
+**If guardrails.md is missing:** Proceed normally — no guardrails enforcement applies.
+
+**If profile exists:** This is a refinement session. Summarize what you see in 2-3 lines. Ask: "What's accurate? What's changed? Or should we walk through everything?"
+
+**If profile doesn't exist:** This is first-time setup. Read the profile template from `${CLAUDE_PLUGIN_ROOT}/assets/templates/profile.template.md` to understand the target structure, but don't show it — keep the conversation natural.
 
 ## Step 2 — Conversational interview
 
 Work through the **domains** below. Branch based on answers, skip what's already solid in refinement mode, dig deeper where answers are vague or thin.
 
 For each question: present **three concrete options** that represent meaningfully different working styles, plus the ability to provide a custom answer. Options should be specific and opinionated — not a spectrum.
+
+### Guardrails enforcement
+
+If `guardrails.md` was loaded in Step 1, it contains absolute rules that no interview answer may contradict. Keep these rules in context throughout every domain.
+
+**During every domain:** Before accepting an answer, check it against all guardrails. If an answer contradicts a guardrail:
+
+1. **Stop immediately** — do not record the answer
+2. **Name the specific guardrail** being contradicted, quoting its text
+3. **Explain the conflict:** what the user said vs what the guardrail requires
+4. **Recommend an alternative** that satisfies both the user's intent and the guardrail
+5. **Never suggest modifying guardrails.md** — the guardrails are absolute. The fix is always to the answer, not the rule.
+
+Example: User says "I never want the agent to verify anything, just go fast." This contradicts guardrail #4 (verify before asserting). Flag it: "That conflicts with the verify-before-asserting guardrail. How about: 'Verify silently and quickly — don't narrate the investigation, just get it right before stating it'?"
 
 ### Domain: Role & context
 
@@ -113,6 +133,8 @@ Write the profile based on the conversation. Structure:
 - **What makes a good/bad session** — the user's experience of success and failure
 
 Use the frontmatter structure from the template. Replace `{{agent_name}}` with the configured agent name. Set `date` to today.
+
+**Guardrails validation (before writing):** If guardrails.md exists, review every section of the generated profile against the guardrails. If any preference or working style contradicts a guardrail, fix it before presenting to the user. Show the user what was adjusted and why.
 
 **For refinement sessions:** show a diff of what changed. Let the user approve before writing.
 

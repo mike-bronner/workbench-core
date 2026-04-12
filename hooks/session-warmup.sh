@@ -131,6 +131,14 @@ if [ -r "$SKILLS_PROTOCOL" ]; then
   printf '\n\n'
 fi
 
+GUARDRAILS="${CLAUDE_PLUGIN_ROOT}/references/guardrails.md"
+
+if [ -r "$GUARDRAILS" ]; then
+  printf '## Guardrails — absolute rules\n\n'
+  cat "$GUARDRAILS"
+  printf '\n\n'
+fi
+
 # ──────────── Pending-summary check (all sources except compact) ────────────
 # On compact we just re-injected identity — don't add summary work on top of
 # a context that was just shed. On all other sources, check for unprocessed

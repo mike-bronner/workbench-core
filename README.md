@@ -7,6 +7,7 @@ Core infrastructure plugin for Claude Code. Part of the [`claude-workbench`](htt
 The infrastructure layer that turns Claude Code from a stateless coding assistant into a persistent, identity-aware collaborator. It provides:
 
 - **Persistent identity** — persona files (`soul-hot.md`, `profile.md`) injected at session start and re-injected after context compression so the agent never drifts.
+- **Guardrails** — absolute behavioral rules that ship with the plugin, load last (highest authority), and are enforced by the interview skills. Guardrails can't be overridden by persona or profile choices.
 - **Session logging** — every session is captured as a rolling JSONL log, then summarized by a background agent into a searchable narrative.
 - **Operational memory** — a local MCP server (markdown-vault-mcp) fronts a searchable vault of decisions, projects, insights, and session history.
 - **Execution-aware skills** — a behavioral protocol that gives any skill persistent memory via vault-backed learnings files.
@@ -95,11 +96,12 @@ The `references/` directory contains single-source-of-truth documents shared acr
 
 | File | Used by | Purpose |
 |------|---------|---------|
+| `guardrails.md` | session-warmup, define-soul, define-profile | Absolute behavioral rules — injected last at session start, enforced during interviews |
 | `summary-format.md` | summary-writer, log-now, summarize-session | Required frontmatter, body structure, JSONL parsing guidance |
 | `decision-promotion.md` | summary-writer, log-now, summarize-session | Promotion criteria, when NOT to promote, decision file template |
 | `vault-conventions.md` | summary-writer, log-now, summarize-session | Vault paths, required frontmatter, write vs edit rules |
 
-These are loaded at execution time via `${CLAUDE_PLUGIN_ROOT}/references/` — not injected at session start.
+Most references are loaded at execution time via `${CLAUDE_PLUGIN_ROOT}/references/`. The exception is `guardrails.md`, which is injected at every session start by the warmup hook.
 
 ## Plugin layout
 
@@ -116,6 +118,7 @@ core/
 │   ├── session-log.sh          — raw log capture + summary-writer dispatch
 │   └── session-warmup.sh       — identity injection + cleanup + health check
 ├── references/
+│   ├── guardrails.md           — absolute behavioral rules (injected at session start)
 │   ├── decision-promotion.md   — when and how to promote decisions
 │   ├── summary-format.md       — summary frontmatter + body template
 │   └── vault-conventions.md    — paths, frontmatter rules, write conventions
@@ -178,6 +181,28 @@ Identity files are injected on **every** warmup source:
 | `compact` | After compression | Identity refresh only (via PostCompact hook) |
 
 This ensures the agent never loses its voice or behavioral constraints, even in long sessions with multiple context compressions.
+
+### Guardrails
+
+Identity files are customizable — users define their agent's persona via `/workbench:define-soul` and their own profile via `/workbench:define-profile`. But some rules should hold regardless of what persona is configured. That's the problem guardrails solve.
+
+**The problem:** Without guardrails, the interview skills can produce identity files that encode bad habits — sycophantic openers, hedged opinions, unverified assertions. These are anti-patterns that degrade output quality no matter what character the agent plays. A user might accidentally request them ("soften critiques with a compliment first") without realizing they're undermining the agent's usefulness.
+
+**The solution:** `references/guardrails.md` ships with the plugin as a set of absolute behavioral rules. They:
+
+1. **Load last** in the identity chain (after soul-hot, profile, skills-protocol) — giving them highest authority in context.
+2. **Are enforced during interviews** — both `/workbench:define-soul` and `/workbench:define-profile` check every answer against the guardrails. If an answer contradicts a guardrail, the skill stops, names the conflict, and recommends an alternative. It never suggests modifying the guardrails.
+3. **Ship with the plugin, not the vault** — guardrails are not user-configurable paths. They're plugin infrastructure, like the hook scripts.
+
+The authority hierarchy for behavioral rules:
+
+```
+guardrails.md (absolute — ships with plugin)
+    ↓ overrides
+soul-hot.md (character-specific — user-defined)
+    ↓ informs
+profile.md (user context — user-defined)
+```
 
 ### Memory vault
 
@@ -252,6 +277,6 @@ All config values can be overridden via environment variables for testing:
 
 ## Design philosophy
 
-The plugin is **infrastructure, not persona**. Your agent's personality comes from the identity files you customize — the plugin itself contains no persona-specific content. Templates in `assets/templates/` use `{{agent_name}}` placeholders.
+The plugin is **infrastructure, not persona**. Your agent's personality comes from the identity files you customize — the plugin itself contains no persona-specific content. Templates in `assets/templates/` use `{{agent_name}}` placeholders. The one exception is `references/guardrails.md`, which contains universal behavioral rules (no sycophancy, no hedging, verify before asserting) — these are quality constraints, not personality.
 
 Memory files live **outside any git repo**, at a user-configured path. Memory is personal state; the plugin is code. They are intentionally separate.

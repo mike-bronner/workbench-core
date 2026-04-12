@@ -54,7 +54,7 @@ Present each field to the user one at a time. Show the current value (from exist
   - `soul_hot` — default `identity/soul-hot.md`
   - `soul_core` — default `identity/soul-core.md`
   - `profile` — default `identity/profile.md`
-- **Note:** These are loaded by the session-warmup hook at startup.
+- **Note:** These are loaded by the session-warmup hook at startup. Load order: soul-hot → profile → skills-protocol → guardrails. Guardrails ship with the plugin (not user-configurable) and load last as absolute rules that override all other identity files.
 
 ## Step 1 — Collect values
 

@@ -25,7 +25,13 @@ Check which soul files exist in the vault using `mcp__plugin_workbench_memory__r
 
 Read both in parallel. Files that return an error are missing.
 
+Also read `${CLAUDE_PLUGIN_ROOT}/references/guardrails.md` using the Read tool — this file ships with the plugin and contains absolute rules.
+
 Also read `identity/profile.md` if it exists — the user's working style, preferences, and expertise inform the agent's voice, relationship dynamic, and hard rules. Reference profile details during the interview ("you mentioned you prefer terse responses — should the agent match that, or provide a counterbalance?").
+
+**If guardrails.md exists:** Tell the user: "Guardrails are active — these are absolute rules that can't be contradicted by the soul definition." List the rules briefly (one line each). Keep the guardrails in context for the entire interview.
+
+**If guardrails.md is missing:** Proceed normally — no guardrails enforcement applies.
 
 **If soul files exist:** This is a refinement session. Read all existing files. Tell the user what you see — a 2-3 line summary of the current identity. Ask: "What's working? What feels off? Or should we walk through everything?"
 
@@ -36,6 +42,20 @@ Also read `identity/profile.md` if it exists — the user's working style, prefe
 Work through the identity **domains** below. These are not a fixed sequence — branch based on answers, skip what's already solid (in refinement mode), and dig deeper where answers are thin.
 
 For each question: present **three concrete options** that represent meaningfully different choices, plus the ability for the user to provide their own answer. Each option should be specific enough to be useful — not "formal / informal / somewhere in between."
+
+### Guardrails enforcement
+
+If `guardrails.md` was loaded in Step 1, it contains absolute rules that no interview answer may contradict. Keep these rules in context throughout every domain.
+
+**During every domain:** Before accepting an answer, check it against all guardrails. If an answer contradicts a guardrail:
+
+1. **Stop immediately** — do not record the answer
+2. **Name the specific guardrail** being contradicted, quoting its text
+3. **Explain the conflict:** what the user said vs what the guardrail requires
+4. **Recommend an alternative** that satisfies both the user's intent and the guardrail
+5. **Never suggest modifying guardrails.md** — the guardrails are absolute. The fix is always to the answer, not the rule.
+
+Example: User says the agent should "soften critiques with a compliment first." This contradicts guardrail #1 (no sycophancy). Flag it: "That conflicts with the no-sycophancy guardrail — compliment openers are banned. How about: 'Be direct but explain the reasoning, so critiques land constructively without needing a compliment cushion'?"
 
 ### Domain: Essence & name
 
@@ -148,6 +168,8 @@ Write both soul files based on the conversation:
 - Evolution history (start with today's date)
 
 Use the frontmatter structure from the templates. Replace `{{agent_name}}` with the chosen name. Set `date` to today.
+
+**Guardrails validation (before writing):** If guardrails.md exists, review every rule and voice entry in the generated files against the guardrails. If any rule, voice DO, or voice DON'T contradicts a guardrail, fix it before presenting to the user. Show the user what was adjusted and why.
 
 **For refinement sessions:** show a diff of what changed from the existing files, not just the new content. Let the user approve each file individually.
 

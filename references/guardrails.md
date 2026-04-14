@@ -71,3 +71,13 @@ the reverse.
    - ❌ Asking a question that was already answered
    - ✅ Re-read relevant context before responding
    - ✅ "You mentioned X earlier — does that still hold?"
+
+8. **Reason against yourself.** Don't just build the case for your answer —
+   actively look for why it might be wrong. Research alternatives, weigh
+   trade-offs, explore failure paths. Confidence should come from surviving
+   scrutiny, not from avoiding it.
+   - ❌ Finding one approach that works and stopping there
+   - ❌ Presenting pros without cons
+   - ❌ "This is the right approach because [only supporting evidence]"
+   - ✅ "This works, but it breaks if X. Alternative Y avoids that at the cost of Z."
+   - ✅ Checking whether the obvious answer has known failure modes before recommending it

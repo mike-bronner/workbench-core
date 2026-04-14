@@ -1,0 +1,110 @@
+name: validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: plugin.json — valid JSON, required fields, semver version
+        run: |
+          set -euo pipefail
+          f=.claude-plugin/plugin.json
+          jq empty "$f"
+          for field in name version description author; do
+            jq -e ".${field}" "$f" > /dev/null \
+              || { echo "::error file=${f}::missing required field: ${field}"; exit 1; }
+          done
+          version=$(jq -r '.version' "$f")
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][A-Za-z0-9.-]+)?$ ]]; then
+            echo "::error file=${f}::version '$version' is not semver"
+            exit 1
+          fi
+
+      - name: MCP tool-name refs match plugin + server names in plugin.json
+        run: |
+          set -euo pipefail
+          plugin_name=$(jq -r '.name' .claude-plugin/plugin.json)
+          # For every MCP server declared in plugin.json, the tool prefix must be
+          # mcp__plugin_<plugin_name>_<server_name>__<tool>. Any reference that
+          # doesn't match is stale (usually from a plugin or server rename).
+          mapfile -t servers < <(jq -r '.mcpServers // {} | keys[]' .claude-plugin/plugin.json)
+          fail=0
+          # Collect every mcp__plugin_ reference from sources.
+          mapfile -t refs < <(grep -rhoE 'mcp__plugin_[A-Za-z0-9_-]+__[A-Za-z0-9_]+' \
+            --include='*.md' --include='*.sh' --include='*.json' \
+            agents hooks references skills assets 2>/dev/null | sort -u)
+          for ref in "${refs[@]}"; do
+            # Strip the trailing __<tool> to get mcp__plugin_<name>_<server>
+            prefix="${ref%__*}"
+            # Strip leading mcp__plugin_ to get <name>_<server>
+            body="${prefix#mcp__plugin_}"
+            matched=0
+            for server in "${servers[@]}"; do
+              if [ "$body" = "${plugin_name}_${server}" ]; then
+                matched=1
+                break
+              fi
+            done
+            if [ "$matched" -eq 0 ]; then
+              echo "::error::stale MCP tool ref: ${ref} (expected prefix for plugin '${plugin_name}', servers: ${servers[*]})"
+              fail=1
+            fi
+          done
+          exit "$fail"
+
+      - name: shellcheck hooks
+        run: shellcheck hooks/*.sh
+
+      - name: bash -n on hooks
+        run: |
+          set -euo pipefail
+          for f in hooks/*.sh; do
+            bash -n "$f"
+          done
+
+      - name: Frontmatter present on skills and agents
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in skills/*/SKILL.md agents/*.md; do
+            [ -f "$f" ] || continue
+            if ! head -1 "$f" | grep -qx -- '---'; then
+              echo "::error file=${f}::missing opening frontmatter"
+              fail=1
+              continue
+            fi
+            if ! awk 'NR>1 && /^---$/ {print NR; exit}' "$f" | grep -qE '^[0-9]+$'; then
+              echo "::error file=${f}::missing closing frontmatter"
+              fail=1
+              continue
+            fi
+            fm=$(awk 'NR==1&&/^---$/ {on=1; next} on && /^---$/ {exit} on' "$f")
+            if ! echo "$fm" | grep -qE '^description:'; then
+              echo "::error file=${f}::frontmatter missing required field: description"
+              fail=1
+            fi
+          done
+          exit "$fail"
+
+      - name: CLAUDE_PLUGIN_ROOT references resolve
+        run: |
+          set -euo pipefail
+          fail=0
+          mapfile -t refs < <(grep -rhoE '\$\{CLAUDE_PLUGIN_ROOT\}/[A-Za-z0-9_./-]+' \
+            --include='*.md' --include='*.sh' \
+            agents hooks references skills assets 2>/dev/null \
+            | sed 's|${CLAUDE_PLUGIN_ROOT}/||' \
+            | sort -u)
+          for r in "${refs[@]}"; do
+            if [ ! -e "$r" ]; then
+              echo "::error::broken reference: \${CLAUDE_PLUGIN_ROOT}/$r"
+              fail=1
+            fi
+          done
+          exit "$fail"

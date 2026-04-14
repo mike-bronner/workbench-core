@@ -19,7 +19,7 @@ inform the next run.
 ## Before executing a skill
 
 1. Check if `skills/{skill-name}.learnings.md` exists in the vault via
-   `mcp__plugin_workbench_memory__read`.
+   `mcp__plugin_workbench-core_memory__read`.
 2. If it exists, read it. Apply the accumulated learnings to this execution —
    these are corrections, preferences, and patterns from past runs.
 3. If it doesn't exist, proceed normally. No overhead for skills with no history.
@@ -33,8 +33,8 @@ Only write a learning if something noteworthy happened:
 - The user **confirmed** a non-obvious approach ("yes, exactly like that")
 - A new **pattern** was established that future runs should follow
 
-Write the learning via `mcp__plugin_workbench_memory__edit` (append to the
-existing file) or `mcp__plugin_workbench_memory__write` (create if first
+Write the learning via `mcp__plugin_workbench-core_memory__edit` (append to the
+existing file) or `mcp__plugin_workbench-core_memory__write` (create if first
 learning). Use this format:
 
 ```markdown

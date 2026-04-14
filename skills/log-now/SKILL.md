@@ -32,7 +32,7 @@ After the script runs, read `~/.claude-memory-cache/pending-summaries/<session_i
 
 Read the raw log. Based on the log contents AND your own lived memory of this session, write the summary.
 
-Read `${CLAUDE_PLUGIN_ROOT}/references/summary-format.md` for the required shape. Set `mode: manual`. Write via `mcp__plugin_workbench_memory__write`.
+Read `${CLAUDE_PLUGIN_ROOT}/references/summary-format.md` for the required shape. Set `mode: manual`. Write via `mcp__plugin_workbench-core_memory__write`.
 
 Because you're in-session, your summary should be richer than what the auto summary-writer produces — you have context the raw JSONL doesn't capture.
 

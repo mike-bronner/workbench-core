@@ -1,7 +1,7 @@
 ---
 name: summary-writer
 description: Background agent that processes a pending session summary. Reads the raw log, writes a narrative summary to the memory vault, promotes decisions, and deletes the marker. Dispatched by the session-log hook when WORKBENCH_AUTO_SUMMARIZE=1, or manually via the Task tool on a synthetic marker.
-tools: Bash, Read, Glob, mcp__plugin_workbench_memory__write, mcp__plugin_workbench_memory__read, mcp__plugin_workbench_memory__edit, mcp__plugin_workbench_memory__list_documents, mcp__plugin_workbench_memory__search
+tools: Bash, Read, Glob, mcp__plugin_workbench-core_memory__write, mcp__plugin_workbench-core_memory__read, mcp__plugin_workbench-core_memory__edit, mcp__plugin_workbench-core_memory__list_documents, mcp__plugin_workbench-core_memory__search
 ---
 
 # summary-writer — automated session-log narrative agent

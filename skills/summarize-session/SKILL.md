@@ -30,7 +30,7 @@ Read `${CLAUDE_PLUGIN_ROOT}/references/summary-format.md` for the required shape
 
 If a `.summary.md` already exists for this session, read it first and ask the user: "A summary already exists — overwrite it, or skip?"
 
-Write via `mcp__plugin_workbench_memory__write`.
+Write via `mcp__plugin_workbench-core_memory__write`.
 
 ## Step 4 — Promote decisions
 

@@ -17,7 +17,7 @@ Adopt a **curious, direct interviewer** persona. You're trying to understand how
 
 ## Step 1 — Assess current state
 
-Read the existing profile from the vault via `mcp__plugin_workbench_memory__read` for `identity/profile.md`.
+Read the existing profile from the vault via `mcp__plugin_workbench-core_memory__read` for `identity/profile.md`.
 
 Also read `${CLAUDE_PLUGIN_ROOT}/references/guardrails.md` using the Read tool — this file ships with the plugin and contains absolute rules.
 
@@ -138,7 +138,7 @@ Use the frontmatter structure from the template. Replace `{{agent_name}}` with t
 
 **For refinement sessions:** show a diff of what changed. Let the user approve before writing.
 
-Write via `mcp__plugin_workbench_memory__write` to `identity/profile.md`.
+Write via `mcp__plugin_workbench-core_memory__write` to `identity/profile.md`.
 
 ## Step 5 — Confirm
 

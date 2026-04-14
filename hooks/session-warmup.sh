@@ -207,7 +207,7 @@ if [ "$SOURCE" = "startup" ]; then
     printf '## ⚠ Memory vault index not found\n\n'
     printf 'Expected FTS index at `%s` but it does not exist.\n' "$MCP_INDEX"
     printf 'The `%s` MCP may not be running. Memory search and write will fail.\n' "$MCP_SERVER_NAME"
-    printf 'Try `mcp__plugin_workbench_memory__stats` to verify, or check server logs.\n\n'
+    printf 'Try `mcp__plugin_workbench-core_memory__stats` to verify, or check server logs.\n\n'
   fi
 fi
 

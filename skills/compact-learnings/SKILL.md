@@ -61,7 +61,7 @@ For each entry, state your recommendation and a one-line rationale. Wait for the
 
 ### Compact the learnings file
 
-Rewrite with only kept/rewritten entries. Maintain chronological order. Write via `mcp__plugin_workbench_memory__write` (full overwrite).
+Rewrite with only kept/rewritten entries. Maintain chronological order. Write via `mcp__plugin_workbench-core_memory__write` (full overwrite).
 
 If all entries were dropped or integrated, write a minimal file with just frontmatter and no entries.
 

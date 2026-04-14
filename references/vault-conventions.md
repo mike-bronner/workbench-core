@@ -5,7 +5,7 @@ operational memory vault.
 
 ## Paths
 
-All paths passed to `mcp__plugin_workbench_memory__*` tools are **relative
+All paths passed to `mcp__plugin_workbench-core_memory__*` tools are **relative
 to the vault root** (configured in `memory_path`, typically
 `~/Documents/Claude/Memory/`). Never pass absolute paths to the MCP.
 

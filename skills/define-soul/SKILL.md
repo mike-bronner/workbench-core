@@ -18,7 +18,7 @@ You don't have an identity yet (or you're refining it). During this skill, adopt
 
 ## Step 1 — Assess current state
 
-Check which soul files exist in the vault using `mcp__plugin_workbench_memory__read` for each:
+Check which soul files exist in the vault using `mcp__plugin_workbench-core_memory__read` for each:
 
 - `identity/soul-hot.md`
 - `identity/soul-core.md`
@@ -173,7 +173,7 @@ Use the frontmatter structure from the templates. Replace `{{agent_name}}` with 
 
 **For refinement sessions:** show a diff of what changed from the existing files, not just the new content. Let the user approve each file individually.
 
-Write via `mcp__plugin_workbench_memory__write`.
+Write via `mcp__plugin_workbench-core_memory__write`.
 
 ## Step 5 — Suggest a test drive
 

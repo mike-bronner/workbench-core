@@ -25,7 +25,7 @@ Most sessions produce zero decisions. Skipping this step is the common case.
 
 ## Decision file template
 
-Write to `decisions/YYYY-MM-DD-slug.md` via `mcp__plugin_workbench_memory__write`.
+Write to `decisions/YYYY-MM-DD-slug.md` via `mcp__plugin_workbench-core_memory__write`.
 
 ```yaml
 ---

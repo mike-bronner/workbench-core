@@ -11,7 +11,7 @@ log:     sessions/2026-04-09/{session-id}.log.md
 summary: sessions/2026-04-09/{session-id}.summary.md
 ```
 
-Write via `mcp__plugin_workbench_memory__write`. Paths are **relative to the vault root**, e.g. `sessions/2026-04-09/{session-id}.summary.md`.
+Write via `mcp__plugin_workbench-core_memory__write`. Paths are **relative to the vault root**, e.g. `sessions/2026-04-09/{session-id}.summary.md`.
 
 ## Required frontmatter
 

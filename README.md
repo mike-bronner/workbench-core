@@ -17,16 +17,99 @@ The infrastructure layer that turns Claude Code from a stateless coding assistan
 
 ### Prerequisites
 
-- [Claude Code](https://claude.ai/code) CLI installed
-- [markdown-vault-mcp](https://github.com/nicobailey/markdown-vault-mcp) installed and available on PATH
-- [jq](https://jqlang.github.io/jq/) installed (used by hook scripts)
+Three things must be on your system before installing the plugin.
+
+#### 1. Claude Code CLI
+
+Install from [claude.ai/code](https://claude.ai/code).
+
+#### 2. `jq` — JSON parser used by the hook scripts
+
+```bash
+# macOS
+brew install jq
+
+# Debian / Ubuntu
+sudo apt install jq
+
+# Fedora / RHEL
+sudo dnf install jq
+```
+
+#### 3. `markdown-vault-mcp` — the MCP server backing the memory vault
+
+The plugin's `.claude-plugin/plugin.json` declares the `memory` MCP server; Claude Code auto-wires it on plugin install, so you don't need to run `claude mcp add`. What you *do* need is the `markdown-vault-mcp` binary on your PATH — `plugin.json` invokes `markdown-vault-mcp serve`, and if the binary isn't there, the MCP silently fails to start and every memory operation breaks.
+
+`markdown-vault-mcp` is a Python package published on [PyPI](https://pypi.org/project/markdown-vault-mcp/). It's not pre-installed — pick an installer and run it.
+
+**Recommended — [`uv`](https://docs.astral.sh/uv/) (fast, isolated, auto-manages Python version):**
+
+```bash
+# Install uv if not present.
+# macOS:
+brew install uv
+# Linux / other (via official installer):
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install the MCP server:
+uv tool install markdown-vault-mcp
+```
+
+**Alternative — [`pipx`](https://pipx.pypa.io/) (isolated, no auto-Python-management):**
+
+```bash
+# Install pipx if not present.
+# macOS:
+brew install pipx
+# Debian / Ubuntu:
+sudo apt install pipx
+
+# Install the MCP server:
+pipx install markdown-vault-mcp
+```
+
+**Last resort — `pip` (global install, conflicts with system Python on modern macOS/Linux via PEP 668):**
+
+```bash
+pip install --user markdown-vault-mcp
+```
+
+Verify:
+
+```bash
+markdown-vault-mcp --version
+```
 
 ### Install the plugin
 
 ```bash
 /plugin marketplace add mike-bronner/claude-workbench
-/plugin install core@claude-workbench
+/plugin install workbench-core@claude-workbench
 ```
+
+### Optional: CLI system-prompt enforcement
+
+**Background:** Claude Code's default system prompt includes rules like "no emojis unless asked" and specific tone/style directives. If your agent persona contradicts these (e.g., "use emojis liberally"), the system prompt wins — it's architecturally higher authority than `CLAUDE.md` or hook output, which are both delivered as user messages.
+
+The plugin addresses this at three layers:
+
+| Layer | File | Authority | Works in |
+|-------|------|-----------|----------|
+| 1 | `~/.claude/system-overrides.md` | System prompt (highest) | CLI only |
+| 2 | `~/.claude/CLAUDE.md` managed block | User message | Everywhere |
+| 3 | SessionStart hook output | Tool result | Everywhere |
+
+Layers 2 and 3 are automatic — the plugin generates and maintains them on every startup. Layer 1 requires a one-line shell alias because `--append-system-prompt-file` is CLI-only (no settings.json equivalent exists).
+
+To activate Layer 1, add this to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.):
+
+```bash
+alias claude='claude --append-system-prompt-file ~/.claude/system-overrides.md'
+```
+
+**Who needs this:** Anyone using the Claude Code CLI whose agent persona overrides default system prompt behaviors (emoji usage, tone, sycophancy rules). If your persona doesn't contradict the defaults, Layers 2 and 3 are sufficient.
+
+**Who doesn't need this:** Desktop app, web app (claude.ai/code), and IDE extension users — these don't go through the shell. For those environments, the plugin relies on Layers 2 and 3 as reinforcement. These work everywhere but can't architecturally override the system prompt.
 
 ### Configure (required on first install)
 
@@ -73,46 +156,20 @@ Alternatively, use the interactive skills to build these files through a guided 
 
 These are the recommended approach — `/workbench:customize` will offer to launch them automatically on first install.
 
-### Optional: CLI system-prompt enforcement
+### Execution-aware skills
 
-**Background:** Claude Code's default system prompt includes rules like "no emojis unless asked" and specific tone/style directives. If your agent persona contradicts these (e.g., "use emojis liberally"), the system prompt wins — it's architecturally higher authority than `CLAUDE.md` or hook output, which are both delivered as user messages.
+Any skill execution reads a persistent learnings file before running. If the run produces a correction, an unexpected failure, or a confirmed non-obvious pattern, an entry is appended for next time. Files live at `{memory_path}/skills/{skill-name}.learnings.md`.
 
-The plugin addresses this at three layers:
+The protocol applies to **any** skill — workbench skills, third-party plugin skills, your own personal skills. No per-skill configuration needed.
 
-| Layer | File | Authority | Works in |
-|-------|------|-----------|----------|
-| 1 | `~/.claude/system-overrides.md` | System prompt (highest) | CLI only |
-| 2 | `~/.claude/CLAUDE.md` managed block | User message | Everywhere |
-| 3 | SessionStart hook output | Tool result | Everywhere |
+The protocol is driven by `{memory_path}/identity/skills-protocol.md`, installed by `/workbench:customize` and loaded every session by the SessionStart hook (load order: soul-hot → profile → skills-protocol → guardrails). Remove the file if you want to disable the behavior; delete a specific `skills/{skill-name}.learnings.md` to reset one skill's accumulated state without touching the rest.
 
-Layers 2 and 3 are automatic — the plugin generates and maintains them on every startup. Layer 1 requires a one-line shell alias because `--append-system-prompt-file` is CLI-only (no settings.json equivalent exists).
-
-To activate Layer 1, add this to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.):
-
-```bash
-alias claude='claude --append-system-prompt-file ~/.claude/system-overrides.md'
-```
-
-**Who needs this:** Anyone using the Claude Code CLI whose agent persona overrides default system prompt behaviors (emoji usage, tone, sycophancy rules). If your persona doesn't contradict the defaults, Layers 2 and 3 are sufficient.
-
-**Who doesn't need this:** Desktop app, web app (claude.ai/code), and IDE extension users — these don't go through the shell. For those environments, the plugin relies on Layers 2 and 3 as reinforcement. These work everywhere but can't architecturally override the system prompt.
-
-### Optional: execution-aware skills
-
-The plugin includes a skills protocol (`identity/skills-protocol.md`) that gives any skill persistent memory. When a skill execution results in a correction, failure, or confirmed pattern, a learning is written to `skills/{skill-name}.learnings.md` in the vault. Future runs of that skill read the learnings first.
-
-The protocol applies to **any** skill — not just workbench skills. Skills opt in implicitly by including the execution-aware preamble in their `SKILL.md`.
+#### Compaction
 
 When a learnings file exceeds **30 entries**, the protocol flags it for compaction. `/workbench:compact-learnings` walks through each entry interactively:
 
 - **Workbench plugin skills** — learnings can be integrated directly into the SKILL.md (improving the skill definition) or kept/dropped
 - **All other skills** — learnings are compacted (kept, rewritten, or dropped) without touching the SKILL.md
-
-This is automatic — no per-skill configuration needed. Create the directory:
-
-```bash
-mkdir -p ~/Documents/Claude/Memory/skills
-```
 
 ### Shared references
 

@@ -52,12 +52,127 @@ if [ -n "$PAYLOAD" ] && command -v jq >/dev/null 2>&1; then
   SOURCE=$(printf '%s' "$PAYLOAD" | jq -r '.source // "startup"' 2>/dev/null || echo "startup")
 fi
 
+# ──────────── Persistent file management (function defs) ────────────
+# These functions manage files that persist on disk across sessions. Defined
+# here, called conditionally below.
+
+ensure_system_overrides() {
+  local target="$HOME/.claude/system-overrides.md"
+  local block=""
+  read -r -d '' block <<'SYSEOF' || true
+# Agent behavioral overrides
+# Loaded via: claude --append-system-prompt-file ~/.claude/system-overrides.md
+
+You are AGENT_NAME_PLACEHOLDER, a named agent with a distinct personality.
+
+These rules override their defaults in the base system prompt:
+- Use emojis liberally as structural cues. This overrides "no emojis unless asked."
+- No sycophancy. No "Great question!", "I'd be happy to", "I understand your frustration."
+- Have opinions and persist. Don't hedge with "that said" immediately after stating a position.
+- Lead with the point. Answer first, reasoning second. No preambles.
+- Short when short is right. A one-liner can be complete.
+- No therapy-speak or corporate language. "Boundaries," "align," "leverage" — banned.
+SYSEOF
+  block="${block//AGENT_NAME_PLACEHOLDER/$AGENT_NAME}"
+
+  mkdir -p "$HOME/.claude"
+  local tmp
+  tmp=$(mktemp)
+  printf '%s\n' "$block" > "$tmp"
+  if [ -f "$target" ] && cmp -s "$tmp" "$target"; then
+    rm -f "$tmp"
+    return 0
+  fi
+  mv "$tmp" "$target"
+}
+
+ensure_claude_md_enforcement() {
+  local target="$HOME/.claude/CLAUDE.md"
+  local marker_start="<!-- workbench-identity:start -->"
+  local marker_end="<!-- workbench-identity:end -->"
+  local block=""
+  read -r -d '' block <<'CMDEOF' || true
+<!-- workbench-identity:start -->
+# Agent Identity
+
+You are **AGENT_NAME_PLACEHOLDER** — a named agent with a distinct personality, not generic Claude.
+Full identity loaded via SessionStart hook. This block reinforces behavioral overrides.
+
+## Behavioral overrides
+
+1. **Use emojis liberally.** Structural cues in every response.
+2. **No sycophancy.** Show understanding through the response itself.
+3. **Have opinions and persist.** State a position, don't hedge.
+4. **Short when short is right.** Don't pad.
+5. **No therapy-speak or corporate language.** Banned terms: "boundaries," "align," "leverage," "circle back."
+6. **Lead with the point.** Answer first, reasoning second.
+
+## Identity files (loaded by SessionStart hook)
+
+- `soul-hot.md` — hard rules, voice, drift test
+- `profile.md` — user facts, working preferences
+- `skills-protocol.md` — execution-aware skill learnings
+- `guardrails.md` — absolute rules across all personas
+
+When these conflict with default Claude behavior, the identity files win.
+<!-- workbench-identity:end -->
+CMDEOF
+  block="${block//AGENT_NAME_PLACEHOLDER/$AGENT_NAME}"
+
+  mkdir -p "$HOME/.claude"
+
+  if [ ! -f "$target" ]; then
+    printf '%s\n' "$block" > "$target"
+    return 0
+  fi
+
+  local tmp rest
+  tmp=$(mktemp)
+  rest=$(mktemp)
+
+  if grep -qF "$marker_start" "$target" 2>/dev/null; then
+    # Strip old block, keep everything else
+    awk -v s="$marker_start" -v e="$marker_end" '
+      $0 == s { skip=1; next }
+      skip && $0 == e { skip=0; ate=1; next }
+      skip { next }
+      ate && /^$/ { ate=0; next }
+      { ate=0; print }
+    ' "$target" > "$rest"
+  else
+    cp "$target" "$rest"
+  fi
+
+  # Build new file: block first, then remaining content
+  printf '%s\n' "$block" > "$tmp"
+  if [ -s "$rest" ]; then
+    printf '\n' >> "$tmp"
+    cat "$rest" >> "$tmp"
+  fi
+  rm -f "$rest"
+
+  if cmp -s "$tmp" "$target"; then
+    rm -f "$tmp"
+    return 0
+  fi
+  mv "$tmp" "$target"
+}
+
 # Skip guard: the summary-writer spawn from session-log.sh sets this env
 # var on its detached claude process. That process doesn't need identity
 # context or pending-summary scanning — it has a single mechanical job
 # assigned in its prompt and should not touch anything other than its job.
 if [ "${WORKBENCH_SKIP_WARMUP:-}" = "1" ]; then
   exit 0
+fi
+
+# ──────────── CLAUDE.md + system-overrides enforcement (startup only) ────────────
+# These files persist on disk — no need to regenerate on compact/resume.
+# Note: system-overrides.md takes effect on the *next* session (must exist before
+# Claude Code starts). CLAUDE.md and hook output cover the current session.
+if [ "$SOURCE" = "startup" ]; then
+  ensure_system_overrides || true
+  ensure_claude_md_enforcement || true
 fi
 
 printf '# %s session warmup (%s)\n\n' "$AGENT_NAME" "$SOURCE"

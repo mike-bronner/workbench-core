@@ -73,6 +73,30 @@ Alternatively, use the interactive skills to build these files through a guided 
 
 These are the recommended approach — `/workbench:customize` will offer to launch them automatically on first install.
 
+### Optional: CLI system-prompt enforcement
+
+**Background:** Claude Code's default system prompt includes rules like "no emojis unless asked" and specific tone/style directives. If your agent persona contradicts these (e.g., "use emojis liberally"), the system prompt wins — it's architecturally higher authority than `CLAUDE.md` or hook output, which are both delivered as user messages.
+
+The plugin addresses this at three layers:
+
+| Layer | File | Authority | Works in |
+|-------|------|-----------|----------|
+| 1 | `~/.claude/system-overrides.md` | System prompt (highest) | CLI only |
+| 2 | `~/.claude/CLAUDE.md` managed block | User message | Everywhere |
+| 3 | SessionStart hook output | Tool result | Everywhere |
+
+Layers 2 and 3 are automatic — the plugin generates and maintains them on every startup. Layer 1 requires a one-line shell alias because `--append-system-prompt-file` is CLI-only (no settings.json equivalent exists).
+
+To activate Layer 1, add this to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.):
+
+```bash
+alias claude='claude --append-system-prompt-file ~/.claude/system-overrides.md'
+```
+
+**Who needs this:** Anyone using the Claude Code CLI whose agent persona overrides default system prompt behaviors (emoji usage, tone, sycophancy rules). If your persona doesn't contradict the defaults, Layers 2 and 3 are sufficient.
+
+**Who doesn't need this:** Desktop app, web app (claude.ai/code), and IDE extension users — these don't go through the shell. For those environments, the plugin relies on Layers 2 and 3 as reinforcement. These work everywhere but can't architecturally override the system prompt.
+
 ### Optional: execution-aware skills
 
 The plugin includes a skills protocol (`identity/skills-protocol.md`) that gives any skill persistent memory. When a skill execution results in a correction, failure, or confirmed pattern, a learning is written to `skills/{skill-name}.learnings.md` in the vault. Future runs of that skill read the learnings first.

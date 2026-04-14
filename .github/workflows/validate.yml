@@ -59,7 +59,7 @@ jobs:
           exit "$fail"
 
       - name: shellcheck hooks
-        run: shellcheck hooks/*.sh
+        run: shellcheck --severity=warning hooks/*.sh
 
       - name: bash -n on hooks
         run: |

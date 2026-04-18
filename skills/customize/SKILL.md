@@ -1,5 +1,5 @@
 ---
-description: Configure the workbench — agent name, memory paths, MCP server name, and identity file paths. Writes config to the plugin data directory; re-run after a plugin update to restore your settings.
+description: Configure the workbench — agent name, memory paths, MCP server name, and identity file paths. Config lives in the plugin data directory and is read at MCP start time, so plugin updates never clobber settings.
 ---
 
 The user has invoked `/workbench:customize`. Walk them through configuring all workbench settings interactively.
@@ -9,10 +9,12 @@ The user has invoked `/workbench:customize`. Walk them through configuring all w
 The config file lives at:
 
 ```
-~/.claude/plugins/data/workbench-claude-workbench/config.json
+~/.claude/plugins/data/workbench-core-claude-workbench/config.json
 ```
 
-This is the plugin system's persistent data directory — it survives plugin version bumps.
+This is the plugin system's persistent data directory — it survives plugin version bumps. The `mcp-memory.sh` wrapper reads it at launch time and exports the corresponding env vars, so `plugin.json` never needs to be edited.
+
+**Legacy path:** if `~/.claude/plugins/data/workbench-claude-workbench/config.json` exists (from before the `workbench` → `workbench-core` rename), migrate it to the new path — see Step 0.
 
 ## Fields
 
@@ -56,12 +58,30 @@ Present each field to the user one at a time. Show the current value (from exist
   - `profile` — default `identity/profile.md`
 - **Note:** These are loaded by the session-warmup hook at startup. Load order: soul-hot → profile → skills-protocol → guardrails. Guardrails ship with the plugin (not user-configurable) and load last as absolute rules that override all other identity files.
 
+## Step 0 — Migrate legacy config (if present)
+
+Before reading or writing anything, migrate the pre-rename data directory:
+
+```bash
+NEW_DIR="$HOME/.claude/plugins/data/workbench-core-claude-workbench"
+OLD_DIR="$HOME/.claude/plugins/data/workbench-claude-workbench"
+
+if [ -d "$OLD_DIR" ] && [ ! -d "$NEW_DIR" ]; then
+  mv "$OLD_DIR" "$NEW_DIR"
+elif [ -d "$OLD_DIR" ] && [ -d "$NEW_DIR" ]; then
+  # Both exist — new wins. Archive the old dir so we don't look at it again.
+  mv "$OLD_DIR" "${OLD_DIR}.legacy-$(date +%Y%m%d)"
+fi
+```
+
+Tell the user if a migration happened.
+
 ## Step 1 — Collect values
 
 Read the existing config file if it exists:
 
 ```bash
-CONFIG_DIR="$HOME/.claude/plugins/data/workbench-claude-workbench"
+CONFIG_DIR="$HOME/.claude/plugins/data/workbench-core-claude-workbench"
 CONFIG_FILE="$CONFIG_DIR/config.json"
 ```
 
@@ -71,9 +91,9 @@ Present each field to the user using the AskUserQuestion tool. Show the current 
 
 After all fields, show the assembled config JSON and ask "Save this configuration? (yes/no)".
 
-## Step 2 — Write config and update plugin.json
+## Step 2 — Write config
 
-1. **Write `config.json`** to the plugin data directory:
+Write `config.json` to the plugin data directory (create the directory if it doesn't exist):
 
 ```json
 {
@@ -91,9 +111,9 @@ After all fields, show the assembled config JSON and ask "Save this configuratio
 }
 ```
 
-2. **Update `plugin.json`** MCP server env vars to match. The fields that feed into `plugin.json` are:
+**Do not edit `plugin.json`.** The `mcp-memory.sh` wrapper reads `config.json` at MCP launch time and exports the env vars the memory server needs. This mapping (for reference only):
 
-| Config field | plugin.json env var |
+| Config field | Exported env var |
 |---|---|
 | `memory_path` | `MARKDOWN_VAULT_MCP_SOURCE_DIR` |
 | `memory_cache` | `MARKDOWN_VAULT_MCP_INDEX_PATH` (+ `/vault-index.sqlite`) |
@@ -101,9 +121,7 @@ After all fields, show the assembled config JSON and ask "Save this configuratio
 | `memory_cache` | `MARKDOWN_VAULT_MCP_STATE_PATH` (+ `/state.json`) |
 | `memory_mcp_server_name` | `MARKDOWN_VAULT_MCP_SERVER_NAME` |
 
-Read `plugin.json`, update the env values, write it back.
-
-3. **Write `config.example.json`** alongside `config.json` with the same structure but placeholder values and inline comments explaining each field. This serves as documentation for anyone setting up the plugin manually.
+Optionally write `config.example.json` alongside `config.json` with placeholder values and inline comments — useful for anyone setting up the plugin manually.
 
 ## Step 3 — Re-templatize identity files (if `agent_name` changed)
 
@@ -134,7 +152,7 @@ If `agent_name` changed from its previous value (or this is a first-time setup):
 
 Tell the user:
 - Config saved to `{CONFIG_FILE}`
-- plugin.json updated (MCP env vars reflect new paths)
+- MCP env vars will be re-read from config.json on next Claude Code restart
 - Whether identity files were created/updated
 
 ## Step 5 — User profile interview
@@ -177,6 +195,6 @@ After both interviews complete (or are skipped), remind the user: **"Restart Cla
 
 ## Notes
 
-- **Re-running after a plugin update:** When the plugin updates, `plugin.json` resets to the version from the marketplace. Re-running `/workbench:customize` reads the saved `config.json` and re-applies the values to the fresh `plugin.json`. The config file is the durable source of truth.
+- **Plugin updates are a non-event.** `plugin.json` points at `mcp-memory.sh`, which resolves env vars from `config.json` at MCP launch. A version bump replaces the plugin dir but the wrapper still reads the same config. No re-customization needed.
 - **Env var overrides still work:** `WORKBENCH_MEMORY_PATH`, `WORKBENCH_MEMORY_CACHE`, and `WORKBENCH_LOG_MODE` override config.json values in the hook scripts. This is useful for testing (e.g., dry-run with temp paths).
 - **First-time setup:** If this is the first run and no config exists, all fields start at their hardcoded defaults. The user confirms or changes each one.

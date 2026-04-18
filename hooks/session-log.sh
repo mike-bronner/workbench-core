@@ -15,7 +15,13 @@
 set -u
 
 # Config resolution: env var → config.json → hardcoded default.
-CONFIG_FILE="$HOME/.claude/plugins/data/workbench-claude-workbench/config.json"
+# Prefer the current data dir; fall back to the pre-rename location so users
+# who customized before the workbench → workbench-core rename keep working.
+CONFIG_FILE="$HOME/.claude/plugins/data/workbench-core-claude-workbench/config.json"
+LEGACY_CONFIG="$HOME/.claude/plugins/data/workbench-claude-workbench/config.json"
+if [ ! -f "$CONFIG_FILE" ] && [ -f "$LEGACY_CONFIG" ]; then
+  CONFIG_FILE="$LEGACY_CONFIG"
+fi
 _cfg() { [ -f "$CONFIG_FILE" ] && command -v jq >/dev/null 2>&1 && jq -r "$1 // empty" "$CONFIG_FILE" 2>/dev/null; }
 
 # Warn on malformed config (logged to stderr so it doesn't break hook stdout).

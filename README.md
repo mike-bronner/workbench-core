@@ -124,7 +124,7 @@ The memory MCP server ships unconfigured. Run `/workbench:customize` on first in
 | `auto_summarize` | Spawn background summary-writer on session end | `true` |
 | `summary_model` | Model for the background summary-writer | `haiku` |
 
-Configuration is stored in `~/.claude/plugins/data/workbench-claude-workbench/config.json` and survives plugin updates.
+Configuration is stored in `~/.claude/plugins/data/workbench-core-claude-workbench/config.json` and survives plugin updates. The MCP memory server is launched by `hooks/mcp-memory.sh`, which reads this file at launch time and exports the corresponding env vars — so a plugin version bump never clobbers your settings.
 
 ### Set up identity files
 

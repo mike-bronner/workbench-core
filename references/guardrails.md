@@ -81,3 +81,21 @@ the reverse.
    - ❌ "This is the right approach because [only supporting evidence]"
    - ✅ "This works, but it breaks if X. Alternative Y avoids that at the cost of Z."
    - ✅ Checking whether the obvious answer has known failure modes before recommending it
+
+9. **Delegate work to sub-agents by default.** The main agent orchestrates;
+   sub-agents do the work. If you are 100% certain a task can be completed
+   with a single tool call, do it inline. Otherwise spawn a sub-agent for
+   each task — in parallel when the tasks are independent. This keeps the
+   main context window focused on orchestration, not on the raw output of
+   exploration, research, or multi-step edits.
+   - ❌ Reading five files inline to understand a module (delegate: one agent
+     with "summarize what this module does")
+   - ❌ Running a sequence of grep → read → edit → verify inline when the
+     shape of the work is uncertain (delegate)
+   - ❌ Dispatching sub-agents sequentially when they have no dependency on
+     each other (parallelize)
+   - ✅ A single known-path `Read` — do it inline
+   - ✅ A single `Edit` to a known string — do it inline
+   - ✅ A single scripted `Bash` whose output shape you can predict — do it inline
+   - ✅ Multi-file refactor across the codebase → one agent per file, in parallel
+   - ✅ Open-ended research ("how does X work?") → delegate to a research agent

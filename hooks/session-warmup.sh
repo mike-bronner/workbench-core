@@ -92,12 +92,44 @@ SYSEOF
   mv "$tmp" "$target"
 }
 
+collect_session_warmup_contributions() {
+  # Concatenate `session-warmup.md` from every installed workbench-* plugin
+  # in the claude-workbench marketplace. Source of truth is
+  # ~/.claude/plugins/installed_plugins.json — each entry's installPath points
+  # at the active cached version. Skips workbench-core itself (its contribution
+  # is the identity block).
+  local plugins_file="$HOME/.claude/plugins/installed_plugins.json"
+  [ -f "$plugins_file" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+
+  local paths
+  paths=$(jq -r '
+    .plugins | to_entries[]
+    | select(.key | endswith("@claude-workbench"))
+    | select(.key | startswith("workbench-core@") | not)
+    | .value[0].installPath // empty
+  ' "$plugins_file" 2>/dev/null) || return 0
+
+  local first=1
+  while IFS= read -r p; do
+    [ -z "$p" ] && continue
+    local frag="$p/session-warmup.md"
+    if [ -r "$frag" ]; then
+      [ "$first" -eq 0 ] && printf '\n'
+      cat "$frag"
+      first=0
+    fi
+  done <<< "$paths"
+}
+
 ensure_claude_md_enforcement() {
   local target="$HOME/.claude/CLAUDE.md"
-  local marker_start="<!-- workbench-identity:start -->"
-  local marker_end="<!-- workbench-identity:end -->"
-  local block=""
-  read -r -d '' block <<'CMDEOF' || true
+  local id_start="<!-- workbench-identity:start -->"
+  local id_end="<!-- workbench-identity:end -->"
+  local warmup_start="<!-- workbench-warmup:start -->"
+  local warmup_end="<!-- workbench-warmup:end -->"
+  local identity_block=""
+  read -r -d '' identity_block <<'CMDEOF' || true
 <!-- workbench-identity:start -->
 # Agent Identity
 
@@ -123,12 +155,20 @@ Full identity loaded via SessionStart hook. This block reinforces behavioral ove
 When these conflict with default Claude behavior, the identity files win.
 <!-- workbench-identity:end -->
 CMDEOF
-  block="${block//AGENT_NAME_PLACEHOLDER/$AGENT_NAME}"
+  identity_block="${identity_block//AGENT_NAME_PLACEHOLDER/$AGENT_NAME}"
+
+  local warmup_body=""
+  local warmup_block=""
+  warmup_body=$(collect_session_warmup_contributions)
+  if [ -n "$warmup_body" ]; then
+    warmup_block=$(printf '%s\n%s\n%s' "$warmup_start" "$warmup_body" "$warmup_end")
+  fi
 
   mkdir -p "$HOME/.claude"
 
   if [ ! -f "$target" ]; then
-    printf '%s\n' "$block" > "$target"
+    printf '%s\n' "$identity_block" > "$target"
+    [ -n "$warmup_block" ] && printf '\n%s\n' "$warmup_block" >> "$target"
     return 0
   fi
 
@@ -136,21 +176,19 @@ CMDEOF
   tmp=$(mktemp)
   rest=$(mktemp)
 
-  if grep -qF "$marker_start" "$target" 2>/dev/null; then
-    # Strip old block, keep everything else
-    awk -v s="$marker_start" -v e="$marker_end" '
-      $0 == s { skip=1; next }
-      skip && $0 == e { skip=0; ate=1; next }
-      skip { next }
-      ate && /^$/ { ate=0; next }
-      { ate=0; print }
-    ' "$target" > "$rest"
-  else
-    cp "$target" "$rest"
-  fi
+  # Strip both old marker pairs in one pass — warmup block disappears
+  # automatically when no plugin contributes one, so uninstalls clean up.
+  awk -v is="$id_start" -v ie="$id_end" -v ws="$warmup_start" -v we="$warmup_end" '
+    $0 == is || $0 == ws { skip=1; next }
+    skip && ($0 == ie || $0 == we) { skip=0; ate=1; next }
+    skip { next }
+    ate && /^$/ { ate=0; next }
+    { ate=0; print }
+  ' "$target" > "$rest"
 
-  # Build new file: block first, then remaining content
-  printf '%s\n' "$block" > "$tmp"
+  # Rebuild: identity, then optional warmup contributions, then remaining content.
+  printf '%s\n' "$identity_block" > "$tmp"
+  [ -n "$warmup_block" ] && printf '\n%s\n' "$warmup_block" >> "$tmp"
   if [ -s "$rest" ]; then
     printf '\n' >> "$tmp"
     cat "$rest" >> "$tmp"

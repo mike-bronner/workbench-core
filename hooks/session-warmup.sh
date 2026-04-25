@@ -92,6 +92,72 @@ SYSEOF
   mv "$tmp" "$target"
 }
 
+detect_chat_skill_changes() {
+  # Print a warmup notice when workbench-* plugins (claude-workbench
+  # marketplace, excluding workbench-core itself) have skills that aren't yet
+  # installed in Claude Chat at their current versions. The notice points the
+  # user at the /workbench-core:install-chat-skills slash command.
+  #
+  # Cheap fast-path: if the state file is newer than installed_plugins.json,
+  # nothing has changed since our last run — exit before any JSON parsing.
+  local plugins_file="$HOME/.claude/plugins/installed_plugins.json"
+  local state_file="$HOME/.claude-workbench/chat-skills-state.json"
+
+  [ ! -f "$plugins_file" ] && return 0
+  command -v jq >/dev/null 2>&1 || return 0
+
+  if [ -f "$state_file" ] && [ "$state_file" -nt "$plugins_file" ]; then
+    return 0
+  fi
+
+  # For each eligible plugin, find skills with `name:` frontmatter and check
+  # whether the recorded version in state file matches the current version.
+  local new_or_updated=()
+  while IFS=$'\t' read -r plugin_path plugin_version; do
+    [ -z "$plugin_path" ] && continue
+    [ ! -d "$plugin_path/skills" ] && continue
+    local plugin_name
+    plugin_name="$(echo "$plugin_path" | awk -F/ '{print $(NF-1)}')"
+
+    for skill_dir in "$plugin_path/skills"/*/; do
+      skill_dir="${skill_dir%/}"
+      [ ! -f "$skill_dir/SKILL.md" ] && continue
+      grep -q '^name:' "$skill_dir/SKILL.md" 2>/dev/null || continue
+
+      local skill_name
+      skill_name="$(basename "$skill_dir")"
+
+      local recorded_version=""
+      if [ -f "$state_file" ]; then
+        recorded_version=$(jq -r --arg p "$plugin_name" --arg s "$skill_name" '
+          .installed[]? | select(.plugin == $p and .skill == $s) | .version
+        ' "$state_file" 2>/dev/null)
+      fi
+
+      if [ "$recorded_version" != "$plugin_version" ]; then
+        new_or_updated+=("$plugin_name|$skill_name")
+      fi
+    done
+  done < <(jq -r '
+    .plugins | to_entries[]
+    | select(.key | endswith("@claude-workbench"))
+    | select(.key | startswith("workbench-core@") | not)
+    | .value[0]
+    | "\(.installPath)\t\(.version)"
+  ' "$plugins_file" 2>/dev/null)
+
+  if [ ${#new_or_updated[@]} -gt 0 ]; then
+    printf '## 📦 New Chat-installable skills\n\n'
+    printf 'The following skills can be installed into Claude Chat (Mac app):\n\n'
+    for entry in "${new_or_updated[@]}"; do
+      local plugin_name="${entry%|*}"
+      local skill_name="${entry#*|}"
+      printf -- '- `%s` (from `%s`)\n' "$skill_name" "$plugin_name"
+    done
+    printf '\nClick to install: `/workbench-core:install-chat-skills`\n\n'
+  fi
+}
+
 collect_session_warmup_contributions() {
   # Concatenate `session-warmup.md` from every installed workbench-* plugin
   # in the claude-workbench marketplace. Source of truth is
@@ -340,6 +406,14 @@ They will be picked up by the next session or manual \`/workbench:log-now\`.
 NOTICE
     printf '\n'
   fi
+fi
+
+# ──────────── Chat-installable skills check (startup only) ────────────
+# Detect new or updated skills in workbench-* plugins that haven't been
+# installed into Claude Chat yet. Cheap fast-path via state-file mtime
+# comparison — only does real work when plugins have actually changed.
+if [ "$SOURCE" = "startup" ]; then
+  detect_chat_skill_changes
 fi
 
 exit 0

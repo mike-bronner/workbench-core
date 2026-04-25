@@ -332,8 +332,29 @@ Runs on every `startup` warmup:
 | `/workbench:summarize-session` | Manually summarize a specific session (or pick from unsummarized) |
 | `/workbench:process-pending-summaries` | Dispatch background agents to clear pending summary markers |
 | `/workbench:compact-learnings` | Review and compact accumulated skill learnings; integrate into SKILL.md for workbench skills |
+| `/workbench-core:install-chat-skills` | Discover skills in `@claude-workbench` plugins and install them into the Claude Mac app's Chat surface via `.skill` packaging |
 
 All skills are **execution-aware** — they check for a `skills/{name}.learnings.md` file in the vault before running and apply any accumulated learnings from prior executions.
+
+### Cross-surface skill installation
+
+workbench-core auto-discovers installable skills in dependent `@claude-workbench` plugins and surfaces a notice in the SessionStart warmup output when new or updated skills are available:
+
+```
+## 📦 New Chat-installable skills
+
+The following skills can be installed into Claude Chat (Mac app):
+- `develop` (from `workbench-dev-team`)
+- `git-commit` (from `workbench-dev-team`)
+
+Click to install: `/workbench-core:install-chat-skills`
+```
+
+The detection runs once per session start (`source: startup` only) and uses a state-file mtime fast-path — when nothing has changed since the last run, the check is a single stat. The cold path triggers only after `claude plugin install/update` actually changes `installed_plugins.json`.
+
+The slash command (`/workbench-core:install-chat-skills`) packages each eligible skill via `skill-creator`'s `package_skill.py`, opens the resulting `.skill` files with the Mac app, and updates `~/.claude-workbench/chat-skills-state.json` so the notice clears. Requires the `skill-creator@claude-plugins-official` plugin (the script will tell you to install it if missing).
+
+The notice persists until the user installs — if you ignore it once, it'll appear again on the next session start. Skipping a skill in the install dialog has the same effect.
 
 ## Environment variable overrides
 

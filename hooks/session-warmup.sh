@@ -333,6 +333,17 @@ SOUL_HOT="${SOUL_HOT:-$MEMORY_PATH/identity/soul-hot.md}"
 PROFILE="$MEMORY_PATH/$(_cfg '.identity_files.profile')"
 PROFILE="${PROFILE:-$MEMORY_PATH/identity/profile.md}"
 SKILLS_PROTOCOL="$MEMORY_PATH/identity/skills-protocol.md"
+GUARDRAILS_INLINE="${CLAUDE_PLUGIN_ROOT}/references/guardrails-inline.md"
+
+# Guardrails first — absolute rules must always sit in the inline preview
+# window, even when the rest of the warmup output overflows to a persisted
+# file. Sourced from the condensed -inline copy; full text with examples
+# stays at references/guardrails.md for re-read on demand.
+if [ -r "$GUARDRAILS_INLINE" ]; then
+  printf '## Guardrails — absolute rules\n\n'
+  cat "$GUARDRAILS_INLINE"
+  printf '\n\n'
+fi
 
 if [ -r "$SOUL_HOT" ]; then
   printf '## Identity — soul-hot\n\n'
@@ -353,14 +364,6 @@ fi
 if [ -r "$SKILLS_PROTOCOL" ]; then
   printf '## Skills protocol\n\n'
   cat "$SKILLS_PROTOCOL"
-  printf '\n\n'
-fi
-
-GUARDRAILS="${CLAUDE_PLUGIN_ROOT}/references/guardrails.md"
-
-if [ -r "$GUARDRAILS" ]; then
-  printf '## Guardrails — absolute rules\n\n'
-  cat "$GUARDRAILS"
   printf '\n\n'
 fi
 

@@ -300,8 +300,8 @@ fi
 # doesn't add latency to the user-visible part of startup. All find commands
 # are fire-and-forget (-delete exits silently on no matches).
 if [ "$SOURCE" = "startup" ]; then
-  # Raw logs older than 28 days — summaries stay forever as the durable record.
-  find "$MEMORY_PATH/sessions" -name "*.log.md" -mtime +28 -delete 2>/dev/null
+  # Raw logs older than 7 days — summaries stay forever as the durable record.
+  find "$MEMORY_PATH/sessions" -name "*.log.md" -mtime +7 -delete 2>/dev/null
 
   # Per-session checkpoint files older than 7 days — sessions don't resume.
   [ -d "$CHECKPOINTS_DIR" ] && find "$CHECKPOINTS_DIR" -name "*.json" -mtime +7 -delete 2>/dev/null

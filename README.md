@@ -128,7 +128,19 @@ Configuration is stored in `~/.claude/plugins/data/workbench-core-claude-workben
 
 ### Set up identity files
 
-The plugin expects identity files in your memory directory:
+There are three ways to get identity files in place — pick one:
+
+**Fastest — install a shipped persona.** The plugin can ship ready-made personas under `assets/personas/<name>/`. Install one with:
+
+```
+/workbench-core:install-persona
+```
+
+It propagates the soul files to your vault, the output style to `~/.claude/output-styles/`, and the `outputStyle` setting — and it's non-destructive: existing hand-edited soul files are diffed and confirmed before any overwrite. This is the quickest path to a durable voice, because the output style sits in the system prompt (which outranks context).
+
+**Guided — build from scratch via interview.** Use `/workbench-core:define-soul` (below).
+
+**Manual — copy templates.** The plugin expects identity files in your memory directory:
 
 ```
 {memory_path}/identity/
@@ -193,6 +205,7 @@ core/
 ├── agents/
 │   └── summary-writer.md       — background narrative agent definition
 ├── assets/
+│   ├── personas/              — optional ready-made personas (soul + output style)
 │   └── templates/              — identity + protocol templates
 ├── hooks/
 │   ├── hooks.json              — hook → script bindings
@@ -208,9 +221,13 @@ core/
 │   ├── customize/              — configure agent name, paths, MCP settings
 │   ├── define-profile/         — interactive user profile interview
 │   ├── define-soul/            — interactive agent identity onboarding
+│   ├── install-persona/        — propagate a shipped persona to live locations
 │   ├── log-now/                — dump + narrate the current session inline
 │   ├── process-pending-summaries/ — dispatch background agents for pending markers
 │   └── summarize-session/      — manually summarize a specific session
+├── scripts/
+│   ├── install-chat-skills.sh  — package + install skills into Claude Chat
+│   └── install-persona.sh      — propagate a shipped persona to live locations
 └── README.md
 ```
 
@@ -327,6 +344,7 @@ Runs on every `startup` warmup:
 |-------|-------------|
 | `/workbench:customize` | Configure agent name, paths, summary model, identity files |
 | `/workbench:define-soul` | Interactive onboarding/refinement for agent identity (soul-hot, soul-core) |
+| `/workbench-core:install-persona` | Install a shipped persona — soul files + output style + `outputStyle` setting — into your live locations; non-destructive |
 | `/workbench:define-profile` | Interactive interview to build/refine the user's profile.md (role, working style, stack, privacy, session quality) |
 | `/workbench:log-now` | Dump the current session log and write a narrative summary inline |
 | `/workbench:summarize-session` | Manually summarize a specific session (or pick from unsummarized) |
@@ -371,6 +389,8 @@ All config values can be overridden via environment variables for testing:
 | `WORKBENCH_SKIP_LOG` | Set to `1` to skip logging (used by summary-writer) |
 | `WORKBENCH_SKIP_WARMUP` | Set to `1` to skip warmup (used by summary-writer) |
 | `WORKBENCH_MCP_SERVER_NAME` | `memory_mcp_server_name` |
+| `WORKBENCH_SETTINGS_FILE` | `~/.claude/settings.json` path (used by `install-persona` tests) |
+| `WORKBENCH_OUTPUT_STYLES_DIR` | `~/.claude/output-styles` path (used by `install-persona` tests) |
 
 ## Known limitations
 
@@ -379,6 +399,6 @@ All config values can be overridden via environment variables for testing:
 
 ## Design philosophy
 
-The plugin is **infrastructure, not persona**. Your agent's personality comes from the identity files you customize — the plugin itself contains no persona-specific content. Templates in `assets/templates/` use `{{agent_name}}` placeholders. The one exception is `references/guardrails.md`, which contains universal behavioral rules (no sycophancy, no hedging, verify before asserting) — these are quality constraints, not personality.
+The plugin is **infrastructure first, persona optional**. Your agent's personality comes from the identity files *you* customize — the framework imposes none. Templates in `assets/templates/` use `{{agent_name}}` placeholders. The plugin *may* also ship ready-made personas under `assets/personas/<name>/` (soul files + output style) as optional starting points: you opt in via `/workbench-core:install-persona`, which copies them to *your* editable locations — they are never enforced, and the framework stays generic for anyone who wants to start from blank templates. The one thing that isn't optional is `references/guardrails.md` — universal quality constraints (no sycophancy, no hedging, verify before asserting), not personality.
 
 Memory files live **outside any git repo**, at a user-configured path. Memory is personal state; the plugin is code. They are intentionally separate.

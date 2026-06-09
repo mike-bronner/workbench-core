@@ -58,13 +58,13 @@ jobs:
           done
           exit "$fail"
 
-      - name: shellcheck hooks
-        run: shellcheck --severity=warning hooks/*.sh
+      - name: shellcheck hooks + scripts
+        run: shellcheck --severity=warning hooks/*.sh scripts/*.sh
 
-      - name: bash -n on hooks
+      - name: bash -n on hooks + scripts
         run: |
           set -euo pipefail
-          for f in hooks/*.sh; do
+          for f in hooks/*.sh scripts/*.sh; do
             bash -n "$f"
           done
 

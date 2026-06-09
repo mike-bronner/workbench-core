@@ -175,6 +175,25 @@ Use the frontmatter structure from the templates. Replace `{{agent_name}}` with 
 
 Write via `mcp__plugin_workbench-core_memory__write`.
 
+### output-style.md (system-prompt layer)
+
+The vault soul files load as *context*, which the built-in Claude Code system prompt outranks — so the persona drifts over a session. To make the voice durable, also author an **output style** (the same voice, written as a system prompt) and install it:
+
+1. Author the output style from the soul-hot voice — second person ("You are {{agent_name}}…"), the hard rules, the voice DOs/DON'Ts condensed, and the drift test. Frontmatter:
+   ```
+   ---
+   name: {{agent_name}}
+   description: <one line — who this agent is>
+   keep-coding-instructions: true
+   ---
+   ```
+2. Write it to `~/.claude/output-styles/<agent_name lowercased>.md`.
+3. Point Claude Code at it — a safe single-key merge of `~/.claude/settings.json` that never touches other settings:
+   ```bash
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/install-persona.sh" --set-output-style "{{agent_name}}"
+   ```
+4. Tell the user the output style takes effect **next session** — run `/clear` or restart.
+
 ## Step 5 — Suggest a test drive
 
 After writing the files, tell the user:

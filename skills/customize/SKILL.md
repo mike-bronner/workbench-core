@@ -107,9 +107,13 @@ Write `config.json` to the plugin data directory (create the directory if it doe
     "soul_hot": "identity/soul-hot.md",
     "soul_core": "identity/soul-core.md",
     "profile": "identity/profile.md"
-  }
+  },
+  "persona": "holmes",
+  "output_style": "Holmes"
 }
 ```
+
+`persona` and `output_style` are written by `/workbench-core:install-persona` (which propagates a shipped persona to the live locations) — they record which persona is active. Don't hand-edit them; re-run install-persona to switch personas. They're optional and absent until a persona is installed.
 
 **Do not edit `plugin.json`.** The `mcp-memory.sh` wrapper reads `config.json` at MCP launch time and exports the env vars the memory server needs. This mapping (for reference only):
 

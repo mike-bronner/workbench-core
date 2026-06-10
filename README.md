@@ -40,7 +40,7 @@ sudo dnf install jq
 
 The plugin's `.claude-plugin/plugin.json` declares the `memory` MCP server; Claude Code auto-wires it on plugin install, so you don't need to run `claude mcp add`. What you *do* need is the `markdown-vault-mcp` binary on your PATH — `plugin.json` invokes `markdown-vault-mcp serve`, and if the binary isn't there, the MCP silently fails to start and every memory operation breaks.
 
-`markdown-vault-mcp` is a Python package published on [PyPI](https://pypi.org/project/markdown-vault-mcp/). It's not pre-installed — pick an installer and run it.
+Install it from the [mikebronner/markdown-vault-mcp](https://github.com/mikebronner/markdown-vault-mcp) fork — the canonical source for this plugin. The fork carries index-state fixes the plugin relies on (persistent-index adoption at boot, offline-change reconciliation, tracker skip-state, embedding convergence, raw-transcript exclusion support) that are not yet in any PyPI release. They have been contributed upstream ([pvliesdonk/markdown-vault-mcp#665](https://github.com/pvliesdonk/markdown-vault-mcp/issues/665)); once an upstream release carries them, plain PyPI installs will work again — until then, installing from PyPI gets you a server that can exceed Claude Code's 30s MCP startup timeout on first boot.
 
 **Recommended — [`uv`](https://docs.astral.sh/uv/) (fast, isolated, auto-manages Python version):**
 
@@ -51,8 +51,8 @@ brew install uv
 # Linux / other (via official installer):
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Install the MCP server:
-uv tool install markdown-vault-mcp
+# Install the MCP server from the fork:
+uv tool install --from git+https://github.com/mikebronner/markdown-vault-mcp markdown-vault-mcp --with fastmcp --with fastembed
 ```
 
 **Alternative — [`pipx`](https://pipx.pypa.io/) (isolated, no auto-Python-management):**
@@ -64,14 +64,14 @@ brew install pipx
 # Debian / Ubuntu:
 sudo apt install pipx
 
-# Install the MCP server:
-pipx install markdown-vault-mcp
+# Install the MCP server from the fork:
+pipx install git+https://github.com/mikebronner/markdown-vault-mcp
 ```
 
 **Last resort — `pip` (global install, conflicts with system Python on modern macOS/Linux via PEP 668):**
 
 ```bash
-pip install --user markdown-vault-mcp
+pip install --user git+https://github.com/mikebronner/markdown-vault-mcp
 ```
 
 Verify:

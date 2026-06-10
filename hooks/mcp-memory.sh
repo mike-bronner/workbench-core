@@ -10,6 +10,59 @@
 
 set -u
 
+# Hooks run with a leaner PATH than an interactive shell. uv and pipx both
+# place tool binaries in ~/.local/bin, so prepend it — this also makes a
+# binary installed by the bootstrap below findable in this same run.
+export PATH="$HOME/.local/bin:$PATH"
+
+# stdout is the MCP stdio channel (JSON-RPC). Every byte of bootstrap output
+# MUST go to stderr — a single stray stdout line corrupts the MCP handshake.
+# Installer invocations below redirect at the command level (1>&2) rather
+# than trusting the tools to be quiet.
+_log() { echo "mcp-memory: $*" 1>&2; }
+
+# --- Bootstrap: self-install the server if missing --------------------------
+# Claude Code plugins have no dependency-install lifecycle, so the launcher
+# installs its own server binary on first run. Note: on a fresh machine the
+# first MCP connection may still time out at Claude Code's 30s limit while
+# the install runs — that's accepted; the install completes anyway and the
+# next session connects normally.
+if ! command -v markdown-vault-mcp >/dev/null 2>&1; then
+  _log "markdown-vault-mcp not found; installing from mikebronner fork (~60-90s, first run only)"
+  if command -v uv >/dev/null 2>&1; then
+    if uv tool install --from git+https://github.com/mikebronner/markdown-vault-mcp \
+        markdown-vault-mcp --with fastmcp --with fastembed 1>&2; then
+      _log "installed markdown-vault-mcp via uv"
+    else
+      _log "ERROR: uv tool install failed (see installer output above)"
+      exit 1
+    fi
+  elif command -v pipx >/dev/null 2>&1; then
+    if pipx install git+https://github.com/mikebronner/markdown-vault-mcp 1>&2; then
+      _log "installed markdown-vault-mcp via pipx"
+    else
+      _log "ERROR: pipx install failed (see installer output above)"
+      exit 1
+    fi
+  else
+    _log "ERROR: markdown-vault-mcp is not installed and neither uv nor pipx is on PATH."
+    _log "Install uv (https://docs.astral.sh/uv/) or pipx (https://pipx.pypa.io/) and restart Claude Code,"
+    _log "or install the server manually with one of:"
+    _log "  uv tool install --from git+https://github.com/mikebronner/markdown-vault-mcp markdown-vault-mcp --with fastmcp --with fastembed"
+    _log "  pipx install git+https://github.com/mikebronner/markdown-vault-mcp"
+    _log "See README.md, section '3. markdown-vault-mcp — the MCP server backing the memory vault'."
+    exit 1
+  fi
+
+  if ! command -v markdown-vault-mcp >/dev/null 2>&1; then
+    _log "ERROR: install reported success but markdown-vault-mcp is still not on PATH"
+    _log "PATH: $PATH"
+    exit 1
+  fi
+  _log "bootstrap complete; starting server"
+fi
+# -----------------------------------------------------------------------------
+
 # Prefer the current data dir; fall back to the pre-rename location.
 CONFIG_FILE="$HOME/.claude/plugins/data/workbench-core-claude-workbench/config.json"
 LEGACY_CONFIG="$HOME/.claude/plugins/data/workbench-claude-workbench/config.json"

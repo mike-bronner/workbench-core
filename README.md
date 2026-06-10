@@ -310,6 +310,7 @@ The vault at `{memory_path}` is served by markdown-vault-mcp with:
 - **Frontmatter indexing** on: `name`, `type`, `tags`, `summary`, `date`, `scope`, `log_files`
 - **Link graph** — backlinks, outlinks, similar documents, connection paths
 - **Incremental indexing** — only reprocesses changed files
+- **Transcript exclusion** — raw `sessions/**/*.log.md` transcripts are excluded from indexing (write-only archival); they stay readable by path, and the indexed summaries carry `log_files` pointers to them
 
 Vault structure:
 
@@ -332,7 +333,7 @@ Runs on every `startup` warmup:
 
 | Artifact | Retention | Rationale |
 |----------|-----------|-----------|
-| Raw `.log.md` files | 28 days | Summaries are the durable record |
+| Raw `.log.md` files | 7 days | Summaries are the durable record |
 | Checkpoint files | 7 days | Sessions don't resume after that |
 | Legacy summary-writer logs | Immediate cleanup | No longer generated; remnants deleted on startup |
 | Summary `.summary.md` files | Forever | Searchable session history |

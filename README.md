@@ -219,6 +219,7 @@ core/
 │   ├── define-soul/            — interactive agent identity onboarding
 │   ├── install-persona/        — propagate a shipped persona to live locations
 │   ├── log-now/                — dump + narrate the current session inline
+│   ├── memory-lint/            — monthly vault health-and-repair pass
 │   ├── process-pending-summaries/ — dispatch background agents for pending markers
 │   └── summarize-session/      — manually summarize a specific session
 ├── scripts/
@@ -323,6 +324,10 @@ Vault structure:
 └── CLAUDE.md          — vault map (metadata only)
 ```
 
+#### Lint ritual
+
+Vaults rot silently: files written without the required `name`/`type` frontmatter are skipped at index time (on disk but invisible to search), links break when targets move, orphans accumulate. `/workbench-core:memory-lint` is the periodic repair pass — it diffs the filesystem against the index to find skipped files and rescues their frontmatter, repairs or removes broken links, adds only high-confidence links (never mass-links orphans), and flags duplicates/contradictions for the human instead of merging. Each run is capped at 50 file-fixes and writes an audit report to `maintenance/` with before/after stats. Intended cadence: monthly, deployed via the scheduled-tasks MCP. Raw `*.log.md` transcripts are never touched.
+
 ### Retention
 
 Runs on every `startup` warmup:
@@ -347,6 +352,7 @@ Runs on every `startup` warmup:
 | `/workbench:summarize-session` | Manually summarize a specific session (or pick from unsummarized) |
 | `/workbench:process-pending-summaries` | Dispatch background agents to clear pending summary markers |
 | `/workbench:compact-learnings` | Review and compact accumulated skill learnings; integrate into SKILL.md for workbench skills |
+| `/workbench-core:memory-lint` | Monthly health-and-repair pass over the memory vault — frontmatter rescue, broken-link repair, conservative orphan linking, duplicate flagging, audit report |
 | `/workbench-core:install-chat-skills` | Discover skills in `@claude-workbench` plugins and install them into the Claude Mac app's Chat surface via `.skill` packaging |
 
 All skills are **execution-aware** — they check for a `skills/{name}.learnings.md` file in the vault before running and apply any accumulated learnings from prior executions.

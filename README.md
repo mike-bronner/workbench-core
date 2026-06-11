@@ -189,6 +189,7 @@ The `references/` directory contains single-source-of-truth documents shared acr
 | `summary-format.md` | summary-writer, log-now, summarize-session | Required frontmatter, body structure, JSONL parsing guidance |
 | `decision-promotion.md` | summary-writer, log-now, summarize-session | Promotion criteria, when NOT to promote, decision file template |
 | `vault-conventions.md` | summary-writer, log-now, summarize-session | Vault paths, required frontmatter, write vs edit rules |
+| `memory-routing-stub.md` | session-warmup | Canonical MEMORY.md router stub — self-healed into the harness's per-project memory directory |
 
 Most references are loaded at execution time via `${CLAUDE_PLUGIN_ROOT}/references/`. The exception is `guardrails.md`, which is injected at every session start by the warmup hook.
 
@@ -210,6 +211,7 @@ core/
 ├── references/
 │   ├── guardrails.md           — absolute behavioral rules (injected at session start)
 │   ├── decision-promotion.md   — when and how to promote decisions
+│   ├── memory-routing-stub.md  — canonical MEMORY.md router stub
 │   ├── summary-format.md       — summary frontmatter + body template
 │   └── vault-conventions.md    — paths, frontmatter rules, write conventions
 ├── skills/
@@ -308,6 +310,10 @@ The vault at `{memory_path}` is served by markdown-vault-mcp with:
 - **Link graph** — backlinks, outlinks, similar documents, connection paths
 - **Incremental indexing** — only reprocesses changed files
 - **Transcript exclusion** — raw `sessions/**/*.log.md` transcripts are excluded from indexing (write-only archival); they stay readable by path, and the indexed summaries carry `log_files` pointers to them
+
+#### Canonical store & routing
+
+The vault is the **canonical** durable memory store. Claude Code's harness ships its own per-project memory channel (`~/.claude/projects/<encoded-cwd>/memory/` plus an auto-loaded `MEMORY.md` index); left alone, sessions scatter memory files there, none of them searchable from the vault. The session warmup neutralizes that channel into a router: it injects a memory-routing rule every session (save to the vault via the memory MCP, recall via vault hybrid search), and on startup self-heals a `MEMORY.md` router stub (canonical template: `references/memory-routing-stub.md`) into the current project's harness memory directory. A marker-less `MEMORY.md` with existing content is never overwritten — the warmup flags it for migration instead. `MEMORY.md` itself stays because the harness auto-loads it each session, which makes it a free routing channel pointing at the vault. Don't install competing memory MCPs alongside — one canonical store.
 
 Vault structure:
 

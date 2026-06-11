@@ -30,17 +30,23 @@ Read `${CLAUDE_PLUGIN_ROOT}/references/summary-format.md` for the required shape
 
 If a `.summary.md` already exists for this session, read it first and ask the user: "A summary already exists — overwrite it, or skip?"
 
+After drafting and before writing, read `${CLAUDE_PLUGIN_ROOT}/references/linking-synthesis.md` and apply Steps A–B: 2–3 targeted vault searches on the session's main themes, then a `## Related` section with path-qualified wikilinks to the confident hits only. The conservative rule and link cap bind; omit the section if nothing clears the bar.
+
 Write via `mcp__plugin_workbench-core_memory__write`.
 
 ## Step 4 — Promote decisions
 
-Read `${CLAUDE_PLUGIN_ROOT}/references/decision-promotion.md` for criteria. Apply the bar.
+Read `${CLAUDE_PLUGIN_ROOT}/references/decision-promotion.md` for criteria. Apply the bar. Cross-link any promoted decision per linking-synthesis Step D.
 
-## Step 5 — Update profile if shifted
+## Step 5 — Synthesize topic and update the vault index
+
+Follow linking-synthesis Steps C–E for the session's central theme only: update (or, with ≥2 related docs, create) its `topics/` page, and keep the matching `index.md` line current in the same pass. One topic page per session maximum; skipping is common.
+
+## Step 6 — Update profile if shifted
 
 Read `${CLAUDE_PLUGIN_ROOT}/references/vault-conventions.md` for conventions.
 
-## Step 6 — Clean up
+## Step 7 — Clean up
 
 If a pending-summary marker exists for this session, delete it:
 
@@ -48,6 +54,6 @@ If a pending-summary marker exists for this session, delete it:
 rm ~/.claude-memory-cache/pending-summaries/<session_id>.json 2>/dev/null
 ```
 
-## Step 7 — Confirm
+## Step 8 — Confirm
 
 Tell the user what you wrote. Keep it terse.

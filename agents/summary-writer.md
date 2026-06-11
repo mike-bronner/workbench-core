@@ -42,15 +42,21 @@ Read the log at `log_path`. Each session produces a single rolling log file (`{s
 
 Read `references/summary-format.md` in the plugin directory (`${CLAUDE_PLUGIN_ROOT}/references/summary-format.md`) for the required frontmatter, body structure, and JSONL parsing guidance. Follow it exactly.
 
+After drafting and before writing: read `references/linking-synthesis.md` and run its Steps A–B — `search` the vault for related decisions, topic pages, and prior summaries on the session's main themes, and add a `## Related` section with path-qualified wikilinks to the confident hits. Conservative linking is a hard rule: an orphan is better than a forced connection, and the per-ingest link cap applies. Omit the section if nothing clears the bar.
+
 ### 4. Promote decisions (only if the bar is met)
 
-Read `references/decision-promotion.md` for the promotion criteria and file template. Most sessions produce zero decisions — skipping is the common case.
+Read `references/decision-promotion.md` for the promotion criteria and file template. Most sessions produce zero decisions — skipping is the common case. A promoted decision gets cross-linked to its session summary and topic page per `references/linking-synthesis.md` Step D.
 
-### 5. Update profile.md if preferences shifted
+### 5. Synthesize topic and update the vault index
+
+Follow `references/linking-synthesis.md` Steps C–E for the session's central theme only: `edit` the existing topic page in `topics/` (dated 1–2 line entry + wikilink, integrate rather than append-dump), or create one if the theme now has ≥2 related vault documents — one topic page per session maximum, and skipping is common. Whenever you touch a topic page or promote a decision, update its line in `index.md` in the same pass (create `index.md` with what you know if it doesn't exist yet).
+
+### 6. Update profile.md if preferences shifted
 
 Read `references/vault-conventions.md` for the profile update conventions. Only update on explicit, repeated signal. Common case is skip.
 
-### 6. Delete the marker
+### 7. Delete the marker
 
 ```bash
 rm "$marker_path"
@@ -58,10 +64,10 @@ rm "$marker_path"
 
 Do this LAST. If you delete the marker without writing a summary, the summary is silently lost.
 
-### 7. Print confirmation and exit
+### 8. Print confirmation and exit
 
 ```
-summary-writer: ok sid={session_id} summary={relative/path} decisions={count} marker=deleted
+summary-writer: ok sid={session_id} summary={relative/path} decisions={count} links={count} marker=deleted
 ```
 
 Then stop.

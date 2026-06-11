@@ -268,6 +268,37 @@ CMDEOF
   mv "$tmp" "$target"
 }
 
+ensure_memory_routing_stub() {
+  # Neutralize the harness's per-project memory channel. Claude Code's system
+  # prompt tells every session to save memories under
+  # ~/.claude/projects/<encoded-cwd>/memory/ + MEMORY.md — the vault must stay
+  # canonical, so MEMORY.md becomes a router stub pointing at the memory MCP.
+  # The encoded dir name is the project cwd with "/" replaced by "-".
+  local marker="<!-- workbench-memory-router -->"
+  local template="${CLAUDE_PLUGIN_ROOT:-}/references/memory-routing-stub.md"
+  [ -r "$template" ] || return 0
+
+  local encoded memory_dir target
+  encoded="${PWD//\//-}"
+  memory_dir="$HOME/.claude/projects/$encoded/memory"
+  target="$memory_dir/MEMORY.md"
+
+  if [ -f "$target" ]; then
+    if ! grep -qF "$marker" "$target" 2>/dev/null; then
+      # Unmanaged content — a human or migration owns this file. Never
+      # overwrite; flag it in the warmup output instead (printed after the
+      # header, since this runs before the first printf).
+      MEMORY_ROUTING_CONFLICT="$target"
+      return 0
+    fi
+    # Marker present — ours to manage. Refresh only if drifted from template.
+    cmp -s "$template" "$target" && return 0
+  fi
+
+  mkdir -p "$memory_dir" 2>/dev/null || return 0
+  cp "$template" "$target" 2>/dev/null || true
+}
+
 # Skip guard: the summary-writer spawn from session-log.sh sets this env
 # var on its detached claude process. That process doesn't need identity
 # context or pending-summary scanning — it has a single mechanical job
@@ -283,6 +314,7 @@ fi
 if [ "$SOURCE" = "startup" ]; then
   ensure_system_overrides || true
   ensure_claude_md_enforcement || true
+  ensure_memory_routing_stub || true
 fi
 
 printf '# %s session warmup (%s)\n\n' "$AGENT_NAME" "$SOURCE"
@@ -293,6 +325,11 @@ if [ "${CONFIG_BROKEN:-}" = "1" ]; then
   printf '`%s` exists but is not valid JSON.\n' "$CONFIG_FILE"
   printf 'All settings are falling back to hardcoded defaults, which may point to wrong directories.\n'
   printf 'Run `/workbench:customize` to regenerate the config, or fix the JSON manually.\n\n'
+fi
+
+# ──────────── Memory-routing stub conflict warning ────────────
+if [ -n "${MEMORY_ROUTING_CONFLICT:-}" ]; then
+  printf '⚠ Harness `MEMORY.md` at `%s` has unmanaged content — left untouched; migrate it to the vault, then delete it so the router stub can take over.\n\n' "$MEMORY_ROUTING_CONFLICT"
 fi
 
 # ──────────── Retention cleanup (startup only) ────────────
@@ -344,6 +381,14 @@ if [ -r "$GUARDRAILS_INLINE" ]; then
   cat "$GUARDRAILS_INLINE"
   printf '\n\n'
 fi
+
+# Memory routing — countermand the harness's per-project memory instructions.
+# Re-injected on every source so the rule survives compaction.
+printf '## Memory routing\n\n'
+printf -- '- The workbench memory vault is the CANONICAL durable memory store, served by the `memory` MCP (`mcp__plugin_workbench-core_memory__search` / `write` / etc.).\n'
+printf -- '- When the harness'\''s memory instructions prompt a save, write to the VAULT instead: MCP `write` with frontmatter `name` + `type` (decision | insight | project | feedback | reference) plus tags/summary/date per vault conventions.\n'
+printf -- '- The per-project memory directory and its MEMORY.md are a router only — never create memory files there.\n'
+printf -- '- Recall = vault `search` (mode hybrid), not directory reads.\n\n'
 
 if [ -r "$SOUL_HOT" ]; then
   printf '## Identity — soul-hot\n\n'

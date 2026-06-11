@@ -1,5 +1,5 @@
 ---
-description: Periodic health-and-repair pass over the memory vault — rescue files skipped for missing frontmatter, repair broken links, conservatively connect orphans, flag duplicates for human review, and write an audit report. Run monthly via the scheduled-tasks MCP, or manually any time.
+description: Periodic health-and-repair pass over the memory vault — rescue files skipped for missing frontmatter, repair broken links, conservatively connect orphans, repair vault-index drift, flag duplicates for human review, and write an audit report. Run monthly via the scheduled-tasks MCP, or manually any time.
 ---
 
 This is an execution-aware skill — check `skills/memory-lint.learnings.md` in the vault before proceeding. If it exists, apply accumulated learnings.
@@ -58,7 +58,7 @@ If the disk-vs-index diff looks implausible (indexed files missing from disk, or
 
 **Hard cap: 50 file-fixes per run.** A fix is any file written or edited (frontmatter rescues, broken-link repairs, link additions). The cap bounds session cost — a 160-file backlog is three monthly runs, not one marathon. When you hit the cap, stop fixing and record the remainder in the report; the next run picks it up.
 
-Prioritize within the cap: frontmatter rescues first (they restore invisible memories to search), then broken links, then conservative linking.
+Prioritize within the cap: frontmatter rescues first (they restore invisible memories to search), then broken links, then conservative linking, then index drift.
 
 ### 2a. Frontmatter rescue
 
@@ -102,7 +102,18 @@ Add a link only when a confident, meaningful relation exists — e.g. a session 
 
 ### 2d. Duplicates and contradictions — flag, never merge
 
-Scan `list_documents` titles/names (and the orphan list) for near-duplicates — two decision files on the same topic, a summary duplicated across folders — and for documents asserting contradictory facts. **Do not auto-merge, do not delete.** List each pair in the report with a one-line note on why it looks duplicated or contradictory. The human decides.
+Scan `list_documents` titles/names (and the orphan list) for near-duplicates — two decision files on the same topic, two `topics/` pages covering the same theme, a summary duplicated across folders — and for documents asserting contradictory facts. **Do not auto-merge, do not delete.** List each pair in the report with a one-line note on why it looks duplicated or contradictory. The human decides.
+
+### 2e. Index drift
+
+`index.md` at the vault root catalogs the curated layer (see `${CLAUDE_PLUGIN_ROOT}/references/linking-synthesis.md` for its contract). Check it in both directions:
+
+1. **Missing entries** — every indexed document under `topics/` and `decisions/` must have an index line. For each one missing, `edit` the index to add a line: path-qualified wikilink + one-line hook (derive the hook from the document's `summary` frontmatter).
+2. **Stale entries** — no index line may point at a document that no longer exists. Remove stale lines via `edit`.
+
+If `index.md` doesn't exist at all, create it per the linking-synthesis contract, populated from the indexed `topics/`, `decisions/`, and `identity/` documents. Sessions are never indexed.
+
+Each index `edit`/`write` counts against the per-run fix cap.
 
 ## Step 3 — Write the report
 
@@ -114,7 +125,7 @@ name: "Memory lint — YYYY-MM-DD"
 type: maintenance
 date: YYYY-MM-DD
 tags: [maintenance, lint]
-summary: "N frontmatter rescues, N broken links repaired, N links added, N flagged, N skipped files remaining."
+summary: "N frontmatter rescues, N broken links repaired, N links added, N index entries fixed, N flagged, N skipped files remaining."
 ---
 
 ## Before / after
@@ -137,6 +148,9 @@ summary: "N frontmatter rescues, N broken links repaired, N links added, N flagg
 
 ### Links added (N)
 - `source` → `target`: rationale
+
+### Index drift (N)
+- `index.md` ± `path`: added missing entry | removed stale entry
 
 ## Flagged for human review
 - duplicate/contradiction pairs, ambiguous broken links

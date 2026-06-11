@@ -189,6 +189,7 @@ The `references/` directory contains single-source-of-truth documents shared acr
 | `summary-format.md` | summary-writer, log-now, summarize-session | Required frontmatter, body structure, JSONL parsing guidance |
 | `decision-promotion.md` | summary-writer, log-now, summarize-session | Promotion criteria, when NOT to promote, decision file template |
 | `vault-conventions.md` | summary-writer, log-now, summarize-session | Vault paths, required frontmatter, write vs edit rules |
+| `linking-synthesis.md` | summary-writer, log-now, summarize-session, memory-lint | Wikilink syntax, related-document linking, topic-page synthesis, vault index contract |
 
 Most references are loaded at execution time via `${CLAUDE_PLUGIN_ROOT}/references/`. The exception is `guardrails.md`, which is injected at every session start by the warmup hook.
 
@@ -210,6 +211,7 @@ core/
 ├── references/
 │   ├── guardrails.md           — absolute behavioral rules (injected at session start)
 │   ├── decision-promotion.md   — when and how to promote decisions
+│   ├── linking-synthesis.md    — wikilinks, topic pages, vault index contract
 │   ├── summary-format.md       — summary frontmatter + body template
 │   └── vault-conventions.md    — paths, frontmatter rules, write conventions
 ├── skills/
@@ -315,18 +317,31 @@ Vault structure:
 {memory_path}/
 ├── identity/          — soul-hot, soul-core, profile, skills-protocol
 ├── decisions/         — architectural and process decisions
+├── topics/            — topical synthesis pages (current state per theme)
 ├── projects/          — project context and system designs
 ├── insights/          — durable patterns and working principles
 ├── sessions/          — session logs (.log.md) and summaries (.summary.md)
 │   └── YYYY-MM-DD/
 ├── skills/            — per-skill learnings files
 ├── infrastructure/    — systems and tools documentation
+├── maintenance/       — memory-lint audit reports
+├── index.md           — catalog of the curated layer (topics, decisions, identity, reference)
 └── CLAUDE.md          — vault map (metadata only)
 ```
 
+#### Canonical store & routing
+
+The vault is the **canonical durable memory store**. Claude Code's harness also injects per-project memory instructions every session (save to `~/.claude/projects/<encoded-cwd>/memory/` + a `MEMORY.md` index) — left alone, sessions scatter memory files there that the vault can't search. The session warmup neutralizes that channel into a router: it injects a `## Memory routing` rule at every session start (saves go to the vault via the memory MCP `write` tool with vault frontmatter; recall is vault hybrid `search`, not directory reads), and on startup it writes a self-healing router stub to the current project's `MEMORY.md` (canonical template: `references/memory-routing-stub.md`). A `MEMORY.md` without the router marker is never overwritten — the warmup flags it for human migration instead. Keep the store singular: don't install competing memory MCP servers alongside the vault.
+
+#### Wiki layer and vault index
+
+Session summaries are chronological sediment; left alone they accumulate as unlinked orphans. Every ingest path (the summary-writer agent, `/workbench:log-now`, `/workbench:summarize-session`) therefore follows `references/linking-synthesis.md`: search the vault for related decisions, topics, and prior summaries; add a `## Related` section of path-qualified wikilinks (`[[folder/file-stem|display text]]` — the form markdown-vault-mcp resolves immediately); maintain at most one topical synthesis page in `topics/` per session; and cross-link promoted decisions to their summaries and topics. Linking is deliberately conservative — only high-confidence connections, capped per ingest, because an orphan beats a forced link.
+
+`index.md` at the vault root is the catalog of the curated layer — one wikilink + one-line hook per topic, decision, identity, and reference document (never sessions). It's the orientation entry point: agents read it **on demand** to get the lay of the vault before searching — it is **not** auto-loaded into context. The summary writers keep it current as they create topics and promote decisions; the lint ritual repairs drift.
+
 #### Lint ritual
 
-Vaults rot silently: files written without the required `name`/`type` frontmatter are skipped at index time (on disk but invisible to search), links break when targets move, orphans accumulate. `/workbench-core:memory-lint` is the periodic repair pass — it diffs the filesystem against the index to find skipped files and rescues their frontmatter, repairs or removes broken links, adds only high-confidence links (never mass-links orphans), and flags duplicates/contradictions for the human instead of merging. Each run is capped at 50 file-fixes and writes an audit report to `maintenance/` with before/after stats. Intended cadence: monthly, deployed via the scheduled-tasks MCP. Raw `*.log.md` transcripts are never touched.
+Vaults rot silently: files written without the required `name`/`type` frontmatter are skipped at index time (on disk but invisible to search), links break when targets move, orphans accumulate. `/workbench-core:memory-lint` is the periodic repair pass — it diffs the filesystem against the index to find skipped files and rescues their frontmatter, repairs or removes broken links, adds only high-confidence links (never mass-links orphans), repairs `index.md` drift in both directions (missing entries for `topics/` and `decisions/` documents, stale entries pointing at deleted ones), and flags duplicates/contradictions for the human instead of merging. Each run is capped at 50 file-fixes and writes an audit report to `maintenance/` with before/after stats. Intended cadence: monthly, deployed via the scheduled-tasks MCP. Raw `*.log.md` transcripts are never touched.
 
 ### Retention
 
@@ -352,7 +367,7 @@ Runs on every `startup` warmup:
 | `/workbench:summarize-session` | Manually summarize a specific session (or pick from unsummarized) |
 | `/workbench:process-pending-summaries` | Dispatch background agents to clear pending summary markers |
 | `/workbench:compact-learnings` | Review and compact accumulated skill learnings; integrate into SKILL.md for workbench skills |
-| `/workbench-core:memory-lint` | Monthly health-and-repair pass over the memory vault — frontmatter rescue, broken-link repair, conservative orphan linking, duplicate flagging, audit report |
+| `/workbench-core:memory-lint` | Monthly health-and-repair pass over the memory vault — frontmatter rescue, broken-link repair, conservative orphan linking, vault-index drift repair, duplicate flagging, audit report |
 | `/workbench-core:install-chat-skills` | Discover skills in `@claude-workbench` plugins and install them into the Claude Mac app's Chat surface via `.skill` packaging |
 
 All skills are **execution-aware** — they check for a `skills/{name}.learnings.md` file in the vault before running and apply any accumulated learnings from prior executions.

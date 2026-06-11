@@ -36,15 +36,21 @@ Read `${CLAUDE_PLUGIN_ROOT}/references/summary-format.md` for the required shape
 
 Because you're in-session, your summary should be richer than what the auto summary-writer produces — you have context the raw JSONL doesn't capture.
 
+After drafting and before writing, read `${CLAUDE_PLUGIN_ROOT}/references/linking-synthesis.md` and apply Steps A–B: 2–3 targeted vault searches on the session's main themes, then a `## Related` section with path-qualified wikilinks to the confident hits only. Your lived context makes you better at judging relatedness than the headless writer — but the conservative rule and link cap still bind. Omit the section if nothing clears the bar.
+
 ## Step 3 — Promote decisions
 
-Read `${CLAUDE_PLUGIN_ROOT}/references/decision-promotion.md` for criteria.
+Read `${CLAUDE_PLUGIN_ROOT}/references/decision-promotion.md` for criteria. Cross-link any promoted decision per linking-synthesis Step D.
 
-## Step 4 — Update profile if shifted
+## Step 4 — Synthesize topic and update the vault index
+
+Follow linking-synthesis Steps C–E for the session's central theme only: update (or, with ≥2 related docs, create) its `topics/` page, and keep the matching `index.md` line current in the same pass. One topic page per session maximum; skipping is common.
+
+## Step 5 — Update profile if shifted
 
 Read `${CLAUDE_PLUGIN_ROOT}/references/vault-conventions.md` for conventions.
 
-## Step 5 — Clean up and confirm
+## Step 6 — Clean up and confirm
 
 Delete the pending-summary marker:
 
@@ -52,7 +58,7 @@ Delete the pending-summary marker:
 rm ~/.claude-memory-cache/pending-summaries/<session_id>.json
 ```
 
-Tell the user what you wrote: log path, summary path, any decisions promoted. Keep it terse.
+Tell the user what you wrote: log path, summary path, any decisions promoted, links added, topic page touched. Keep it terse.
 
 ## Notes
 

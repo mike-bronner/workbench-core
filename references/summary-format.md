@@ -55,6 +55,13 @@ Any explicit decision worth remembering. If none, write "No new decisions in thi
 
 Loose ends, next steps, anything flagged as TODO or blocked. If none, write "Nothing open."
 
+## Related
+
+- Path-qualified wikilinks to confidently-related vault documents, one per
+  line with a short reason — see `linking-synthesis.md` for the search
+  procedure, link syntax, and the conservative-linking rules. Omit this
+  section entirely when nothing clears the confidence bar.
+
 ## Logs
 
 - `/absolute/path/to/session.log.md`

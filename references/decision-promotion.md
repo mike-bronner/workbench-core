@@ -53,4 +53,21 @@ Options considered and why they lost.
 ## Consequences
 
 What this means for future work.
+
+## Related
+
+- [[sessions/YYYY-MM-DD/{session-id}.summary|Session summary]] — where this was decided
+- [[topics/{topic}|{Topic title}]] — if a topic page covers this theme
 ```
+
+## Cross-linking
+
+A promoted decision is part of the vault's wiki layer, not loose sediment
+(see `linking-synthesis.md` for syntax and the conservative-linking rules):
+
+- The decision's `## Related` section wikilinks its session summary, and
+  the topic page if one exists.
+- The session summary's `## Related` section links the decision back.
+- If a topic page for the theme is touched in the same ingest, it links
+  the decision too, and the decision's `index.md` line is added or updated
+  in the same pass.

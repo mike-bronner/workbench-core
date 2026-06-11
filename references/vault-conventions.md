@@ -22,7 +22,7 @@ must have both.
 ```yaml
 ---
 name: "Short descriptive title"
-type: session|decision|identity|project|insight|skill-learnings
+type: session|decision|topic|identity|project|insight|skill-learnings|index|maintenance
 ---
 ```
 
@@ -51,9 +51,20 @@ the file. Use `edit`, not `write`.
 ```
 identity/        — soul-hot, soul-core, profile, skills-protocol
 decisions/       — architectural and process decisions
+topics/          — topical synthesis pages (current state per theme)
 projects/        — project context and system designs
 insights/        — durable patterns and working principles
 sessions/        — session logs (.log.md) and summaries (.summary.md)
 skills/          — per-skill learnings files
 infrastructure/  — systems and tools documentation
+maintenance/     — memory-lint audit reports
+index.md         — catalog of the curated layer (see linking-synthesis.md)
 ```
+
+## Linking
+
+Documents connect via path-qualified wikilinks —
+`[[folder/file-stem|display text]]`, vault-relative, no `.md` extension.
+See `linking-synthesis.md` for the full syntax rules, the topic-page
+contract, the `index.md` maintenance contract, and the conservative-linking
+rules that bind every ingest.

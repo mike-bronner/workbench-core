@@ -113,7 +113,7 @@ The memory MCP server ships unconfigured. Run `/workbench:customize` on first in
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| `agent_name` | Your agent's name (e.g. `Hobbes`) | `Claude` |
+| `agent_name` | Your agent's name (e.g. `Holmes`) | `Claude` |
 | `memory_path` | Where your operational memory lives on disk | `~/Documents/Claude/Memory` |
 | `memory_cache` | Where indexes and checkpoints are stored | `~/.claude-memory-cache` |
 | `memory_mcp_server_name` | MCP server name for the vault | `workbench-memory` |

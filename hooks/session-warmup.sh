@@ -365,10 +365,10 @@ fi
 # consistent voice and behavior.
 #
 # Paths resolve from config.json identity_files, falling back to hardcoded defaults.
-SOUL_HOT="$MEMORY_PATH/$(_cfg '.identity_files.soul_hot')"
-SOUL_HOT="${SOUL_HOT:-$MEMORY_PATH/identity/soul-hot.md}"
-PROFILE="$MEMORY_PATH/$(_cfg '.identity_files.profile')"
-PROFILE="${PROFILE:-$MEMORY_PATH/identity/profile.md}"
+SOUL_HOT_REL="$(_cfg '.identity_files.soul_hot')"
+SOUL_HOT="$MEMORY_PATH/${SOUL_HOT_REL:-identity/soul-hot.md}"
+PROFILE_REL="$(_cfg '.identity_files.profile')"
+PROFILE="$MEMORY_PATH/${PROFILE_REL:-identity/profile.md}"
 SKILLS_PROTOCOL="$MEMORY_PATH/identity/skills-protocol.md"
 GUARDRAILS_INLINE="${CLAUDE_PLUGIN_ROOT}/references/guardrails-inline.md"
 

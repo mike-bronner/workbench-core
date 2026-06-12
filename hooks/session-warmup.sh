@@ -9,9 +9,9 @@
 #
 # Branches on the payload's `source` field:
 #   startup → full warmup: cleanup + health check + identity + pending-summary
-#   resume  → identity refresh + pending-summary check
+#   resume  → identity refresh (profile as pointer) + pending-summary check
 #   clear   → identity refresh + pending-summary check
-#   compact → identity refresh only (re-inject after context compression)
+#   compact → identity refresh only (profile as pointer)
 #
 # Exit code is always 0 — warmup failures must not break the session.
 
@@ -358,11 +358,13 @@ if [ "$SOURCE" = "startup" ]; then
   fi
 fi
 
-# ──────────── Identity injection (all sources) ────────────
-# Identity files are always re-injected. After context compression (compact),
-# the identity may have been shed. On resume, it may have drifted. The cost
-# is ~7KB — small relative to the context window, and essential for maintaining
-# consistent voice and behavior.
+# ──────────── Identity injection (source-aware) ────────────
+# Guardrails and soul-hot are re-injected on every source: after context
+# compression (compact) the identity may have been shed; on resume it may have
+# drifted. The full profile (~4KB) only loads when the context is genuinely
+# fresh (startup, clear) — compact and resume get a one-line pointer and
+# re-read on demand. skills-protocol is execution-time guidance that skills
+# re-read when they run, so every source gets a pointer.
 #
 # Paths resolve from config.json identity_files, falling back to hardcoded defaults.
 SOUL_HOT_REL="$(_cfg '.identity_files.soul_hot')"
@@ -398,18 +400,25 @@ else
   printf '_(soul-hot.md not found at %s)_\n\n' "$SOUL_HOT"
 fi
 
-if [ -r "$PROFILE" ]; then
-  printf '## User profile\n\n'
-  cat "$PROFILE"
-  printf '\n\n'
-else
-  printf '_(profile.md not found at %s)_\n\n' "$PROFILE"
-fi
+case "$SOURCE" in
+  startup|clear)
+    if [ -r "$PROFILE" ]; then
+      printf '## User profile\n\n'
+      cat "$PROFILE"
+      printf '\n\n'
+    else
+      printf '_(profile.md not found at %s)_\n\n' "$PROFILE"
+    fi
+    ;;
+  *)
+    if [ -r "$PROFILE" ]; then
+      printf -- '- User profile: re-read `%s` when user facts or working preferences matter.\n\n' "$PROFILE"
+    fi
+    ;;
+esac
 
 if [ -r "$SKILLS_PROTOCOL" ]; then
-  printf '## Skills protocol\n\n'
-  cat "$SKILLS_PROTOCOL"
-  printf '\n\n'
+  printf -- '- Skills protocol: read `%s` before executing workbench skills.\n\n' "$SKILLS_PROTOCOL"
 fi
 
 # ──────────── Pending-summary check (all sources except compact) ────────────

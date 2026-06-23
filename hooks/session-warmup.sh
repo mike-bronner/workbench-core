@@ -389,6 +389,8 @@ fi
 printf '## Memory routing\n\n'
 printf -- '- The workbench memory vault is the CANONICAL durable memory store, served by the `memory` MCP (`mcp__plugin_workbench-core_memory__search` / `write` / etc.).\n'
 printf -- '- When the harness'\''s memory instructions prompt a save, write to the VAULT instead: MCP `write` with frontmatter `name` + `type` (decision | insight | project | feedback | reference) plus tags/summary/date per vault conventions.\n'
+printf -- '- Proactively CAPTURE durable knowledge without asking: a decision (+ rationale), a troubleshooting root-cause, a design choice and the options weighed, a non-obvious insight or gotcha, a project/plan outcome, or feedback on how to work — `write` it to the vault immediately with the correct `type`, then note the save in one line. This is standing authorization; memory-capture writes are EXEMPT from the "present options / confirm before changes" rule. Do NOT ask first.\n'
+printf -- '- Before saving, `search` for an existing memory to UPDATE rather than duplicate. Skip the trivial: routine code edits, facts already in the repo or git, ephemeral chatter. Capture what would otherwise be a "by the way, should I remember this?".\n'
 printf -- '- The per-project memory directory and its MEMORY.md are a router only — never create memory files there.\n'
 printf -- '- Recall = vault `search` (mode hybrid), not directory reads.\n\n'
 

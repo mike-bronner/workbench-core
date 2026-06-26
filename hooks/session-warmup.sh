@@ -385,7 +385,10 @@ if [ -r "$GUARDRAILS_INLINE" ]; then
 fi
 
 # Memory routing — countermand the harness's per-project memory instructions.
-# Re-injected on every source so the rule survives compaction.
+# Re-injected on every source so the rule survives compaction. This is the
+# always-on FLOOR for the capture rule; hooks/memory-capture-nudge.sh
+# (UserPromptSubmit) reinforces it per-turn when a turn looks capture-worthy,
+# so the rule keeps its salience deep into a long session.
 printf '## Memory routing\n\n'
 printf -- '- The workbench memory vault is the CANONICAL durable memory store, served by the `memory` MCP (`mcp__plugin_workbench-core_memory__search` / `write` / etc.).\n'
 printf -- '- When the harness'\''s memory instructions prompt a save, write to the VAULT instead: MCP `write` with frontmatter `name` + `type` (decision | insight | project | feedback | reference) plus tags/summary/date per vault conventions.\n'

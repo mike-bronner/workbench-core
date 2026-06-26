@@ -96,10 +96,15 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
+          # Strip a trailing dot from each match: prose and comments often end a
+          # sentence right after a path ("see ${CLAUDE_PLUGIN_ROOT}/hooks/x.sh."),
+          # and the char class above would otherwise fold that period into the
+          # path and report a spurious broken reference. No plugin path legitimately
+          # ends in a dot, so this is safe.
           mapfile -t refs < <(grep -rhoE '\$\{CLAUDE_PLUGIN_ROOT\}/[A-Za-z0-9_./-]+' \
             --include='*.md' --include='*.sh' \
             agents hooks references skills assets 2>/dev/null \
-            | sed 's|${CLAUDE_PLUGIN_ROOT}/||' \
+            | sed 's|${CLAUDE_PLUGIN_ROOT}/||; s|[.]*$||' \
             | sort -u)
           for r in "${refs[@]}"; do
             if [ ! -e "$r" ]; then

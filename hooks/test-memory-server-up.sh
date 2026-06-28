@@ -250,6 +250,40 @@ else
   no "supervisor does not write claimer.pid from \$\$"
 fi
 
+echo "generation nonce — release_lock only removes OUR generation's lock:"
+# Source the supervisor's helpers (MEMORY_SPAWN_LIB_ONLY=1 returns before the
+# body runs) and drive release_lock with controlled nonces. The hazard: a stale
+# gen-1 supervisor whose lock was stolen and re-created by gen-2 must NOT delete
+# gen-2's lock (same fixed path). WORKBENCH_MEMORY_CACHE overrides CACHE_PATH so
+# LOCK_DIR/NONCE_FILE point into the sandbox regardless of real config.
+SPAWN="$HOOKS/memory-server-spawn.sh"
+release_lock_in() {  # <cache-dir> <captured-nonce>
+  ( export HOME="$1/home" CLAUDE_PLUGIN_ROOT="$REPO_ROOT" \
+      WORKBENCH_MEMORY_CACHE="$1/cache" WORKBENCH_MEMORY_PATH="$1/vault" \
+      MEMORY_SPAWN_LIB_ONLY=1
+    # GEN_NONCE is consumed by release_lock, sourced from $SPAWN on this line.
+    # shellcheck source=hooks/memory-server-spawn.sh disable=SC2034
+    . "$SPAWN"; GEN_NONCE="$2"; release_lock ) >/dev/null 2>&1
+}
+
+D="$SANDBOX/nonce-match"; mkdir -p "$D/cache/server.lock" "$D/home"
+printf 'GEN-A' > "$D/cache/server.lock/nonce"
+release_lock_in "$D" 'GEN-A'
+if [ ! -d "$D/cache/server.lock" ]; then ok "matching nonce releases the lock"; else no "matching nonce should release the lock"; fi
+
+D="$SANDBOX/nonce-changed"; mkdir -p "$D/cache/server.lock" "$D/home"
+printf 'GEN-B' > "$D/cache/server.lock/nonce"   # a newer generation took over
+release_lock_in "$D" 'GEN-A'                     # stale gen-1 supervisor releases
+if [ -d "$D/cache/server.lock" ] && [ "$(cat "$D/cache/server.lock/nonce" 2>/dev/null)" = "GEN-B" ]; then
+  ok "changed nonce → newer generation's lock survives"
+else
+  no "stale supervisor deleted a newer generation's lock"
+fi
+
+D="$SANDBOX/nonce-legacy"; mkdir -p "$D/cache/server.lock" "$D/home"  # no nonce file
+release_lock_in "$D" ''
+if [ ! -d "$D/cache/server.lock" ]; then ok "legacy empty nonce still releases (no wedge)"; else no "legacy empty nonce should still release"; fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

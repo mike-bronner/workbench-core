@@ -119,6 +119,16 @@ if ! try_claim; then
   fi
 fi
 
+# ──────────── Stamp the lock generation (nonce) ────────────
+# We hold the lock now (a fresh mkdir — this generation). Write a unique
+# generation nonce INTO the lock dir before reparenting. The supervisor captures
+# it as its first action, and its release_lock only removes the lock while this
+# nonce is still on disk. If our lock is later stolen and re-created by a newer
+# generation (a new mkdir → new nonce), the old supervisor sees the changed nonce
+# and declines to delete the newer generation's lock — closing the fixed-path
+# rm -rf cross-generation race.
+echo "$$-${RANDOM}-$(date +%s)" > "$LOCK_DIR/nonce" 2>/dev/null || true
+
 # ──────────── Reparent the supervisor and return immediately ────────────
 # We hold the lock. Hand it (and all the slow work) to a DETACHED supervisor:
 # perl-setsid puts it in its own session/process group, so it survives this
@@ -126,8 +136,9 @@ fi
 # setsid binary, and nohup+disown alone does NOT escape the process group — the
 # perl POSIX::setsid idiom is the verified detach. We do NOT wait for it.
 #
-# perl's `exec` keeps the SAME pid, so $! is the supervisor's pid. We record it
-# as the claimer so the lock's liveness token is the long-lived supervisor, not
+# perl's `exec` keeps the SAME pid, so $! is the supervisor's pid (used only for
+# the log line below). The supervisor itself writes the lock's liveness token
+# (claimer.pid) from its own $$, so the token is the long-lived supervisor, not
 # this ephemeral kicker (see try_claim). The supervisor releases the lock when
 # the server is ready or has failed.
 SUPERVISOR_PID=""

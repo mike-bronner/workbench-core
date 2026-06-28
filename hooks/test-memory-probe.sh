@@ -134,10 +134,24 @@ CACHE="$SANDBOX/sse"; mkdir -p "$CACHE"
 P=$(next_port); start_fake "$P" myvault FAKE_SERVER_SSE=1; touch "$CACHE/vault-index.sqlite"
 assert_status "SSE-framed initialize → UP (not DOWN_FOREIGN)" "$(probe "$CACHE" "$P" myvault)" "UP"
 
-echo "bearer token is sent — probe still matches identity when auth is required:"
-CACHE="$SANDBOX/auth"; mkdir -p "$CACHE"; printf 'secrettoken' > "$CACHE/server.token"
-P=$(next_port); start_fake "$P" myvault; touch "$CACHE/vault-index.sqlite"
-assert_status "token present, identity match → UP" "$(probe "$CACHE" "$P" myvault)" "UP"
+echo "bearer token actually reaches the server (token-validating fixture):"
+# The fixture validates the Authorization header (FAKE_SERVER_REQUIRE_TOKEN), so
+# these prove the probe's bearer token genuinely ARRIVES — not merely that the
+# request succeeds. A rejected request gets a 401, which curl -fsS turns into an
+# empty response, which the probe classifies DOWN_FOREIGN.
+TOK='s3cr3t-probe-token'
+
+CACHE="$SANDBOX/auth-ok"; mkdir -p "$CACHE"; printf '%s' "$TOK" > "$CACHE/server.token"
+P=$(next_port); start_fake "$P" myvault FAKE_SERVER_REQUIRE_TOKEN="$TOK"; touch "$CACHE/vault-index.sqlite"
+assert_status "correct token reaches the server → UP" "$(probe "$CACHE" "$P" myvault)" "UP"
+
+CACHE="$SANDBOX/auth-missing"; mkdir -p "$CACHE"   # no server.token at all
+P=$(next_port); start_fake "$P" myvault FAKE_SERVER_REQUIRE_TOKEN="$TOK"; touch "$CACHE/vault-index.sqlite"
+assert_status "missing token → 401 → DOWN_FOREIGN" "$(probe "$CACHE" "$P" myvault)" "DOWN_FOREIGN"
+
+CACHE="$SANDBOX/auth-wrong"; mkdir -p "$CACHE"; printf 'not-the-token' > "$CACHE/server.token"
+P=$(next_port); start_fake "$P" myvault FAKE_SERVER_REQUIRE_TOKEN="$TOK"; touch "$CACHE/vault-index.sqlite"
+assert_status "wrong token → 401 → DOWN_FOREIGN" "$(probe "$CACHE" "$P" myvault)" "DOWN_FOREIGN"
 
 echo "no token under set -u — must not abort (bash 3.2 empty-array regression):"
 # The probe is sourced by memory-server-up.sh / -spawn.sh, both `set -u`. With no

@@ -21,6 +21,11 @@
 #                              of a single JSON object, matching the real
 #                              Streamable-HTTP transport — exercises the probe's
 #                              SSE-aware response parsing.
+#   FAKE_SERVER_REQUIRE_TOKEN  when set, answer initialize ONLY if the request's
+#                              Authorization header equals "Bearer <value>";
+#                              otherwise reject with 401. Lets a test prove the
+#                              probe's bearer token actually reaches the server,
+#                              not merely that the request succeeds.
 #
 # It is intentionally a thin bash shim around an inline python3 HTTP server:
 # python3's http.server gives a real bound TCP port that bash /dev/tcp and curl
@@ -49,8 +54,9 @@ fi
 SERVER_NAME="${FAKE_SERVER_NAME:-${MARKDOWN_VAULT_MCP_SERVER_NAME:-fake-vault}}"
 BIND_DELAY_MS="${FAKE_SERVER_BIND_DELAY_MS:-0}"
 SSE="${FAKE_SERVER_SSE:-0}"
+REQUIRE_TOKEN="${FAKE_SERVER_REQUIRE_TOKEN:-}"
 
-exec python3 - "$PORT" "$HTTP_PATH" "$SERVER_NAME" "$BIND_DELAY_MS" "$SSE" <<'PY'
+exec python3 - "$PORT" "$HTTP_PATH" "$SERVER_NAME" "$BIND_DELAY_MS" "$SSE" "$REQUIRE_TOKEN" <<'PY'
 import json
 import sys
 import time
@@ -61,6 +67,7 @@ http_path = sys.argv[2]
 server_name = sys.argv[3]
 bind_delay_ms = int(sys.argv[4])
 sse = sys.argv[5] == "1"
+require_token = sys.argv[6]
 
 # Simulate the real server's bind window: stay unbound for the delay so
 # concurrency tests can race the readiness gate against a not-yet-listening port.
@@ -79,6 +86,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path.rstrip("/") != http_path.rstrip("/"):
             return self._reject(404)
+        # Optional auth gate: when require_token is set, only an exact
+        # "Bearer <token>" Authorization header is accepted; anything else is a
+        # 401. This lets a test prove the probe's bearer token reaches us, not
+        # merely that the request succeeds.
+        if require_token and self.headers.get("Authorization") != "Bearer " + require_token:
+            return self._reject(401)
         length = int(self.headers.get("Content-Length", 0) or 0)
         try:
             payload = json.loads(self.rfile.read(length) or b"{}")

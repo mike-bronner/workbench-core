@@ -86,51 +86,13 @@ _install_from_git_and_exec() {
 . "$HOOKS_DIR/lib/memory-env.sh"
 memory_load_env
 
-# --- Out-of-band index reclamation: gated full VACUUM ------------------------
-# We keep the markdown-vault-mcp server a pristine mirror of upstream 3.0.1, so
-# index maintenance happens here in the launcher rather than inside the server.
-# This matches upstream's own guidance ("run VACUUM on the index file").
-#
-# A *gated full* VACUUM is the right out-of-band choice:
-#   - The index is auto_vacuum=NONE, so `PRAGMA incremental_vacuum` is a no-op —
-#     only a full VACUUM actually reclaims space.
-#   - A full VACUUM also defragments the file, and avoids the permanent ptrmap
-#     overhead that switching to auto_vacuum=FULL would impose on every write.
-#
-# Gating keeps boot fast: we only VACUUM when the reclaimable freelist exceeds a
-# threshold (freelist_count * page_size). Most boots have a tiny freelist → skip
-# → zero added latency. The first VACUUM on an already-bloated index is bounded
-# by *live* data size (~1s here), well under Claude Code's MCP startup timeout.
-#
-# Hard rules: this step must NEVER fail the launcher and must NEVER touch stdout
-# (the MCP stdio channel) — all output goes through _log (stderr). Another server
-# process may hold the index (multi-session), so we set a busy timeout and treat
-# any error (busy/locked, missing sqlite3, absent file) as a skip-and-continue.
-# The busy timeout is set with the `.timeout` dot-command, not `PRAGMA
-# busy_timeout` — the PRAGMA emits a result row that would pollute the freelist
-# read; the dot-command sets the same busy handler silently.
-VACUUM_THRESHOLD_MB="${WORKBENCH_MEMORY_VACUUM_THRESHOLD_MB:-50}"
-if ! command -v sqlite3 >/dev/null 2>&1; then
-  _log "vacuum: sqlite3 not on PATH; skipping index reclamation"
-elif [ ! -f "$MARKDOWN_VAULT_MCP_INDEX_PATH" ]; then
-  _log "vacuum: index not present yet; skipping reclamation"
-else
-  FREELIST_BYTES=$(sqlite3 "$MARKDOWN_VAULT_MCP_INDEX_PATH" -cmd ".timeout 2000" \
-    "SELECT freelist_count * page_size FROM pragma_freelist_count, pragma_page_size;" \
-    2>/dev/null)
-  if ! [[ "$FREELIST_BYTES" =~ ^[0-9]+$ ]]; then
-    _log "vacuum: could not read freelist (locked or unreadable); skipping"
-  elif [ "$FREELIST_BYTES" -gt $(( VACUUM_THRESHOLD_MB * 1024 * 1024 )) ]; then
-    _log "vacuum: reclaimable freelist ${FREELIST_BYTES}B > ${VACUUM_THRESHOLD_MB}MB threshold; running VACUUM"
-    if sqlite3 "$MARKDOWN_VAULT_MCP_INDEX_PATH" -cmd ".timeout 2000" "VACUUM;" 1>&2; then
-      _log "vacuum: reclaimed index space"
-    else
-      _log "vacuum: VACUUM failed (likely held by another session); continuing"
-    fi
-  else
-    _log "vacuum: freelist ${FREELIST_BYTES}B under ${VACUUM_THRESHOLD_MB}MB threshold; skipping"
-  fi
-fi
+# --- Index reclamation moved out of this launcher ----------------------------
+# The gated full VACUUM used to run here on every per-session connect, which
+# could race a sibling session holding the same index. It now lives in the
+# shared cold-start library (hooks/lib/memory-vacuum.sh); under the shared-server
+# model the lazy-start supervisor runs it at a confirmed cold start, inside the
+# spawn lock, with no server alive — so there is no writer to race. This stdio
+# launcher is the escape hatch / in-flight-old-session path; it no longer VACUUMs.
 # -----------------------------------------------------------------------------
 
 # --- Bundled-wheel install into a persistent venv, then exec the venv binary -

@@ -109,7 +109,10 @@ if wait_up "$D/cache" "$P" cold-vault; then ok "server came up"; else no "server
 [ -f "$D/cache/server.pid" ] && ok "server.pid written" || no "no server.pid"
 wait_lock_released "$D/cache" && ok "spawn lock released" || no "spawn lock left behind"
 [ -s "$D/cache/server.token" ] && ok "bearer token minted (0600)" || no "no token minted"
-PERM=$(stat -f '%Lp' "$D/cache/server.token" 2>/dev/null || stat -c '%a' "$D/cache/server.token" 2>/dev/null)
+# GNU stat (`-c`) first — it fails cleanly on macOS, so the BSD (`-f`) fallback
+# fires there. The reverse order is unsafe: BSD's `-f` means --file-system on
+# GNU and *succeeds* with filesystem stats, swallowing the real mode.
+PERM=$(stat -c '%a' "$D/cache/server.token" 2>/dev/null || stat -f '%Lp' "$D/cache/server.token" 2>/dev/null)
 [ "$PERM" = "600" ] && ok "token is 0600" || no "token perms are $PERM, expected 600"
 
 # ──────────── 2. already-up fast path: no second spawn ────────────

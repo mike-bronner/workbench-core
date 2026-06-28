@@ -58,15 +58,35 @@ jobs:
           done
           exit "$fail"
 
-      - name: shellcheck hooks + scripts
-        run: shellcheck --severity=warning hooks/*.sh scripts/*.sh
-
-      - name: bash -n on hooks + scripts
+      - name: shellcheck hooks + libs + fixtures + scripts
         run: |
           set -euo pipefail
-          for f in hooks/*.sh scripts/*.sh; do
+          # -x lets shellcheck follow `source`d libraries under hooks/lib.
+          shellcheck --severity=warning -x \
+            hooks/*.sh hooks/lib/*.sh hooks/fixtures/*.sh scripts/*.sh
+
+      - name: bash -n on hooks + libs + fixtures + scripts
+        run: |
+          set -euo pipefail
+          for f in hooks/*.sh hooks/lib/*.sh hooks/fixtures/*.sh scripts/*.sh; do
             bash -n "$f"
           done
+
+      - name: hook test suite (offline; fake-server fixture, no real server)
+        run: |
+          set -euo pipefail
+          fail=0
+          for t in hooks/test-*.sh; do
+            echo "::group::$t"
+            if bash "$t"; then
+              echo "::endgroup::"
+            else
+              echo "::endgroup::"
+              echo "::error file=${t}::test suite failed"
+              fail=1
+            fi
+          done
+          exit "$fail"
 
       - name: Frontmatter present on skills and agents
         run: |

@@ -69,6 +69,76 @@ fail() {
   exit 0
 }
 
+# sweep_orphan_stdio_servers: one-shot migration. Before the shared-server model,
+# every session launched its OWN stdio markdown-vault-mcp. When those sessions
+# ended uncleanly their servers could leak as orphans (parent dead → reparented
+# to PID 1) — the exact CPU/SQLite-contention problem the shared server fixes.
+# On the FIRST successful shared start, reap those leaked orphans so the shared
+# server inherits a clean field. Guarded by a stamp so it runs once, ever.
+#
+# Safety rails (all must hold to kill a pid):
+#   - UID-scoped: only our own processes (pgrep -u $(id -u)).
+#   - Command matches the resolved venv SERVER_BIN path (the per-session stdio
+#     launcher's binary) — never a random "markdown-vault-mcp" substring.
+#   - ORPHAN only: parent is dead or PID 1. A server with a LIVE parent is an
+#     in-flight session's server — NEVER touch it.
+#   - Excludes our own shared server, this supervisor ($$), and our parent
+#     ($PPID).
+# WAL checkpoint runs only if, after the sweep, zero servers remain holding the
+# index (so we don't checkpoint under a live writer).
+sweep_orphan_stdio_servers() {
+  local stamp="$CACHE_PATH/.shared-migration-done"
+  [ -f "$stamp" ] && return 0
+  command -v pgrep >/dev/null 2>&1 || { touch "$stamp" 2>/dev/null; return 0; }
+
+  # The per-session stdio launcher execs the SAME venv binary we resolved. Match
+  # candidates on that exact path. (When SERVER_BIN came from the git fallback it
+  # is the global binary path — still the right discriminator.)
+  local bin="$SERVER_BIN"
+  local uid; uid="$(id -u)"
+  local self="$$" parent="${PPID:-0}" shared="$SERVER_PID"
+
+  local killed=0 pid ppid cmd
+  # -f matches against the full command line; -u scopes to our uid.
+  for pid in $(pgrep -u "$uid" -f "$bin" 2>/dev/null); do
+    # Never our own shared server, this supervisor, or our parent.
+    [ "$pid" = "$shared" ] && continue
+    [ "$pid" = "$self" ] && continue
+    [ "$pid" = "$parent" ] && continue
+    # Confirm it really is a markdown-vault-mcp server invocation, not e.g. an
+    # editor that happens to have the path in argv.
+    cmd="$(ps -o command= -p "$pid" 2>/dev/null)"
+    case "$cmd" in *markdown-vault-mcp*|*"$bin"*) : ;; *) continue ;; esac
+    # ORPHAN gate: parent must be dead or PID 1. A live, non-init parent means a
+    # live session owns this server — leave it strictly alone.
+    ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+    if [ "$ppid" != "1" ] && [ -n "$ppid" ] && kill -0 "$ppid" 2>/dev/null; then
+      continue
+    fi
+    _log "sweep: reaping orphan stdio server pid=$pid (ppid=$ppid)"
+    kill "$pid" 2>/dev/null && killed=$((killed + 1))
+  done
+  _log "sweep: reaped $killed orphan stdio server(s)"
+
+  # WAL checkpoint only if no server besides ours remains holding the index.
+  # (Our shared server is the legitimate holder; a checkpoint while a stray
+  # writer is live could race, so we skip it then.)
+  local remaining=0 p
+  for p in $(pgrep -u "$uid" -f "$bin" 2>/dev/null); do
+    [ "$p" = "$shared" ] && continue
+    remaining=$((remaining + 1))
+  done
+  if [ "$remaining" -eq 0 ] && command -v sqlite3 >/dev/null 2>&1 \
+      && [ -f "$MARKDOWN_VAULT_MCP_INDEX_PATH" ]; then
+    sqlite3 "$MARKDOWN_VAULT_MCP_INDEX_PATH" -cmd ".timeout 2000" \
+      "PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null 2>&1 \
+      && _log "sweep: WAL checkpoint complete" \
+      || _log "sweep: WAL checkpoint skipped/failed (non-fatal)"
+  fi
+
+  touch "$stamp" 2>/dev/null || true
+}
+
 # ──────────── Cache + state dirs ────────────
 # Create the cache and the HTTP transport's required KV/event store dirs. chmod
 # 700 — these hold the index, embeddings, session KV state, and the bearer
@@ -187,6 +257,9 @@ chmod 600 "$SERVER_LOG" 2>/dev/null || true
 if [ "$READY" -eq 1 ]; then
   # Healthy start — clear any prior failure marker.
   rm -f "$FAILED_MARKER" 2>/dev/null || true
+  # One-shot: reap leaked orphan stdio servers from the pre-shared-server era,
+  # now that a healthy shared server has taken over. Never fails the supervisor.
+  sweep_orphan_stdio_servers || true
   release_lock
   exit 0
 fi

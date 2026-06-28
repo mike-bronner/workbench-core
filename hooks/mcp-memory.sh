@@ -77,39 +77,14 @@ _install_from_git_and_exec() {
 }
 # -----------------------------------------------------------------------------
 
-# Prefer the current data dir; fall back to the pre-rename location.
-CONFIG_FILE="$HOME/.claude/plugins/data/workbench-core-claude-workbench/config.json"
-LEGACY_CONFIG="$HOME/.claude/plugins/data/workbench-claude-workbench/config.json"
-if [ ! -f "$CONFIG_FILE" ] && [ -f "$LEGACY_CONFIG" ]; then
-  CONFIG_FILE="$LEGACY_CONFIG"
-fi
-
-_cfg() {
-  [ -f "$CONFIG_FILE" ] && command -v jq >/dev/null 2>&1 \
-    && jq -r "$1 // empty" "$CONFIG_FILE" 2>/dev/null
-}
-
-MEMORY_PATH=$(_cfg '.memory_path')
-MEMORY_PATH="${MEMORY_PATH:-$HOME/Documents/Claude/Memory}"
-CACHE_PATH=$(_cfg '.memory_cache')
-CACHE_PATH="${CACHE_PATH:-$HOME/.claude-memory-cache}"
-MCP_NAME=$(_cfg '.memory_mcp_server_name')
-MCP_NAME="${MCP_NAME:-workbench-memory}"
-
-export MARKDOWN_VAULT_MCP_SOURCE_DIR="$MEMORY_PATH"
-export MARKDOWN_VAULT_MCP_INDEX_PATH="$CACHE_PATH/vault-index.sqlite"
-export MARKDOWN_VAULT_MCP_EMBEDDINGS_PATH="$CACHE_PATH/embeddings"
-export MARKDOWN_VAULT_MCP_STATE_PATH="$CACHE_PATH/state.json"
-export MARKDOWN_VAULT_MCP_READ_ONLY="false"
-export MARKDOWN_VAULT_MCP_REQUIRED_FIELDS="name,type"
-export MARKDOWN_VAULT_MCP_INDEXED_FIELDS="name,type,tags,summary,date,scope,log_files"
-# Raw session transcripts are write-only archival: searchable memory lives in
-# the summaries/decisions layer (summaries keep log_files pointers, and the
-# server's read tool still reads excluded files by path). The server purges
-# previously-indexed matches on next boot (markdown-vault-mcp upgrade, #255).
-export MARKDOWN_VAULT_MCP_EXCLUDE="sessions/**/*.log.md"
-export MARKDOWN_VAULT_MCP_SERVER_NAME="$MCP_NAME"
-export EMBEDDING_PROVIDER="fastembed"
+# Resolve the memory env (path/cache/mcp-name/port + the full MARKDOWN_VAULT_MCP_*
+# export set) via the shared library, so this launcher, the lazy-start
+# supervisor, and the warmup all agree on where the vault and cache live.
+# memory_load_env sets MEMORY_PATH/CACHE_PATH/MCP_NAME/MEMORY_PORT and exports
+# the server env (precedence: WORKBENCH_* override → config.json → default).
+# shellcheck source=hooks/lib/memory-env.sh
+. "$HOOKS_DIR/lib/memory-env.sh"
+memory_load_env
 
 # --- Out-of-band index reclamation: gated full VACUUM ------------------------
 # We keep the markdown-vault-mcp server a pristine mirror of upstream 3.0.1, so

@@ -47,32 +47,50 @@ _memory_probe_tcp_open() {
 }
 
 # _memory_probe_initialize: POST a minimal MCP initialize to the server and echo
-# the raw response body. Sends the bearer token (when a token file exists) and
-# the dual Accept header the HTTP/SSE transport requires. Echoes nothing on a
-# transport-level failure (curl non-zero).
+# the raw response body, sending the dual Accept header the HTTP/SSE transport
+# requires. Echoes nothing on a transport-level failure (curl non-zero).
+#
+# The bearer token is passed through a curl --config read from stdin (-K -), NOT
+# on argv: a -H "Authorization: Bearer ..." argument is world-readable via ps /
+# /proc/<pid>/cmdline and would leak the token to other local users — the
+# opposite of the 0600 token-file handling everywhere else. The config carries
+# the header only when a token exists; with no token the config is empty (a
+# no-op), so there is no auth array to expand either — which sidesteps the
+# bash 3.2 `set -u` abort on "${arr[@]}" for an empty array (bash 4.4+
+# special-cases it, so Linux CI never sees it; the macOS target runs bash 3.2).
 _memory_probe_initialize() {
   local port="$1" token="$2"
   local body='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"memory-probe","version":"1"}}}'
-  local auth=()
-  [ -n "$token" ] && auth=(-H "Authorization: Bearer $token")
-  curl -fsS --max-time 5 \
-    -H 'Content-Type: application/json' \
-    -H 'Accept: application/json, text/event-stream' \
-    "${auth[@]}" \
-    -X POST "http://127.0.0.1:$port/mcp" \
-    -d "$body" 2>/dev/null
+  local config=""
+  [ -n "$token" ] && config="header = \"Authorization: Bearer $token\""
+  printf '%s\n' "$config" \
+    | curl -fsS --max-time 5 -K - \
+      -H 'Content-Type: application/json' \
+      -H 'Accept: application/json, text/event-stream' \
+      -X POST "http://127.0.0.1:$port/mcp" \
+      -d "$body" 2>/dev/null
 }
 
 # _memory_probe_server_name: extract serverInfo.name from an initialize response.
-# The HTTP transport may answer as a single JSON object OR as an SSE stream
-# (`data: {json}` lines). Handle both: strip a leading `data:` prefix from each
-# line, then let jq pull the first result.serverInfo.name it can parse.
+# The Streamable-HTTP transport may answer as a single JSON object OR as an SSE
+# stream — `text/event-stream` with named events, e.g.
+#   event: message
+#   data: {"jsonrpc":"2.0",...,"result":{"serverInfo":{"name":"..."}}}
+#   <blank line>
+# Only the `data:` lines carry JSON; `event:`/`id:`/`:comment`/blank framing
+# lines are NOT JSON and make a bare jq parse error out. So feed jq ONLY the
+# `data:` payloads: `sed -n 's/^data: *//; /^{/p'` keeps a line solely when it
+# began `data:` AND (after stripping) starts with `{`. A plain single-object
+# response (no `data:` prefix, starts with `{`) passes through unchanged. Then
+# `jq -R` reads each surviving line as a raw STRING and `fromjson?` parses it,
+# silently skipping any straggler that is not valid JSON (a truncated SSE chunk
+# can't poison the whole stream the way a bare `jq` top-level parse would).
 _memory_probe_server_name() {
   local response="$1"
   command -v jq >/dev/null 2>&1 || return 1
   printf '%s\n' "$response" \
-    | sed -n 's/^data: *//p; /^data: /!p' \
-    | jq -r 'select(.result.serverInfo.name != null) | .result.serverInfo.name' 2>/dev/null \
+    | sed -n 's/^data: *//; /^{/p' \
+    | jq -rR 'fromjson? | select(.result.serverInfo.name != null) | .result.serverInfo.name' 2>/dev/null \
     | head -n 1
 }
 

@@ -16,6 +16,11 @@
 #                              simulate a server that fails to come up.
 #   FAKE_SERVER_NAME           override the serverInfo.name reported (defaults to
 #                              MARKDOWN_VAULT_MCP_SERVER_NAME, then a constant).
+#   FAKE_SERVER_SSE=1          answer initialize as a `text/event-stream` SSE
+#                              frame (`event: message\ndata: {json}\n\n`) instead
+#                              of a single JSON object, matching the real
+#                              Streamable-HTTP transport — exercises the probe's
+#                              SSE-aware response parsing.
 #
 # It is intentionally a thin bash shim around an inline python3 HTTP server:
 # python3's http.server gives a real bound TCP port that bash /dev/tcp and curl
@@ -43,8 +48,9 @@ fi
 
 SERVER_NAME="${FAKE_SERVER_NAME:-${MARKDOWN_VAULT_MCP_SERVER_NAME:-fake-vault}}"
 BIND_DELAY_MS="${FAKE_SERVER_BIND_DELAY_MS:-0}"
+SSE="${FAKE_SERVER_SSE:-0}"
 
-exec python3 - "$PORT" "$HTTP_PATH" "$SERVER_NAME" "$BIND_DELAY_MS" <<'PY'
+exec python3 - "$PORT" "$HTTP_PATH" "$SERVER_NAME" "$BIND_DELAY_MS" "$SSE" <<'PY'
 import json
 import sys
 import time
@@ -54,6 +60,7 @@ port = int(sys.argv[1])
 http_path = sys.argv[2]
 server_name = sys.argv[3]
 bind_delay_ms = int(sys.argv[4])
+sse = sys.argv[5] == "1"
 
 # Simulate the real server's bind window: stay unbound for the delay so
 # concurrency tests can race the readiness gate against a not-yet-listening port.
@@ -79,7 +86,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._reject(400)
         if payload.get("method") != "initialize":
             return self._reject(400)
-        body = json.dumps(
+        result = json.dumps(
             {
                 "jsonrpc": "2.0",
                 "id": payload.get("id", 1),
@@ -89,9 +96,18 @@ class Handler(BaseHTTPRequestHandler):
                     "serverInfo": {"name": server_name, "version": "fake"},
                 },
             }
-        ).encode()
+        )
+        if sse:
+            # Real Streamable-HTTP framing: text/event-stream with a named event
+            # and a `data:` JSON payload, terminated by a blank line. The probe
+            # must strip the framing lines before handing the payload to jq.
+            body = ("event: message\ndata: " + result + "\n\n").encode()
+            content_type = "text/event-stream"
+        else:
+            body = result.encode()
+            content_type = "application/json"
         self.send_response(200)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

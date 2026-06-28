@@ -38,7 +38,18 @@ Present each field to the user one at a time. Show the current value (from exist
 ### 4. `memory_mcp_server_name`
 - **Prompt:** "MCP server friendly name — the display name for the memory vault MCP server"
 - **Default:** `{agent_name}-memory` (derived from field 1)
-- **Note:** This is the `MARKDOWN_VAULT_MCP_SERVER_NAME` value.
+- **Note:** This is the `MARKDOWN_VAULT_MCP_SERVER_NAME` value, and the identity the health probe checks against.
+
+### 4b. `memory_port`
+- **Prompt:** "Memory server port — the loopback port the shared HTTP memory server binds (and the host connects to)"
+- **Default:** `8765`
+- **Note:** The shared HTTP memory server binds `127.0.0.1:{memory_port}`. Only change it if `8765` collides with another local service. **Preflight the port** before accepting a non-default value:
+  ```bash
+  if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "WARNING: port $PORT is already in use — pick another or stop the squatter."
+  fi
+  ```
+  The port reaches the MCP client only via `~/.claude/settings.json` `.env.WORKBENCH_MEMORY_PORT` (a SessionStart hook can't inject it into the host's config parse). Step 2b writes it there when it differs from the default.
 
 ### 5. `summary_model`
 - **Prompt:** "Model for background summary-writer agent"
@@ -91,31 +102,48 @@ Present each field to the user using the AskUserQuestion tool. Show the current 
 
 After all fields, show the assembled config JSON and ask "Save this configuration? (yes/no)".
 
-## Step 2 — Write config
+## Step 2 — Write config (merge, never clobber)
 
-Write `config.json` to the plugin data directory (create the directory if it doesn't exist):
+`config.json` may already hold keys this skill doesn't manage (`persona`, `output_style`, future additions). **Read-modify-write with `jq`** so those survive — do NOT overwrite the file wholesale:
 
-```json
-{
-  "agent_name": "Claude",
-  "memory_path": "/Users/yourname/Documents/Claude/Memory",
-  "memory_cache": "/Users/yourname/.claude-memory-cache",
-  "memory_mcp_server_name": "claude-memory",
-  "auto_summarize": true,
-  "summary_model": "haiku",
-  "identity_files": {
-    "soul_hot": "identity/soul-hot.md",
-    "soul_core": "identity/soul-core.md",
-    "profile": "identity/profile.md"
-  },
-  "persona": "holmes",
-  "output_style": "Holmes"
-}
+```bash
+CONFIG_DIR="$HOME/.claude/plugins/data/workbench-core-claude-workbench"
+CONFIG_FILE="$CONFIG_DIR/config.json"
+mkdir -p "$CONFIG_DIR"
+[ -f "$CONFIG_FILE" ] || echo '{}' > "$CONFIG_FILE"
+
+# Merge the collected values onto the existing object (existing keys not listed
+# here — e.g. persona/output_style — are preserved untouched). Only include
+# memory_port when it differs from the 8765 default, to keep config minimal.
+tmp="$(mktemp)"
+jq \
+  --arg agent_name        "$AGENT_NAME" \
+  --arg memory_path       "$MEMORY_PATH" \
+  --arg memory_cache      "$MEMORY_CACHE" \
+  --arg mcp_name          "$MCP_NAME" \
+  --arg summary_model     "$SUMMARY_MODEL" \
+  --argjson auto_summarize "$AUTO_SUMMARIZE" \
+  --argjson memory_port   "$MEMORY_PORT" \
+  '
+  .agent_name = $agent_name
+  | .memory_path = $memory_path
+  | .memory_cache = $memory_cache
+  | .memory_mcp_server_name = $mcp_name
+  | .summary_model = $summary_model
+  | .auto_summarize = $auto_summarize
+  | .identity_files = (.identity_files // {})
+  | .identity_files.soul_hot  = (.identity_files.soul_hot  // "identity/soul-hot.md")
+  | .identity_files.soul_core = (.identity_files.soul_core // "identity/soul-core.md")
+  | .identity_files.profile   = (.identity_files.profile   // "identity/profile.md")
+  | if $memory_port == 8765 then del(.memory_port) else .memory_port = $memory_port end
+  ' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
 ```
 
-`persona` and `output_style` are written by `/workbench-core:install-persona` (which propagates a shipped persona to the live locations) — they record which persona is active. Don't hand-edit them; re-run install-persona to switch personas. They're optional and absent until a persona is installed.
+Running this twice with the same answers produces a byte-identical file (idempotent).
 
-**Do not edit `plugin.json`.** The `mcp-memory.sh` wrapper reads `config.json` at MCP launch time and exports the env vars the memory server needs. This mapping (for reference only):
+`persona` and `output_style` are written by `/workbench-core:install-persona` — they record which persona is active. Don't hand-edit them; the merge above never touches them. They're absent until a persona is installed.
+
+**Do not edit `plugin.json`.** The hooks resolve env from `config.json` at launch time (precedence: `WORKBENCH_*` override env → `config.json` → default), via `hooks/lib/memory-env.sh`. Reference mapping:
 
 | Config field | Exported env var |
 |---|---|
@@ -123,9 +151,55 @@ Write `config.json` to the plugin data directory (create the directory if it doe
 | `memory_cache` | `MARKDOWN_VAULT_MCP_INDEX_PATH` (+ `/vault-index.sqlite`) |
 | `memory_cache` | `MARKDOWN_VAULT_MCP_EMBEDDINGS_PATH` (+ `/embeddings`) |
 | `memory_cache` | `MARKDOWN_VAULT_MCP_STATE_PATH` (+ `/state.json`) |
+| `memory_cache` | `MARKDOWN_VAULT_MCP_KV_STORE_URL` (+ `/kv`), `…_EVENT_STORE_URL` (+ `/events`) |
 | `memory_mcp_server_name` | `MARKDOWN_VAULT_MCP_SERVER_NAME` |
+| `memory_port` | server `--port` (launcher fallback; settings.json env is what the host connects with) |
 
 Optionally write `config.example.json` alongside `config.json` with placeholder values and inline comments — useful for anyone setting up the plugin manually.
+
+## Step 2b — Provision the bearer token + settings.json env (fully automatic)
+
+The shared HTTP memory server authenticates with a per-install **bearer token**, and the MCP client reads the port + token from `~/.claude/settings.json` `.env` (the only channel that reaches the host's config parse — a hook can't). Provision both with **zero user involvement**, idempotently:
+
+```bash
+CACHE_PATH="$MEMORY_CACHE"   # the resolved memory_cache from Step 1
+TOKEN_FILE="$CACHE_PATH/server.token"
+SETTINGS="${WORKBENCH_SETTINGS_FILE:-$HOME/.claude/settings.json}"
+
+mkdir -p "$CACHE_PATH"
+chmod 700 "$CACHE_PATH" 2>/dev/null || true
+
+# Mint the token ONCE — reuse an existing one so re-running customize is a no-op
+# and doesn't rotate a token the running server is already using.
+if [ ! -s "$TOKEN_FILE" ]; then
+  ( umask 077; openssl rand -hex 32 > "$TOKEN_FILE" )
+fi
+chmod 600 "$TOKEN_FILE"
+TOKEN="$(cat "$TOKEN_FILE")"
+
+# Merge WORKBENCH_MEMORY_TOKEN (and WORKBENCH_MEMORY_PORT when non-default) into
+# settings.json .env, preserving every other setting. Handle the file being
+# absent. Then lock the file down (it now holds a secret).
+mkdir -p "$(dirname "$SETTINGS")"
+[ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
+tmp="$(mktemp)"
+jq \
+  --arg token "$TOKEN" \
+  --argjson port "$MEMORY_PORT" \
+  '
+  .env = (.env // {})
+  | .env.WORKBENCH_MEMORY_TOKEN = $token
+  | if $port == 8765 then (.env | del(.WORKBENCH_MEMORY_PORT)) as $e | .env = $e
+    else .env.WORKBENCH_MEMORY_PORT = ($port|tostring) end
+  ' "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
+chmod 600 "$SETTINGS"
+```
+
+Notes:
+- **Idempotent:** the token is minted once and reused; the `jq` merge is a no-op when values already match. Running customize twice changes nothing.
+- **Non-default port only:** `WORKBENCH_MEMORY_PORT` is written to settings.json only when it isn't `8765` (the baked-in default in `plugin.json`'s URL), keeping settings minimal.
+- **Restart required:** settings.json `.env` is read at Claude Code launch, so the token/port reach the MCP client on the **next restart**, not just the next session. Mention this in the Step 7 restart reminder.
+- **Self-heal:** if the token file is ever lost, the supervisor re-mints one at next start; re-running customize re-syncs settings.json to it.
 
 ## Step 3 — Re-templatize identity files (if `agent_name` changed)
 
@@ -157,6 +231,7 @@ If `agent_name` changed from its previous value (or this is a first-time setup):
 Tell the user:
 - Config saved to `{CONFIG_FILE}`
 - MCP env vars will be re-read from config.json on next Claude Code restart
+- The memory server's bearer token was provisioned (and the port, if non-default) into `~/.claude/settings.json`
 - Whether identity files were created/updated
 
 ## Step 5 — User profile interview
@@ -195,10 +270,11 @@ The profile is completed first intentionally — define-soul benefits from knowi
 
 ## Step 7 — Restart reminder
 
-After both interviews complete (or are skipped), remind the user: **"Restart Claude Code for the MCP server changes to take effect."**
+After both interviews complete (or are skipped), remind the user: **"Restart Claude Code for the memory server changes to take effect."** Be specific about why a restart (not just a new session) is needed: the memory **port and bearer token** live in `~/.claude/settings.json` `.env`, which Claude Code reads only at launch — a SessionStart hook can't inject them into the host's MCP config parse. On a brand-new git install this means memory tools may be unavailable until the next restart picks up the token; that's expected and self-heals.
 
 ## Notes
 
-- **Plugin updates are a non-event.** `plugin.json` points at `mcp-memory.sh`, which resolves env vars from `config.json` at MCP launch. A version bump replaces the plugin dir but the wrapper still reads the same config. No re-customization needed.
-- **Env var overrides still work:** `WORKBENCH_MEMORY_PATH`, `WORKBENCH_MEMORY_CACHE`, and `WORKBENCH_LOG_MODE` override config.json values in the hook scripts. This is useful for testing (e.g., dry-run with temp paths).
+- **Plugin updates are a non-event.** `plugin.json` points the memory MCP at the shared HTTP server; the hooks resolve env from `config.json` at launch via `hooks/lib/memory-env.sh`. A version bump replaces the plugin dir but the hooks still read the same config and settings.json env. No re-customization needed.
+- **Env var overrides still work:** `WORKBENCH_MEMORY_PATH`, `WORKBENCH_MEMORY_CACHE`, `WORKBENCH_MEMORY_PORT`, `WORKBENCH_MCP_SERVER_NAME`, and `WORKBENCH_LOG_MODE` override config.json values in the hook scripts. Useful for testing (e.g., dry-run with temp paths/ports).
+- **Token security:** `server.token` is `0600` under the cache, and `settings.json` is `chmod 600` after the merge (it now carries the token). Never commit either.
 - **First-time setup:** If this is the first run and no config exists, all fields start at their hardcoded defaults. The user confirms or changes each one.

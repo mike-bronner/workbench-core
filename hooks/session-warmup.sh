@@ -31,6 +31,8 @@ HOOKS_DIR="${HOOKS_DIR:-$SCRIPT_DIR}"
 # CACHE_PATH, MCP_NAME, MEMORY_PORT.
 # shellcheck source=hooks/lib/memory-env.sh
 . "$HOOKS_DIR/lib/memory-env.sh"
+# shellcheck source=hooks/lib/memory-probe.sh
+. "$HOOKS_DIR/lib/memory-probe.sh"
 memory_load_env
 MCP_SERVER_NAME="$MCP_NAME"
 
@@ -354,15 +356,40 @@ if [ "$SOURCE" = "startup" ]; then
   find "$CACHE_PATH" -name "summary-writer-*.log" -delete 2>/dev/null
 fi
 
-# ──────────── MCP health check (startup only) ────────────
+# ──────────── Memory server health check (startup only) ────────────
+# The memory server is now a shared HTTP server, lazy-started by the
+# memory-server-up hook that runs just before this warmup. Probe its actual
+# health (identity-checked) rather than guessing from the index file's presence.
+# Only surface a notice when something is wrong — a healthy/coming-up server is
+# the common case and needs no words.
 if [ "$SOURCE" = "startup" ]; then
-  MCP_INDEX="$CACHE_PATH/vault-index.sqlite"
-  if [ ! -f "$MCP_INDEX" ]; then
-    printf '## ⚠ Memory vault index not found\n\n'
-    printf 'Expected FTS index at `%s` but it does not exist.\n' "$MCP_INDEX"
-    printf 'The `%s` MCP may not be running. Memory search and write will fail.\n' "$MCP_SERVER_NAME"
-    printf 'Try `mcp__plugin_workbench-core_memory__stats` to verify, or check server logs.\n\n'
-  fi
+  case "$(memory_probe)" in
+    UP|BUILDING)
+      : # serving (BUILDING = bound, index still building, search available) — quiet.
+      ;;
+    PORT_DRIFT)
+      printf '## ⚠ Memory server port drift\n\n'
+      printf 'The running memory server bound a different port than configured (port `%s`).\n' "$MEMORY_PORT"
+      printf 'This usually means `WORKBENCH_MEMORY_PORT` in `~/.claude/settings.json` and the\n'
+      printf 'recorded `%s/server.port` disagree. Reconcile them (or run `/workbench-core:memory-status`), then restart Claude Code.\n\n' "$CACHE_PATH"
+      ;;
+    DOWN_FOREIGN)
+      printf '## ⚠ Memory server port conflict\n\n'
+      printf 'Another process is listening on memory port `%s` that is not the `%s` vault.\n' "$MEMORY_PORT" "$MCP_SERVER_NAME"
+      printf 'The shared server was not started to avoid a conflict. Free the port or set a different\n'
+      printf '`WORKBENCH_MEMORY_PORT`, then restart. See `/workbench-core:memory-status`.\n\n'
+      ;;
+    DOWN_FAILED)
+      printf '## ⚠ Memory server failed to start\n\n'
+      printf 'The last attempt to start the shared memory server failed (see `%s/server.log`).\n' "$CACHE_PATH"
+      printf 'Memory search and write will fail until it comes up. Run `/workbench-core:memory-status` to diagnose.\n\n'
+      ;;
+    *)  # DOWN_NONE — not up yet; the up-hook just kicked a spawn that binds in ~2s.
+      printf '## ℹ Memory server starting\n\n'
+      printf 'The shared memory server is starting in the background (binds in ~2s; the client retries the connection).\n'
+      printf 'If memory tools are unavailable this turn, they should work shortly — or next session.\n\n'
+      ;;
+  esac
 fi
 
 # ──────────── Identity injection (source-aware) ────────────

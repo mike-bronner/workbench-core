@@ -45,6 +45,13 @@ memory_load_env
 
 LOCK_DIR="$CACHE_PATH/server.lock"
 CLAIMER_PID_FILE="$LOCK_DIR/claimer.pid"
+NONCE_FILE="$LOCK_DIR/nonce"
+# Generation token of the lock WE belong to, captured at stamp time. release_lock
+# only removes the lock while the on-disk nonce still matches this one — so a
+# stale supervisor whose lock was already stolen and re-created by a newer
+# generation never deletes that newer generation's lock (the fixed-path rm -rf
+# cross-generation hazard).
+GEN_NONCE=""
 SERVER_LOG="$CACHE_PATH/server.log"
 SERVER_PID_FILE="$CACHE_PATH/server.pid"
 SERVER_PORT_FILE="$CACHE_PATH/server.port"
@@ -55,9 +62,23 @@ FAILED_MARKER="$CACHE_PATH/.server-failed"
 # stdout consumer). Mirror the launcher's _log shape for grep-ability.
 _log() { echo "memory-server-spawn: $*" >> "$SERVER_LOG" 2>/dev/null; }
 
-# release_lock: remove the spawn lock. The lock dir is non-empty (it holds
-# claimer.pid), so rm -rf, never rmdir.
-release_lock() { rm -rf "$LOCK_DIR" 2>/dev/null || true; }
+# release_lock: remove the spawn lock — but ONLY if it is still OUR generation's
+# lock. Compare the on-disk nonce against the one we captured at stamp time: if
+# they differ, our lock was stolen (rm -rf) and re-created by a newer generation,
+# so removing the fixed-path dir now would delete THAT generation's lock — leave
+# it. When they match (the normal case) rm -rf (the dir is non-empty — it holds
+# claimer.pid + nonce — so rm -rf, never rmdir). An empty captured nonce paired
+# with an empty on-disk nonce is the legacy/no-nonce case and still releases, so
+# a missing nonce can never wedge the lock.
+release_lock() {
+  local cur
+  cur="$(cat "$NONCE_FILE" 2>/dev/null)"
+  if [ "$cur" = "$GEN_NONCE" ]; then
+    rm -rf "$LOCK_DIR" 2>/dev/null || true
+  else
+    _log "lock generation changed (nonce '$cur' != ours '$GEN_NONCE'); not releasing a newer generation's lock"
+  fi
+}
 
 # fail: record the failure (marker + log tail) and release the lock, then exit.
 # Never leave the lock held — a stuck lock would block every future spawn.
@@ -142,6 +163,12 @@ sweep_orphan_stdio_servers() {
   touch "$stamp" 2>/dev/null || true
 }
 
+# Test seam: let the suite source THIS file for its helper functions
+# (release_lock, etc.) without running the supervisor body. Tests set
+# MEMORY_SPAWN_LIB_ONLY=1; `return` is valid here because the test sources us,
+# and the guard is never reached on a normal direct execution (the var is unset).
+[ -n "${MEMORY_SPAWN_LIB_ONLY:-}" ] && return 0
+
 # ──────────── Stamp the lock's liveness token (our own pid) ────────────
 # The kicker won the mkdir lock and reparented us but deliberately does NOT write
 # claimer.pid. A late write from the ephemeral kicker can land in a NEWER lock
@@ -153,6 +180,11 @@ sweep_orphan_stdio_servers() {
 # because the token lives INSIDE the lock dir it is removed (rm -rf) with the dir
 # on release — it can never outlive its generation. The kicker pre-created
 # LOCK_DIR (the mkdir mutex), so this write lands; it is best-effort regardless.
+# Capture our generation's nonce (the kicker wrote it into the lock at mkdir
+# time) BEFORE any heavy work, so release_lock can later prove the lock is still
+# ours. Capture-then-stamp is the supervisor's first action; a steal can only
+# happen once our claimer.pid looks dead, which it does not while we run.
+GEN_NONCE="$(cat "$NONCE_FILE" 2>/dev/null)"
 echo "$$" > "$CLAIMER_PID_FILE" 2>/dev/null || true
 
 # ──────────── Cache + state dirs ────────────

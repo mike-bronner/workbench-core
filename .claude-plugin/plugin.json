@@ -1,7 +1,7 @@
 {
   "name": "workbench-core",
   "description": "Core infrastructure for Claude Code: persistent agent identity, session lifecycle hooks, operational memory, and meta skills. Provides a customizable framework where users configure the agent name, memory path, and persona files.",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "author": {
     "name": "Mike Bronner",
     "url": "https://github.com/mike-bronner"
@@ -9,10 +9,11 @@
   "repository": "https://github.com/mike-bronner/core",
   "mcpServers": {
     "memory": {
-      "command": "bash",
-      "args": [
-        "${CLAUDE_PLUGIN_ROOT}/hooks/mcp-memory.sh"
-      ]
+      "type": "http",
+      "url": "http://127.0.0.1:${WORKBENCH_MEMORY_PORT:-8765}/mcp",
+      "headers": {
+        "Authorization": "Bearer ${WORKBENCH_MEMORY_TOKEN}"
+      }
     }
   }
 }

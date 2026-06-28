@@ -80,13 +80,12 @@ esac
 try_claim() { mkdir "$LOCK_DIR" 2>/dev/null; }
 
 if ! try_claim; then
-  # Lock held by someone else. The claimer pid is the SUPERVISOR's pid, written
-  # by the winning kicker right after it reparents the supervisor — NOT the
-  # ephemeral kicker's pid (which would be dead within milliseconds and cause
-  # every concurrent kicker to steal and double-spawn). The winner needs a brief
-  # moment to spawn the supervisor and write its pid, so an empty claimer.pid
-  # means "winner still spawning", not "crashed". Re-read over ~300ms before
-  # concluding the pid is genuinely absent.
+  # Lock held by someone else. claimer.pid is the SUPERVISOR's OWN pid, which the
+  # supervisor writes as its first action — NOT the ephemeral kicker's pid (which
+  # would be dead within milliseconds and make every concurrent kicker steal and
+  # double-spawn). The supervisor needs a brief moment to start and write its pid,
+  # so an empty claimer.pid means "supervisor still starting", not "crashed".
+  # Re-read over ~300ms before concluding the pid is genuinely absent.
   CLAIMER_PID=""
   j=0
   while [ "$j" -lt 30 ]; do
@@ -147,10 +146,11 @@ else
   disown 2>/dev/null || true
 fi
 
-# Hand the lock's liveness token to the supervisor. A concurrent kicker now sees
-# a LIVE claimer (the working supervisor) and backs off instead of double-
-# spawning. If the supervisor pid is somehow empty, claimer.pid stays absent and
-# a concurrent kicker's wait-then-steal path resolves the wedged lock.
-[ -n "$SUPERVISOR_PID" ] && echo "$SUPERVISOR_PID" > "$CLAIMER_PID_FILE" 2>/dev/null || true
+# The supervisor stamps the lock's liveness token (claimer.pid) with its OWN pid
+# as its first action — we deliberately do NOT write it here. A late write from
+# this ephemeral kicker could land in a newer lock generation (if the supervisor
+# releases the lock fast) and clobber a live sibling's pid, causing the exact
+# double-spawn the lock prevents. Leaving the stamp to the lock's true owner
+# closes that race.
 
 exit 0

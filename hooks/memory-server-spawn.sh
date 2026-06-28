@@ -8,8 +8,10 @@
 #
 # Contract with memory-server-up.sh (the kicker):
 #   - The kicker has already won the spawn lock ($CACHE_PATH/server.lock) and
-#     written server.lock/claimer.pid. This supervisor OWNS that lock now and is
-#     responsible for releasing it (rm -rf) on every exit path.
+#     reparented us. The kicker does NOT write claimer.pid — WE stamp the lock
+#     with our OWN pid as our first action (a late write from the ephemeral
+#     kicker could clobber a newer lock generation). This supervisor OWNS the
+#     lock now and is responsible for releasing it (rm -rf) on every exit path.
 #   - On success: server bound + identity-checked-ready → release the lock.
 #   - On failure: write $CACHE_PATH/.server-failed (with a log tail) → release
 #     the lock. The next SessionStart will see DOWN_FAILED and retry.
@@ -42,6 +44,7 @@ export PATH="$HOME/.local/bin:$PATH"
 memory_load_env
 
 LOCK_DIR="$CACHE_PATH/server.lock"
+CLAIMER_PID_FILE="$LOCK_DIR/claimer.pid"
 SERVER_LOG="$CACHE_PATH/server.log"
 SERVER_PID_FILE="$CACHE_PATH/server.pid"
 SERVER_PORT_FILE="$CACHE_PATH/server.port"
@@ -138,6 +141,19 @@ sweep_orphan_stdio_servers() {
 
   touch "$stamp" 2>/dev/null || true
 }
+
+# ──────────── Stamp the lock's liveness token (our own pid) ────────────
+# The kicker won the mkdir lock and reparented us but deliberately does NOT write
+# claimer.pid. A late write from the ephemeral kicker can land in a NEWER lock
+# generation if we release the lock fast (the UP/BUILDING fast paths below do
+# exactly that), overwriting a live sibling supervisor's pid with our dead one —
+# a third kicker then reads the dead pid, declares the lock stale, steals it, and
+# double-spawns. WE own the lock now, so WE stamp it with our own long-lived pid
+# as the first action. A concurrent kicker reads this live pid and backs off, and
+# because the token lives INSIDE the lock dir it is removed (rm -rf) with the dir
+# on release — it can never outlive its generation. The kicker pre-created
+# LOCK_DIR (the mkdir mutex), so this write lands; it is best-effort regardless.
+echo "$$" > "$CLAIMER_PID_FILE" 2>/dev/null || true
 
 # ──────────── Cache + state dirs ────────────
 # Create the cache and the HTTP transport's required KV/event store dirs. chmod

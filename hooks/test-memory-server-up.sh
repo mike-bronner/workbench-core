@@ -232,6 +232,24 @@ else
   no "server PPID never became 1 (not detached)"
 fi
 
+echo "issue 2 — only the supervisor writes claimer.pid (no late-kicker clobber):"
+# The kicker must NOT write claimer.pid. A late write from the ephemeral kicker
+# can land in a newer lock generation (if a fast supervisor already released the
+# lock), clobbering a live sibling's pid with a dead one → a third kicker reads
+# the dead pid, declares the lock stale, and double-spawns. Only the supervisor,
+# the lock's true owner, stamps it with its own $$. Guard structurally (code
+# lines only, not the explanatory comments).
+if grep -vE '^[[:space:]]*#' "$UP" | grep -qF '> "$CLAIMER_PID_FILE"'; then
+  no "kicker still writes claimer.pid (late-write clobber risk)"
+else
+  ok "kicker does not write claimer.pid"
+fi
+if grep -qF 'echo "$$" > "$CLAIMER_PID_FILE"' "$HOOKS/memory-server-spawn.sh"; then
+  ok "supervisor stamps claimer.pid with its own \$\$ as its first action"
+else
+  no "supervisor does not write claimer.pid from \$\$"
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

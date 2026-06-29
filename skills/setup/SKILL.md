@@ -2,7 +2,7 @@
 description: Configure the workbench — agent name, memory paths, MCP server name, and identity file paths. Config lives in the plugin data directory and is read at MCP start time, so plugin updates never clobber settings.
 ---
 
-The user has invoked `/workbench:customize`. Walk them through configuring all workbench settings interactively.
+The user has invoked `/workbench:setup`. Walk them through configuring all workbench settings interactively.
 
 ## Config location
 
@@ -169,7 +169,7 @@ SETTINGS="${WORKBENCH_SETTINGS_FILE:-$HOME/.claude/settings.json}"
 mkdir -p "$CACHE_PATH"
 chmod 700 "$CACHE_PATH" 2>/dev/null || true
 
-# Mint the token ONCE — reuse an existing one so re-running customize is a no-op
+# Mint the token ONCE — reuse an existing one so re-running setup is a no-op
 # and doesn't rotate a token the running server is already using.
 if [ ! -s "$TOKEN_FILE" ]; then
   ( umask 077; openssl rand -hex 32 > "$TOKEN_FILE" )
@@ -196,10 +196,10 @@ chmod 600 "$SETTINGS"
 ```
 
 Notes:
-- **Idempotent:** the token is minted once and reused; the `jq` merge is a no-op when values already match. Running customize twice changes nothing.
+- **Idempotent:** the token is minted once and reused; the `jq` merge is a no-op when values already match. Running setup twice changes nothing.
 - **Non-default port only:** `WORKBENCH_MEMORY_PORT` is written to settings.json only when it isn't `8765` (the baked-in default in `plugin.json`'s URL), keeping settings minimal.
 - **Restart required:** settings.json `.env` is read at Claude Code launch, so the token/port reach the MCP client on the **next restart**, not just the next session. Mention this in the Step 7 restart reminder.
-- **Self-heal:** if the token file is ever lost, the supervisor re-mints one at next start; re-running customize re-syncs settings.json to it.
+- **Self-heal:** if the token file is ever lost, the supervisor re-mints one at next start; re-running setup re-syncs settings.json to it.
 
 ## Step 3 — Re-templatize identity files (if `agent_name` changed)
 
@@ -242,7 +242,7 @@ Ask whether to enable it, via AskUserQuestion:
 - **Question:** "Schedule the nightly decision-quality review? It evaluates recent decisions, then pauses on a proposal triage for your sign-off."
 - **Options:** "Yes — run it nightly" · "Skip (I'll run it manually)"
 
-If the user declines, skip this step (they can re-run customize anytime to enable it). If they accept:
+If the user declines, skip this step (they can re-run setup anytime to enable it). If they accept:
 
 1. **Pre-warm the scheduled-tasks MCP tools** in one ToolSearch call:
    `ToolSearch(query: "select:mcp__scheduled-tasks__list_scheduled_tasks,mcp__scheduled-tasks__create_scheduled_task,mcp__scheduled-tasks__update_scheduled_task")`
@@ -260,7 +260,7 @@ If the user declines, skip this step (they can re-run customize anytime to enabl
    }
    ```
 
-4. **Confirm:** "✅ Nightly decision-quality task registered (03:00). It writes a learnings report and pauses on the triage until you pick it up. Re-run customize to change the time or remove it."
+4. **Confirm:** "✅ Nightly decision-quality task registered (03:00). It writes a learnings report and pauses on the triage until you pick it up. Re-run setup to change the time or remove it."
 
 **One chained task, not two.** The proposal triage must run only *after* the evaluation report exists, so a single task that runs evaluate then propose expresses that dependency directly — a second fixed-time cron could fire before the evaluation finished. The prompt's pause instruction is what makes the unattended run wait at the triage rather than fabricate answers.
 

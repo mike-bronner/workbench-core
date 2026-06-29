@@ -40,7 +40,7 @@ sudo dnf install jq
 
 **You normally don't need to install this yourself** — the plugin self-installs the server from the fork on first run. All it needs is [`uv`](https://docs.astral.sh/uv/) or [`pipx`](https://pipx.pypa.io/) on your PATH (`uv` preferred). The plugin's `.claude-plugin/plugin.json` declares the `memory` MCP server (an HTTP transport at `127.0.0.1:8765`) and Claude Code auto-wires it on plugin install, so there's no `claude mcp add` step either.
 
-Since v0.10.0 the server is a **single shared HTTP server**, lazy-started on the first session and shared by every session after (see [Shared memory server](#shared-memory-server) below). On a brand-new git install the very first session may have no memory until the next restart — the SessionStart hook kicks the server (binding in ~2s), but the bearer **token** it authenticates with reaches the MCP client only via `~/.claude/settings.json`, which Claude Code reads at launch. Run `/workbench-core:customize` to provision the token, then restart once; thereafter memory is available from the first session.
+Since v0.10.0 the server is a **single shared HTTP server**, lazy-started on the first session and shared by every session after (see [Shared memory server](#shared-memory-server) below). On a brand-new git install the very first session may have no memory until the next restart — the SessionStart hook kicks the server (binding in ~2s), but the bearer **token** it authenticates with reaches the MCP client only via `~/.claude/settings.json`, which Claude Code reads at launch. Run `/workbench-core:setup` to provision the token, then restart once; thereafter memory is available from the first session.
 
 The launcher installs from the [mikebronner/markdown-vault-mcp](https://github.com/mikebronner/markdown-vault-mcp) fork — the canonical source for this plugin. The fork carries index-state fixes the plugin relies on (persistent-index adoption at boot, offline-change reconciliation, tracker skip-state, embedding convergence, raw-transcript exclusion support) that are not yet in any PyPI release. They have been contributed upstream ([pvliesdonk/markdown-vault-mcp#665](https://github.com/pvliesdonk/markdown-vault-mcp/issues/665)); once an upstream release carries them, plain PyPI installs will work again — until then, installing from PyPI gets you a server that can exceed Claude Code's 30s MCP startup timeout on first boot.
 
@@ -111,7 +111,7 @@ alias claude='claude --append-system-prompt-file ~/.claude/system-overrides.md'
 
 ### Configure (required on first install)
 
-The memory MCP server ships unconfigured. Run `/workbench:customize` on first install to set your paths:
+The memory MCP server ships unconfigured. Run `/workbench:setup` on first install to set your paths:
 
 | Setting | Description | Default |
 |---------|-------------|---------|
@@ -123,7 +123,7 @@ The memory MCP server ships unconfigured. Run `/workbench:customize` on first in
 | `auto_summarize` | Spawn background summary-writer on session end | `true` |
 | `summary_model` | Model for the background summary-writer | `haiku` |
 
-Configuration is stored in `~/.claude/plugins/data/workbench-core-claude-workbench/config.json` and survives plugin updates. The hooks resolve env from this file at launch (via `hooks/lib/memory-env.sh`), so a plugin version bump never clobbers your settings. `/workbench-core:customize` also provisions the memory server's **bearer token** (and the port, when non-default) into `~/.claude/settings.json` `.env` — the only channel that reaches the MCP client's config parse. Those changes take effect on the next Claude Code **restart**, not just a new session.
+Configuration is stored in `~/.claude/plugins/data/workbench-core-claude-workbench/config.json` and survives plugin updates. The hooks resolve env from this file at launch (via `hooks/lib/memory-env.sh`), so a plugin version bump never clobbers your settings. `/workbench-core:setup` also provisions the memory server's **bearer token** (and the port, when non-default) into `~/.claude/settings.json` `.env` — the only channel that reaches the MCP client's config parse. Those changes take effect on the next Claude Code **restart**, not just a new session.
 
 ### Set up identity files
 
@@ -165,7 +165,7 @@ Alternatively, use the interactive skills to build these files through a guided 
 - `/workbench:define-soul` — walks through agent identity, voice, hard rules, and failure modes
 - `/workbench:define-profile` — walks through user role, working style, technical stack, privacy preferences, and session quality
 
-These are the recommended approach — `/workbench:customize` will offer to launch them automatically on first install.
+These are the recommended approach — `/workbench:setup` will offer to launch them automatically on first install.
 
 ### Execution-aware skills
 
@@ -173,7 +173,7 @@ Any skill execution reads a persistent learnings file before running. If the run
 
 The protocol applies to **any** skill — workbench skills, third-party plugin skills, your own personal skills. No per-skill configuration needed.
 
-The protocol is driven by `{memory_path}/identity/skills-protocol.md`, installed by `/workbench:customize` and loaded every session by the SessionStart hook (load order: soul-hot → profile → skills-protocol → guardrails). Remove the file if you want to disable the behavior; delete a specific `skills/{skill-name}.learnings.md` to reset one skill's accumulated state without touching the rest.
+The protocol is driven by `{memory_path}/identity/skills-protocol.md`, installed by `/workbench:setup` and loaded every session by the SessionStart hook (load order: soul-hot → profile → skills-protocol → guardrails). Remove the file if you want to disable the behavior; delete a specific `skills/{skill-name}.learnings.md` to reset one skill's accumulated state without touching the rest.
 
 #### Compaction
 
@@ -228,7 +228,7 @@ core/
 │   └── vault-conventions.md    — paths, frontmatter rules, write conventions
 ├── skills/
 │   ├── compact-learnings/      — review, compact, and integrate skill learnings
-│   ├── customize/              — configure agent name, paths, MCP settings
+│   ├── setup/                  — configure agent name, paths, MCP settings
 │   ├── evaluate-decisions/     — grade recorded decisions/memories → learnings report (REPS gear 2)
 │   ├── propose-upgrades/       — learnings → reviewed proposals → apply on sign-off (REPS gears 3+4)
 │   ├── define-profile/         — interactive user profile interview
@@ -356,7 +356,7 @@ How it works:
 - **Lazy start.** A SessionStart hook (`hooks/memory-server-up.sh`) runs first, before the warmup. It probes the configured port (`127.0.0.1:8765` by default); if the vault is already serving, it does nothing. Otherwise it wins a mutex and hands a **detached supervisor** (`hooks/memory-server-spawn.sh`) the slow work — venv install, the gated index VACUUM, and launching the server — then returns immediately. The supervisor is reparented out of the hook's process group (via `perl` + `POSIX::setsid`), so the server outlives the session that started it. The HTTP transport binds in ~2s; Claude Code retries the MCP connection until it's up.
 - **Never stops.** Once up, the server stays up across sessions — it is shared infrastructure, not per-session. The only stop path is manual: `/workbench-core:memory-status stop` (or `hooks/memory-server-down.sh`), e.g. to change ports.
 - **Identity-checked health.** The warmup and `/workbench-core:memory-status` probe the server with a real MCP `initialize` and assert the handshake's `serverInfo.name` matches your configured server name — so a session never silently attaches to a *different* vault squatting the port. A foreign listener is reported as a conflict, never adopted.
-- **Bearer token auth.** The server authenticates with a per-install bearer token, **fully auto-provisioned** by `/workbench-core:customize`: it mints a random token (`openssl rand -hex 32`), writes it `0600` to `{memory_cache}/server.token`, and merges `WORKBENCH_MEMORY_TOKEN` into `~/.claude/settings.json` `.env` (which `plugin.json`'s `Authorization: Bearer ${WORKBENCH_MEMORY_TOKEN}` header reads). If the token file is ever lost, the supervisor re-mints one at next start. Because settings.json env is read at launch, a brand-new install's first session may lack memory until the next restart — expected, and self-healing.
+- **Bearer token auth.** The server authenticates with a per-install bearer token, **fully auto-provisioned** by `/workbench-core:setup`: it mints a random token (`openssl rand -hex 32`), writes it `0600` to `{memory_cache}/server.token`, and merges `WORKBENCH_MEMORY_TOKEN` into `~/.claude/settings.json` `.env` (which `plugin.json`'s `Authorization: Bearer ${WORKBENCH_MEMORY_TOKEN}` header reads). If the token file is ever lost, the supervisor re-mints one at next start. Because settings.json env is read at launch, a brand-new install's first session may lack memory until the next restart — expected, and self-healing.
 - **One-shot orphan sweep.** On the first shared start, the supervisor reaps any leaked **orphan** stdio servers from the old per-session model (UID-scoped, matched on the server binary path, and only those whose parent is dead — a live-parented session's server is never touched).
 
 Cache layout under `{memory_cache}` (default `~/.claude-memory-cache`):
@@ -377,7 +377,7 @@ Cache layout under `{memory_cache}` (default `~/.claude-memory-cache`):
 
 The `kv/` and `events/` stores are required by the HTTP transport (its default `file:///data/state` is unwritable on macOS); they back HTTP session persistence. A retention sweep for them is deferred to a future release — they grow slowly and are safe to delete when the server is stopped.
 
-To change the port, set `memory_port` via `/workbench-core:customize` (which preflights it with `lsof` and writes `WORKBENCH_MEMORY_PORT` to settings.json), then restart Claude Code. Check health any time with `/workbench-core:memory-status`.
+To change the port, set `memory_port` via `/workbench-core:setup` (which preflights it with `lsof` and writes `WORKBENCH_MEMORY_PORT` to settings.json), then restart Claude Code. Check health any time with `/workbench-core:memory-status`.
 
 #### Canonical store & routing
 
@@ -400,7 +400,7 @@ The memory pipeline above *records* what was decided; this loop asks whether tho
 1. **`/workbench-core:evaluate-decisions`** reads recently recorded decisions and memory entries and grades them on four axes — correctness vs. later outcomes, accuracy/efficiency/speed, consistency/recurrence (the same mistake recorded twice), and gaps (a decision made with no governing rule). It writes a **learnings report** to `learnings/` and changes nothing else.
 2. **`/workbench-core:propose-upgrades`** turns that report into concrete **proposals** — corrections to existing memories and new process recordings — in a review digest under `proposals/`. It then walks **sign-off**: in phase 1 every proposal needs explicit human approval, judged on whether it improves accuracy, efficiency, or speed. Approved memory changes are applied via the memory MCP; approved repo-file changes (`CLAUDE.md`, a `SKILL.md`) still pass through the normal commit-approval gate. Rejections are logged so they never resurface.
 
-**Nightly scheduling (opt-in).** `/workbench-core:customize` offers to deploy one scheduled task (`workbench-core-decision-quality`) via the scheduled-tasks MCP. It runs the two phases chained — evaluate writes the report, then propose builds the digest and **pauses on the sign-off triage** (`AskUserQuestion`) until you pick it up next session. This is the same "generate overnight, present when you arrive" pattern as the BuJo ritual; the scheduled prompt instructs the run to wait rather than fabricate answers, and nothing is ever applied without your approval. A quiet night with no findings completes silently. **Auto-accepting** low-risk proposals remains deferred until the manual loop has earned trust.
+**Nightly scheduling (opt-in).** `/workbench-core:setup` offers to deploy one scheduled task (`workbench-core-decision-quality`) via the scheduled-tasks MCP. It runs the two phases chained — evaluate writes the report, then propose builds the digest and **pauses on the sign-off triage** (`AskUserQuestion`) until you pick it up next session. This is the same "generate overnight, present when you arrive" pattern as the BuJo ritual; the scheduled prompt instructs the run to wait rather than fabricate answers, and nothing is ever applied without your approval. A quiet night with no findings completes silently. **Auto-accepting** low-risk proposals remains deferred until the manual loop has earned trust.
 
 ### Retention
 
@@ -418,7 +418,7 @@ Runs on every `startup` warmup:
 
 | Skill | Description |
 |-------|-------------|
-| `/workbench:customize` | Configure agent name, paths, summary model, identity files |
+| `/workbench:setup` | Configure agent name, paths, summary model, identity files |
 | `/workbench:define-soul` | Interactive onboarding/refinement for agent identity (soul-hot, soul-core) |
 | `/workbench-core:install-persona` | Install a shipped persona — soul files + output style + `outputStyle` setting — into your live locations; non-destructive |
 | `/workbench:define-profile` | Interactive interview to build/refine the user's profile.md (role, working style, stack, privacy, session quality) |
@@ -464,7 +464,7 @@ All config values can be overridden via environment variables for testing:
 | `WORKBENCH_MEMORY_PATH` | `memory_path` |
 | `WORKBENCH_MEMORY_CACHE` | `memory_cache` |
 | `WORKBENCH_MEMORY_PORT` | `memory_port` (also read by the MCP client from `settings.json` `.env`) |
-| `WORKBENCH_MEMORY_TOKEN` | memory server bearer token (set in `settings.json` `.env` by customize) |
+| `WORKBENCH_MEMORY_TOKEN` | memory server bearer token (set in `settings.json` `.env` by setup) |
 | `WORKBENCH_SUMMARY_MODEL` | `summary_model` |
 | `WORKBENCH_AUTO_SUMMARIZE` | `auto_summarize` |
 | `WORKBENCH_LOG_MODE` | Force log mode (`checkpoint`, `final`, `manual`) |
@@ -479,7 +479,7 @@ All config values can be overridden via environment variables for testing:
 ## Known limitations
 
 - **Restart after plugin update.** `CLAUDE_PLUGIN_ROOT` is resolved once at session startup. After updating, restart Claude Code to pick up changes.
-- **First session after a git install may lack memory.** The memory server's port and bearer token reach the MCP client via `~/.claude/settings.json` `.env`, which Claude Code reads at launch — a SessionStart hook can't inject them. Run `/workbench-core:customize` to provision them, then restart once; memory is available from the first session thereafter. Check status any time with `/workbench-core:memory-status`.
+- **First session after a git install may lack memory.** The memory server's port and bearer token reach the MCP client via `~/.claude/settings.json` `.env`, which Claude Code reads at launch — a SessionStart hook can't inject them. Run `/workbench-core:setup` to provision them, then restart once; memory is available from the first session thereafter. Check status any time with `/workbench-core:memory-status`.
 - **Summary-writer race on rapid compactions.** If a session compacts multiple times in quick succession, multiple summary-writers may run concurrently. The last one wins (overwrites the summary), which is always the most complete — but intermediate writers do wasted work.
 
 ## Design philosophy

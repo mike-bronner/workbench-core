@@ -215,6 +215,8 @@ core/
 │   ├── memory-server-up.sh     — SessionStart kicker: lazy-start the shared server
 │   ├── memory-server-spawn.sh  — detached supervisor: install + launch + readiness
 │   ├── memory-server-down.sh   — manual stop for the shared server
+│   ├── memory-capture-nudge.sh — UserPromptSubmit: nudge proactive memory WRITES
+│   ├── memory-recall.sh        — UserPromptSubmit: inject relevant memory READS (recall)
 │   ├── lib/                    — sourceable libs: memory-env / -probe / -vacuum / -install
 │   └── fixtures/               — test fixtures (fake-server stub, no real server)
 ├── references/
@@ -246,7 +248,7 @@ core/
 
 ### Session lifecycle
 
-Four hooks manage the session lifecycle:
+These hooks fire across the session lifecycle and on each turn:
 
 | Hook | Script | Purpose |
 |------|--------|---------|
@@ -255,6 +257,8 @@ Four hooks manage the session lifecycle:
 | `PreCompact` | `hooks/session-log.sh` | Dump raw log checkpoint, spawn summary-writer |
 | `PostCompact` | `hooks/session-warmup.sh` | Re-inject identity after context compression |
 | `SessionEnd` | `hooks/session-log.sh` | Dump final log segment, spawn summary-writer |
+| `UserPromptSubmit` | `hooks/memory-capture-nudge.sh` | Sparse nudge to capture durable knowledge to the vault (memory **writes**) |
+| `UserPromptSubmit` | `hooks/memory-recall.sh` | Proactive recall — search the vault with the prompt and inject relevant memories, **once per session** per memory (memory **reads**) |
 
 ### Logging pipeline
 
@@ -466,6 +470,8 @@ All config values can be overridden via environment variables for testing:
 | `WORKBENCH_SKIP_LOG` | Set to `1` to skip logging (used by summary-writer) |
 | `WORKBENCH_SKIP_WARMUP` | Set to `1` to skip warmup (used by summary-writer) |
 | `WORKBENCH_MCP_SERVER_NAME` | `memory_mcp_server_name` |
+| `WORKBENCH_MEMORY_RECALL` | Set to `0` to disable proactive vault recall (`memory-recall.sh`) |
+| `WORKBENCH_MEMORY_RECALL_LIMIT` | Max memories the recall hook injects per turn (default `2`) |
 | `WORKBENCH_SETTINGS_FILE` | `~/.claude/settings.json` path (used by `install-persona` tests) |
 | `WORKBENCH_OUTPUT_STYLES_DIR` | `~/.claude/output-styles` path (used by `install-persona` tests) |
 

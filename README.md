@@ -206,6 +206,7 @@ core/
 │   └── summary-writer.md       — background narrative agent definition
 ├── assets/
 │   ├── personas/              — optional ready-made personas (soul + output style)
+│   ├── prompt-templates/      — scheduled-task prompt bodies (decision-quality nightly)
 │   └── templates/              — identity + protocol templates
 ├── hooks/
 │   ├── hooks.json              — hook → script bindings
@@ -399,7 +400,7 @@ The memory pipeline above *records* what was decided; this loop asks whether tho
 1. **`/workbench-core:evaluate-decisions`** reads recently recorded decisions and memory entries and grades them on four axes — correctness vs. later outcomes, accuracy/efficiency/speed, consistency/recurrence (the same mistake recorded twice), and gaps (a decision made with no governing rule). It writes a **learnings report** to `learnings/` and changes nothing else.
 2. **`/workbench-core:propose-upgrades`** turns that report into concrete **proposals** — corrections to existing memories and new process recordings — in a review digest under `proposals/`. It then walks **sign-off**: in phase 1 every proposal needs explicit human approval, judged on whether it improves accuracy, efficiency, or speed. Approved memory changes are applied via the memory MCP; approved repo-file changes (`CLAUDE.md`, a `SKILL.md`) still pass through the normal commit-approval gate. Rejections are logged so they never resurface.
 
-Auto-accepting low-risk proposals and running the loop on a schedule are deliberately deferred until the manual loop has earned trust.
+**Nightly scheduling (opt-in).** `/workbench-core:customize` offers to deploy one scheduled task (`workbench-core-decision-quality`) via the scheduled-tasks MCP. It runs the two phases chained — evaluate writes the report, then propose builds the digest and **pauses on the sign-off triage** (`AskUserQuestion`) until you pick it up next session. This is the same "generate overnight, present when you arrive" pattern as the BuJo ritual; the scheduled prompt instructs the run to wait rather than fabricate answers, and nothing is ever applied without your approval. A quiet night with no findings completes silently. **Auto-accepting** low-risk proposals remains deferred until the manual loop has earned trust.
 
 ### Retention
 

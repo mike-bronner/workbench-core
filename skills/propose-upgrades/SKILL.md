@@ -71,15 +71,19 @@ summary: "N proposals — C corrections, P new-process, R promotions, … awaiti
 
 ## Step 4 — Sign-off (phase 1: every item needs Mike)
 
-Walk the digest with Mike. **Phase 1 has no auto-accept — present every proposal**, in severity order, each with its proposed change and your recommendation, and **wait for his decision** before the next (this is the `develop` decision protocol applied to the learning layer). Offer three choices per item:
+Present the proposals for sign-off via **`AskUserQuestion`** — one question per proposal, in severity order, batched in groups of up to 4 per call (the tool's max). **This is what makes the scheduled run work:** when this skill runs unattended (the nightly `workbench-core-decision-quality` task), the `AskUserQuestion` call **pauses the session and waits** until Mike picks up the triage — it never fabricates an answer or auto-applies. Run interactively, the same call just prompts him directly. The behavior is identical; only who answers (now vs. later) differs.
 
-| Choice | Action |
+Each question states the proposed change + your recommendation + the metric it improves. Options per proposal:
+
+| Option | Action |
 |---|---|
-| **Approve** | Apply it (Step 5), set `Status: applied`. |
+| **Approve** | Apply it (Step 5); set `Status: applied`. |
 | **Reject** | Don't apply; append a one-line entry to `proposals/rejected.md` (title + target + why) so it never resurfaces; set `Status: rejected`. |
-| **Edit & approve** | Mike amends the proposed change; apply the amended version. |
+| **Edit & approve** | Mike amends via the question's free-text "Other"; apply the amended version. |
 
-Mike judges each against **accuracy / efficiency / speed** — the metrics named on the item. When every item is decided, set the digest `status: signed-off`.
+Phase 1 has **no auto-accept** — every proposal goes through a question. Mike judges each against **accuracy / efficiency / speed** — the metrics named on the item. Apply each decision (Step 5) as it lands; when every item is decided, set the digest `status: signed-off`.
+
+**Empty-triage guard:** if there are no proposals, do **not** call `AskUserQuestion` — finish silently. A scheduled run must never pause on an empty triage.
 
 ## Step 5 — Apply approved proposals
 

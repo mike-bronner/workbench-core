@@ -234,6 +234,36 @@ Tell the user:
 - The memory server's bearer token was provisioned (and the port, if non-default) into `~/.claude/settings.json`
 - Whether identity files were created/updated
 
+## Step 4.5 — Deploy the nightly decision-quality task (opt-in)
+
+The decision-quality learning loop (`/workbench-core:evaluate-decisions` → `/workbench-core:propose-upgrades`) can run on a nightly schedule: it grades the decisions and memories recorded that day, writes a learnings report, then holds a **triage of sign-off questions that pauses until you pick it up** — the same async pattern as the BuJo ritual. Auto-apply never happens; every proposal waits for your explicit approval.
+
+Ask whether to enable it, via AskUserQuestion:
+- **Question:** "Schedule the nightly decision-quality review? It evaluates recent decisions, then pauses on a proposal triage for your sign-off."
+- **Options:** "Yes — run it nightly" · "Skip (I'll run it manually)"
+
+If the user declines, skip this step (they can re-run customize anytime to enable it). If they accept:
+
+1. **Pre-warm the scheduled-tasks MCP tools** in one ToolSearch call:
+   `ToolSearch(query: "select:mcp__scheduled-tasks__list_scheduled_tasks,mcp__scheduled-tasks__create_scheduled_task,mcp__scheduled-tasks__update_scheduled_task")`
+
+2. **Read the scheduled-task prompt body** from the plugin — use it verbatim as the `prompt` (it is plain prose, no frontmatter to strip):
+   `${CLAUDE_PLUGIN_ROOT}/assets/prompt-templates/decision-quality.prompt.md`
+
+3. **Idempotently register ONE task**, `workbench-core-decision-quality` (mirroring the house pattern in `skills/memory-lint/SKILL.md`). Call `list_scheduled_tasks`; if a task with that `taskId` already exists, call `update_scheduled_task`, otherwise `create_scheduled_task`, with:
+   ```jsonc
+   {
+     "taskId": "workbench-core-decision-quality",
+     "cronExpression": "0 3 * * *",   // nightly at 03:00 local — offer to adjust
+     "prompt": "<the decision-quality.prompt.md body, verbatim>",
+     "description": "Nightly decision-quality review — evaluate recorded decisions, then hold a proposal triage for sign-off."
+   }
+   ```
+
+4. **Confirm:** "✅ Nightly decision-quality task registered (03:00). It writes a learnings report and pauses on the triage until you pick it up. Re-run customize to change the time or remove it."
+
+**One chained task, not two.** The proposal triage must run only *after* the evaluation report exists, so a single task that runs evaluate then propose expresses that dependency directly — a second fixed-time cron could fire before the evaluation finished. The prompt's pause instruction is what makes the unattended run wait at the triage rather than fabricate answers.
+
 ## Step 5 — User profile interview
 
 Check whether `profile.md` exists at the configured path and has real content (not just a template):

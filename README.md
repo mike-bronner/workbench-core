@@ -226,6 +226,8 @@ core/
 ├── skills/
 │   ├── compact-learnings/      — review, compact, and integrate skill learnings
 │   ├── customize/              — configure agent name, paths, MCP settings
+│   ├── evaluate-decisions/     — grade recorded decisions/memories → learnings report (REPS gear 2)
+│   ├── propose-upgrades/       — learnings → reviewed proposals → apply on sign-off (REPS gears 3+4)
 │   ├── define-profile/         — interactive user profile interview
 │   ├── define-soul/            — interactive agent identity onboarding
 │   ├── install-persona/        — propagate a shipped persona to live locations
@@ -386,6 +388,15 @@ Session summaries are chronological sediment; left alone they accumulate as unli
 
 Vaults rot silently: files written without the required `name`/`type` frontmatter are skipped at index time (on disk but invisible to search), links break when targets move, orphans accumulate. `/workbench-core:memory-lint` is the periodic repair pass — it diffs the filesystem against the index to find skipped files and rescues their frontmatter, repairs or removes broken links, adds only high-confidence links (never mass-links orphans), repairs `index.md` drift in both directions (missing entries for `topics/` and `decisions/` documents, stale entries pointing at deleted ones), and flags duplicates/contradictions for the human instead of merging. Each run is capped at 50 file-fixes and writes an audit report to `maintenance/` with before/after stats. Intended cadence: monthly, deployed via the scheduled-tasks MCP. Raw `*.log.md` transcripts are never touched.
 
+#### Decision-quality loop
+
+The memory pipeline above *records* what was decided; this loop asks whether those decisions were any good and turns the answer into better future decisions. It runs on the **learning layer** (decisions and memories), never on deployed code, and keeps the human in control of every change. Two skills, run as a pair:
+
+1. **`/workbench-core:evaluate-decisions`** reads recently recorded decisions and memory entries and grades them on four axes — correctness vs. later outcomes, accuracy/efficiency/speed, consistency/recurrence (the same mistake recorded twice), and gaps (a decision made with no governing rule). It writes a **learnings report** to `learnings/` and changes nothing else.
+2. **`/workbench-core:propose-upgrades`** turns that report into concrete **proposals** — corrections to existing memories and new process recordings — in a review digest under `proposals/`. It then walks **sign-off**: in phase 1 every proposal needs explicit human approval, judged on whether it improves accuracy, efficiency, or speed. Approved memory changes are applied via the memory MCP; approved repo-file changes (`CLAUDE.md`, a `SKILL.md`) still pass through the normal commit-approval gate. Rejections are logged so they never resurface.
+
+Auto-accepting low-risk proposals and running the loop on a schedule are deliberately deferred until the manual loop has earned trust.
+
 ### Retention
 
 Runs on every `startup` warmup:
@@ -410,6 +421,8 @@ Runs on every `startup` warmup:
 | `/workbench:summarize-session` | Manually summarize a specific session (or pick from unsummarized) |
 | `/workbench:process-pending-summaries` | Dispatch background agents to clear pending summary markers |
 | `/workbench:compact-learnings` | Review and compact accumulated skill learnings; integrate into SKILL.md for workbench skills |
+| `/workbench-core:evaluate-decisions` | Grade recorded decisions & memories for decision quality (correctness, accuracy/efficiency/speed, consistency/recurrence, gaps) → learnings report. Decision-quality loop, gear 2 |
+| `/workbench-core:propose-upgrades` | Turn an evaluation into concrete corrections & new process recordings, walk human sign-off, apply only what's approved. Decision-quality loop, gears 3+4 |
 | `/workbench-core:memory-lint` | Monthly health-and-repair pass over the memory vault — frontmatter rescue, broken-link repair, conservative orphan linking, vault-index drift repair, duplicate flagging, audit report |
 | `/workbench-core:memory-status` | Report the shared memory server's health (up/building/down/conflict), port, and token; start or stop it |
 | `/workbench-core:install-chat-skills` | Discover skills in `@claude-workbench` plugins and install them into the Claude Mac app's Chat surface via `.skill` packaging |

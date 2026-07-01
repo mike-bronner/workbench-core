@@ -216,6 +216,9 @@ EOF
 #     this the detached writer inherited that project's cwd and an accidental
 #     relative filesystem write landed a .summary.md inside the project instead
 #     of the vault. See the summary-misroute RCA.
+#   - WORKBENCH_SUMMARY_WRITER=1 marks the child so the PreToolUse guard
+#     (hooks/summary-writer-guard.sh) can hard-block any Bash write to a .md
+#     file — belt-and-suspenders over the agent's MCP-only write instruction.
 if [[ "${WORKBENCH_AUTO_SUMMARIZE:-$(_cfg '.auto_summarize')}" =~ ^(1|true)$ ]] \
     && command -v claude >/dev/null 2>&1; then
   SUMMARY_MODEL="${WORKBENCH_SUMMARY_MODEL:-$(_cfg '.summary_model')}"
@@ -236,6 +239,7 @@ the marker, and exit. Never write summary files with Bash."
     # instead of spawning. Set only by tests; never in production.
     printf 'DISPATCH cwd=%s\n' "$MEMORY_PATH"
     printf 'DISPATCH env WORKBENCH_MEMORY_PATH=%s\n' "$MEMORY_PATH"
+    printf 'DISPATCH env WORKBENCH_SUMMARY_WRITER=1\n'
     printf 'DISPATCH model=%s\n' "$SUMMARY_MODEL"
     printf 'DISPATCH args=%s\n' "--add-dir $MEMORY_PATH --model $SUMMARY_MODEL --agent summary-writer"
   else
@@ -243,6 +247,7 @@ the marker, and exit. Never write summary files with Bash."
       cd "$MEMORY_PATH" 2>/dev/null || exit 0
       WORKBENCH_SKIP_LOG=1 WORKBENCH_SKIP_WARMUP=1 \
         WORKBENCH_MEMORY_PATH="$MEMORY_PATH" \
+        WORKBENCH_SUMMARY_WRITER=1 \
         nohup claude -p \
         --no-session-persistence \
         --permission-mode bypassPermissions \

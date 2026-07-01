@@ -9,9 +9,15 @@ All paths passed to `mcp__plugin_workbench-core_memory__*` tools are **relative
 to the vault root** (configured in `memory_path`, typically
 `~/Documents/Claude/Memory/`). Never pass absolute paths to the MCP.
 
+Write vault files **only through the memory MCP** — never with Bash/shell
+redirection (`>`, `tee`, `cp`, heredoc). A shell write resolves against the
+current directory, which is not guaranteed to be the vault, so it can silently
+escape into whatever project you happen to be in.
+
 ```
 Good:  sessions/2026-04-09/abc123.summary.md
 Bad:   $HOME/Documents/Claude/Memory/sessions/2026-04-09/abc123.summary.md
+Bad:   memory/sessions/2026-04-09/abc123.summary.md   (a `memory/` prefix escapes the vault root)
 ```
 
 ## Required frontmatter

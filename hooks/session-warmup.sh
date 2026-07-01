@@ -341,6 +341,26 @@ if [ -n "${MEMORY_ROUTING_CONFLICT:-}" ]; then
   printf '⚠ Harness `MEMORY.md` at `%s` has unmanaged content — left untouched; migrate it to the vault, then delete it so the router stub can take over.\n\n' "$MEMORY_ROUTING_CONFLICT"
 fi
 
+# ──────────── Stray project-dir summary detector (startup only) ────────────
+# Session summaries belong in the vault, never in a project. A misrouted
+# summary-writer (see the summary-misroute fix) could leave *.summary.md under
+# the project's memory/ or .claude/memory* dirs. Surface any so a silent
+# misroute becomes visible and can be relocated to the vault. Skip when the
+# session cwd IS the vault (its sessions/ summaries are legitimate).
+if [ "$SOURCE" = "startup" ] && [ "${PWD#"$MEMORY_PATH"}" = "$PWD" ]; then
+  STRAY_SUMMARIES=$(find "$PWD/memory" "$PWD/.claude/memory" "$PWD/.claude/memory-vault" \
+    -name "*.summary.md" 2>/dev/null | head -20)
+  if [ -n "$STRAY_SUMMARIES" ]; then
+    STRAY_COUNT=$(printf '%s\n' "$STRAY_SUMMARIES" | grep -c .)
+    printf '## ⚠ Stray session summaries in this project (%s)\n\n' "$STRAY_COUNT"
+    printf 'These `.summary.md` files are in the project, not the memory vault — a misrouted summary-writer left them here. Relocate them into `%s/sessions/` via the memory MCP, then delete the empty project dirs:\n\n' "$MEMORY_PATH"
+    while IFS= read -r stray; do
+      [ -n "$stray" ] && printf -- '- `%s`\n' "$stray"
+    done <<< "$STRAY_SUMMARIES"
+    printf '\n'
+  fi
+fi
+
 # ──────────── Retention cleanup (startup only) ────────────
 # Prune stale artifacts on full warmup. Runs before identity injection so it
 # doesn't add latency to the user-visible part of startup. All find commands

@@ -121,7 +121,7 @@ The memory MCP server ships unconfigured. Run `/workbench:customize` on first in
 | `memory_mcp_server_name` | MCP server name for the vault (also the health-probe identity) | `workbench-memory` |
 | `memory_port` | Loopback port the shared HTTP memory server binds | `8765` |
 | `auto_summarize` | Spawn background summary-writer on session end | `true` |
-| `summary_model` | Model for the background summary-writer | `haiku` |
+| `summary_model` | Model for the background summary-writer | `sonnet` |
 
 Configuration is stored in `~/.claude/plugins/data/workbench-core-claude-workbench/config.json` and survives plugin updates. The hooks resolve env from this file at launch (via `hooks/lib/memory-env.sh`), so a plugin version bump never clobbers your settings. `/workbench-core:customize` also provisions the memory server's **bearer token** (and the port, when non-default) into `~/.claude/settings.json` `.env` — the only channel that reaches the MCP client's config parse. Those changes take effect on the next Claude Code **restart**, not just a new session.
 
@@ -265,7 +265,7 @@ hooks/session-log.sh
     ├── Append to rolling log: sessions/YYYY-MM-DD/{session-id}.log.md
     ├── Update checkpoint
     ├── Write pending-summary marker
-    └── Spawn background summary-writer (haiku, detached)
+    └── Spawn background summary-writer (sonnet, detached)
             ↓
         summary-writer agent
             ├── Read the rolling log

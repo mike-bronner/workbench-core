@@ -42,6 +42,13 @@ Read the log at `log_path`. Each session produces a single rolling log file (`{s
 
 Read `references/summary-format.md` in the plugin directory (`${CLAUDE_PLUGIN_ROOT}/references/summary-format.md`) for the required frontmatter, body structure, and JSONL parsing guidance. Follow it exactly.
 
+**How you write it — non-negotiable:**
+
+- Write the summary **only** with `mcp__plugin_workbench-core_memory__write`, passing a **vault-relative** path that begins with `sessions/` (e.g. `sessions/2026-04-09/{session-id}.summary.md`).
+- **Never** write the summary with `Bash` — no `>`, `>>`, `tee`, `cp`, `mv`, `sed -i`, or heredoc. You do not have the `Write` tool and Bash is not a substitute: a shell write resolves against your current directory, and misrouting a summary into the source project instead of the vault is exactly the failure this rule exists to prevent.
+- The path must **not** begin with `memory/` and must **not** be absolute — `sessions/…` is already relative to the vault root the MCP is anchored to.
+- **Verify after writing:** confirm the file exists via `mcp__plugin_workbench-core_memory__read` (or `list_documents`) at the path you wrote. If the write errored or the memory MCP is unavailable, follow the **Summary write fails** failure mode — leave the marker and exit. Do **not** fall back to Bash.
+
 After drafting and before writing: read `references/linking-synthesis.md` and run its Steps A–B — `search` the vault for related decisions, topic pages, and prior summaries on the session's main themes, and add a `## Related` section with path-qualified wikilinks to the confident hits. Conservative linking is a hard rule: an orphan is better than a forced connection, and the per-ingest link cap applies. Omit the section if nothing clears the bar.
 
 ### 4. Promote decisions (only if the bar is met)
@@ -76,7 +83,7 @@ Then stop.
 
 - **Marker missing**: Print `summary-writer: noop sid={sid} marker=already-gone` and exit. Not an error.
 - **Log missing**: Print `summary-writer: error sid={sid} log-missing={log_path}`, leave marker, exit.
-- **Summary write fails**: Print `summary-writer: error sid={sid} summary-write-failed`, leave marker, exit.
+- **Summary write fails** (MCP `write` errors or the memory MCP is unavailable): Print `summary-writer: error sid={sid} summary-write-failed`, leave the marker, and exit. **Never** fall back to a Bash/filesystem write — a missed summary is recovered on the next session's warmup, but a misrouted one is silent corruption.
 - **Short/unfamiliar log**: Write a thin 2-3 line summary. Don't hallucinate. Delete the marker.
 
 ## Invariants
@@ -85,3 +92,4 @@ Then stop.
 2. **Never invent content.**
 3. **Never process a mismatched session_id.**
 4. **Exit when done.**
+5. **Write vault files only via the memory MCP, with a vault-relative `sessions/` path.** Never use Bash to write a summary.

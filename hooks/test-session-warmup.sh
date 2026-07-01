@@ -86,6 +86,26 @@ assert_contains "startup notes missing profile"        "$OUT" "profile.md not fo
 printf 'PROFILE-CANARY user facts\n' > "$SANDBOX/memory/identity/profile.md"
 printf 'SKILLSPROTO-CANARY skill learnings\n' > "$SANDBOX/memory/identity/skills-protocol.md"
 
+echo "stray-summary detector — startup flags project-dir summaries:"
+STRAY_PROJ="$SANDBOX/proj"
+mkdir -p "$STRAY_PROJ/memory/sessions/2026-07-01"
+printf 'stray\n' > "$STRAY_PROJ/memory/sessions/2026-07-01/xyz.summary.md"
+OUT=$(cd "$STRAY_PROJ" && printf '{"source":"startup"}' | \
+  HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
+  WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" WORKBENCH_AGENT_NAME="TestAgent" \
+  CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" 2>/dev/null)
+assert_contains "warns about stray summaries"          "$OUT" "Stray session summaries in this project"
+assert_contains "lists the stray file"                 "$OUT" "xyz.summary.md"
+
+echo "stray-summary detector — clean project stays quiet:"
+CLEAN_PROJ="$SANDBOX/clean"
+mkdir -p "$CLEAN_PROJ"
+OUT=$(cd "$CLEAN_PROJ" && printf '{"source":"startup"}' | \
+  HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
+  WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" WORKBENCH_AGENT_NAME="TestAgent" \
+  CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" 2>/dev/null)
+assert_missing "no stray warning when project is clean" "$OUT" "Stray session summaries"
+
 echo "exit code is always 0:"
 if printf '{"source":"compact"}' | HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" >/dev/null 2>&1; then
   PASS=$((PASS + 1)); echo "  ✅ compact exits 0"

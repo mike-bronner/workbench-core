@@ -11,7 +11,13 @@ log:     sessions/2026-04-09/{session-id}.log.md
 summary: sessions/2026-04-09/{session-id}.summary.md
 ```
 
-Write via `mcp__plugin_workbench-core_memory__write`. Paths are **relative to the vault root**, e.g. `sessions/2026-04-09/{session-id}.summary.md`.
+Write via `mcp__plugin_workbench-core_memory__write` **only** — never with Bash (`>`, `>>`, `tee`, `cp`, `sed -i`, heredoc). Paths are **relative to the vault root**, e.g. `sessions/2026-04-09/{session-id}.summary.md`.
+
+```
+Good:  sessions/2026-04-09/{session-id}.summary.md
+Bad:   memory/sessions/2026-04-09/{session-id}.summary.md   (a `memory/` prefix nests a copy inside the vault, or via Bash escapes into the source project)
+Bad:   /Users/…/Documents/Claude/Memory/sessions/…          (absolute paths are rejected by the MCP)
+```
 
 ## Required frontmatter
 

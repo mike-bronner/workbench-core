@@ -210,6 +210,12 @@ EOF
 #   - --no-session-persistence prevents the spawned claude from leaving a
 #     transcript that would become a new pending summary.
 #   - nohup + & + disown fully detaches so this hook returns immediately.
+#   - The child is launched FROM the vault dir (cd "$MEMORY_PATH") and granted
+#     it via --add-dir, and inherits WORKBENCH_MEMORY_PATH. This anchors every
+#     write to the vault: hooks run with cwd = the source project, so without
+#     this the detached writer inherited that project's cwd and an accidental
+#     relative filesystem write landed a .summary.md inside the project instead
+#     of the vault. See the summary-misroute RCA.
 if [[ "${WORKBENCH_AUTO_SUMMARIZE:-$(_cfg '.auto_summarize')}" =~ ^(1|true)$ ]] \
     && command -v claude >/dev/null 2>&1; then
   SUMMARY_MODEL="${WORKBENCH_SUMMARY_MODEL:-$(_cfg '.summary_model')}"
@@ -219,16 +225,35 @@ if [[ "${WORKBENCH_AUTO_SUMMARIZE:-$(_cfg '.auto_summarize')}" =~ ^(1|true)$ ]] 
 session_id: ${SESSION_ID}
 marker_path: ${PENDING_SUMMARY_FILE}
 log_path: ${SEG_FILE}
+memory_vault: ${MEMORY_PATH}
 
-Follow your agent definition. Write the summary, promote any decisions, delete the marker, and exit."
-  WORKBENCH_SKIP_LOG=1 WORKBENCH_SKIP_WARMUP=1 nohup claude -p \
-    --no-session-persistence \
-    --permission-mode bypassPermissions \
-    --model "$SUMMARY_MODEL" \
-    --agent summary-writer \
-    "$SUMMARY_WRITER_PROMPT" \
-    > /dev/null 2>&1 &
-  disown 2>/dev/null || true
+Follow your agent definition. Write the summary via the memory MCP using a
+vault-relative path (starting with 'sessions/'), promote any decisions, delete
+the marker, and exit. Never write summary files with Bash."
+
+  if [ "${WORKBENCH_DISPATCH_DRY_RUN:-}" = "1" ]; then
+    # Test hook (hooks/test-session-log.sh): print the resolved invocation
+    # instead of spawning. Set only by tests; never in production.
+    printf 'DISPATCH cwd=%s\n' "$MEMORY_PATH"
+    printf 'DISPATCH env WORKBENCH_MEMORY_PATH=%s\n' "$MEMORY_PATH"
+    printf 'DISPATCH model=%s\n' "$SUMMARY_MODEL"
+    printf 'DISPATCH args=%s\n' "--add-dir $MEMORY_PATH --model $SUMMARY_MODEL --agent summary-writer"
+  else
+    (
+      cd "$MEMORY_PATH" 2>/dev/null || exit 0
+      WORKBENCH_SKIP_LOG=1 WORKBENCH_SKIP_WARMUP=1 \
+        WORKBENCH_MEMORY_PATH="$MEMORY_PATH" \
+        nohup claude -p \
+        --no-session-persistence \
+        --permission-mode bypassPermissions \
+        --add-dir "$MEMORY_PATH" \
+        --model "$SUMMARY_MODEL" \
+        --agent summary-writer \
+        "$SUMMARY_WRITER_PROMPT" \
+        > /dev/null 2>&1 &
+      disown 2>/dev/null || true
+    )
+  fi
 fi
 
 exit 0

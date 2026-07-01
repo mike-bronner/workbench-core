@@ -57,6 +57,7 @@ OUT=$(run_dispatch "WORKBENCH_AUTO_SUMMARIZE=1")
 assert_contains "runs from the vault dir"              "$OUT" "DISPATCH cwd=$SANDBOX/memory"
 assert_contains "child inherits WORKBENCH_MEMORY_PATH" "$OUT" "WORKBENCH_MEMORY_PATH=$SANDBOX/memory"
 assert_contains "grants the vault via --add-dir"       "$OUT" "--add-dir $SANDBOX/memory"
+assert_contains "defaults to the sonnet model"         "$OUT" "DISPATCH model=sonnet"
 
 echo "auto-summarize off — no dispatch:"
 OUT=$(run_dispatch "WORKBENCH_AUTO_SUMMARIZE=0")

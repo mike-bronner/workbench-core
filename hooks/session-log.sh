@@ -219,7 +219,7 @@ EOF
 if [[ "${WORKBENCH_AUTO_SUMMARIZE:-$(_cfg '.auto_summarize')}" =~ ^(1|true)$ ]] \
     && command -v claude >/dev/null 2>&1; then
   SUMMARY_MODEL="${WORKBENCH_SUMMARY_MODEL:-$(_cfg '.summary_model')}"
-  SUMMARY_MODEL="${SUMMARY_MODEL:-haiku}"
+  SUMMARY_MODEL="${SUMMARY_MODEL:-sonnet}"
   SUMMARY_WRITER_PROMPT="Process pending session summary.
 
 session_id: ${SESSION_ID}

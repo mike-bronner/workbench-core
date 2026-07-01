@@ -53,8 +53,8 @@ Present each field to the user one at a time. Show the current value (from exist
 
 ### 5. `summary_model`
 - **Prompt:** "Model for background summary-writer agent"
-- **Default:** `haiku`
-- **Note:** The model used when the detached summary-writer processes session logs. Haiku is fast and cheap; use a larger model if summaries need more nuance.
+- **Default:** `sonnet`
+- **Note:** The model used when the detached summary-writer processes session logs. Sonnet is the default because summary quality and reliable tool-use matter more here than raw speed; drop to `haiku` if you want faster, cheaper summaries and can accept more variance.
 
 ### 6. `auto_summarize`
 - **Prompt:** "Auto-summarize sessions on end?"

@@ -54,6 +54,7 @@ OUT=$(run_warmup startup)
 assert_contains "soul-hot injected in full"        "$OUT" "SOULHOT-CANARY"
 assert_contains "profile injected in full"         "$OUT" "PROFILE-CANARY"
 assert_contains "guardrails injected"              "$OUT" "Guardrails — absolute rules"
+assert_contains "guardrails exempt memory vault"   "$OUT" "personal memory vault is exempt"
 assert_missing  "skills-protocol not inlined"      "$OUT" "SKILLSPROTO-CANARY"
 assert_contains "skills-protocol pointer present"  "$OUT" "Skills protocol: read \`$SANDBOX/memory/identity/skills-protocol.md\`"
 

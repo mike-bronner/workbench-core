@@ -86,7 +86,20 @@ memory_load_env() {
   # previously-indexed matches on next boot (markdown-vault-mcp upgrade, #255).
   export MARKDOWN_VAULT_MCP_EXCLUDE="sessions/**/*.log.md"
   export MARKDOWN_VAULT_MCP_SERVER_NAME="$MCP_NAME"
-  export EMBEDDING_PROVIDER="fastembed"
+  # The server reads only the prefixed form — a bare EMBEDDING_PROVIDER export
+  # was dead config (2026-07-08 audit) and left the provider pin to defaults.
+  export MARKDOWN_VAULT_MCP_EMBEDDING_PROVIDER="fastembed"
+
+  # Curated-ranking options (fork feat/curated-ranking, bundled wheel ≥3.1.0):
+  # vault convention titles notes via `name:`; hand-written `summary:` text is
+  # searchable and boosted; the sessions/ corpus (majority of docs) is
+  # down-weighted so curated notes win decision-shaped queries. All five are
+  # no-ops on a server without the feature.
+  export MARKDOWN_VAULT_MCP_TITLE_FIELD="name"
+  export MARKDOWN_VAULT_MCP_SEARCHABLE_FIELDS="summary"
+  export MARKDOWN_VAULT_MCP_EMBED_CONTEXT="true"
+  export MARKDOWN_VAULT_MCP_FOLDER_WEIGHTS="sessions:0.5"
+  export MARKDOWN_VAULT_MCP_FTS_WEIGHTS="title:3.0,summary:2.0"
 
   # HTTP/SSE transport REQUIRES a writable KV store and event store; its default
   # file:///data/state is unwritable on macOS and crashes the server at boot.

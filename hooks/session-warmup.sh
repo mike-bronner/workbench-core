@@ -434,6 +434,19 @@ if [ "$SOURCE" = "startup" ]; then
   esac
 fi
 
+# ──────────── Recall-hook liveness check (startup only) ────────────
+# memory-recall.sh stamps last-attempt on every substantive prompt. A stamp
+# that exists but is >48h old means the hook stopped firing — a silent recall
+# death is otherwise invisible. No stamp at all = fresh install; stay quiet.
+if [ "$SOURCE" = "startup" ]; then
+  RECALL_STAMP="${WORKBENCH_MEMORY_RECALL_STATE:-$HOME/.claude-workbench/memory-recall}/last-attempt"
+  if [ -f "$RECALL_STAMP" ] && [ -z "$(find "$RECALL_STAMP" -mtime -2 2>/dev/null)" ]; then
+    printf '## ⚠ Memory recall may be dead\n\n'
+    printf 'The proactive recall hook last attempted a search more than 48h ago.\n'
+    printf 'Check hook registration and the memory server: `/workbench-core:memory-status`.\n\n'
+  fi
+fi
+
 # ──────────── Identity injection (source-aware) ────────────
 # Guardrails and soul-hot are re-injected on every source: after context
 # compression (compact) the identity may have been shed; on resume it may have

@@ -241,6 +241,32 @@ assert_empty "empty stdin → no-op" "$(feed_payload '')"
 assert_empty "empty JSON object {} → no-op" "$(feed_payload '{}')"
 assert_empty "prompt but no session_id → no-op" "$(feed_payload '{"prompt":"a perfectly substantive design question here"}')"
 
+echo "Curated-type filter — session-summary hits are never injected:"
+P=$(next_port); start_fake "$P" FAKE_SEARCH_NOISE=1
+CACHE="$SANDBOX/typefilter"; mk_cache "$CACHE" ""
+GOT=$(run_hook "a substantive design question about the memory system" "s-tf1" "$CACHE" "$P")
+assert_contains     "curated hit one injected"      "$GOT" "canned-recall-one.md"
+assert_contains     "curated hit two injected"      "$GOT" "canned-recall-two.md"
+assert_not_contains "session noise hit filtered"    "$GOT" "noise-tick.summary.md"
+
+echo "Curated-type filter — empty TYPES disables the filter:"
+GOT=$(run_hook "a substantive design question about the memory system" "s-tf2" "$CACHE" "$P" WORKBENCH_MEMORY_RECALL_TYPES=)
+assert_contains "session hit injected when filter disabled" "$GOT" "noise-tick.summary.md"
+
+echo "Query truncation — oversized prompt still searches and injects:"
+P=$(next_port); start_fake "$P"
+CACHE="$SANDBOX/trunc"; mk_cache "$CACHE" ""
+LONGPROMPT="how should the memory vault handle recall $(printf 'x%.0s' $(seq 1 4000))"
+GOT=$(run_hook "$LONGPROMPT" "s-tr1" "$CACHE" "$P")
+assert_contains "long prompt still injects" "$GOT" "canned-recall-one.md"
+
+echo "Liveness breadcrumb — substantive attempt stamps last-attempt:"
+if [ -f "$SANDBOX/state/last-attempt" ]; then
+  PASS=$((PASS+1)); echo "  ✅ last-attempt stamp exists"
+else
+  FAIL=$((FAIL+1)); echo "  ❌ last-attempt stamp missing"
+fi
+
 echo "Hook always exits 0 (down server path):"
 printf '%s' "$(jq -cn '{prompt:"a substantive question here", session_id:"s-rc", hook_event_name:"UserPromptSubmit"}')" \
   | env WORKBENCH_CONFIG_FILE="$NO_CONFIG" WORKBENCH_MEMORY_PORT=18998 \

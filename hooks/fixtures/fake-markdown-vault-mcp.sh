@@ -30,6 +30,8 @@
 #                              set (a bare `[]`), to exercise the recall hook's
 #                              "no hits → no-op" path. Default returns two canned
 #                              hits in the real search payload shape.
+#   FAKE_SEARCH_NOISE=1        prepend a session-summary hit ranked FIRST, to
+#                              exercise the recall hook's curated-type filter.
 #   FAKE_SEARCH_SHAPE=...      which envelope carries the search hits: "content"
 #                              (default — content[].text bare array), "dual"
 #                              (BOTH content[].text AND structuredContent, like
@@ -67,8 +69,9 @@ SSE="${FAKE_SERVER_SSE:-0}"
 REQUIRE_TOKEN="${FAKE_SERVER_REQUIRE_TOKEN:-}"
 SEARCH_EMPTY="${FAKE_SEARCH_EMPTY:-0}"
 SEARCH_SHAPE="${FAKE_SEARCH_SHAPE:-content}"
+SEARCH_NOISE="${FAKE_SEARCH_NOISE:-0}"
 
-exec python3 - "$PORT" "$HTTP_PATH" "$SERVER_NAME" "$BIND_DELAY_MS" "$SSE" "$REQUIRE_TOKEN" "$SEARCH_EMPTY" "$SEARCH_SHAPE" <<'PY'
+exec python3 - "$PORT" "$HTTP_PATH" "$SERVER_NAME" "$BIND_DELAY_MS" "$SSE" "$REQUIRE_TOKEN" "$SEARCH_EMPTY" "$SEARCH_SHAPE" "$SEARCH_NOISE" <<'PY'
 import json
 import sys
 import time
@@ -82,6 +85,7 @@ sse = sys.argv[5] == "1"
 require_token = sys.argv[6]
 search_empty = sys.argv[7] == "1"
 search_shape = sys.argv[8] if len(sys.argv) > 8 else "content"
+search_noise = len(sys.argv) > 9 and sys.argv[9] == "1"
 
 # Fixed session id handed back on initialize and required on every later call,
 # mirroring the real Streamable-HTTP transport's Mcp-Session-Id contract.
@@ -172,7 +176,26 @@ class Handler(BaseHTTPRequestHandler):
             if search_empty:
                 hits = []
             else:
-                hits = [
+                hits = []
+                if search_noise:
+                    # A session-summary hit RANKED FIRST — exercises the
+                    # curated-type filter (must be skipped, not injected).
+                    hits.append(
+                        {
+                            "path": "sessions/2026-01-01/noise-tick.summary.md",
+                            "title": "Session summary — dispatch (idle)",
+                            "folder": "sessions/2026-01-01",
+                            "score": 0.99,
+                            "search_type": "semantic",
+                            "frontmatter": {
+                                "name": "Session summary — dispatch (idle)",
+                                "type": "session",
+                                "summary": "Noise summary that must not be injected.",
+                            },
+                            "sections": [{"heading": None, "content": "noise body"}],
+                        }
+                    )
+                hits += [
                     {
                         "path": "insights/canned-recall-one.md",
                         "title": "Canned recall hit one",

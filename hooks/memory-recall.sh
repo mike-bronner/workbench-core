@@ -33,6 +33,9 @@
 #   WORKBENCH_MEMORY_RECALL_MODE=...    → search mode (default hybrid).
 #   WORKBENCH_MEMORY_RECALL_TIMEOUT=N   → curl --max-time seconds (default 4).
 #   WORKBENCH_MEMORY_RECALL_STATE=DIR   → per-session seen-paths state dir override.
+#   WORKBENCH_MEMORY_RECALL_TYPES=a,b   → frontmatter types eligible for injection
+#                                         (default decision,insight,topic,feedback,reference;
+#                                         set empty to disable the filter).
 #   (vault location/port/token come from lib/memory-env.sh, like every other hook.)
 #
 # Never fails the session. Always exits 0 — missing jq, a down server, a
@@ -105,6 +108,25 @@ MODE="${WORKBENCH_MEMORY_RECALL_MODE:-hybrid}"
 TIMEOUT="${WORKBENCH_MEMORY_RECALL_TIMEOUT:-4}"
 case "$TIMEOUT" in ''|*[!0-9]*) TIMEOUT=4 ;; esac
 
+# Curated-type filter: 77% of the index is session summaries, and unfiltered
+# recall spends its whole injection budget on them (2026-07-08 audit). Over-
+# fetch 4× the limit, then keep only curated types. The server's `filters`
+# param can't express type-IN-set (single value, ANDed), so filter client-side.
+TYPES="${WORKBENCH_MEMORY_RECALL_TYPES-decision,insight,topic,feedback,reference}"
+FETCH=$((LIMIT * 4))
+
+# Truncate the search query: the raw prompt can carry pasted logs or diffs;
+# the first ~500 chars carry the intent and the rest just skews ranking.
+QUERY="${_trimmed:0:500}"
+
+# Liveness breadcrumb — stamped on every substantive-prompt attempt (before
+# the server call, so a down server still counts as "hook alive"). The warmup
+# alerts when this goes stale >48h; a silent hook death is otherwise invisible.
+STATE_DIR="${WORKBENCH_MEMORY_RECALL_STATE:-$HOME/.claude-workbench/memory-recall}"
+if mkdir -p "$STATE_DIR" 2>/dev/null; then
+  date +%s > "$STATE_DIR/last-attempt" 2>/dev/null || true
+fi
+
 # ──────────── Call the vault's search tool over the HTTP MCP ────────────
 # Wire conventions match lib/memory-probe.sh: JSON-RPC POST to /mcp, the dual
 # Accept header the Streamable-HTTP transport needs, and the bearer token carried
@@ -135,8 +157,9 @@ SID=$(printf '%s' "$INIT_HDRS" \
   | grep -i '^mcp-session-id:' | head -n 1 | sed 's/^[^:]*: *//' | tr -d '\r\n')
 [ -n "$SID" ] || exit 0
 
-# Step 2: the search call, carrying the session id.
-BODY=$(jq -cn --arg q "$PROMPT" --arg mode "$MODE" --argjson lim "$LIMIT" \
+# Step 2: the search call, carrying the session id. Fetch FETCH (4× LIMIT)
+# candidates so the client-side type filter still has LIMIT survivors.
+BODY=$(jq -cn --arg q "$QUERY" --arg mode "$MODE" --argjson lim "$FETCH" \
   '{jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"search",arguments:{query:$q,mode:$mode,limit:$lim,chunks_per_file:1,snippet_words:28}}}' \
   2>/dev/null) || exit 0
 
@@ -164,8 +187,9 @@ DEFRAMED=$(printf '%s\n' "$RESPONSE" | sed -n 's/^data: *//; /^{/p')
 [ -n "$DEFRAMED" ] || exit 0
 
 _extract() {
-  printf '%s\n' "$DEFRAMED" | jq -rR --argjson n "$LIMIT" '
-    fromjson?
+  printf '%s\n' "$DEFRAMED" | jq -rR --argjson n "$LIMIT" --arg types "$TYPES" '
+    ($types | if . == "" then [] else split(",") end) as $allowed
+    | fromjson?
     | ( [ .result.content[]?.text | fromjson? ]
         | map( if type == "array" then .
                elif type == "object" then (.result // [])
@@ -177,6 +201,9 @@ _extract() {
                  elif type == "array" then .
                  else [] end )
         end )
+    | ( if ($allowed | length) > 0
+        then map(select((.frontmatter.type // "note") as $t | $allowed | index($t)))
+        else . end )
     | .[:$n][]
     | [ (.path // ""),
         (.title // .frontmatter.name // .path // ""),
@@ -195,7 +222,6 @@ ROWS=$(_extract)
 # A memory path is injected at most once per session. Track seen paths in a
 # per-session file; filter this turn's hits against it; append the survivors.
 # If every hit was already injected this session → emit nothing.
-STATE_DIR="${WORKBENCH_MEMORY_RECALL_STATE:-$HOME/.claude-workbench/memory-recall}"
 mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
 # Prune seen-files older than 3 days (mirrors capture-nudge / warmup retention).
 find "$STATE_DIR" -name '*.seen' -mtime +3 -delete 2>/dev/null

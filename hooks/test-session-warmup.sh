@@ -133,6 +133,29 @@ assert_contains "drain command namespaced correctly" "$OUT" "/workbench-core:pro
 assert_missing  "no stale pre-rename namespace"      "$OUT" "\`/workbench:process-pending-summaries\`"
 rm -f "$SANDBOX/cache/pending-summaries/aaaa1111-protected.json" "$PROTECTED_LOG"
 
+echo "pending listing — capped at count + 3 oldest:"
+mkdir -p "$SANDBOX/cache/pending-summaries"
+for i in 1 2 3 4 5; do
+  printf '{"session_id":"sid-%s","log_path":"/nonexistent/sid-%s.log.md"}\n' "$i" "$i" \
+    > "$SANDBOX/cache/pending-summaries/sid-$i.json"
+  touch -t "2026010${i}0000" "$SANDBOX/cache/pending-summaries/sid-$i.json"
+done
+OUT=$(run_warmup startup)
+assert_contains "count reflects all markers"   "$OUT" "Pending session summaries (5)"
+assert_contains "oldest marker listed"         "$OUT" "sid-1"
+assert_missing  "newest marker not enumerated" "$OUT" "sid-5"
+assert_missing  "log paths not enumerated"     "$OUT" "/nonexistent/sid-1.log.md"
+
+echo "PostCompact payload routes to the compact branch:"
+OUT=$(printf '{"hook_event_name":"PostCompact","trigger":"auto"}' | \
+  HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
+  WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" WORKBENCH_AGENT_NAME="TestAgent" \
+  CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" 2>/dev/null)
+assert_missing  "profile not inlined on PostCompact"  "$OUT" "PROFILE-CANARY"
+assert_contains "profile pointer present"             "$OUT" "User profile: re-read"
+assert_missing  "no pending block on PostCompact"     "$OUT" "Pending session summaries"
+rm -f "$SANDBOX/cache/pending-summaries"/sid-*.json
+
 echo "exit code is always 0:"
 if printf '{"source":"compact"}' | HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" >/dev/null 2>&1; then
   PASS=$((PASS + 1)); echo "  ✅ compact exits 0"

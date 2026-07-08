@@ -65,6 +65,11 @@ fi
 SOURCE="startup"
 if [ -n "$PAYLOAD" ] && command -v jq >/dev/null 2>&1; then
   SOURCE=$(printf '%s' "$PAYLOAD" | jq -r '.source // "startup"' 2>/dev/null || echo "startup")
+  # PostCompact payloads carry `trigger` (manual|auto) instead of `source`.
+  # Without this mapping they fall through to a FULL startup warmup right
+  # after the context was compressed — route them to the compact branch.
+  HOOK_EVENT=$(printf '%s' "$PAYLOAD" | jq -r '.hook_event_name // empty' 2>/dev/null)
+  [ "$HOOK_EVENT" = "PostCompact" ] && SOURCE="compact"
 fi
 
 # ──────────── Persistent file management (function defs) ────────────
@@ -513,22 +518,15 @@ if [ "$SOURCE" != "compact" ]; then
 
   if [ "$MARKER_COUNT" -gt 0 ]; then
     printf '## ⚠ Pending session summaries (%d)\n\n' "$MARKER_COUNT"
-    printf 'Previous sessions ended without narrative summaries. Markers:\n\n'
-
-    for m in "${MARKERS[@]}"; do
-      LOG_PATH=""
-      SID=""
-      if command -v jq >/dev/null 2>&1; then
-        LOG_PATH=$(jq -r '.log_path // empty' "$m" 2>/dev/null)
-        SID=$(jq -r '.session_id // empty' "$m" 2>/dev/null)
-      fi
-      if [ -n "$LOG_PATH" ] && [ -n "$SID" ]; then
-        printf -- '- session `%s` → `%s` (marker: `%s`)\n' "$SID" "$LOG_PATH" "$m"
-      else
-        printf -- '- _(could not parse marker at `%s`)_\n' "$m"
-      fi
-    done
-    printf '\n'
+    # Count + the 3 oldest only. The drain skill rescans the marker directory
+    # itself, so the listing is purely informational — enumerating every
+    # marker once bloated the warmup to 57KB, overflowed the harness's inline
+    # window, and buried the identity payload (2026-07-08 audit).
+    OLDEST_SIDS=$(ls -tr "$PENDING_SUMMARIES_DIR"/*.json 2>/dev/null | head -3 \
+      | sed 's|.*/||; s|\.json$||' | paste -sd ',' -)
+    printf 'Previous sessions ended without narrative summaries.\n\n'
+    printf -- '- oldest first: `%s`\n' "${OLDEST_SIDS:-unparsable}"
+    printf -- '- marker directory: `%s`\n\n' "$PENDING_SUMMARIES_DIR"
 
     cat <<NOTICE
 **Run \`/workbench-core:process-pending-summaries\` to handle these in the background.**

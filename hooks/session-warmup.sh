@@ -367,7 +367,24 @@ fi
 # are fire-and-forget (-delete exits silently on no matches).
 if [ "$SOURCE" = "startup" ]; then
   # Raw logs older than 7 days — summaries stay forever as the durable record.
-  find "$MEMORY_PATH/sessions" -name "*.log.md" -mtime +7 -delete 2>/dev/null
+  # A log whose session still has a pending-summary marker is NOT deleted:
+  # the marker means summarization is outstanding, and the summary-writer
+  # cannot run without the log. Markers are removed on summary (or deliberate
+  # skip), which re-arms normal deletion.
+  while IFS= read -r OLD_LOG; do
+    [ -n "$OLD_LOG" ] || continue
+    OLD_SID=$(basename "$OLD_LOG" .log.md)
+    if [ -f "$PENDING_SUMMARIES_DIR/$OLD_SID.json" ]; then
+      continue
+    fi
+    # Manual logs carry suffixes, so the basename may not be the session id —
+    # a marker referencing the exact log path also protects it.
+    if [ -d "$PENDING_SUMMARIES_DIR" ] && \
+       grep -qF "\"$OLD_LOG\"" "$PENDING_SUMMARIES_DIR"/*.json 2>/dev/null; then
+      continue
+    fi
+    rm -f "$OLD_LOG" 2>/dev/null
+  done < <(find "$MEMORY_PATH/sessions" -name "*.log.md" -mtime +7 2>/dev/null)
 
   # Per-session checkpoint files older than 7 days — sessions don't resume.
   [ -d "$CHECKPOINTS_DIR" ] && find "$CHECKPOINTS_DIR" -name "*.json" -mtime +7 -delete 2>/dev/null
@@ -514,11 +531,11 @@ if [ "$SOURCE" != "compact" ]; then
     printf '\n'
 
     cat <<NOTICE
-**Run \`/workbench:process-pending-summaries\` to handle these in the background.**
+**Run \`/workbench-core:process-pending-summaries\` to handle these in the background.**
 Do NOT block the session — the skill dispatches agents and returns immediately.
 
 If the skill is unavailable, note the pending summaries and move on.
-They will be picked up by the next session or manual \`/workbench:log-now\`.
+They will be picked up by the next session or manual \`/workbench-core:log-now\`.
 NOTICE
     printf '\n'
   fi

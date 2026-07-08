@@ -107,6 +107,32 @@ OUT=$(cd "$CLEAN_PROJ" && printf '{"source":"startup"}' | \
   CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" 2>/dev/null)
 assert_missing "no stray warning when project is clean" "$OUT" "Stray session summaries"
 
+echo "retention sweep — pending marker protects an old log:"
+mkdir -p "$SANDBOX/memory/sessions/2026-01-01" "$SANDBOX/cache/pending-summaries"
+PROTECTED_LOG="$SANDBOX/memory/sessions/2026-01-01/aaaa1111-protected.log.md"
+DOOMED_LOG="$SANDBOX/memory/sessions/2026-01-01/bbbb2222-doomed.log.md"
+printf 'protected raw log\n' > "$PROTECTED_LOG"
+printf 'doomed raw log\n' > "$DOOMED_LOG"
+touch -t 202601010000 "$PROTECTED_LOG" "$DOOMED_LOG"
+printf '{"session_id":"aaaa1111-protected","log_path":"%s"}\n' "$PROTECTED_LOG" \
+  > "$SANDBOX/cache/pending-summaries/aaaa1111-protected.json"
+OUT=$(run_warmup startup)
+if [ -f "$PROTECTED_LOG" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ marker-protected log survives the sweep"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ marker-protected log was deleted"
+fi
+if [ ! -f "$DOOMED_LOG" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ markerless old log is deleted"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ markerless old log survived"
+fi
+
+echo "pending-summary notice — uses the workbench-core namespace:"
+assert_contains "drain command namespaced correctly" "$OUT" "/workbench-core:process-pending-summaries"
+assert_missing  "no stale pre-rename namespace"      "$OUT" "\`/workbench:process-pending-summaries\`"
+rm -f "$SANDBOX/cache/pending-summaries/aaaa1111-protected.json" "$PROTECTED_LOG"
+
 echo "exit code is always 0:"
 if printf '{"source":"compact"}' | HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" >/dev/null 2>&1; then
   PASS=$((PASS + 1)); echo "  ✅ compact exits 0"

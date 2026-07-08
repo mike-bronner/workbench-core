@@ -185,7 +185,7 @@ The schedule is deployed via the scheduled-tasks MCP, mirroring the workbench ho
 }
 ```
 
-Running this skill does not register the schedule by itself — deploy it once (manually, or when the user asks). Manual invocations between scheduled runs are always fine; the cap and the report remainder make runs resumable.
+Running this skill does not register the schedule by itself — `/workbench-core:setup` Step 4.6 registers it by default (or deploy it manually with the payload above). Manual invocations between scheduled runs are always fine; the cap and the report remainder make runs resumable.
 
 ## Safety rails
 

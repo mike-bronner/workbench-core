@@ -264,6 +264,23 @@ If the user declines, skip this step (they can re-run setup anytime to enable it
 
 **One chained task, not two.** The proposal triage must run only *after* the evaluation report exists, so a single task that runs evaluate then propose expresses that dependency directly — a second fixed-time cron could fire before the evaluation finished. The prompt's pause instruction is what makes the unattended run wait at the triage rather than fabricate answers.
 
+## Step 4.6 — Deploy the monthly memory-lint task (default-on)
+
+The memory-lint ritual is the vault's only self-healing pass: it rescues files skipped for broken frontmatter, repairs broken links, and writes an audit report. Register it **without asking** — the 2026-07-08 audit found that an unregistered lint schedule let 31 documents rot invisibly for a month. Mention it in the confirmation so the user can remove it if they truly want to.
+
+Idempotently register ONE task (same list → update-else-create pattern as Step 4.5, tools already pre-warmed there):
+
+```jsonc
+{
+  "taskId": "workbench-core-memory-lint",
+  "cronExpression": "0 9 1 * *",   // monthly, 1st at 09:00 local
+  "prompt": "/workbench-core:memory-lint",
+  "description": "Monthly memory-vault lint — frontmatter rescue, broken-link repair, audit report."
+}
+```
+
+**Confirm:** "✅ Monthly memory-lint task registered (1st of the month, 09:00). It keeps every vault file searchable; remove it from the Scheduled sidebar if you'd rather run `/workbench-core:memory-lint` manually."
+
 ## Step 5 — User profile interview
 
 Check whether `profile.md` exists at the configured path and has real content (not just a template):

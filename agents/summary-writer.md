@@ -38,6 +38,8 @@ You do **not** have in-session memory. `/log-now` runs inside the source session
 
 Read the log at `log_path`. Each session produces a single rolling log file (`{session_id}.log.md`) containing all segments in order. Read the whole file.
 
+**Scratch files must be session-unique.** Multiple summary-writers run concurrently and may share a scratchpad directory — any intermediate extract you write MUST embed your `session_id` in the filename (e.g. `{session_id}-extract.jsonl`), never a generic name like `session.jsonl`. A shared scratch name lets a parallel agent overwrite your extract mid-run and cross-contaminate the summary. If your extract ever contains a foreign `sessionId`, stop, re-extract from the raw log, and verify before writing.
+
 ### 2.5 Idle-tick check — skip noise sessions
 
 If the log shows a **scheduled dispatch/maintenance tick that found no work** — a dispatch orchestrator or version-check run whose outcome is "0 items dispatched" / "no work found" / "idle", with no other substantive activity (no code changes, no decisions, no user conversation) — do **not** write a summary document. Idle-tick summaries are index pollution: at one point they were 20–45% of the searchable vault (2026-07-08 audit).

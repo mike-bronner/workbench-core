@@ -338,7 +338,7 @@ if [ "${CONFIG_BROKEN:-}" = "1" ]; then
   printf '## ⚠ Malformed config.json\n\n'
   printf '`%s` exists but is not valid JSON.\n' "$CONFIG_FILE"
   printf 'All settings are falling back to hardcoded defaults, which may point to wrong directories.\n'
-  printf 'Run `/workbench:customize` to regenerate the config, or fix the JSON manually.\n\n'
+  printf 'Run `/workbench:setup` to regenerate the config, or fix the JSON manually.\n\n'
 fi
 
 # ──────────── Memory-routing stub conflict warning ────────────

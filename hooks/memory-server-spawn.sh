@@ -213,7 +213,7 @@ _log "spawn starting (pid $$): port=$MEMORY_PORT vault=$MEMORY_PATH name=$MCP_NA
 
 # ──────────── Bearer token: read or mint ────────────
 # Auth is a per-install static bearer token, fully auto-provisioned. The
-# customize/setup skill mints it and writes it to settings.json env; here we
+# setup skill mints it and writes it to settings.json env; here we
 # self-heal — if the token file is missing, mint one so the server still comes
 # up authenticated. Setting MARKDOWN_VAULT_MCP_BEARER_TOKEN is sufficient: the
 # server auto-resolves to single-bearer auth when only a bearer token is set

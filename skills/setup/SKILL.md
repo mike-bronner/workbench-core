@@ -2,7 +2,7 @@
 description: Configure the workbench — agent name, memory paths, MCP server name, and identity file paths. Config lives in the plugin data directory and is read at MCP start time, so plugin updates never clobber settings.
 ---
 
-The user has invoked `/workbench:customize`. Walk them through configuring all workbench settings interactively.
+The user has invoked `/workbench:setup`. Walk them through configuring all workbench settings interactively.
 
 ## Config location
 
@@ -169,7 +169,7 @@ SETTINGS="${WORKBENCH_SETTINGS_FILE:-$HOME/.claude/settings.json}"
 mkdir -p "$CACHE_PATH"
 chmod 700 "$CACHE_PATH" 2>/dev/null || true
 
-# Mint the token ONCE — reuse an existing one so re-running customize is a no-op
+# Mint the token ONCE — reuse an existing one so re-running setup is a no-op
 # and doesn't rotate a token the running server is already using.
 if [ ! -s "$TOKEN_FILE" ]; then
   ( umask 077; openssl rand -hex 32 > "$TOKEN_FILE" )
@@ -196,10 +196,10 @@ chmod 600 "$SETTINGS"
 ```
 
 Notes:
-- **Idempotent:** the token is minted once and reused; the `jq` merge is a no-op when values already match. Running customize twice changes nothing.
+- **Idempotent:** the token is minted once and reused; the `jq` merge is a no-op when values already match. Running setup twice changes nothing.
 - **Non-default port only:** `WORKBENCH_MEMORY_PORT` is written to settings.json only when it isn't `8765` (the baked-in default in `plugin.json`'s URL), keeping settings minimal.
 - **Restart required:** settings.json `.env` is read at Claude Code launch, so the token/port reach the MCP client on the **next restart**, not just the next session. Mention this in the Step 7 restart reminder.
-- **Self-heal:** if the token file is ever lost, the supervisor re-mints one at next start; re-running customize re-syncs settings.json to it.
+- **Self-heal:** if the token file is ever lost, the supervisor re-mints one at next start; re-running setup re-syncs settings.json to it.
 
 ## Step 3 — Re-templatize identity files (if `agent_name` changed)
 
@@ -233,6 +233,53 @@ Tell the user:
 - MCP env vars will be re-read from config.json on next Claude Code restart
 - The memory server's bearer token was provisioned (and the port, if non-default) into `~/.claude/settings.json`
 - Whether identity files were created/updated
+
+## Step 4.5 — Deploy the nightly decision-quality task (opt-in)
+
+The decision-quality learning loop (`/workbench-core:evaluate-decisions` → `/workbench-core:propose-upgrades`) can run on a nightly schedule: it grades the decisions and memories recorded that day, writes a learnings report, then holds a **triage of sign-off questions that pauses until you pick it up** — the same async pattern as the BuJo ritual. Auto-apply never happens; every proposal waits for your explicit approval.
+
+Ask whether to enable it, via AskUserQuestion:
+- **Question:** "Schedule the nightly decision-quality review? It evaluates recent decisions, then pauses on a proposal triage for your sign-off."
+- **Options:** "Yes — run it nightly" · "Skip (I'll run it manually)"
+
+If the user declines, skip this step (they can re-run setup anytime to enable it). If they accept:
+
+1. **Pre-warm the scheduled-tasks MCP tools** in one ToolSearch call:
+   `ToolSearch(query: "select:mcp__scheduled-tasks__list_scheduled_tasks,mcp__scheduled-tasks__create_scheduled_task,mcp__scheduled-tasks__update_scheduled_task")`
+
+2. **Read the scheduled-task prompt body** from the plugin — use it verbatim as the `prompt` (it is plain prose, no frontmatter to strip):
+   `${CLAUDE_PLUGIN_ROOT}/assets/prompt-templates/decision-quality.prompt.md`
+
+3. **Idempotently register ONE task**, `workbench-core-decision-quality` (mirroring the house pattern in `skills/memory-lint/SKILL.md`). Call `list_scheduled_tasks`; if a task with that `taskId` already exists, call `update_scheduled_task`, otherwise `create_scheduled_task`, with:
+   ```jsonc
+   {
+     "taskId": "workbench-core-decision-quality",
+     "cronExpression": "0 3 * * *",   // nightly at 03:00 local — offer to adjust
+     "prompt": "<the decision-quality.prompt.md body, verbatim>",
+     "description": "Nightly decision-quality review — evaluate recorded decisions, then hold a proposal triage for sign-off."
+   }
+   ```
+
+4. **Confirm:** "✅ Nightly decision-quality task registered (03:00). It writes a learnings report and pauses on the triage until you pick it up. Re-run setup to change the time or remove it."
+
+**One chained task, not two.** The proposal triage must run only *after* the evaluation report exists, so a single task that runs evaluate then propose expresses that dependency directly — a second fixed-time cron could fire before the evaluation finished. The prompt's pause instruction is what makes the unattended run wait at the triage rather than fabricate answers.
+
+## Step 4.6 — Deploy the monthly memory-lint task (default-on)
+
+The memory-lint ritual is the vault's only self-healing pass: it rescues files skipped for broken frontmatter, repairs broken links, and writes an audit report. Register it **without asking** — the 2026-07-08 audit found that an unregistered lint schedule let 31 documents rot invisibly for a month. Mention it in the confirmation so the user can remove it if they truly want to.
+
+Idempotently register ONE task (same list → update-else-create pattern as Step 4.5, tools already pre-warmed there):
+
+```jsonc
+{
+  "taskId": "workbench-core-memory-lint",
+  "cronExpression": "0 9 1 * *",   // monthly, 1st at 09:00 local
+  "prompt": "/workbench-core:memory-lint",
+  "description": "Monthly memory-vault lint — frontmatter rescue, broken-link repair, audit report."
+}
+```
+
+**Confirm:** "✅ Monthly memory-lint task registered (1st of the month, 09:00). It keeps every vault file searchable; remove it from the Scheduled sidebar if you'd rather run `/workbench-core:memory-lint` manually."
 
 ## Step 5 — User profile interview
 

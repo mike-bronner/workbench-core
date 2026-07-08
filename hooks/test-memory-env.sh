@@ -44,7 +44,13 @@ load() {
       printf "INDEX_PATH=%s\n" "$MARKDOWN_VAULT_MCP_INDEX_PATH"
       printf "SERVER_NAME=%s\n" "$MARKDOWN_VAULT_MCP_SERVER_NAME"
       printf "KV_STORE_URL=%s\n" "$MARKDOWN_VAULT_MCP_KV_STORE_URL"
-      printf "EVENT_STORE_URL=%s\n" "$MARKDOWN_VAULT_MCP_EVENT_STORE_URL"'
+      printf "EVENT_STORE_URL=%s\n" "$MARKDOWN_VAULT_MCP_EVENT_STORE_URL"
+      printf "EMBEDDING_PROVIDER=%s\n" "$MARKDOWN_VAULT_MCP_EMBEDDING_PROVIDER"
+      printf "TITLE_FIELD=%s\n" "$MARKDOWN_VAULT_MCP_TITLE_FIELD"
+      printf "SEARCHABLE_FIELDS=%s\n" "$MARKDOWN_VAULT_MCP_SEARCHABLE_FIELDS"
+      printf "EMBED_CONTEXT=%s\n" "$MARKDOWN_VAULT_MCP_EMBED_CONTEXT"
+      printf "FOLDER_WEIGHTS=%s\n" "$MARKDOWN_VAULT_MCP_FOLDER_WEIGHTS"
+      printf "FTS_WEIGHTS=%s\n" "$MARKDOWN_VAULT_MCP_FTS_WEIGHTS"'
 }
 
 assert_line() {
@@ -74,6 +80,12 @@ assert_line "port from config"            "$OUT" "MEMORY_PORT=9999"
 assert_line "source_dir tracks path"      "$OUT" "SOURCE_DIR=/cfg/mem"
 assert_line "index_path under cache"      "$OUT" "INDEX_PATH=/cfg/cache/vault-index.sqlite"
 assert_line "server_name tracks mcp name" "$OUT" "SERVER_NAME=cfg-mcp"
+assert_line "provider pin uses prefixed var"  "$OUT" "EMBEDDING_PROVIDER=fastembed"
+assert_line "title field is name"             "$OUT" "TITLE_FIELD=name"
+assert_line "summary is searchable"           "$OUT" "SEARCHABLE_FIELDS=summary"
+assert_line "embed context on"                "$OUT" "EMBED_CONTEXT=true"
+assert_line "sessions down-weighted"          "$OUT" "FOLDER_WEIGHTS=sessions:0.5"
+assert_line "title and summary boosted"       "$OUT" "FTS_WEIGHTS=title:3.0,summary:2.0"
 
 echo "override env wins over config.json:"
 OUT=$(load "$SANDBOX/cfgdir/config.json" \

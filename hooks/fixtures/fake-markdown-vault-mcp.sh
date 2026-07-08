@@ -26,6 +26,18 @@
 #                              otherwise reject with 401. Lets a test prove the
 #                              probe's bearer token actually reaches the server,
 #                              not merely that the request succeeds.
+#   FAKE_SEARCH_EMPTY=1        answer a `tools/call`/`search` with an empty result
+#                              set (a bare `[]`), to exercise the recall hook's
+#                              "no hits → no-op" path. Default returns two canned
+#                              hits in the real search payload shape.
+#   FAKE_SEARCH_NOISE=1        prepend a session-summary hit ranked FIRST, to
+#                              exercise the recall hook's curated-type filter.
+#   FAKE_SEARCH_SHAPE=...      which envelope carries the search hits: "content"
+#                              (default — content[].text bare array), "dual"
+#                              (BOTH content[].text AND structuredContent, like
+#                              the live server — the hook must inject each hit
+#                              once), or "structured" (structuredContent only —
+#                              exercises the hook's fallback branch).
 #
 # It is intentionally a thin bash shim around an inline python3 HTTP server:
 # python3's http.server gives a real bound TCP port that bash /dev/tcp and curl
@@ -55,8 +67,11 @@ SERVER_NAME="${FAKE_SERVER_NAME:-${MARKDOWN_VAULT_MCP_SERVER_NAME:-fake-vault}}"
 BIND_DELAY_MS="${FAKE_SERVER_BIND_DELAY_MS:-0}"
 SSE="${FAKE_SERVER_SSE:-0}"
 REQUIRE_TOKEN="${FAKE_SERVER_REQUIRE_TOKEN:-}"
+SEARCH_EMPTY="${FAKE_SEARCH_EMPTY:-0}"
+SEARCH_SHAPE="${FAKE_SEARCH_SHAPE:-content}"
+SEARCH_NOISE="${FAKE_SEARCH_NOISE:-0}"
 
-exec python3 - "$PORT" "$HTTP_PATH" "$SERVER_NAME" "$BIND_DELAY_MS" "$SSE" "$REQUIRE_TOKEN" <<'PY'
+exec python3 - "$PORT" "$HTTP_PATH" "$SERVER_NAME" "$BIND_DELAY_MS" "$SSE" "$REQUIRE_TOKEN" "$SEARCH_EMPTY" "$SEARCH_SHAPE" "$SEARCH_NOISE" <<'PY'
 import json
 import sys
 import time
@@ -68,6 +83,13 @@ server_name = sys.argv[3]
 bind_delay_ms = int(sys.argv[4])
 sse = sys.argv[5] == "1"
 require_token = sys.argv[6]
+search_empty = sys.argv[7] == "1"
+search_shape = sys.argv[8] if len(sys.argv) > 8 else "content"
+search_noise = len(sys.argv) > 9 and sys.argv[9] == "1"
+
+# Fixed session id handed back on initialize and required on every later call,
+# mirroring the real Streamable-HTTP transport's Mcp-Session-Id contract.
+SESSION_ID = "fake-session-0001"
 
 # Simulate the real server's bind window: stay unbound for the delay so
 # concurrency tests can race the readiness gate against a not-yet-listening port.
@@ -83,6 +105,27 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.end_headers()
 
+    def _send_result(self, payload_id, result_obj, extra_headers=None):
+        # Frame the JSON-RPC result the same way for every method: a single JSON
+        # object, or — when sse — a text/event-stream `event: message` frame, so
+        # callers that strip SSE framing are exercised on both paths.
+        result = json.dumps(
+            {"jsonrpc": "2.0", "id": payload_id, "result": result_obj}
+        )
+        if sse:
+            body = ("event: message\ndata: " + result + "\n\n").encode()
+            content_type = "text/event-stream"
+        else:
+            body = result.encode()
+            content_type = "application/json"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        for k, v in (extra_headers or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self):
         if self.path.rstrip("/") != http_path.rstrip("/"):
             return self._reject(404)
@@ -97,33 +140,103 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length) or b"{}")
         except ValueError:
             return self._reject(400)
-        if payload.get("method") != "initialize":
-            return self._reject(400)
-        result = json.dumps(
-            {
-                "jsonrpc": "2.0",
-                "id": payload.get("id", 1),
-                "result": {
+        method = payload.get("method")
+        pid = payload.get("id", 1)
+
+        if method == "initialize":
+            # The real Streamable-HTTP transport hands back an Mcp-Session-Id on
+            # initialize that every later call must echo. Reproduce that so the
+            # recall hook's handshake (init → capture sid → tools/call) is
+            # exercised, not bypassed.
+            return self._send_result(
+                pid,
+                {
                     "protocolVersion": "2025-06-18",
                     "capabilities": {},
                     "serverInfo": {"name": server_name, "version": "fake"},
                 },
-            }
-        )
-        if sse:
-            # Real Streamable-HTTP framing: text/event-stream with a named event
-            # and a `data:` JSON payload, terminated by a blank line. The probe
-            # must strip the framing lines before handing the payload to jq.
-            body = ("event: message\ndata: " + result + "\n\n").encode()
-            content_type = "text/event-stream"
-        else:
-            body = result.encode()
-            content_type = "application/json"
-        self.send_response(200)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+                extra_headers={"Mcp-Session-Id": SESSION_ID},
+            )
+
+        if method == "tools/call" and (payload.get("params") or {}).get("name") == "search":
+            # The real server rejects a tools/call that lacks the session id with
+            # a JSON-RPC "Missing session ID" error. Mirror that so a hook that
+            # forgets the handshake fails the test instead of silently passing.
+            if self.headers.get("Mcp-Session-Id") != SESSION_ID:
+                return self._reject(400)
+            # markdown-vault-mcp returns the search payload as a JSON STRING in
+            # result.content[].text — a BARE ARRAY [{path,title,frontmatter,
+            # sections,…}] (confirmed against the live server), NOT wrapped in a
+            # {"result":…} object. The live server ALSO mirrors the same hits into
+            # result.structuredContent. FAKE_SEARCH_SHAPE selects which the
+            # fixture emits: "content" (default, content[].text only), "dual"
+            # (BOTH — like the live server; the hook must inject each hit ONCE),
+            # or "structured" (structuredContent only — exercises the fallback).
+            # FAKE_SEARCH_EMPTY → no hits.
+            if search_empty:
+                hits = []
+            else:
+                hits = []
+                if search_noise:
+                    # A session-summary hit RANKED FIRST — exercises the
+                    # curated-type filter (must be skipped, not injected).
+                    hits.append(
+                        {
+                            "path": "sessions/2026-01-01/noise-tick.summary.md",
+                            "title": "Session summary — dispatch (idle)",
+                            "folder": "sessions/2026-01-01",
+                            "score": 0.99,
+                            "search_type": "semantic",
+                            "frontmatter": {
+                                "name": "Session summary — dispatch (idle)",
+                                "type": "session",
+                                "summary": "Noise summary that must not be injected.",
+                            },
+                            "sections": [{"heading": None, "content": "noise body"}],
+                        }
+                    )
+                hits += [
+                    {
+                        "path": "insights/canned-recall-one.md",
+                        "title": "Canned recall hit one",
+                        "folder": "insights",
+                        "score": 0.42,
+                        "search_type": "semantic",
+                        "frontmatter": {
+                            "name": "Canned recall hit one",
+                            "type": "insight",
+                            "summary": "First canned summary for the recall hook test.",
+                        },
+                        "sections": [{"heading": None, "content": "body one"}],
+                    },
+                    {
+                        "path": "decisions/canned-recall-two.md",
+                        "title": "Canned recall hit two",
+                        "folder": "decisions",
+                        "score": 0.39,
+                        "search_type": "semantic",
+                        "frontmatter": {
+                            "name": "Canned recall hit two",
+                            "type": "decision",
+                            "summary": "Second canned summary for the recall hook test.",
+                        },
+                        "sections": [{"heading": None, "content": "body two"}],
+                    },
+                ]
+            inner = json.dumps(hits)
+            structured = {"result": hits}
+            result_obj = {"_meta": {"index_stale": False}}
+            if search_shape == "structured":
+                result_obj["content"] = []
+                result_obj["structuredContent"] = structured
+            elif search_shape == "dual":
+                result_obj["content"] = [{"type": "text", "text": inner}]
+                result_obj["structuredContent"] = structured
+            else:  # "content" — the default bare-array-in-text shape
+                result_obj["content"] = [{"type": "text", "text": inner}]
+            return self._send_result(pid, result_obj)
+
+        return self._reject(400)
 
 
 httpd = HTTPServer(("127.0.0.1", port), Handler)

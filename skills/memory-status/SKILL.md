@@ -32,7 +32,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/memory-status.sh" stop
 - **DOWN_FAILED** — the last start failed. Read the `server.log` tail and the `.server-failed` marker; common causes are a missing/broken venv or an unwritable cache. After fixing, run `... start`.
 - **DOWN_FOREIGN** — a different process holds the port. One transport per port: free the port or set a different `WORKBENCH_MEMORY_PORT` in `~/.claude/settings.json`, then restart Claude Code.
 - **PORT_DRIFT** — the running server's recorded port differs from the configured one (settings.json env vs config.json disagree). Reconcile them, then restart.
-- **bearer token MISSING** — run `/workbench-core:customize` to auto-provision the token (it mints one and writes it to `~/.claude/settings.json`). A token change needs a Claude Code restart to reach the MCP client.
+- **bearer token MISSING** — run `/workbench-core:setup` to auto-provision the token (it mints one and writes it to `~/.claude/settings.json`). A token change needs a Claude Code restart to reach the MCP client.
 
 ## Notes
 

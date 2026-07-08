@@ -83,7 +83,7 @@ fi
 if [ -s "$CACHE_PATH/server.token" ]; then
   echo "bearer token     : present (0600)"
 else
-  echo "bearer token     : MISSING — run /workbench-core:customize to provision it"
+  echo "bearer token     : MISSING — run /workbench-core:setup to provision it"
 fi
 
 # Surface failure / conflict breadcrumbs verbatim.

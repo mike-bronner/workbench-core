@@ -38,6 +38,16 @@ You do **not** have in-session memory. `/log-now` runs inside the source session
 
 Read the log at `log_path`. Each session produces a single rolling log file (`{session_id}.log.md`) containing all segments in order. Read the whole file.
 
+**Scratch files must be session-unique.** Multiple summary-writers run concurrently and may share a scratchpad directory — any intermediate extract you write MUST embed your `session_id` in the filename (e.g. `{session_id}-extract.jsonl`), never a generic name like `session.jsonl`. A shared scratch name lets a parallel agent overwrite your extract mid-run and cross-contaminate the summary. If your extract ever contains a foreign `sessionId`, stop, re-extract from the raw log, and verify before writing.
+
+### 2.5 Idle-tick check — skip noise sessions
+
+If the log shows a **scheduled dispatch/maintenance tick that found no work** — a dispatch orchestrator or version-check run whose outcome is "0 items dispatched" / "no work found" / "idle", with no other substantive activity (no code changes, no decisions, no user conversation) — do **not** write a summary document. Idle-tick summaries are index pollution: at one point they were 20–45% of the searchable vault (2026-07-08 audit).
+
+Instead: delete the marker (`rm "$marker_path"`), print `summary-writer: skipped sid={session_id} reason=idle-tick marker=deleted`, and exit. The raw log remains on disk for the 7-day retention window as the only record, which is enough for a session that did nothing.
+
+**The bar is strict**: any dispatched item, any error worth remembering, any human interaction → not an idle tick; write the summary.
+
 ### 3. Write the narrative summary
 
 Read `references/summary-format.md` in the plugin directory (`${CLAUDE_PLUGIN_ROOT}/references/summary-format.md`) for the required frontmatter, body structure, and JSONL parsing guidance. Follow it exactly.
@@ -88,7 +98,7 @@ Then stop.
 
 ## Invariants
 
-1. **Never delete the marker without writing a summary.**
+1. **Never delete the marker without writing a summary** — except the deliberate idle-tick skip (step 2.5), which is the one sanctioned no-summary marker deletion.
 2. **Never invent content.**
 3. **Never process a mismatched session_id.**
 4. **Exit when done.**

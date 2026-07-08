@@ -65,6 +65,11 @@ fi
 SOURCE="startup"
 if [ -n "$PAYLOAD" ] && command -v jq >/dev/null 2>&1; then
   SOURCE=$(printf '%s' "$PAYLOAD" | jq -r '.source // "startup"' 2>/dev/null || echo "startup")
+  # PostCompact payloads carry `trigger` (manual|auto) instead of `source`.
+  # Without this mapping they fall through to a FULL startup warmup right
+  # after the context was compressed — route them to the compact branch.
+  HOOK_EVENT=$(printf '%s' "$PAYLOAD" | jq -r '.hook_event_name // empty' 2>/dev/null)
+  [ "$HOOK_EVENT" = "PostCompact" ] && SOURCE="compact"
 fi
 
 # ──────────── Persistent file management (function defs) ────────────
@@ -333,7 +338,7 @@ if [ "${CONFIG_BROKEN:-}" = "1" ]; then
   printf '## ⚠ Malformed config.json\n\n'
   printf '`%s` exists but is not valid JSON.\n' "$CONFIG_FILE"
   printf 'All settings are falling back to hardcoded defaults, which may point to wrong directories.\n'
-  printf 'Run `/workbench:customize` to regenerate the config, or fix the JSON manually.\n\n'
+  printf 'Run `/workbench:setup` to regenerate the config, or fix the JSON manually.\n\n'
 fi
 
 # ──────────── Memory-routing stub conflict warning ────────────
@@ -367,7 +372,24 @@ fi
 # are fire-and-forget (-delete exits silently on no matches).
 if [ "$SOURCE" = "startup" ]; then
   # Raw logs older than 7 days — summaries stay forever as the durable record.
-  find "$MEMORY_PATH/sessions" -name "*.log.md" -mtime +7 -delete 2>/dev/null
+  # A log whose session still has a pending-summary marker is NOT deleted:
+  # the marker means summarization is outstanding, and the summary-writer
+  # cannot run without the log. Markers are removed on summary (or deliberate
+  # skip), which re-arms normal deletion.
+  while IFS= read -r OLD_LOG; do
+    [ -n "$OLD_LOG" ] || continue
+    OLD_SID=$(basename "$OLD_LOG" .log.md)
+    if [ -f "$PENDING_SUMMARIES_DIR/$OLD_SID.json" ]; then
+      continue
+    fi
+    # Manual logs carry suffixes, so the basename may not be the session id —
+    # a marker referencing the exact log path also protects it.
+    if [ -d "$PENDING_SUMMARIES_DIR" ] && \
+       grep -qF "\"$OLD_LOG\"" "$PENDING_SUMMARIES_DIR"/*.json 2>/dev/null; then
+      continue
+    fi
+    rm -f "$OLD_LOG" 2>/dev/null
+  done < <(find "$MEMORY_PATH/sessions" -name "*.log.md" -mtime +7 2>/dev/null)
 
   # Per-session checkpoint files older than 7 days — sessions don't resume.
   [ -d "$CHECKPOINTS_DIR" ] && find "$CHECKPOINTS_DIR" -name "*.json" -mtime +7 -delete 2>/dev/null
@@ -410,6 +432,19 @@ if [ "$SOURCE" = "startup" ]; then
       printf 'If memory tools are unavailable this turn, they should work shortly — or next session.\n\n'
       ;;
   esac
+fi
+
+# ──────────── Recall-hook liveness check (startup only) ────────────
+# memory-recall.sh stamps last-attempt on every substantive prompt. A stamp
+# that exists but is >48h old means the hook stopped firing — a silent recall
+# death is otherwise invisible. No stamp at all = fresh install; stay quiet.
+if [ "$SOURCE" = "startup" ]; then
+  RECALL_STAMP="${WORKBENCH_MEMORY_RECALL_STATE:-$HOME/.claude-workbench/memory-recall}/last-attempt"
+  if [ -f "$RECALL_STAMP" ] && [ -z "$(find "$RECALL_STAMP" -mtime -2 2>/dev/null)" ]; then
+    printf '## ⚠ Memory recall may be dead\n\n'
+    printf 'The proactive recall hook last attempted a search more than 48h ago.\n'
+    printf 'Check hook registration and the memory server: `/workbench-core:memory-status`.\n\n'
+  fi
 fi
 
 # ──────────── Identity injection (source-aware) ────────────
@@ -496,29 +531,22 @@ if [ "$SOURCE" != "compact" ]; then
 
   if [ "$MARKER_COUNT" -gt 0 ]; then
     printf '## ⚠ Pending session summaries (%d)\n\n' "$MARKER_COUNT"
-    printf 'Previous sessions ended without narrative summaries. Markers:\n\n'
-
-    for m in "${MARKERS[@]}"; do
-      LOG_PATH=""
-      SID=""
-      if command -v jq >/dev/null 2>&1; then
-        LOG_PATH=$(jq -r '.log_path // empty' "$m" 2>/dev/null)
-        SID=$(jq -r '.session_id // empty' "$m" 2>/dev/null)
-      fi
-      if [ -n "$LOG_PATH" ] && [ -n "$SID" ]; then
-        printf -- '- session `%s` → `%s` (marker: `%s`)\n' "$SID" "$LOG_PATH" "$m"
-      else
-        printf -- '- _(could not parse marker at `%s`)_\n' "$m"
-      fi
-    done
-    printf '\n'
+    # Count + the 3 oldest only. The drain skill rescans the marker directory
+    # itself, so the listing is purely informational — enumerating every
+    # marker once bloated the warmup to 57KB, overflowed the harness's inline
+    # window, and buried the identity payload (2026-07-08 audit).
+    OLDEST_SIDS=$(ls -tr "$PENDING_SUMMARIES_DIR"/*.json 2>/dev/null | head -3 \
+      | sed 's|.*/||; s|\.json$||' | paste -sd ',' -)
+    printf 'Previous sessions ended without narrative summaries.\n\n'
+    printf -- '- oldest first: `%s`\n' "${OLDEST_SIDS:-unparsable}"
+    printf -- '- marker directory: `%s`\n\n' "$PENDING_SUMMARIES_DIR"
 
     cat <<NOTICE
-**Run \`/workbench:process-pending-summaries\` to handle these in the background.**
+**Run \`/workbench-core:process-pending-summaries\` to handle these in the background.**
 Do NOT block the session — the skill dispatches agents and returns immediately.
 
 If the skill is unavailable, note the pending summaries and move on.
-They will be picked up by the next session or manual \`/workbench:log-now\`.
+They will be picked up by the next session or manual \`/workbench-core:log-now\`.
 NOTICE
     printf '\n'
   fi

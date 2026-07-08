@@ -107,6 +107,55 @@ OUT=$(cd "$CLEAN_PROJ" && printf '{"source":"startup"}' | \
   CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" 2>/dev/null)
 assert_missing "no stray warning when project is clean" "$OUT" "Stray session summaries"
 
+echo "retention sweep — pending marker protects an old log:"
+mkdir -p "$SANDBOX/memory/sessions/2026-01-01" "$SANDBOX/cache/pending-summaries"
+PROTECTED_LOG="$SANDBOX/memory/sessions/2026-01-01/aaaa1111-protected.log.md"
+DOOMED_LOG="$SANDBOX/memory/sessions/2026-01-01/bbbb2222-doomed.log.md"
+printf 'protected raw log\n' > "$PROTECTED_LOG"
+printf 'doomed raw log\n' > "$DOOMED_LOG"
+touch -t 202601010000 "$PROTECTED_LOG" "$DOOMED_LOG"
+printf '{"session_id":"aaaa1111-protected","log_path":"%s"}\n' "$PROTECTED_LOG" \
+  > "$SANDBOX/cache/pending-summaries/aaaa1111-protected.json"
+OUT=$(run_warmup startup)
+if [ -f "$PROTECTED_LOG" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ marker-protected log survives the sweep"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ marker-protected log was deleted"
+fi
+if [ ! -f "$DOOMED_LOG" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ markerless old log is deleted"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ markerless old log survived"
+fi
+
+echo "pending-summary notice — uses the workbench-core namespace:"
+assert_contains "drain command namespaced correctly" "$OUT" "/workbench-core:process-pending-summaries"
+assert_missing  "no stale pre-rename namespace"      "$OUT" "\`/workbench:process-pending-summaries\`"
+rm -f "$SANDBOX/cache/pending-summaries/aaaa1111-protected.json" "$PROTECTED_LOG"
+
+echo "pending listing — capped at count + 3 oldest:"
+mkdir -p "$SANDBOX/cache/pending-summaries"
+for i in 1 2 3 4 5; do
+  printf '{"session_id":"sid-%s","log_path":"/nonexistent/sid-%s.log.md"}\n' "$i" "$i" \
+    > "$SANDBOX/cache/pending-summaries/sid-$i.json"
+  touch -t "2026010${i}0000" "$SANDBOX/cache/pending-summaries/sid-$i.json"
+done
+OUT=$(run_warmup startup)
+assert_contains "count reflects all markers"   "$OUT" "Pending session summaries (5)"
+assert_contains "oldest marker listed"         "$OUT" "sid-1"
+assert_missing  "newest marker not enumerated" "$OUT" "sid-5"
+assert_missing  "log paths not enumerated"     "$OUT" "/nonexistent/sid-1.log.md"
+
+echo "PostCompact payload routes to the compact branch:"
+OUT=$(printf '{"hook_event_name":"PostCompact","trigger":"auto"}' | \
+  HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
+  WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" WORKBENCH_AGENT_NAME="TestAgent" \
+  CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" 2>/dev/null)
+assert_missing  "profile not inlined on PostCompact"  "$OUT" "PROFILE-CANARY"
+assert_contains "profile pointer present"             "$OUT" "User profile: re-read"
+assert_missing  "no pending block on PostCompact"     "$OUT" "Pending session summaries"
+rm -f "$SANDBOX/cache/pending-summaries"/sid-*.json
+
 echo "exit code is always 0:"
 if printf '{"source":"compact"}' | HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" >/dev/null 2>&1; then
   PASS=$((PASS + 1)); echo "  ✅ compact exits 0"

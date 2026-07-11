@@ -58,6 +58,15 @@ assert_contains "guardrails exempt memory vault"   "$OUT" "personal memory vault
 assert_missing  "skills-protocol not inlined"      "$OUT" "SKILLSPROTO-CANARY"
 assert_contains "skills-protocol pointer present"  "$OUT" "Skills protocol: read \`$SANDBOX/memory/identity/skills-protocol.md\`"
 
+echo "startup — no phantom shared-server health notices (per-session stdio):"
+# $OUT still holds the startup run above. The v0.12 shared-HTTP health probe
+# printed "Memory server starting" (plus port-drift/conflict notices) on EVERY
+# startup once the transport reverted to stdio, because nothing listens on the
+# loopback port. That block was removed; assert its notices never appear.
+assert_missing "no phantom 'server starting' notice" "$OUT" "Memory server starting"
+assert_missing "no shared-server port-drift notice"  "$OUT" "Memory server port drift"
+assert_missing "no shared-server conflict notice"    "$OUT" "Memory server port conflict"
+
 echo "clear — wiped context gets full identity:"
 OUT=$(run_warmup clear)
 assert_contains "soul-hot injected in full"        "$OUT" "SOULHOT-CANARY"

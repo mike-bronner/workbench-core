@@ -38,18 +38,18 @@ Present each field to the user one at a time. Show the current value (from exist
 ### 4. `memory_mcp_server_name`
 - **Prompt:** "MCP server friendly name — the display name for the memory vault MCP server"
 - **Default:** `{agent_name}-memory` (derived from field 1)
-- **Note:** This is the `MARKDOWN_VAULT_MCP_SERVER_NAME` value, and the identity the health probe checks against.
+- **Note:** This is the `MARKDOWN_VAULT_MCP_SERVER_NAME` value (`serverInfo.name`).
 
 ### 4b. `memory_port`
-- **Prompt:** "Memory server port — the loopback port the shared HTTP memory server binds (and the host connects to)"
+- **Prompt:** "Memory server port — only the **optional** shared HTTP server uses it; keep the default under the per-session stdio transport (the default since v0.13.0)"
 - **Default:** `8765`
-- **Note:** The shared HTTP memory server binds `127.0.0.1:{memory_port}`. Only change it if `8765` collides with another local service. **Preflight the port** before accepting a non-default value:
+- **Note:** Inert under per-session stdio — nothing binds a port there. It only matters if you re-enable the shared HTTP server (see README, "Memory server transport"), which then binds `127.0.0.1:{memory_port}`. If you do set a non-default value, **preflight the port** first:
   ```bash
   if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
     echo "WARNING: port $PORT is already in use — pick another or stop the squatter."
   fi
   ```
-  The port reaches the MCP client only via `~/.claude/settings.json` `.env.WORKBENCH_MEMORY_PORT` (a SessionStart hook can't inject it into the host's config parse). Step 2b writes it there when it differs from the default.
+  When the shared HTTP server is enabled, the port reaches the MCP client via `~/.claude/settings.json` `.env.WORKBENCH_MEMORY_PORT` (Step 2b writes it there when it differs from the default).
 
 ### 5. `summary_model`
 - **Prompt:** "Model for background summary-writer agent"
@@ -153,13 +153,15 @@ Running this twice with the same answers produces a byte-identical file (idempot
 | `memory_cache` | `MARKDOWN_VAULT_MCP_STATE_PATH` (+ `/state.json`) |
 | `memory_cache` | `MARKDOWN_VAULT_MCP_KV_STORE_URL` (+ `/kv`), `…_EVENT_STORE_URL` (+ `/events`) |
 | `memory_mcp_server_name` | `MARKDOWN_VAULT_MCP_SERVER_NAME` |
-| `memory_port` | server `--port` (launcher fallback; settings.json env is what the host connects with) |
+| `memory_port` | the optional shared HTTP server's `--port` (inert under per-session stdio) |
 
 Optionally write `config.example.json` alongside `config.json` with placeholder values and inline comments — useful for anyone setting up the plugin manually.
 
-## Step 2b — Provision the bearer token + settings.json env (fully automatic)
+## Step 2b — Provision the bearer token + settings.json env (shared HTTP server only)
 
-The shared HTTP memory server authenticates with a per-install **bearer token**, and the MCP client reads the port + token from `~/.claude/settings.json` `.env` (the only channel that reaches the host's config parse — a hook can't). Provision both with **zero user involvement**, idempotently:
+> **Skip this step under the default per-session stdio transport (v0.13.0+).** Stdio needs no port or bearer token — the MCP host spawns the server in-process per session, and memory works from the very first session with nothing in `settings.json`. Run this step **only if you have re-enabled the optional shared HTTP server** (see README, "Memory server transport — re-enabling the shared HTTP server"). Under stdio, doing nothing here is correct.
+
+When the shared HTTP server is enabled it authenticates with a per-install **bearer token**, and the MCP client reads the port + token from `~/.claude/settings.json` `.env` (the only channel that reaches the host's config parse — a hook can't). Provision both with **zero user involvement**, idempotently:
 
 ```bash
 CACHE_PATH="$MEMORY_CACHE"   # the resolved memory_cache from Step 1
@@ -317,11 +319,11 @@ The profile is completed first intentionally — define-soul benefits from knowi
 
 ## Step 7 — Restart reminder
 
-After both interviews complete (or are skipped), remind the user: **"Restart Claude Code for the memory server changes to take effect."** Be specific about why a restart (not just a new session) is needed: the memory **port and bearer token** live in `~/.claude/settings.json` `.env`, which Claude Code reads only at launch — a SessionStart hook can't inject them into the host's MCP config parse. On a brand-new git install this means memory tools may be unavailable until the next restart picks up the token; that's expected and self-heals.
+After both interviews complete (or are skipped), remind the user to **start a new session (or restart Claude Code) for the changes to take effect.** Under the default per-session stdio transport, memory config (`config.json`) is re-read when the host respawns the stdio server for the next session — nothing needs to reach `settings.json`, so there's no "first session lacks memory" gap. (If you re-enabled the optional shared HTTP server in Step 2b, its port + bearer token in `settings.json` `.env` are read only at Claude Code **launch**, so that path does need a full restart, not just a new session.)
 
 ## Notes
 
-- **Plugin updates are a non-event.** `plugin.json` points the memory MCP at the shared HTTP server; the hooks resolve env from `config.json` at launch via `hooks/lib/memory-env.sh`. A version bump replaces the plugin dir but the hooks still read the same config and settings.json env. No re-customization needed.
+- **Plugin updates are a non-event.** `plugin.json` points the memory MCP at the per-session stdio launcher (`hooks/mcp-memory.sh`); the hooks resolve env from `config.json` at launch via `hooks/lib/memory-env.sh`. A version bump replaces the plugin dir but the hooks still read the same config. No re-customization needed.
 - **Env var overrides still work:** `WORKBENCH_MEMORY_PATH`, `WORKBENCH_MEMORY_CACHE`, `WORKBENCH_MEMORY_PORT`, `WORKBENCH_MCP_SERVER_NAME`, and `WORKBENCH_LOG_MODE` override config.json values in the hook scripts. Useful for testing (e.g., dry-run with temp paths/ports).
-- **Token security:** `server.token` is `0600` under the cache, and `settings.json` is `chmod 600` after the merge (it now carries the token). Never commit either.
+- **Token security (shared HTTP server only):** if you ran Step 2b to re-enable the shared HTTP server, `server.token` is `0600` under the cache and `settings.json` is `chmod 600` after the merge (it then carries the token). Never commit either. Per-session stdio mints no token.
 - **First-time setup:** If this is the first run and no config exists, all fields start at their hardcoded defaults. The user confirms or changes each one.

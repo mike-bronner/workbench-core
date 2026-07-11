@@ -38,9 +38,9 @@ sudo dnf install jq
 
 #### 3. `markdown-vault-mcp` — the MCP server backing the memory vault
 
-**You normally don't need to install this yourself** — the plugin self-installs the server from the fork on first run. All it needs is [`uv`](https://docs.astral.sh/uv/) or [`pipx`](https://pipx.pypa.io/) on your PATH (`uv` preferred). The plugin's `.claude-plugin/plugin.json` declares the `memory` MCP server (an HTTP transport at `127.0.0.1:8765`) and Claude Code auto-wires it on plugin install, so there's no `claude mcp add` step either.
+**You normally don't need to install this yourself** — the plugin self-installs the server from the fork on first run. All it needs is [`uv`](https://docs.astral.sh/uv/) or [`pipx`](https://pipx.pypa.io/) on your PATH (`uv` preferred). The plugin's `.claude-plugin/plugin.json` declares the `memory` MCP server (a per-session **stdio** server launched via `hooks/mcp-memory.sh`) and Claude Code auto-wires it on plugin install, so there's no `claude mcp add` step either.
 
-Since v0.10.0 the server is a **single shared HTTP server**, lazy-started on the first session and shared by every session after (see [Shared memory server](#shared-memory-server) below). On a brand-new git install the very first session may have no memory until the next restart — the SessionStart hook kicks the server (binding in ~2s), but the bearer **token** it authenticates with reaches the MCP client only via `~/.claude/settings.json`, which Claude Code reads at launch. Run `/workbench-core:setup` to provision the token, then restart once; thereafter memory is available from the first session.
+Since v0.13.0 the server is a **per-session stdio server**: the MCP host (Claude Code or Cowork) spawns one in-process for each session via `hooks/mcp-memory.sh`, with no shared listener, port, or token. This is what lets memory work inside **Claude Cowork's remote sandbox**, where nothing can reach a loopback port on your Mac. Memory is available from the very first session on a fresh install — no token or restart dance. (v0.10.0–v0.12.0 used a single shared HTTP server; that architecture is retained but disabled — see [Memory server transport](#memory-server-transport) below.)
 
 The launcher installs from the [mikebronner/markdown-vault-mcp](https://github.com/mikebronner/markdown-vault-mcp) fork — the canonical source for this plugin. The fork carries index-state fixes the plugin relies on (persistent-index adoption at boot, offline-change reconciliation, tracker skip-state, embedding convergence, raw-transcript exclusion support) that are not yet in any PyPI release. They have been contributed upstream ([pvliesdonk/markdown-vault-mcp#665](https://github.com/pvliesdonk/markdown-vault-mcp/issues/665)); once an upstream release carries them, plain PyPI installs will work again — until then, installing from PyPI gets you a server that can exceed Claude Code's 30s MCP startup timeout on first boot.
 
@@ -118,12 +118,12 @@ The memory MCP server ships unconfigured. Run `/workbench:setup` on first instal
 | `agent_name` | Your agent's name (e.g. `Holmes`) | `Claude` |
 | `memory_path` | Where your operational memory lives on disk | `~/Documents/Claude/Memory` |
 | `memory_cache` | Where indexes, server artifacts, and checkpoints are stored | `~/.claude-memory-cache` |
-| `memory_mcp_server_name` | MCP server name for the vault (also the health-probe identity) | `workbench-memory` |
-| `memory_port` | Loopback port the shared HTTP memory server binds | `8765` |
+| `memory_mcp_server_name` | MCP server name for the vault (`serverInfo.name`) | `workbench-memory` |
+| `memory_port` | Loopback port for the **optional** shared HTTP server (inert under per-session stdio) | `8765` |
 | `auto_summarize` | Spawn background summary-writer on session end | `true` |
 | `summary_model` | Model for the background summary-writer | `sonnet` |
 
-Configuration is stored in `~/.claude/plugins/data/workbench-core-claude-workbench/config.json` and survives plugin updates. The hooks resolve env from this file at launch (via `hooks/lib/memory-env.sh`), so a plugin version bump never clobbers your settings. `/workbench-core:setup` also provisions the memory server's **bearer token** (and the port, when non-default) into `~/.claude/settings.json` `.env` — the only channel that reaches the MCP client's config parse. Those changes take effect on the next Claude Code **restart**, not just a new session.
+Configuration is stored in `~/.claude/plugins/data/workbench-core-claude-workbench/config.json` and survives plugin updates. The hooks resolve env from this file at launch (via `hooks/lib/memory-env.sh`), so a plugin version bump never clobbers your settings. Per-session stdio needs no port or bearer token in `settings.json` — those are provisioned by `/workbench-core:setup` only if you re-enable the optional shared HTTP server (see [Memory server transport](#memory-server-transport)).
 
 ### Set up identity files
 
@@ -211,11 +211,11 @@ core/
 ├── hooks/
 │   ├── hooks.json              — hook → script bindings
 │   ├── session-log.sh          — raw log capture + summary-writer dispatch
-│   ├── session-warmup.sh       — identity injection + cleanup + health check
-│   ├── mcp-memory.sh           — stdio launcher (escape hatch / in-flight sessions)
-│   ├── memory-server-up.sh     — SessionStart kicker: lazy-start the shared server
-│   ├── memory-server-spawn.sh  — detached supervisor: install + launch + readiness
-│   ├── memory-server-down.sh   — manual stop for the shared server
+│   ├── session-warmup.sh       — identity injection + retention cleanup
+│   ├── mcp-memory.sh           — per-session stdio launcher (the memory MCP) + gated VACUUM
+│   ├── memory-server-up.sh     — shared-HTTP SessionStart kicker (disabled; retained for re-enable)
+│   ├── memory-server-spawn.sh  — shared-HTTP detached supervisor (disabled; retained)
+│   ├── memory-server-down.sh   — shared-HTTP manual stop (disabled; retained)
 │   ├── memory-capture-nudge.sh — UserPromptSubmit: nudge proactive memory WRITES
 │   ├── memory-recall.sh        — UserPromptSubmit: inject relevant memory READS (recall)
 │   ├── lib/                    — sourceable libs: memory-env / -probe / -vacuum / -install
@@ -241,7 +241,7 @@ core/
 ├── scripts/
 │   ├── install-chat-skills.sh  — package + install skills into Claude Chat
 │   ├── install-persona.sh      — propagate a shipped persona to live locations
-│   └── memory-status.sh        — report / start / stop the shared memory server
+│   └── memory-status.sh        — report the per-session stdio memory server's facts
 └── README.md
 ```
 
@@ -253,8 +253,7 @@ These hooks fire across the session lifecycle and on each turn:
 
 | Hook | Script | Purpose |
 |------|--------|---------|
-| `SessionStart` | `hooks/memory-server-up.sh` | Lazy-start the shared memory server (runs first, before warmup) |
-| `SessionStart` | `hooks/session-warmup.sh` | Identity injection, retention cleanup, memory-server health check, pending-summary dispatch |
+| `SessionStart` | `hooks/session-warmup.sh` | Identity injection, retention cleanup, pending-summary dispatch |
 | `PreCompact` | `hooks/session-log.sh` | Dump raw log checkpoint, spawn summary-writer |
 | `PostCompact` | `hooks/session-warmup.sh` | Re-inject identity after context compression |
 | `SessionEnd` | `hooks/session-log.sh` | Dump final log segment, spawn summary-writer |
@@ -290,7 +289,7 @@ Identity files are injected on **every** warmup source:
 
 | Source | When | What happens |
 |--------|------|--------------|
-| `startup` | Fresh session | Full warmup: cleanup + health check + identity + pending summaries |
+| `startup` | Fresh session | Full warmup: retention cleanup + identity + pending summaries |
 | `resume` | Reconnecting | Identity refresh + pending summaries |
 | `clear` | After `/clear` | Identity refresh + pending summaries |
 | `compact` | After compression | Identity refresh only (via PostCompact hook) |
@@ -347,17 +346,13 @@ Vault structure:
 └── CLAUDE.md          — vault map (metadata only)
 ```
 
-#### Shared memory server
+#### Memory server transport
 
-Through v0.9, `plugin.json` launched a **stdio** markdown-vault-mcp server **per Claude session**. Every session pointed at the same cache, so N sessions meant N processes each building embeddings over the whole vault — CPU saturation — plus a cross-process SQLite write-race on one WAL. v0.10 replaces that with **one shared local HTTP server** that all sessions connect to.
+The vault is served by a **per-session stdio** markdown-vault-mcp server (the default through v0.9, restored in v0.13.0). `plugin.json` points the `memory` MCP at `hooks/mcp-memory.sh`, and the MCP host (Claude Code or Cowork) spawns one server **in-process per session** — so the server runs wherever the session runs, including **Cowork's remote sandbox**. There is no shared listener, no port, and no bearer token.
 
-How it works:
-
-- **Lazy start.** A SessionStart hook (`hooks/memory-server-up.sh`) runs first, before the warmup. It probes the configured port (`127.0.0.1:8765` by default); if the vault is already serving, it does nothing. Otherwise it wins a mutex and hands a **detached supervisor** (`hooks/memory-server-spawn.sh`) the slow work — venv install, the gated index VACUUM, and launching the server — then returns immediately. The supervisor is reparented out of the hook's process group (via `perl` + `POSIX::setsid`), so the server outlives the session that started it. The HTTP transport binds in ~2s; Claude Code retries the MCP connection until it's up.
-- **Never stops.** Once up, the server stays up across sessions — it is shared infrastructure, not per-session. The only stop path is manual: `/workbench-core:memory-status stop` (or `hooks/memory-server-down.sh`), e.g. to change ports.
-- **Identity-checked health.** The warmup and `/workbench-core:memory-status` probe the server with a real MCP `initialize` and assert the handshake's `serverInfo.name` matches your configured server name — so a session never silently attaches to a *different* vault squatting the port. A foreign listener is reported as a conflict, never adopted.
-- **Bearer token auth.** The server authenticates with a per-install bearer token, **fully auto-provisioned** by `/workbench-core:setup`: it mints a random token (`openssl rand -hex 32`), writes it `0600` to `{memory_cache}/server.token`, and merges `WORKBENCH_MEMORY_TOKEN` into `~/.claude/settings.json` `.env` (which `plugin.json`'s `Authorization: Bearer ${WORKBENCH_MEMORY_TOKEN}` header reads). If the token file is ever lost, the supervisor re-mints one at next start. Because settings.json env is read at launch, a brand-new install's first session may lack memory until the next restart — expected, and self-healing.
-- **One-shot orphan sweep.** On the first shared start, the supervisor reaps any leaked **orphan** stdio servers from the old per-session model (UID-scoped, matched on the server binary path, and only those whose parent is dead — a live-parented session's server is never touched).
+- **Why stdio (again).** v0.10.0–v0.12.0 used a single shared HTTP server on `127.0.0.1:8765` to avoid N sessions each building embeddings and racing one SQLite WAL. But Cowork runs in a remote sandbox that can't reach a loopback port on your Mac, so the shared server made memory unreachable there. Per-session stdio spawns the server in-process in *every* environment, so memory works in both terminal Claude Code and Cowork. The tradeoff — concurrent sessions on the Mac each run their own indexer and can contend on the index — is knowingly re-accepted.
+- **Index maintenance.** A gated, once/day full VACUUM reclaims index space out-of-band from the launcher (`hooks/mcp-memory.sh` → `hooks/lib/memory-vacuum.sh`), guarded by a non-blocking `mkdir` lock so concurrent launchers don't collide: one session VACUUMs, the rest skip. A VACUUM that still contends with a live sibling server's writes skips safely via SQLite's busy timeout — no blocking, no corruption.
+- **No port or token.** Per-session stdio needs neither. `WORKBENCH_MEMORY_PORT` / `WORKBENCH_MEMORY_TOKEN` in `settings.json` are inert unless the shared HTTP server is re-enabled.
 
 Cache layout under `{memory_cache}` (default `~/.claude-memory-cache`):
 
@@ -365,19 +360,22 @@ Cache layout under `{memory_cache}` (default `~/.claude-memory-cache`):
 {memory_cache}/
 ├── vault-index.sqlite   — FTS index
 ├── embeddings/          — FastEmbed vectors
-├── kv/                  — HTTP-transport key-value store (session persistence)
-├── events/              — HTTP-transport event store
 ├── server-venv/         — the installed server (survives plugin updates)
-├── server.log           — server stdout/stderr (size-rotated, 5MB × 2)
-├── server.pid           — running server's PID
-├── server.port          — running server's bound port
-├── server.token         — bearer token (0600)
 └── .last-vacuum         — cooldown stamp for the gated index VACUUM
 ```
 
-The `kv/` and `events/` stores are required by the HTTP transport (its default `file:///data/state` is unwritable on macOS); they back HTTP session persistence. A retention sweep for them is deferred to a future release — they grow slowly and are safe to delete when the server is stopped.
+(`kv/`, `events/`, `server.log`, `server.pid`, `server.port`, and `server.token` appear only when the shared HTTP server is enabled — they back the HTTP transport, not stdio.)
 
-To change the port, set `memory_port` via `/workbench-core:setup` (which preflights it with `lsof` and writes `WORKBENCH_MEMORY_PORT` to settings.json), then restart Claude Code. Check health any time with `/workbench-core:memory-status`.
+##### Re-enabling the shared HTTP server (optional)
+
+The shared-HTTP implementation is **retained, not deleted** — only its invocation is stopped. To switch back:
+
+1. **`.claude-plugin/plugin.json`** — change the `memory` MCP from the stdio `command`/`args` form back to the http block: `{"type":"http","url":"http://127.0.0.1:${WORKBENCH_MEMORY_PORT:-8765}/mcp","headers":{"Authorization":"Bearer ${WORKBENCH_MEMORY_TOKEN}"}}`.
+2. **`hooks/hooks.json`** — re-add the `memory-server-up.sh` hook to the `SessionStart` array (before `session-warmup.sh`).
+3. **`hooks/session-warmup.sh`** — restore the "Memory server health check" block and the `hooks/lib/memory-probe.sh` source (both are in git history; the file carries a breadcrumb comment where the block used to live).
+4. **`/workbench-core:setup`** — re-run to provision the bearer token + `WORKBENCH_MEMORY_PORT` into `~/.claude/settings.json` `.env`, then restart Claude Code.
+
+The supervisor (`hooks/memory-server-spawn.sh`), the identity-checked health probe (`hooks/lib/memory-probe.sh`), the manual stop (`hooks/memory-server-down.sh`), the bearer-token minting, and the one-shot orphan sweep all remain in the tree and work as before once re-wired.
 
 #### Canonical store & routing
 
@@ -429,7 +427,7 @@ Runs on every `startup` warmup:
 | `/workbench-core:evaluate-decisions` | Grade recorded decisions & memories for decision quality (correctness, accuracy/efficiency/speed, consistency/recurrence, gaps) → learnings report. Decision-quality loop, gear 2 |
 | `/workbench-core:propose-upgrades` | Turn an evaluation into concrete corrections & new process recordings, walk human sign-off, apply only what's approved. Decision-quality loop, gears 3+4 |
 | `/workbench-core:memory-lint` | Monthly health-and-repair pass over the memory vault — frontmatter rescue, broken-link repair, conservative orphan linking, vault-index drift repair, duplicate flagging, audit report |
-| `/workbench-core:memory-status` | Report the shared memory server's health (up/building/down/conflict), port, and token; start or stop it |
+| `/workbench-core:memory-status` | Report the per-session stdio memory server's facts — vault/cache, launcher & server-binary presence, index & last-VACUUM |
 | `/workbench-core:install-chat-skills` | Discover skills in `@claude-workbench` plugins and install them into the Claude Mac app's Chat surface via `.skill` packaging |
 
 All skills are **execution-aware** — they check for a `skills/{name}.learnings.md` file in the vault before running and apply any accumulated learnings from prior executions.
@@ -463,8 +461,8 @@ All config values can be overridden via environment variables for testing:
 | `WORKBENCH_AGENT_NAME` | `agent_name` |
 | `WORKBENCH_MEMORY_PATH` | `memory_path` |
 | `WORKBENCH_MEMORY_CACHE` | `memory_cache` |
-| `WORKBENCH_MEMORY_PORT` | `memory_port` (also read by the MCP client from `settings.json` `.env`) |
-| `WORKBENCH_MEMORY_TOKEN` | memory server bearer token (set in `settings.json` `.env` by setup) |
+| `WORKBENCH_MEMORY_PORT` | `memory_port` — the optional shared HTTP server's port (inert under per-session stdio) |
+| `WORKBENCH_MEMORY_TOKEN` | the optional shared HTTP server's bearer token (inert under per-session stdio) |
 | `WORKBENCH_SUMMARY_MODEL` | `summary_model` |
 | `WORKBENCH_AUTO_SUMMARIZE` | `auto_summarize` |
 | `WORKBENCH_LOG_MODE` | Force log mode (`checkpoint`, `final`, `manual`) |
@@ -479,7 +477,7 @@ All config values can be overridden via environment variables for testing:
 ## Known limitations
 
 - **Restart after plugin update.** `CLAUDE_PLUGIN_ROOT` is resolved once at session startup. After updating, restart Claude Code to pick up changes.
-- **First session after a git install may lack memory.** The memory server's port and bearer token reach the MCP client via `~/.claude/settings.json` `.env`, which Claude Code reads at launch — a SessionStart hook can't inject them. Run `/workbench-core:setup` to provision them, then restart once; memory is available from the first session thereafter. Check status any time with `/workbench-core:memory-status`.
+- **Concurrent sessions share one index.** Per-session stdio spawns a server per session, all pointed at the same `{memory_cache}` index. Multiple simultaneous sessions each run their own indexer and can contend on the SQLite index (the gated VACUUM skips safely when contended). This is the knowingly-accepted tradeoff of stdio; the optional shared HTTP server (see [Memory server transport](#memory-server-transport)) avoids it at the cost of not working in Cowork.
 - **Summary-writer race on rapid compactions.** If a session compacts multiple times in quick succession, multiple summary-writers may run concurrently. The last one wins (overwrites the summary), which is always the most complete — but intermediate writers do wasted work.
 
 ## Design philosophy

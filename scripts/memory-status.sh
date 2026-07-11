@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
 #
-# memory-status.sh — report the shared memory server's health and key facts.
+# memory-status.sh — report the per-session stdio memory server's facts.
 #
-# A human-facing diagnostic for the lazy-start shared HTTP memory server: it
-# resolves the configured vault/cache/port, runs the same identity-checked probe
-# the warmup and host use, and prints status plus the artifacts that explain it
-# (pid, port, token presence, recent server.log, any failure/conflict markers).
-# Read-only by default; pass `start` or `stop` to act.
+# Since v0.13.0 the memory vault is served by a per-session STDIO server that the
+# MCP host (Claude Code / Cowork) spawns in-process via hooks/mcp-memory.sh — one
+# per session, no shared listener, no port, no bearer token. There is therefore
+# no out-of-band server to probe, start, or stop. This reports the things that
+# actually determine whether memory works: the resolved vault/cache, whether the
+# launcher and server binary are installed, and index / maintenance facts.
+#
+# (The shared HTTP server is retained but disabled. To re-enable it — and its
+# port/token/health reporting — see README, section "Memory server transport".)
 #
 # Usage:
-#   memory-status.sh         # print status (default)
-#   memory-status.sh start   # kick a lazy start (memory-server-up.sh)
-#   memory-status.sh stop     # stop the server (memory-server-down.sh)
-#
-# Always exits 0 on a plain status read; start/stop propagate nothing fatal.
+#   memory-status.sh          # print status (read-only)
+# Always exits 0.
 
 set -u
 
@@ -24,87 +25,58 @@ HOOKS_DIR="${HOOKS_DIR:-$(cd "$SCRIPT_DIR/../hooks" && pwd)}"
 
 # shellcheck source=hooks/lib/memory-env.sh
 . "$HOOKS_DIR/lib/memory-env.sh"
-# shellcheck source=hooks/lib/memory-probe.sh
-. "$HOOKS_DIR/lib/memory-probe.sh"
 memory_load_env
 
-ACTION="${1:-status}"
-
-case "$ACTION" in
-  start)
-    echo "Kicking a lazy start of the shared memory server ..."
-    bash "$HOOKS_DIR/memory-server-up.sh" < /dev/null
-    echo "Kicked. The server binds in ~2s; re-run 'memory-status' to confirm."
-    exit 0
-    ;;
-  stop)
-    bash "$HOOKS_DIR/memory-server-down.sh"
-    exit 0
-    ;;
-  status|"")
-    : # fall through to the report
-    ;;
-  *)
-    echo "Usage: memory-status.sh [status|start|stop]"
-    exit 0
+# start/stop don't apply to a per-session stdio server — the MCP host owns its
+# lifecycle. Accept them for muscle-memory, but explain and fall through to status.
+case "${1:-status}" in
+  start|stop)
+    echo "Note: '$1' does not apply to the per-session stdio server — the MCP host"
+    echo "spawns it in-process per session and stops it when the session ends."
+    echo "Restart Claude Code to re-spawn it. Showing status instead:"
+    echo
     ;;
 esac
 
-STATUS="$(memory_probe)"
-
-echo "Memory server status"
-echo "===================="
+echo "Memory server status (per-session stdio)"
+echo "========================================"
+echo "transport        : per-session stdio (in-process; spawned by the MCP host)"
 echo "vault (source)   : $MEMORY_PATH"
 echo "cache            : $CACHE_PATH"
 echo "server name      : $MCP_NAME"
-echo "configured port  : $MEMORY_PORT"
 
-# Decode the probe word into a human line.
-case "$STATUS" in
-  UP)          echo "health           : UP — serving, index built" ;;
-  BUILDING)    echo "health           : BUILDING — serving (index still building; search available, keyword-only)" ;;
-  DOWN_NONE)   echo "health           : DOWN — nothing listening (run 'memory-status start')" ;;
-  DOWN_FAILED) echo "health           : DOWN — last start FAILED (see server.log below)" ;;
-  DOWN_FOREIGN)echo "health           : CONFLICT — a different process holds the port" ;;
-  PORT_DRIFT)  echo "health           : PORT DRIFT — recorded server.port != configured port" ;;
-  *)           echo "health           : $STATUS" ;;
-esac
-
-# Recorded artifacts.
-if [ -f "$CACHE_PATH/server.pid" ]; then
-  PID="$(cat "$CACHE_PATH/server.pid" 2>/dev/null)"
-  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-    echo "server.pid       : $PID (alive)"
-  else
-    echo "server.pid       : ${PID:-?} (not running)"
-  fi
-fi
-[ -f "$CACHE_PATH/server.port" ] && echo "server.port      : $(cat "$CACHE_PATH/server.port" 2>/dev/null)"
-if [ -s "$CACHE_PATH/server.token" ]; then
-  echo "bearer token     : present (0600)"
+# Launcher: plugin.json points the memory MCP at this script.
+LAUNCHER="$HOOKS_DIR/mcp-memory.sh"
+if [ -x "$LAUNCHER" ]; then
+  echo "launcher         : $LAUNCHER (present)"
 else
-  echo "bearer token     : MISSING — run /workbench-core:setup to provision it"
+  echo "launcher         : $LAUNCHER (MISSING — plugin.json's memory MCP points here)"
 fi
 
-# Surface failure / conflict breadcrumbs verbatim.
-if [ -f "$CACHE_PATH/.server-failed" ]; then
-  echo
-  echo "--- .server-failed ---"
-  cat "$CACHE_PATH/.server-failed" 2>/dev/null
-fi
-if [ -f "$CACHE_PATH/.port-conflict" ]; then
-  echo
-  echo "--- .port-conflict ---"
-  cat "$CACHE_PATH/.port-conflict" 2>/dev/null
+# Server binary: the persistent venv the launcher installs into, under the cache.
+SERVER_BIN="$CACHE_PATH/server-venv/bin/markdown-vault-mcp"
+if [ -x "$SERVER_BIN" ]; then
+  echo "server binary    : installed ($SERVER_BIN)"
+else
+  echo "server binary    : not installed yet — the launcher installs it on first session (needs uv or pipx)"
 fi
 
-# A short server.log tail helps diagnose a failed/odd start.
-if [ -f "$CACHE_PATH/server.log" ]; then
-  echo
-  echo "--- server.log (last 15 lines) ---"
-  tail -n 15 "$CACHE_PATH/server.log" 2>/dev/null
+# Index + maintenance facts.
+if [ -f "$MARKDOWN_VAULT_MCP_INDEX_PATH" ]; then
+  SIZE=$(wc -c < "$MARKDOWN_VAULT_MCP_INDEX_PATH" 2>/dev/null | tr -d ' ')
+  echo "index            : $MARKDOWN_VAULT_MCP_INDEX_PATH (${SIZE:-?} bytes)"
+else
+  echo "index            : not built yet (builds on first session)"
+fi
+STAMP="$CACHE_PATH/.last-vacuum"
+if [ -f "$STAMP" ]; then
+  echo "last VACUUM      : $(date -r "$STAMP" 2>/dev/null || echo present)"
+else
+  echo "last VACUUM      : never (runs out-of-band from the launcher, gated + once/day)"
 fi
 
 echo
-echo "Actions: 'memory-status start' to start · 'memory-status stop' to stop."
+echo "Memory runs in-process per session — there is no shared server to start or stop."
+echo "If memory tools are unavailable: confirm 'uv' (or 'pipx') is on PATH, then restart"
+echo "Claude Code so the MCP host re-spawns the stdio launcher."
 exit 0

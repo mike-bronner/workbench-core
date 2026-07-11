@@ -41,13 +41,23 @@ HOOKS_DIR="${HOOKS_DIR:-$SCRIPT_DIR}"
 . "$HOOKS_DIR/lib/memory-env.sh"
 memory_load_env
 
-# --- Index reclamation moved out of this launcher ----------------------------
-# The gated full VACUUM used to run here on every per-session connect, which
-# could race a sibling session holding the same index. Under the shared-server
-# model index maintenance is the lazy-start supervisor's job: it runs the gated
-# VACUUM (hooks/lib/memory-vacuum.sh) at a confirmed cold start, inside the spawn
-# lock, with no server alive — so there is no writer to race. This stdio launcher
-# is the escape hatch / in-flight-old-session path; it no longer VACUUMs.
+# --- Out-of-band index reclamation: race-guarded gated VACUUM ----------------
+# Per-session stdio means N sessions can start concurrently, and a sibling
+# session's server may already hold the index. memory_vacuum_locked serializes
+# the attempt with a non-blocking mkdir lock — one launcher VACUUMs, the rest
+# skip immediately — and, one layer down, memory_vacuum's SQLite busy timeout
+# makes a VACUUM that still contends with a live sibling writer skip safely
+# rather than block or corrupt. Gated (freelist threshold) + cooled down
+# (once/day) inside the lib, so most boots skip with near-zero added latency.
+# Reuses the same lib the shared-server supervisor uses — no reinvention.
+#
+# Hard rules carry over from the old inline VACUUM: this step must NEVER fail the
+# launcher and must NEVER touch stdout (the MCP stdio channel). memory_vacuum
+# routes all output through the _log function (stderr) passed here and treats
+# every error (busy/locked, missing sqlite3, absent file) as skip-and-continue.
+# shellcheck source=hooks/lib/memory-vacuum.sh
+. "$HOOKS_DIR/lib/memory-vacuum.sh"
+memory_vacuum_locked "$MARKDOWN_VAULT_MCP_INDEX_PATH" _log
 # -----------------------------------------------------------------------------
 
 # --- Resolve/install the server binary via the shared install library --------

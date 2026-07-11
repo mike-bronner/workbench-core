@@ -91,3 +91,62 @@ memory_vacuum() {
 # Default logger: a plain stderr line. Callers with their own _log (the
 # supervisor) pass it as $2 so vacuum output joins the server log.
 _memory_vacuum_log() { echo "memory-vacuum: $*" >&2; }
+
+# memory_vacuum_locked: race-safe wrapper around memory_vacuum for the
+# per-session stdio launcher (hooks/mcp-memory.sh).
+#
+# WHY a lock here but not in the supervisor: the shared-server supervisor holds
+# the spawn lock and VACUUMs in a guaranteed "no server alive" window, so it
+# calls memory_vacuum directly. The stdio launcher has no such window — it runs
+# once per session and sibling sessions' servers may be live. This wrapper adds
+# a NON-BLOCKING atomic-mkdir lock so that among concurrently starting launchers
+# exactly one attempts the VACUUM and the rest skip immediately (one session
+# VACUUMs, others skip if held) rather than piling onto the same index.
+#
+# The lock only dedups concurrent *launchers*. A VACUUM that still contends with
+# a live sibling server's writes is handled one layer down: memory_vacuum sets a
+# SQLite busy timeout and treats a busy/locked index as skip-and-continue, so it
+# degrades safely — no corruption, no blocking. That SQLite-level busy handler is
+# the true safety net; this mkdir lock is a cheap best-effort dedup on top of it.
+# Skipping when a sibling server holds the index is the honest multi-session
+# tradeoff the Mac knowingly re-accepts by choosing per-session stdio.
+#
+# Staleness is PID-liveness, never wall-clock (mirrors memory-server-up.sh's
+# lock): a crashed launcher's lock is stolen once when its pid is dead. Because
+# the SQLite busy handler already prevents corruption, a lost steal-race just
+# means a redundant skip — so this deliberately omits the heavier lock-generation
+# nonce the spawn lock carries. Never fails the caller; releases the lock inline
+# (no EXIT trap — the launcher execs the server after this, where a trap would
+# fire in the wrong process).
+#
+# Args: $1 = index sqlite path (as memory_vacuum). $2 = optional logger name.
+memory_vacuum_locked() {
+  local index_path="$1"
+  local logger="${2:-_memory_vacuum_log}"
+  local lock_dir="${index_path%/*}/vacuum.lock"
+  local pid_file="$lock_dir/pid"
+
+  # Non-blocking claim: mkdir is atomic, so exactly one concurrent launcher wins.
+  if ! mkdir "$lock_dir" 2>/dev/null; then
+    local holder=""
+    [ -f "$pid_file" ] && holder="$(cat "$pid_file" 2>/dev/null)"
+    if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+      "$logger" "vacuum: lock held by live pid $holder; skipping"
+      return 0
+    fi
+    # Stale lock (holder dead or never stamped) — steal once and retry the claim.
+    "$logger" "vacuum: stealing stale lock (holder '${holder:-none}' not alive)"
+    rm -rf "$lock_dir" 2>/dev/null || true
+    if ! mkdir "$lock_dir" 2>/dev/null; then
+      "$logger" "vacuum: lost re-claim race; another launcher owns the lock; skipping"
+      return 0
+    fi
+  fi
+
+  # We hold the lock. Stamp our pid for the liveness check above, run the gated
+  # VACUUM, then always release (rm -rf, since the dir holds pid).
+  echo "$$" > "$pid_file" 2>/dev/null || true
+  memory_vacuum "$index_path" "$logger"
+  rm -rf "$lock_dir" 2>/dev/null || true
+  return 0
+}

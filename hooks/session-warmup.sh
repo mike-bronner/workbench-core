@@ -25,16 +25,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOKS_DIR="${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/hooks}"
 HOOKS_DIR="${HOOKS_DIR:-$SCRIPT_DIR}"
 
-# Memory path/cache/mcp-name/port come from the shared resolver (precedence:
-# WORKBENCH_* override → config.json → default). It also exports the full
-# MARKDOWN_VAULT_MCP_* set, harmless here. memory_load_env sets MEMORY_PATH,
-# CACHE_PATH, MCP_NAME, MEMORY_PORT.
+# Memory path/cache come from the shared resolver (precedence: WORKBENCH_*
+# override → config.json → default). It also exports the full MARKDOWN_VAULT_MCP_*
+# set, harmless here. memory_load_env sets MEMORY_PATH and CACHE_PATH, both used
+# below. memory-probe.sh is deliberately NOT sourced any more: the shared-server
+# health check was disabled when the memory transport reverted to per-session
+# stdio (v0.13.0) — there is no external server to probe. See the breadcrumb
+# where that block used to live, further down.
 # shellcheck source=hooks/lib/memory-env.sh
 . "$HOOKS_DIR/lib/memory-env.sh"
-# shellcheck source=hooks/lib/memory-probe.sh
-. "$HOOKS_DIR/lib/memory-probe.sh"
 memory_load_env
-MCP_SERVER_NAME="$MCP_NAME"
 
 # Config resolution for warmup-only fields (agent_name, identity_files).
 # Prefer the current data dir; fall back to the pre-rename location so users
@@ -398,41 +398,20 @@ if [ "$SOURCE" = "startup" ]; then
   find "$CACHE_PATH" -name "summary-writer-*.log" -delete 2>/dev/null
 fi
 
-# ──────────── Memory server health check (startup only) ────────────
-# The memory server is now a shared HTTP server, lazy-started by the
-# memory-server-up hook that runs just before this warmup. Probe its actual
-# health (identity-checked) rather than guessing from the index file's presence.
-# Only surface a notice when something is wrong — a healthy/coming-up server is
-# the common case and needs no words.
-if [ "$SOURCE" = "startup" ]; then
-  case "$(memory_probe)" in
-    UP|BUILDING)
-      : # serving (BUILDING = bound, index still building, search available) — quiet.
-      ;;
-    PORT_DRIFT)
-      printf '## ⚠ Memory server port drift\n\n'
-      printf 'The running memory server bound a different port than configured (port `%s`).\n' "$MEMORY_PORT"
-      printf 'This usually means `WORKBENCH_MEMORY_PORT` in `~/.claude/settings.json` and the\n'
-      printf 'recorded `%s/server.port` disagree. Reconcile them (or run `/workbench-core:memory-status`), then restart Claude Code.\n\n' "$CACHE_PATH"
-      ;;
-    DOWN_FOREIGN)
-      printf '## ⚠ Memory server port conflict\n\n'
-      printf 'Another process is listening on memory port `%s` that is not the `%s` vault.\n' "$MEMORY_PORT" "$MCP_SERVER_NAME"
-      printf 'The shared server was not started to avoid a conflict. Free the port or set a different\n'
-      printf '`WORKBENCH_MEMORY_PORT`, then restart. See `/workbench-core:memory-status`.\n\n'
-      ;;
-    DOWN_FAILED)
-      printf '## ⚠ Memory server failed to start\n\n'
-      printf 'The last attempt to start the shared memory server failed (see `%s/server.log`).\n' "$CACHE_PATH"
-      printf 'Memory search and write will fail until it comes up. Run `/workbench-core:memory-status` to diagnose.\n\n'
-      ;;
-    *)  # DOWN_NONE — not up yet; the up-hook just kicked a spawn that binds in ~2s.
-      printf '## ℹ Memory server starting\n\n'
-      printf 'The shared memory server is starting in the background (binds in ~2s; the client retries the connection).\n'
-      printf 'If memory tools are unavailable this turn, they should work shortly — or next session.\n\n'
-      ;;
-  esac
-fi
+# ──────────── Memory server health check — disabled (per-session stdio) ────────
+# A shared-HTTP health probe lived here through v0.12: it ran memory_probe and
+# surfaced port-drift / conflict / failed / starting notices for the lazy-started
+# shared server. It was removed in v0.13.0 when the transport reverted to a
+# per-session stdio server: stdio spawns the server in-process per session, so
+# there is NO external listener to probe — the probe returned DOWN_NONE every
+# startup and printed a phantom "Memory server starting" notice. The MCP host's
+# own connect error is the real signal for a broken stdio launcher now.
+#
+# To RE-ENABLE the shared HTTP server, restore this block and the memory-probe.sh
+# source near the top of this file (both are in git history), re-add the
+# memory-server-up.sh SessionStart hook in hooks/hooks.json, and switch
+# plugin.json's memory MCP back to the http transport. See README, section
+# "Memory server transport — re-enabling the shared HTTP server (optional)".
 
 # ──────────── Recall-hook liveness check (startup only) ────────────
 # memory-recall.sh stamps last-attempt on every substantive prompt. A stamp

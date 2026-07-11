@@ -59,6 +59,28 @@ assert_no_file() {
   else FAIL=$((FAIL + 1)); echo "  ❌ $desc — should be absent: $path"; fi
 }
 
+assert_no_dir() {
+  local desc="$1" path="$2"
+  if [ ! -d "$path" ]; then PASS=$((PASS + 1)); echo "  ✅ $desc"
+  else FAIL=$((FAIL + 1)); echo "  ❌ $desc — dir should be absent: $path"; fi
+}
+
+# run_vacuum_locked <index> [env...] — call the race-guarded wrapper the stdio
+# launcher uses, capturing its stderr log.
+run_vacuum_locked() {
+  local index="$1"; shift
+  env "$@" bash -c '. "'"$LIB"'"; memory_vacuum_locked "'"$index"'"' 2>&1
+}
+
+assert_no_run() {
+  local desc="$1" output="$2"
+  if printf '%s' "$output" | grep -qF "running VACUUM"; then
+    FAIL=$((FAIL + 1)); echo "  ❌ $desc — VACUUM ran but should have been skipped"
+  else
+    PASS=$((PASS + 1)); echo "  ✅ $desc"
+  fi
+}
+
 echo "freelist over threshold → VACUUM runs, file shrinks, stamp written:"
 IDX="$SANDBOX/over/vault-index.sqlite"; mkdir -p "$SANDBOX/over"
 build_index "$IDX"
@@ -112,6 +134,38 @@ OUT=$(PATH="$STUBBIN" bash -c '. "'"$LIB"'"; memory_vacuum "'"$SANDBOX"'/over/va
 RC=$?
 assert_contains "logs sqlite3-missing skip" "$OUT" "sqlite3 not on PATH"
 [ "$RC" -eq 0 ] && { PASS=$((PASS+1)); echo "  ✅ returns 0 when sqlite3 absent"; } || { FAIL=$((FAIL+1)); echo "  ❌ non-zero when sqlite3 absent"; }
+
+echo "locked wrapper: free lock → VACUUM runs and the lock is released:"
+IDX="$SANDBOX/lockfree/vault-index.sqlite"; mkdir -p "$SANDBOX/lockfree"
+build_index "$IDX"
+OUT=$(run_vacuum_locked "$IDX" WORKBENCH_MEMORY_VACUUM_THRESHOLD_MB=1)
+assert_contains "runs VACUUM when the lock is free" "$OUT" "running VACUUM"
+assert_no_dir   "lock dir released after the run"    "$SANDBOX/lockfree/vacuum.lock"
+
+echo "locked wrapper: lock held by a LIVE pid → skip, holder untouched:"
+IDX="$SANDBOX/lockheld/vault-index.sqlite"; mkdir -p "$SANDBOX/lockheld"
+build_index "$IDX"
+mkdir -p "$SANDBOX/lockheld/vacuum.lock"
+sleep 60 & HOLDER=$!
+disown 2>/dev/null || true   # silence the job-control "Terminated" notice on kill
+echo "$HOLDER" > "$SANDBOX/lockheld/vacuum.lock/pid"
+OUT=$(run_vacuum_locked "$IDX" WORKBENCH_MEMORY_VACUUM_THRESHOLD_MB=1)
+kill "$HOLDER" 2>/dev/null
+assert_contains "logs the live-holder skip" "$OUT" "held by live pid"
+assert_no_run   "does not VACUUM under a live lock" "$OUT"
+assert_file     "live holder's lock left intact" "$SANDBOX/lockheld/vacuum.lock/pid"
+
+echo "locked wrapper: STALE lock (dead pid) → stolen, VACUUM runs, lock released:"
+IDX="$SANDBOX/lockstale/vault-index.sqlite"; mkdir -p "$SANDBOX/lockstale"
+build_index "$IDX"
+mkdir -p "$SANDBOX/lockstale/vacuum.lock"
+# A guaranteed-dead pid: spawn a trivial child, then reap it so kill -0 fails.
+sh -c 'exit 0' & DEAD=$!; wait "$DEAD" 2>/dev/null
+echo "$DEAD" > "$SANDBOX/lockstale/vacuum.lock/pid"
+OUT=$(run_vacuum_locked "$IDX" WORKBENCH_MEMORY_VACUUM_THRESHOLD_MB=1)
+assert_contains "steals the stale lock"          "$OUT" "stealing stale lock"
+assert_contains "runs VACUUM after the steal"    "$OUT" "running VACUUM"
+assert_no_dir   "lock released after stolen run" "$SANDBOX/lockstale/vacuum.lock"
 
 echo
 echo "$PASS passed, $FAIL failed"

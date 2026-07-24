@@ -458,7 +458,6 @@ All config values can be overridden via environment variables for testing:
 
 | Variable | Overrides |
 |----------|-----------|
-| `WORKBENCH_AGENT_NAME` | `agent_name` |
 | `WORKBENCH_MEMORY_PATH` | `memory_path` |
 | `WORKBENCH_MEMORY_CACHE` | `memory_cache` |
 | `WORKBENCH_MEMORY_PORT` | `memory_port` — the optional shared HTTP server's port (inert under per-session stdio) |

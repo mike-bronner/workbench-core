@@ -10,6 +10,12 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PASS=0
 FAIL=0
 
+# Isolate the interactive (unset) path: if the runner itself is an --agent
+# dispatch, CLAUDE_CODE_AGENT leaks into every child warmup and the whole suite
+# would trip the new skip guard. Unset it here so every invocation below tests
+# the unset case unless it opts into an agent via run_warmup's second argument.
+unset CLAUDE_CODE_AGENT
+
 SANDBOX=$(mktemp -d)
 trap 'rm -rf "$SANDBOX"' EXIT
 
@@ -22,13 +28,15 @@ printf 'SKILLSPROTO-CANARY skill learnings\n' > "$SANDBOX/memory/identity/skills
 
 run_warmup() {
   local source="$1"
-  printf '{"source":"%s"}' "$source" | \
+  local agent="${2:-}"
+  printf '{"source":"%s"}' "$source" | (
+    [ -n "$agent" ] && export CLAUDE_CODE_AGENT="$agent"
     HOME="$SANDBOX/home" \
     WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
     WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
-    WORKBENCH_AGENT_NAME="TestAgent" \
     CLAUDE_PLUGIN_ROOT="$REPO_ROOT" \
     bash "$WARMUP" 2>/dev/null
+  )
 }
 
 assert_contains() {
@@ -86,6 +94,72 @@ assert_missing  "profile not inlined"              "$OUT" "PROFILE-CANARY"
 assert_contains "profile pointer present"          "$OUT" "User profile: re-read"
 assert_contains "soul-hot injected in full"        "$OUT" "SOULHOT-CANARY"
 
+echo "agent dispatch — CLAUDE_CODE_AGENT set skips the entire warmup:"
+# Seed pending-summary markers so we can prove even the summary-dispatch
+# housekeeping is skipped, not just identity injection.
+mkdir -p "$SANDBOX/cache/pending-summaries"
+printf '{"session_id":"agent-skip","log_path":"/nonexistent/agent-skip.log.md"}\n' \
+  > "$SANDBOX/cache/pending-summaries/agent-skip.json"
+OUT=$(run_warmup startup "workbench-dev-team:watson")
+if [ -z "$OUT" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ produces no output at all"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ expected empty output, got: $OUT"
+fi
+assert_missing "no warmup header"                  "$OUT" "session warmup"
+assert_missing "no guardrails"                     "$OUT" "Guardrails — absolute rules"
+assert_missing "no memory-routing block"           "$OUT" "## Memory routing"
+assert_missing "no soul-hot"                        "$OUT" "SOULHOT-CANARY"
+assert_missing "no profile"                         "$OUT" "PROFILE-CANARY"
+assert_missing "no pending-summary housekeeping"   "$OUT" "Pending session summaries"
+OUT=$(run_warmup resume "some-plugin:some-agent")
+assert_missing "skip is source-independent (resume)" "$OUT" "SOULHOT-CANARY"
+if printf '{"source":"startup"}' | ( export CLAUDE_CODE_AGENT="workbench-dev-team:holmes"; \
+    HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
+    WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
+    CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" >/dev/null 2>&1 ); then
+  PASS=$((PASS + 1)); echo "  ✅ still exits 0 (never breaks the session)"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ agent-skip exited non-zero"
+fi
+rm -f "$SANDBOX/cache/pending-summaries/agent-skip.json"
+
+echo "agent dispatch — no persistent-file side effects on ~/.claude:"
+AGENT_HOME="$SANDBOX/agent-home"
+mkdir -p "$AGENT_HOME"
+printf '{"source":"startup"}' | ( export CLAUDE_CODE_AGENT="workbench-dev-team:watson"; \
+  HOME="$AGENT_HOME" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
+  WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
+  CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" >/dev/null 2>&1 )
+if [ ! -f "$AGENT_HOME/.claude/CLAUDE.md" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ does not write ~/.claude/CLAUDE.md"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ wrote ~/.claude/CLAUDE.md"
+fi
+if [ ! -f "$AGENT_HOME/.claude/system-overrides.md" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ does not write ~/.claude/system-overrides.md"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ wrote ~/.claude/system-overrides.md"
+fi
+
+echo "interactive (unset) — persistent-file enforcement still runs:"
+UNSET_HOME="$SANDBOX/unset-home"
+mkdir -p "$UNSET_HOME"
+printf '{"source":"startup"}' | \
+  HOME="$UNSET_HOME" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
+  WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
+  CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" >/dev/null 2>&1
+if [ -f "$UNSET_HOME/.claude/CLAUDE.md" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ writes ~/.claude/CLAUDE.md as before"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ did not write ~/.claude/CLAUDE.md when unset"
+fi
+if [ -f "$UNSET_HOME/.claude/system-overrides.md" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ writes ~/.claude/system-overrides.md as before"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ did not write ~/.claude/system-overrides.md when unset"
+fi
+
 echo "missing files degrade gracefully:"
 rm "$SANDBOX/memory/identity/profile.md" "$SANDBOX/memory/identity/skills-protocol.md"
 OUT=$(run_warmup compact)
@@ -102,7 +176,7 @@ mkdir -p "$STRAY_PROJ/memory/sessions/2026-07-01"
 printf 'stray\n' > "$STRAY_PROJ/memory/sessions/2026-07-01/xyz.summary.md"
 OUT=$(cd "$STRAY_PROJ" && printf '{"source":"startup"}' | \
   HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
-  WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" WORKBENCH_AGENT_NAME="TestAgent" \
+  WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
   CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" 2>/dev/null)
 assert_contains "warns about stray summaries"          "$OUT" "Stray session summaries in this project"
 assert_contains "lists the stray file"                 "$OUT" "xyz.summary.md"
@@ -112,7 +186,7 @@ CLEAN_PROJ="$SANDBOX/clean"
 mkdir -p "$CLEAN_PROJ"
 OUT=$(cd "$CLEAN_PROJ" && printf '{"source":"startup"}' | \
   HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
-  WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" WORKBENCH_AGENT_NAME="TestAgent" \
+  WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
   CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" 2>/dev/null)
 assert_missing "no stray warning when project is clean" "$OUT" "Stray session summaries"
 
@@ -158,7 +232,7 @@ assert_missing  "log paths not enumerated"     "$OUT" "/nonexistent/sid-1.log.md
 echo "PostCompact payload routes to the compact branch:"
 OUT=$(printf '{"hook_event_name":"PostCompact","trigger":"auto"}' | \
   HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
-  WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" WORKBENCH_AGENT_NAME="TestAgent" \
+  WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
   CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" 2>/dev/null)
 assert_missing  "profile not inlined on PostCompact"  "$OUT" "PROFILE-CANARY"
 assert_contains "profile pointer present"             "$OUT" "User profile: re-read"

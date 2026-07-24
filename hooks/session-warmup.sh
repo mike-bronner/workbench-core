@@ -52,7 +52,7 @@ fi
 
 PENDING_SUMMARIES_DIR="$CACHE_PATH/pending-summaries"
 CHECKPOINTS_DIR="$CACHE_PATH/log-checkpoints"
-AGENT_NAME="${WORKBENCH_AGENT_NAME:-$(_cfg '.agent_name')}"
+AGENT_NAME="$(_cfg '.agent_name')"
 AGENT_NAME="${AGENT_NAME:-Claude}"
 
 # Read hook payload from stdin. May be empty if invoked outside a hook.
@@ -318,6 +318,19 @@ ensure_memory_routing_stub() {
 # context or pending-summary scanning — it has a single mechanical job
 # assigned in its prompt and should not touch anything other than its job.
 if [ "${WORKBENCH_SKIP_WARMUP:-}" = "1" ]; then
+  exit 0
+fi
+
+# Skip guard: Claude Code sets this env var on every sub-agent dispatch
+# (Watson, Holmes-reviewer, Lestrade, Harvester — and any future agent
+# from any plugin). Those runs carry self-contained system prompts and
+# must not inherit the interactive "Holmes" identity this warmup injects:
+# its guardrail #1 ("present options before making changes") directly
+# conflicts with autonomous, unattended pipeline work — Watson dispatched
+# via cron has no human present to answer it. Orchestrator/Dispatch and
+# Mike's own interactive sessions run without --agent, leave this unset,
+# and are unaffected.
+if [ -n "${CLAUDE_CODE_AGENT:-}" ]; then
   exit 0
 fi
 

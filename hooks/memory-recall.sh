@@ -26,22 +26,43 @@
 #      commands) emit nothing, so most turns cost zero tokens.
 #   3. Small top-K — default 2 hits, each trimmed to a one-line summary.
 #
+# TRANSPORT: this hook shells out to the `markdown-vault-mcp search` CLI — a
+# one-shot subprocess that loads the index, runs the query, prints JSON, and
+# exits. NOT the `serve` command: no port, no daemon, nothing left running
+# afterward. That makes it consistent with the per-session stdio MCP transport
+# (mcp-memory.sh) — no shared server for either to depend on — at the cost of
+# ~1s per call (process start + loading the embedding index fresh every time,
+# vs. a warm daemon's ~25ms). Deliberate trade: see the vault insight
+# 2026-07-26-memory-recall-cli-migration for the measurement and the
+# alternative (a properly-supervised daemon) that was rejected in favor of
+# this. Before this, the hook curled a shared HTTP server on port 8765 that
+# the per-session-stdio revert (PR #14) left undersupervised — an orphaned
+# instance from the old shared-server model kept it silently "working" for
+# 18 days after the revert, until it was found and killed.
+#
 # Env knobs:
 #   WORKBENCH_MEMORY_RECALL=0           → disable entirely.
 #   WORKBENCH_MEMORY_RECALL_LIMIT=N     → max hits to inject (default 2).
 #   WORKBENCH_MEMORY_RECALL_MIN_CHARS=N → min prompt length to search (default 16).
 #   WORKBENCH_MEMORY_RECALL_MODE=...    → search mode (default hybrid).
-#   WORKBENCH_MEMORY_RECALL_TIMEOUT=N   → curl --max-time seconds (default 4).
+#   WORKBENCH_MEMORY_RECALL_TIMEOUT=N   → search subprocess watchdog seconds
+#                                         (default 8 — the call itself takes ~1s;
+#                                         this only bounds a pathological hang).
 #   WORKBENCH_MEMORY_RECALL_STATE=DIR   → per-session seen-paths state dir override.
 #   WORKBENCH_MEMORY_RECALL_TYPES=a,b   → frontmatter types eligible for injection
 #                                         (default decision,insight,topic,feedback,reference;
 #                                         set empty to disable the filter).
-#   (vault location/port/token come from lib/memory-env.sh, like every other hook.)
+#   (vault location comes from lib/memory-env.sh, like every other hook.)
 #
-# Never fails the session. Always exits 0 — missing jq, a down server, a
-# malformed payload, or a curl timeout all degrade to a silent no-op.
+# Never fails the session. Always exits 0 — missing jq, a binary that can't be
+# resolved, a malformed payload, or a subprocess that hangs past the watchdog
+# all degrade to a silent no-op.
 
 set -u
+
+# install/vacuum-lib chatter must never touch stdout (this hook's stdout is
+# either nothing or one additionalContext JSON block) — route it to stderr.
+_memory_recall_noop_log() { echo "memory-recall: $*" >&2; }
 
 # ──────────── Disable switch ────────────
 if [ "${WORKBENCH_MEMORY_RECALL:-}" = "0" ]; then
@@ -58,7 +79,6 @@ fi
 [ -n "$PAYLOAD" ] || exit 0
 
 command -v jq >/dev/null 2>&1 || exit 0
-command -v curl >/dev/null 2>&1 || exit 0
 
 PROMPT=$(printf '%s' "$PAYLOAD" | jq -r '.prompt // empty' 2>/dev/null)
 SESSION_ID=$(printf '%s' "$PAYLOAD" | jq -r '.session_id // empty' 2>/dev/null)
@@ -90,23 +110,36 @@ if printf '%s' "$_trimmed" \
   exit 0
 fi
 
-# ──────────── Resolve vault env (port / cache / name) ────────────
+# ──────────── Resolve vault env (source dir / index / cache) ────────────
 # Same resolution every other memory hook uses, so we always agree on where the
-# vault and its token live. memory_load_env sets MEMORY_PORT / MCP_NAME /
-# CACHE_PATH (precedence: WORKBENCH_* override → config.json → default).
+# vault and its index live. memory_load_env exports the MARKDOWN_VAULT_MCP_*
+# env the CLI reads (precedence: WORKBENCH_* override → config.json → default).
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HOOKS_DIR="$HOOK_DIR"
 # shellcheck source=hooks/lib/memory-env.sh
 . "$HOOK_DIR/lib/memory-env.sh" 2>/dev/null || exit 0
 memory_load_env 2>/dev/null || exit 0
 
-PORT="${MEMORY_PORT:-8765}"
-CACHE="${CACHE_PATH:-$HOME/.claude-memory-cache}"
 LIMIT="${WORKBENCH_MEMORY_RECALL_LIMIT:-2}"
 case "$LIMIT" in ''|*[!0-9]*) LIMIT=2 ;; esac
 [ "$LIMIT" -lt 1 ] && LIMIT=2
 MODE="${WORKBENCH_MEMORY_RECALL_MODE:-hybrid}"
-TIMEOUT="${WORKBENCH_MEMORY_RECALL_TIMEOUT:-4}"
-case "$TIMEOUT" in ''|*[!0-9]*) TIMEOUT=4 ;; esac
+TIMEOUT="${WORKBENCH_MEMORY_RECALL_TIMEOUT:-8}"
+case "$TIMEOUT" in ''|*[!0-9]*) TIMEOUT=8 ;; esac
+
+# ──────────── Resolve the server binary ────────────
+# Same shared resolution mcp-memory.sh and memory-server-spawn.sh use.
+# WORKBENCH_MEMORY_SERVER_BIN short-circuits it — the test suite points that at
+# the fake-binary fixture; a missing/unresolvable binary is a silent no-op, the
+# same fail-open contract as every other failure mode in this hook.
+# shellcheck source=hooks/lib/memory-install.sh
+. "$HOOK_DIR/lib/memory-install.sh" 2>/dev/null || exit 0
+if [ -n "${WORKBENCH_MEMORY_SERVER_BIN:-}" ]; then
+  SERVER_BIN="$WORKBENCH_MEMORY_SERVER_BIN"
+else
+  memory_install_server _memory_recall_noop_log 2>/dev/null || exit 0
+fi
+[ -n "${SERVER_BIN:-}" ] && [ -x "$SERVER_BIN" ] || exit 0
 
 # Curated-type filter: 77% of the index is session summaries, and unfiltered
 # recall spends its whole injection budget on them (2026-07-08 audit). Over-
@@ -127,80 +160,40 @@ if mkdir -p "$STATE_DIR" 2>/dev/null; then
   date +%s > "$STATE_DIR/last-attempt" 2>/dev/null || true
 fi
 
-# ──────────── Call the vault's search tool over the HTTP MCP ────────────
-# Wire conventions match lib/memory-probe.sh: JSON-RPC POST to /mcp, the dual
-# Accept header the Streamable-HTTP transport needs, and the bearer token carried
-# through a curl -K - stdin config (NEVER on argv, where ps / /proc/<pid>/cmdline
-# would leak it).
-#
-# Unlike the probe (which only ever calls `initialize`), a `tools/call` needs an
-# established MCP session: the transport rejects a bare tool call with
-# "Missing session ID". So this is a two-step handshake —
-#   1. POST `initialize`; the server returns an `Mcp-Session-Id` response header.
-#   2. POST `tools/call` for `search`, echoing that header.
-# (The `notifications/initialized` step is not required by this server.)
-TOKEN=""
-[ -f "$CACHE/server.token" ] && TOKEN="$(cat "$CACHE/server.token" 2>/dev/null)"
-CONFIG=""
-[ -n "$TOKEN" ] && CONFIG="header = \"Authorization: Bearer $TOKEN\""
-URL="http://127.0.0.1:$PORT/mcp"
+# ──────────── Call the vault's search CLI (one-shot subprocess) ────────────
+# `search --json` prints a bare JSON array [{path,title,frontmatter,sections,…}]
+# straight to stdout and exits — no handshake, no session id, no framing (that
+# was all Streamable-HTTP transport ceremony; the CLI has none of it). Guarded
+# by a portable bash watchdog (no `timeout`/`gtimeout` on stock macOS): run in
+# the background, race a `sleep $TIMEOUT` killer against it, capture stdout via
+# a temp file since a backgrounded `VAR=$(cmd) &` would run the assignment in a
+# subshell and lose the result. Deliberately NOT `disown`ed (unlike the
+# detach-and-outlive use in memory-server-spawn.sh) — disowning stops bash from
+# tracking the job, and `wait "$CLI_PID"` on an untracked pid returns before the
+# process has actually finished writing, racing the read below. The watchdog
+# SIGTERMs only CLI_PID itself (no process-group kill — job control is off in a
+# non-interactive script, so `-$CLI_PID` would target this hook's OWN group);
+# fine for the real CLI, which is a single process with no children.
+OUT_FILE="$(mktemp 2>/dev/null)" || exit 0
+"$SERVER_BIN" search "$QUERY" --mode "$MODE" --limit "$FETCH" --json \
+  >"$OUT_FILE" 2>/dev/null &
+CLI_PID=$!
+( sleep "$TIMEOUT"; kill -TERM "$CLI_PID" 2>/dev/null ) &
+WATCHDOG_PID=$!
+wait "$CLI_PID" 2>/dev/null
+CLI_RC=$?
+kill "$WATCHDOG_PID" 2>/dev/null; wait "$WATCHDOG_PID" 2>/dev/null
 
-# Step 1: initialize, capturing response headers (-D -, body discarded) to read
-# the session id the transport mints for this exchange.
-INIT_BODY='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"memory-recall","version":"1"}}}'
-INIT_HDRS=$(printf '%s\n' "$CONFIG" \
-  | curl -fsS --max-time "$TIMEOUT" -K - -D - -o /dev/null \
-    -H 'Content-Type: application/json' \
-    -H 'Accept: application/json, text/event-stream' \
-    -X POST "$URL" -d "$INIT_BODY" 2>/dev/null) || exit 0
-SID=$(printf '%s' "$INIT_HDRS" \
-  | grep -i '^mcp-session-id:' | head -n 1 | sed 's/^[^:]*: *//' | tr -d '\r\n')
-[ -n "$SID" ] || exit 0
-
-# Step 2: the search call, carrying the session id. Fetch FETCH (4× LIMIT)
-# candidates so the client-side type filter still has LIMIT survivors.
-BODY=$(jq -cn --arg q "$QUERY" --arg mode "$MODE" --argjson lim "$FETCH" \
-  '{jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"search",arguments:{query:$q,mode:$mode,limit:$lim,chunks_per_file:1,snippet_words:28}}}' \
-  2>/dev/null) || exit 0
-
-RESPONSE=$(printf '%s\n' "$CONFIG" \
-  | curl -fsS --max-time "$TIMEOUT" -K - \
-    -H 'Content-Type: application/json' \
-    -H 'Accept: application/json, text/event-stream' \
-    -H "Mcp-Session-Id: $SID" \
-    -X POST "$URL" -d "$BODY" 2>/dev/null)
+RESPONSE=""
+[ "$CLI_RC" -eq 0 ] && RESPONSE="$(cat "$OUT_FILE" 2>/dev/null)"
+rm -f "$OUT_FILE" 2>/dev/null
 [ -n "$RESPONSE" ] || exit 0
 
 # ──────────── Parse the search hits ────────────
-# The transport answers as a single JSON object or an SSE stream
-# (`event: message\ndata: {json}\n\n`). Strip the SSE framing the same way
-# memory-probe does (`sed -n 's/^data: *//; /^{/p'`), then pull the tool result.
-# markdown-vault-mcp returns the search payload as a JSON string in
-# result.content[].text — a BARE ARRAY [{path,title,frontmatter,sections,…}]
-# (confirmed against the live server), each text accepting either an array OR a
-# {"result":[…]} object. The live server ALSO mirrors the same hits into
-# result.structuredContent, so the two sources must NOT be unioned (that would
-# inject every hit twice). Prefer content; fall back to structuredContent only
-# when content yields nothing. Each hit becomes a TSV row of
-# path / title / type / one-line summary.
-DEFRAMED=$(printf '%s\n' "$RESPONSE" | sed -n 's/^data: *//; /^{/p')
-[ -n "$DEFRAMED" ] || exit 0
-
+# Each hit becomes a TSV row of path / title / type / one-line summary.
 _extract() {
-  printf '%s\n' "$DEFRAMED" | jq -rR --argjson n "$LIMIT" --arg types "$TYPES" '
+  printf '%s\n' "$RESPONSE" | jq -r --argjson n "$LIMIT" --arg types "$TYPES" '
     ($types | if . == "" then [] else split(",") end) as $allowed
-    | fromjson?
-    | ( [ .result.content[]?.text | fromjson? ]
-        | map( if type == "array" then .
-               elif type == "object" then (.result // [])
-               else [] end )
-        | add // [] ) as $fromcontent
-    | ( if ($fromcontent | length) > 0 then $fromcontent
-        else ( .result.structuredContent
-               | if type == "object" then (.result // [])
-                 elif type == "array" then .
-                 else [] end )
-        end )
     | ( if ($allowed | length) > 0
         then map(select((.frontmatter.type // "note") as $t | $allowed | index($t)))
         else . end )

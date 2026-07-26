@@ -38,12 +38,66 @@
 #                              the live server — the hook must inject each hit
 #                              once), or "structured" (structuredContent only —
 #                              exercises the hook's fallback branch).
+#                              These SHAPE/SSE/token knobs only apply to `serve`
+#                              — the real CLI `search` subcommand (below) has
+#                              none of that Streamable-HTTP transport ceremony.
+#   FAKE_SEARCH_HANG_SECONDS=N  (search subcommand only) sleep N seconds before
+#                              printing anything — exercises memory-recall.sh's
+#                              watchdog kill-on-timeout path.
+#   FAKE_SEARCH_EXIT_NONZERO=1  (search subcommand only) exit 1 with no stdout —
+#                              simulates a crashed/erroring CLI invocation.
 #
-# It is intentionally a thin bash shim around an inline python3 HTTP server:
-# python3's http.server gives a real bound TCP port that bash /dev/tcp and curl
-# can hit, with none of the real server's heavy dependency closure.
+# `serve` is a thin bash shim around an inline python3 HTTP server: python3's
+# http.server gives a real bound TCP port that bash /dev/tcp and curl can hit,
+# with none of the real server's heavy dependency closure. `search` is plain
+# bash — it prints a canned JSON array and exits, mirroring the real CLI's
+# one-shot shape exactly (no server, no port).
 
 set -u
+
+# The real CLI dispatches on a `search` vs `serve` subcommand; this fixture
+# does the same rather than assuming `serve`, so one fixture backs both the
+# per-session-stdio/shared-server test suites (serve) and the recall hook's
+# test suite (search).
+if [ "${1:-}" = "search" ]; then
+  shift            # drop "search"
+  [ "$#" -gt 0 ] && shift  # drop the QUERY positional — the fixture ignores it
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --mode|--limit|--folder|--source-dir) shift 2 ;;
+      *) shift ;;
+    esac
+  done
+
+  if [ "${FAKE_SEARCH_EXIT_NONZERO:-}" = "1" ]; then
+    echo "fake-markdown-vault-mcp: FAKE_SEARCH_EXIT_NONZERO=1 — simulated crash" >&2
+    exit 1
+  fi
+  hang="${FAKE_SEARCH_HANG_SECONDS:-0}"
+  [ "$hang" -gt 0 ] 2>/dev/null && sleep "$hang"
+
+  if [ "${FAKE_SEARCH_EMPTY:-}" = "1" ]; then
+    echo '[]'
+    exit 0
+  fi
+  if [ "${FAKE_SEARCH_NOISE:-}" = "1" ]; then
+    cat <<JSON
+[
+  {"path":"sessions/2026-01-01/noise-tick.summary.md","title":"Session summary — dispatch (idle)","folder":"sessions/2026-01-01","score":0.99,"search_type":"semantic","frontmatter":{"name":"Session summary — dispatch (idle)","type":"session","summary":"Noise summary that must not be injected."},"sections":[{"heading":null,"content":"noise body"}]},
+  {"path":"insights/canned-recall-one.md","title":"Canned recall hit one","folder":"insights","score":0.42,"search_type":"semantic","frontmatter":{"name":"Canned recall hit one","type":"insight","summary":"First canned summary for the recall hook test."},"sections":[{"heading":null,"content":"body one"}]},
+  {"path":"decisions/canned-recall-two.md","title":"Canned recall hit two","folder":"decisions","score":0.39,"search_type":"semantic","frontmatter":{"name":"Canned recall hit two","type":"decision","summary":"Second canned summary for the recall hook test."},"sections":[{"heading":null,"content":"body two"}]}
+]
+JSON
+    exit 0
+  fi
+  cat <<JSON
+[
+  {"path":"insights/canned-recall-one.md","title":"Canned recall hit one","folder":"insights","score":0.42,"search_type":"semantic","frontmatter":{"name":"Canned recall hit one","type":"insight","summary":"First canned summary for the recall hook test."},"sections":[{"heading":null,"content":"body one"}]},
+  {"path":"decisions/canned-recall-two.md","title":"Canned recall hit two","folder":"decisions","score":0.39,"search_type":"semantic","frontmatter":{"name":"Canned recall hit two","type":"decision","summary":"Second canned summary for the recall hook test."},"sections":[{"heading":null,"content":"body two"}]}
+]
+JSON
+  exit 0
+fi
 
 # Parse just the flags the supervisor sends; ignore the rest. We only need the
 # port to bind. Accept `serve` as argv[1] like the real CLI.

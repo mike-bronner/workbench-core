@@ -253,7 +253,7 @@ These hooks fire across the session lifecycle and on each turn:
 
 | Hook | Script | Purpose |
 |------|--------|---------|
-| `SessionStart` | `hooks/session-warmup.sh` | Identity injection, retention cleanup, pending-summary dispatch |
+| `SessionStart` | `hooks/session-warmup.sh` | Identity injection, retention cleanup, housekeeping notices (written to a file, not injected) |
 | `PreCompact` | `hooks/session-log.sh` | Dump raw log checkpoint, spawn summary-writer |
 | `PostCompact` | `hooks/session-warmup.sh` | Re-inject identity after context compression |
 | `SessionEnd` | `hooks/session-log.sh` | Dump final log segment, spawn summary-writer |
@@ -289,12 +289,45 @@ Identity files are injected on **every** warmup source:
 
 | Source | When | What happens |
 |--------|------|--------------|
-| `startup` | Fresh session | Full warmup: retention cleanup + identity + pending summaries |
-| `resume` | Reconnecting | Identity refresh + pending summaries |
-| `clear` | After `/clear` | Identity refresh + pending summaries |
+| `startup` | Fresh session | Full warmup: retention cleanup + identity + notices refresh |
+| `resume` | Reconnecting | Identity refresh + notices refresh |
+| `clear` | After `/clear` | Identity refresh + notices refresh |
 | `compact` | After compression | Identity refresh only (via PostCompact hook) |
 
 This ensures the agent never loses its voice or behavioral constraints, even in long sessions with multiple context compressions.
+
+### Housekeeping notices — pulled, not pushed
+
+Warmup output has to be **byte-stable**. Anthropic prompt caching matches on an
+exact request prefix, so a single byte that drifts between otherwise identical
+sessions invalidates the cache for the whole prompt downstream of it — identity,
+plugin contributions, skill bodies, tool definitions. An unattended scheduled
+task that fires every 20 minutes pays that penalty on every tick.
+
+So no volatile state is injected into the warmup payload. Pending session
+summaries, misrouted project summaries, recall-hook liveness, and new
+Chat-installable skills are all written to:
+
+```
+~/.claude-workbench/warmup-notices.md
+```
+
+rewritten from scratch at every session start (so a stale notice can never look
+current), and surfaced by a single pointer line whose bytes never change.
+
+That pointer instructs an **unconditional** read at session start. It replaced a
+push banner that said "run `/workbench-core:process-pending-summaries`" outright,
+and a pointer hedged as "read this if housekeeping seems relevant" would be
+strictly weaker — judging relevance is precisely what requires reading the file.
+Pull-not-push is a transport change, not a softer instruction.
+
+There is deliberately **no** detection of which kind of session this is. No
+signal for a scheduled or headless fire exists at `SessionStart` — the payload
+carries only `source` (`startup`/`resume`/`clear`/`compact`/`fork`) plus
+`agent_type` for `--agent` sub-agent dispatches, and no environment variable
+distinguishes a cron fire from an interactive run. Making the payload
+unconditionally stable sidesteps the need for one, and benefits every session
+type at once.
 
 ### Guardrails
 
@@ -434,7 +467,7 @@ All skills are **execution-aware** — they check for a `skills/{name}.learnings
 
 ### Cross-surface skill installation
 
-workbench-core auto-discovers installable skills in dependent `@claude-workbench` plugins and surfaces a notice in the SessionStart warmup output when new or updated skills are available:
+workbench-core auto-discovers installable skills in dependent `@claude-workbench` plugins and records a notice in `~/.claude-workbench/warmup-notices.md` (see [Housekeeping notices](#housekeeping-notices--pulled-not-pushed)) when new or updated skills are available:
 
 ```
 ## 📦 New Chat-installable skills

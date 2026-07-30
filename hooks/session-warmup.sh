@@ -8,10 +8,14 @@
 # assistant's context.
 #
 # Branches on the payload's `source` field:
-#   startup → full warmup: cleanup + health check + identity + pending-summary
-#   resume  → identity refresh (profile as pointer) + pending-summary check
-#   clear   → identity refresh + pending-summary check
+#   startup → full warmup: cleanup + identity + notices refresh
+#   resume  → identity refresh (profile as pointer) + notices refresh
+#   clear   → identity refresh + notices refresh
 #   compact → identity refresh only (profile as pointer)
+#
+# The injected payload is BYTE-STABLE by construction: all volatile housekeeping
+# state goes to ~/.claude-workbench/warmup-notices.md and is surfaced by a
+# constant pointer line. See the append-only invariant at the guardrails block.
 #
 # Exit code is always 0 — warmup failures must not break the session.
 
@@ -486,11 +490,21 @@ if [ -r "$SKILLS_PROTOCOL" ]; then
   printf -- '- Skills protocol: read `%s` before executing workbench skills.\n\n' "$SKILLS_PROTOCOL"
 fi
 
-# ──────────── VOLATILE NOTICES — everything below here appends ────────────
-# Each block below varies run to run. They sit AFTER the identity payload so
-# the byte-stable prefix above stays cacheable (see the append-only invariant
-# documented at the guardrails block).
+# ──────────── VOLATILE NOTICES — written to a file, never injected ────────────
+# Every block below varies run to run: a live file count, a wall-clock flag, a
+# marker-directory listing, a plugin-version diff. Injecting any of them makes
+# the warmup output drift between otherwise identical sessions, which breaks
+# prompt-cache reuse for the ENTIRE prompt downstream of it — the ~36k-token
+# tail of a scheduled Dispatch tick never cached for exactly this reason.
+#
+# So they are PULLED, not PUSHED: collected into $NOTICES_FILE and surfaced by
+# a pointer line whose bytes never change. The warmup payload is therefore
+# byte-stable for every session type — interactive, sub-agent, or scheduled —
+# without the hook needing to detect which kind of fire this is (no such signal
+# exists at SessionStart — see README, "Housekeeping notices — pulled, not
+# pushed", for what was checked and ruled out).
 
+collect_warmup_notices() {
 # ──────────── Stray project-dir summary detector (startup only) ────────────
 # Session summaries belong in the vault, never in a project. A misrouted
 # summary-writer (see the summary-misroute fix) could leave *.summary.md under
@@ -567,6 +581,49 @@ fi
 # comparison — only does real work when plugins have actually changed.
 if [ "$SOURCE" = "startup" ]; then
   detect_chat_skill_changes
+fi
+}
+
+# Collect, then persist. The file is rewritten every run — including when there
+# is nothing to report, so a stale notice from a previous session can never
+# masquerade as current. A write failure is not fatal (warmup never breaks a
+# session), but it must not leave the pointer promising a file that is missing
+# or stale: on failure the pointer is suppressed, which is the only branch here
+# that changes the injected bytes, and it only fires when the filesystem is
+# already broken.
+NOTICES_FILE="$HOME/.claude-workbench/warmup-notices.md"
+NOTICES="$(collect_warmup_notices)"
+NOTICES_WRITTEN=0
+if mkdir -p "$(dirname "$NOTICES_FILE")" 2>/dev/null; then
+  if {
+    printf '# Warmup notices\n\n'
+    printf '_Written by session-warmup.sh at %s session start. Rewritten every run._\n\n' "$SOURCE"
+    if [ -n "$NOTICES" ]; then
+      printf '%s\n' "$NOTICES"
+    else
+      printf 'No outstanding notices.\n'
+    fi
+  } > "$NOTICES_FILE" 2>/dev/null; then
+    NOTICES_WRITTEN=1
+  fi
+fi
+
+# The pointer. These bytes are IDENTICAL on every run — no count, no per-session
+# path, no conditional phrasing. That is the whole point: the notices change
+# constantly, this line never does.
+#
+# The instruction is UNCONDITIONAL on purpose. The push version this replaced
+# said "Run /workbench-core:process-pending-summaries" flat out; a pointer that
+# said "read this if housekeeping seems relevant" would be strictly weaker,
+# because deciding relevance is exactly what the agent cannot do before reading.
+# Pull-not-push is a transport change, not a licence to make the instruction
+# softer.
+if [ "$NOTICES_WRITTEN" = "1" ]; then
+  printf '## Session health notices\n\n'
+  # Deliberately paraphrased rather than echoing each notice's own heading: a
+  # heading repeated here would read as the notice itself having fired.
+  printf -- '- Read `%s` at the start of this session. It may list items that require action — summaries waiting to be drained, summaries misrouted into this project, a recall hook that has stopped firing, Chat skill installs.\n' "$NOTICES_FILE"
+  printf -- '- The file is rewritten at every session start, so it is always current. This pointer is constant by design: the notices live in the file so the warmup payload stays byte-stable and cacheable.\n\n'
 fi
 
 exit 0

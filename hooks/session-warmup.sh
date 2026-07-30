@@ -359,26 +359,6 @@ if [ -n "${MEMORY_ROUTING_CONFLICT:-}" ]; then
   printf '⚠ Harness `MEMORY.md` at `%s` has unmanaged content — left untouched; migrate it to the vault, then delete it so the router stub can take over.\n\n' "$MEMORY_ROUTING_CONFLICT"
 fi
 
-# ──────────── Stray project-dir summary detector (startup only) ────────────
-# Session summaries belong in the vault, never in a project. A misrouted
-# summary-writer (see the summary-misroute fix) could leave *.summary.md under
-# the project's memory/ or .claude/memory* dirs. Surface any so a silent
-# misroute becomes visible and can be relocated to the vault. Skip when the
-# session cwd IS the vault (its sessions/ summaries are legitimate).
-if [ "$SOURCE" = "startup" ] && [ "${PWD#"$MEMORY_PATH"}" = "$PWD" ]; then
-  STRAY_SUMMARIES=$(find "$PWD/memory" "$PWD/.claude/memory" "$PWD/.claude/memory-vault" \
-    -name "*.summary.md" 2>/dev/null | head -20)
-  if [ -n "$STRAY_SUMMARIES" ]; then
-    STRAY_COUNT=$(printf '%s\n' "$STRAY_SUMMARIES" | grep -c .)
-    printf '## ⚠ Stray session summaries in this project (%s)\n\n' "$STRAY_COUNT"
-    printf 'These `.summary.md` files are in the project, not the memory vault — a misrouted summary-writer left them here. Relocate them into `%s/sessions/` via the memory MCP, then delete the empty project dirs:\n\n' "$MEMORY_PATH"
-    while IFS= read -r stray; do
-      [ -n "$stray" ] && printf -- '- `%s`\n' "$stray"
-    done <<< "$STRAY_SUMMARIES"
-    printf '\n'
-  fi
-fi
-
 # ──────────── Retention cleanup (startup only) ────────────
 # Prune stale artifacts on full warmup. Runs before identity injection so it
 # doesn't add latency to the user-visible part of startup. All find commands
@@ -426,19 +406,6 @@ fi
 # plugin.json's memory MCP back to the http transport. See README, section
 # "Memory server transport — re-enabling the shared HTTP server (optional)".
 
-# ──────────── Recall-hook liveness check (startup only) ────────────
-# memory-recall.sh stamps last-attempt on every substantive prompt. A stamp
-# that exists but is >48h old means the hook stopped firing — a silent recall
-# death is otherwise invisible. No stamp at all = fresh install; stay quiet.
-if [ "$SOURCE" = "startup" ]; then
-  RECALL_STAMP="${WORKBENCH_MEMORY_RECALL_STATE:-$HOME/.claude-workbench/memory-recall}/last-attempt"
-  if [ -f "$RECALL_STAMP" ] && [ -z "$(find "$RECALL_STAMP" -mtime -2 2>/dev/null)" ]; then
-    printf '## ⚠ Memory recall may be dead\n\n'
-    printf 'The proactive recall hook last attempted a search more than 48h ago.\n'
-    printf 'Check hook registration and the memory server: `/workbench-core:memory-status`.\n\n'
-  fi
-fi
-
 # ──────────── Identity injection (source-aware) ────────────
 # Guardrails and soul-hot are re-injected on every source: after context
 # compression (compact) the identity may have been shed; on resume it may have
@@ -459,6 +426,18 @@ GUARDRAILS_INLINE="${CLAUDE_PLUGIN_ROOT}/references/guardrails-inline.md"
 # window, even when the rest of the warmup output overflows to a persisted
 # file. Sourced from the condensed -inline copy; full text with examples
 # stays at references/guardrails.md for re-read on demand.
+#
+# APPEND-ONLY INVARIANT (cache-prefix stability). Everything printed from the
+# top of this script through the end of the identity payload below must be
+# BYTE-STABLE across invocations: identical config, identical identity files →
+# identical bytes. Anthropic prompt caching matches on an exact request prefix,
+# so a single drifting byte up here invalidates the cache for the entire rest
+# of the prompt — the identity payload, every plugin's contributions, the
+# skill body, and the tool definitions. Any block whose content varies run to
+# run (a live file count, a wall-clock-triggered flag, a directory listing)
+# therefore APPENDS after this section, never precedes it. See the
+# stray-summary, recall-liveness, pending-summary, and chat-skills blocks
+# below for the pattern.
 if [ -r "$GUARDRAILS_INLINE" ]; then
   printf '## Guardrails — absolute rules\n\n'
   cat "$GUARDRAILS_INLINE"
@@ -505,6 +484,44 @@ esac
 
 if [ -r "$SKILLS_PROTOCOL" ]; then
   printf -- '- Skills protocol: read `%s` before executing workbench skills.\n\n' "$SKILLS_PROTOCOL"
+fi
+
+# ──────────── VOLATILE NOTICES — everything below here appends ────────────
+# Each block below varies run to run. They sit AFTER the identity payload so
+# the byte-stable prefix above stays cacheable (see the append-only invariant
+# documented at the guardrails block).
+
+# ──────────── Stray project-dir summary detector (startup only) ────────────
+# Session summaries belong in the vault, never in a project. A misrouted
+# summary-writer (see the summary-misroute fix) could leave *.summary.md under
+# the project's memory/ or .claude/memory* dirs. Surface any so a silent
+# misroute becomes visible and can be relocated to the vault. Skip when the
+# session cwd IS the vault (its sessions/ summaries are legitimate).
+if [ "$SOURCE" = "startup" ] && [ "${PWD#"$MEMORY_PATH"}" = "$PWD" ]; then
+  STRAY_SUMMARIES=$(find "$PWD/memory" "$PWD/.claude/memory" "$PWD/.claude/memory-vault" \
+    -name "*.summary.md" 2>/dev/null | head -20)
+  if [ -n "$STRAY_SUMMARIES" ]; then
+    STRAY_COUNT=$(printf '%s\n' "$STRAY_SUMMARIES" | grep -c .)
+    printf '## ⚠ Stray session summaries in this project (%s)\n\n' "$STRAY_COUNT"
+    printf 'These `.summary.md` files are in the project, not the memory vault — a misrouted summary-writer left them here. Relocate them into `%s/sessions/` via the memory MCP, then delete the empty project dirs:\n\n' "$MEMORY_PATH"
+    while IFS= read -r stray; do
+      [ -n "$stray" ] && printf -- '- `%s`\n' "$stray"
+    done <<< "$STRAY_SUMMARIES"
+    printf '\n'
+  fi
+fi
+
+# ──────────── Recall-hook liveness check (startup only) ────────────
+# memory-recall.sh stamps last-attempt on every substantive prompt. A stamp
+# that exists but is >48h old means the hook stopped firing — a silent recall
+# death is otherwise invisible. No stamp at all = fresh install; stay quiet.
+if [ "$SOURCE" = "startup" ]; then
+  RECALL_STAMP="${WORKBENCH_MEMORY_RECALL_STATE:-$HOME/.claude-workbench/memory-recall}/last-attempt"
+  if [ -f "$RECALL_STAMP" ] && [ -z "$(find "$RECALL_STAMP" -mtime -2 2>/dev/null)" ]; then
+    printf '## ⚠ Memory recall may be dead\n\n'
+    printf 'The proactive recall hook last attempted a search more than 48h ago.\n'
+    printf 'Check hook registration and the memory server: `/workbench-core:memory-status`.\n\n'
+  fi
 fi
 
 # ──────────── Pending-summary check (all sources except compact) ────────────

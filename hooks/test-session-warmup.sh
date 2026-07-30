@@ -190,6 +190,85 @@ OUT=$(cd "$CLEAN_PROJ" && printf '{"source":"startup"}' | \
   CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" 2>/dev/null)
 assert_missing "no stray warning when project is clean" "$OUT" "Stray session summaries"
 
+# ──────────── Cache-prefix stability (the append-only invariant) ────────────
+# Anthropic prompt caching matches on an exact request prefix: one drifting
+# byte in the warmup output invalidates the cache for everything downstream.
+# The stray-summary banner (a live file count + listing) and the recall-
+# liveness check (a wall-clock-triggered flag) are genuinely volatile, so they
+# must print AFTER the guardrails/identity payload, never before it. These two
+# tests pin that ordering and the byte-stability property it exists to protect.
+
+# Everything from the first byte of output through the identity payload's last
+# stable line. Sentinel = the skills-protocol pointer, the final element of the
+# identity block. Prints nothing if the sentinel is absent, so a run that never
+# reached the identity payload can't masquerade as a matching prefix.
+stable_prefix() {
+  printf '%s\n' "$1" | awk '
+    /^- Skills protocol: read /{ found=1; print; exit }
+    { buf = buf $0 "\n" }
+    END { if (found) printf "%s", buf }
+  '
+}
+
+echo "cache-prefix stability — volatile blocks never precede the identity payload:"
+PREFIX_PROJ="$SANDBOX/prefix-proj"
+mkdir -p "$PREFIX_PROJ"
+run_in_prefix_proj() {
+  (cd "$PREFIX_PROJ" && printf '{"source":"startup"}' | \
+    HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
+    WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
+    CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" 2>/dev/null)
+}
+
+# State A: clean project, fresh recall stamp → neither volatile block fires.
+RECALL_STATE="$SANDBOX/home/.claude-workbench/memory-recall"
+mkdir -p "$RECALL_STATE"
+date +%s > "$RECALL_STATE/last-attempt"
+OUT_A=$(run_in_prefix_proj)
+
+# State B: stray summaries present AND a 3-day-old recall stamp → both fire.
+mkdir -p "$PREFIX_PROJ/memory"
+printf 'stray\n' > "$PREFIX_PROJ/memory/prefix-canary.summary.md"
+touch -t "$(date -v-3d +%Y%m%d%H%M 2>/dev/null || date -d '3 days ago' +%Y%m%d%H%M)" \
+  "$RECALL_STATE/last-attempt"
+OUT_B=$(run_in_prefix_proj)
+
+# Guard against a vacuous pass: state B must actually render both blocks, or
+# the prefixes would match for the wrong reason.
+assert_contains "state B renders the stray-summary block"  "$OUT_B" "Stray session summaries in this project"
+assert_contains "state B renders the recall-dead block"    "$OUT_B" "Memory recall may be dead"
+assert_missing  "state A renders neither (stray)"          "$OUT_A" "Stray session summaries in this project"
+assert_missing  "state A renders neither (recall)"         "$OUT_A" "Memory recall may be dead"
+
+PREFIX_A=$(stable_prefix "$OUT_A")
+PREFIX_B=$(stable_prefix "$OUT_B")
+if [ -z "$PREFIX_A" ] || [ -z "$PREFIX_B" ]; then
+  FAIL=$((FAIL + 1)); echo "  ❌ identity payload sentinel missing — prefix extraction failed"
+elif [ "$PREFIX_A" = "$PREFIX_B" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ header→identity prefix is byte-identical across volatile states"
+else
+  FAIL=$((FAIL + 1))
+  echo "  ❌ prefix drifted between volatile states — cache-prefix stability broken:"
+  diff <(printf '%s\n' "$PREFIX_A") <(printf '%s\n' "$PREFIX_B") | head -20
+fi
+
+# Ordering, asserted directly: both volatile headers must appear strictly after
+# the guardrails header. Byte-stability alone would still pass if a volatile
+# block moved above guardrails but happened to render in both states.
+line_of() { printf '%s\n' "$2" | grep -nF "$1" | head -1 | cut -d: -f1; }
+GUARD_LINE=$(line_of "## Guardrails — absolute rules" "$OUT_B")
+STRAY_LINE=$(line_of "## ⚠ Stray session summaries in this project" "$OUT_B")
+RECALL_LINE=$(line_of "## ⚠ Memory recall may be dead" "$OUT_B")
+for pair in "stray-summary block:$STRAY_LINE" "recall-liveness block:$RECALL_LINE"; do
+  desc="${pair%:*}"; ln="${pair##*:}"
+  if [ -n "$GUARD_LINE" ] && [ -n "$ln" ] && [ "$ln" -gt "$GUARD_LINE" ]; then
+    PASS=$((PASS + 1)); echo "  ✅ $desc prints after guardrails (line $ln > $GUARD_LINE)"
+  else
+    FAIL=$((FAIL + 1)); echo "  ❌ $desc must print after guardrails (guardrails=$GUARD_LINE, block=$ln)"
+  fi
+done
+rm -f "$PREFIX_PROJ/memory/prefix-canary.summary.md" "$RECALL_STATE/last-attempt"
+
 echo "retention sweep — pending marker protects an old log:"
 mkdir -p "$SANDBOX/memory/sessions/2026-01-01" "$SANDBOX/cache/pending-summaries"
 PROTECTED_LOG="$SANDBOX/memory/sessions/2026-01-01/aaaa1111-protected.log.md"

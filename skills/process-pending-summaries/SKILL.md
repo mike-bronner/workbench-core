@@ -4,7 +4,7 @@ description: Process any pending session summaries by dispatching background age
 
 This is an execution-aware skill — check `skills/process-pending-summaries.learnings.md` in the vault before proceeding. If it exists, apply accumulated learnings.
 
-The user has invoked `/workbench-core:process-pending-summaries`, or the session warmup detected pending markers and asked you to handle them.
+The user has invoked `/workbench-core:process-pending-summaries`, or pending markers were reported in `~/.claude-workbench/warmup-notices.md` (the session warmup writes housekeeping state there rather than injecting it, to keep the warmup payload byte-stable and cacheable).
 
 ## Step 1 — Find pending markers
 

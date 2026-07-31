@@ -57,6 +57,12 @@ assert_missing() {
   fi
 }
 
+# Volatile notices are no longer injected into the warmup payload — they are
+# written to this file and surfaced by a byte-stable pointer. Tests that used
+# to grep stdout for a notice now read here instead.
+NOTICES_FILE="$SANDBOX/home/.claude-workbench/warmup-notices.md"
+notices() { cat "$NOTICES_FILE" 2>/dev/null; }
+
 echo "startup — fresh context gets full identity:"
 OUT=$(run_warmup startup)
 assert_contains "soul-hot injected in full"        "$OUT" "SOULHOT-CANARY"
@@ -178,8 +184,10 @@ OUT=$(cd "$STRAY_PROJ" && printf '{"source":"startup"}' | \
   HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
   WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
   CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" 2>/dev/null)
-assert_contains "warns about stray summaries"          "$OUT" "Stray session summaries in this project"
-assert_contains "lists the stray file"                 "$OUT" "xyz.summary.md"
+assert_contains "warns about stray summaries"          "$(notices)" "Stray session summaries in this project"
+assert_contains "lists the stray file"                 "$(notices)" "xyz.summary.md"
+assert_missing  "notice is NOT injected into stdout"   "$OUT" "Stray session summaries in this project"
+assert_contains "stdout carries the stable pointer"    "$OUT" "Session health notices"
 
 echo "stray-summary detector — clean project stays quiet:"
 CLEAN_PROJ="$SANDBOX/clean"
@@ -188,7 +196,85 @@ OUT=$(cd "$CLEAN_PROJ" && printf '{"source":"startup"}' | \
   HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
   WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
   CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" 2>/dev/null)
-assert_missing "no stray warning when project is clean" "$OUT" "Stray session summaries"
+assert_missing  "no stray warning when project is clean" "$(notices)" "Stray session summaries"
+assert_contains "notices file rewritten, not appended"   "$(notices)" "No outstanding notices."
+assert_contains "pointer still printed with no notices"  "$OUT" "Session health notices"
+# The instruction must be unconditional. A pointer that says "read this if
+# housekeeping seems relevant" is strictly weaker than the push banner it
+# replaced, because judging relevance is what requires reading the file.
+assert_contains "pointer names the file and orders a read" "$OUT" "Read \`$NOTICES_FILE\` at the start of this session."
+assert_missing  "pointer is not conditional on perceived relevance" "$OUT" "when starting work that touches"
+
+# ──────────── Cache stability (volatile notices are pulled, not pushed) ────────
+# Anthropic prompt caching matches on an exact request prefix: one drifting byte
+# in the warmup output invalidates the cache for everything downstream — which
+# is why a scheduled Dispatch tick's ~36k-token tail never cached. The fix is
+# that NO volatile notice is injected at all; they go to the notices file and a
+# constant pointer line stands in. So the property to pin is not "stable prefix"
+# but "byte-identical ENTIRE payload", regardless of how much notice state
+# churns underneath it.
+
+echo "cache stability — the whole warmup payload is byte-identical across notice states:"
+PREFIX_PROJ="$SANDBOX/prefix-proj"
+mkdir -p "$PREFIX_PROJ"
+run_in_prefix_proj() {
+  (cd "$PREFIX_PROJ" && printf '{"source":"startup"}' | \
+    HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
+    WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
+    CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" 2>/dev/null)
+}
+
+# State A: clean project, fresh recall stamp, no pending markers → no notices.
+RECALL_STATE="$SANDBOX/home/.claude-workbench/memory-recall"
+mkdir -p "$RECALL_STATE" "$SANDBOX/cache/pending-summaries"
+rm -f "$SANDBOX/cache/pending-summaries"/*.json
+date +%s > "$RECALL_STATE/last-attempt"
+OUT_A=$(run_in_prefix_proj)
+NOTICES_A=$(notices)
+
+# State B: stray summaries, a 3-day-old recall stamp, AND pending markers →
+# all three notice sources fire at once.
+mkdir -p "$PREFIX_PROJ/memory"
+printf 'stray\n' > "$PREFIX_PROJ/memory/prefix-canary.summary.md"
+touch -t "$(date -v-3d +%Y%m%d%H%M 2>/dev/null || date -d '3 days ago' +%Y%m%d%H%M)" \
+  "$RECALL_STATE/last-attempt"
+printf '{"session_id":"cache-canary","log_path":"/nonexistent/cache-canary.log.md"}\n' \
+  > "$SANDBOX/cache/pending-summaries/cache-canary.json"
+OUT_B=$(run_in_prefix_proj)
+NOTICES_B=$(notices)
+
+# Guard against a vacuous pass: the notice STATE must genuinely differ between
+# the two runs, or identical payloads would prove nothing.
+assert_contains "state B notices carry the stray-summary block" "$NOTICES_B" "Stray session summaries in this project"
+assert_contains "state B notices carry the recall-dead block"   "$NOTICES_B" "Memory recall may be dead"
+assert_contains "state B notices carry the pending block"       "$NOTICES_B" "Pending session summaries"
+assert_contains "state A notices are empty"                     "$NOTICES_A" "No outstanding notices."
+if [ "$NOTICES_A" != "$NOTICES_B" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ notice state genuinely differs between the two runs"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ notice state identical — payload comparison would be vacuous"
+fi
+
+# The property itself: same bytes out, despite all that churn.
+if [ -z "$OUT_A" ]; then
+  FAIL=$((FAIL + 1)); echo "  ❌ warmup produced no output — comparison is meaningless"
+elif [ "$OUT_A" = "$OUT_B" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ warmup payload is byte-identical across notice states"
+else
+  FAIL=$((FAIL + 1))
+  echo "  ❌ warmup payload drifted with notice state — cache stability broken:"
+  diff <(printf '%s\n' "$OUT_A") <(printf '%s\n' "$OUT_B") | head -20
+fi
+
+# No volatile notice may leak into the payload by any route.
+for leak in "Stray session summaries in this project" "Memory recall may be dead" \
+            "Pending session summaries" "New Chat-installable skills"; do
+  assert_missing "payload omits: $leak" "$OUT_B" "$leak"
+done
+assert_contains "payload carries the constant pointer instead" "$OUT_B" "Session health notices"
+
+rm -f "$PREFIX_PROJ/memory/prefix-canary.summary.md" "$RECALL_STATE/last-attempt" \
+      "$SANDBOX/cache/pending-summaries/cache-canary.json"
 
 echo "retention sweep — pending marker protects an old log:"
 mkdir -p "$SANDBOX/memory/sessions/2026-01-01" "$SANDBOX/cache/pending-summaries"
@@ -212,8 +298,8 @@ else
 fi
 
 echo "pending-summary notice — uses the workbench-core namespace:"
-assert_contains "drain command namespaced correctly" "$OUT" "/workbench-core:process-pending-summaries"
-assert_missing  "no stale pre-rename namespace"      "$OUT" "\`/workbench:process-pending-summaries\`"
+assert_contains "drain command namespaced correctly" "$(notices)" "/workbench-core:process-pending-summaries"
+assert_missing  "no stale pre-rename namespace"      "$(notices)" "\`/workbench:process-pending-summaries\`"
 rm -f "$SANDBOX/cache/pending-summaries/aaaa1111-protected.json" "$PROTECTED_LOG"
 
 echo "pending listing — capped at count + 3 oldest:"
@@ -224,10 +310,10 @@ for i in 1 2 3 4 5; do
   touch -t "2026010${i}0000" "$SANDBOX/cache/pending-summaries/sid-$i.json"
 done
 OUT=$(run_warmup startup)
-assert_contains "count reflects all markers"   "$OUT" "Pending session summaries (5)"
-assert_contains "oldest marker listed"         "$OUT" "sid-1"
-assert_missing  "newest marker not enumerated" "$OUT" "sid-5"
-assert_missing  "log paths not enumerated"     "$OUT" "/nonexistent/sid-1.log.md"
+assert_contains "count reflects all markers"   "$(notices)" "Pending session summaries (5)"
+assert_contains "oldest marker listed"         "$(notices)" "sid-1"
+assert_missing  "newest marker not enumerated" "$(notices)" "sid-5"
+assert_missing  "log paths not enumerated"     "$(notices)" "/nonexistent/sid-1.log.md"
 
 echo "PostCompact payload routes to the compact branch:"
 OUT=$(printf '{"hook_event_name":"PostCompact","trigger":"auto"}' | \
@@ -236,7 +322,7 @@ OUT=$(printf '{"hook_event_name":"PostCompact","trigger":"auto"}' | \
   CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" 2>/dev/null)
 assert_missing  "profile not inlined on PostCompact"  "$OUT" "PROFILE-CANARY"
 assert_contains "profile pointer present"             "$OUT" "User profile: re-read"
-assert_missing  "no pending block on PostCompact"     "$OUT" "Pending session summaries"
+assert_missing  "no pending block on PostCompact"     "$(notices)" "Pending session summaries"
 rm -f "$SANDBOX/cache/pending-summaries"/sid-*.json
 
 echo "exit code is always 0:"

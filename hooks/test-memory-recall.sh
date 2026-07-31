@@ -94,6 +94,60 @@ CACHE="$SANDBOX/trivial"; mk_cache "$CACHE"
 GOT=$(run_hook "continue" s-triv "$CACHE" "$FAKE" WORKBENCH_MEMORY_RECALL_MIN_CHARS=1)
 assert_empty "bare 'continue' skipped by triviality regex" "$GOT"
 
+# The harness wraps a scheduled task's prompt in this element and nothing else
+# distinguishes an unattended cron fire — no env var, no payload field. Verified
+# against 969 recorded workbench-dev-team Dispatch ticks.
+SCHEDULED_PROMPT='<scheduled-task name="workbench-dev-team-dispatch" file="/Users/x/.claude/scheduled-tasks/workbench-dev-team-dispatch/SKILL.md">
+This is an automated run of a scheduled task. The user is not present to answer questions.
+
+# Dispatch — The Orchestrator
+
+You poll The Index for work and dispatch the right agent per item.'
+
+echo "Scheduled-task guard — a cron fire is skipped entirely:"
+CACHE="$SANDBOX/sched"; mk_cache "$CACHE"
+GOT=$(run_hook "$SCHEDULED_PROMPT" s-sched "$CACHE" "$FAKE")
+assert_empty "scheduled-task prompt skipped" "$GOT"
+
+echo "Scheduled-task guard — skip survives a fresh session id every tick:"
+# Each tick gets a new session_id, so per-session dedup can never suppress the
+# re-injection. If the guard regresses, THIS is what makes it cost money.
+CACHE="$SANDBOX/sched2"; mk_cache "$CACHE"
+GOT=$(run_hook "$SCHEDULED_PROMPT" s-sched-tick-2 "$CACHE" "$FAKE")
+assert_empty "second tick, different session, still skipped" "$GOT"
+
+echo "Scheduled-task guard — leading whitespace does not defeat it:"
+CACHE="$SANDBOX/sched3"; mk_cache "$CACHE"
+GOT=$(run_hook "
+
+$SCHEDULED_PROMPT" s-sched-ws "$CACHE" "$FAKE")
+assert_empty "wrapper after blank lines still skipped" "$GOT"
+
+echo "Scheduled-task guard — does NOT swallow a human prompt about scheduled tasks:"
+# The guard anchors on the wrapper at the START of the prompt. A human asking
+# about scheduled tasks must still get recall, or the guard is over-broad.
+CACHE="$SANDBOX/sched-neg"; mk_cache "$CACHE"
+GOT=$(run_hook "why does the <scheduled-task wrapper break prompt caching for us" s-sched-neg "$CACHE" "$FAKE")
+assert_contains "human prompt mentioning the wrapper still recalls" "$GOT" "additionalContext"
+
+echo "Scheduled-task guard — no liveness stamp for an unattended fire:"
+# Skipping before the breadcrumb is deliberate: the warmup's 48h staleness
+# check should measure "recall fired for a real human prompt", not "the hook is
+# still wired up". A cron fire stamping it would mask a dead interactive hook.
+rm -rf "$SANDBOX/sched-stamp-state"
+CACHE="$SANDBOX/sched-stamp"; mk_cache "$CACHE"
+printf '%s' "$(jq -cn --arg p "$SCHEDULED_PROMPT" \
+  '{prompt:$p, session_id:"s-sched-stamp", hook_event_name:"UserPromptSubmit"}')" \
+  | env WORKBENCH_CONFIG_FILE="$NO_CONFIG" WORKBENCH_MEMORY_CACHE="$CACHE" \
+        WORKBENCH_MEMORY_SERVER_BIN="$FAKE" \
+        WORKBENCH_MEMORY_RECALL_STATE="$SANDBOX/sched-stamp-state" \
+    bash "$HOOK" >/dev/null 2>&1
+if [ ! -f "$SANDBOX/sched-stamp-state/last-attempt" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ scheduled fire leaves last-attempt unstamped"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ scheduled fire stamped last-attempt"
+fi
+
 echo "Fail-open — binary cannot be resolved emits nothing, never errors:"
 CACHE="$SANDBOX/nobin"; mk_cache "$CACHE"
 GOT=$(run_hook "how should I design the recall mechanism" s-nobin "$CACHE" "$SANDBOX/does-not-exist")

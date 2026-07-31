@@ -18,6 +18,7 @@
 #   - Heartbeat: every Nth low-signal turn (default 8) → nudge once, to catch
 #     captures that surface from the agent's own work rather than the prompt.
 #   - Otherwise: emit NOTHING (exit 0, no stdout) — that is the cost lever.
+#   - Scheduled-task fires are skipped outright, before any of the above.
 #
 # Env knobs:
 #   WORKBENCH_MEMORY_NUDGE=0            → disable entirely.
@@ -60,6 +61,21 @@ SESSION_ID=$(printf '%s' "$PAYLOAD" | jq -r '.session_id // empty' 2>/dev/null)
 if [ -z "$SESSION_ID" ]; then
   exit 0
 fi
+
+# ──────────── Scheduled-task guard ────────────
+# An unattended cron fire gets no nudge. Nudging it is worse than useless: the
+# rule this hook reinforces is standing authorization for the agent to capture
+# durable knowledge unprompted, and a scheduled orchestrator writing memories
+# about its own routing decisions is exactly the noise the vault does not want.
+# Every tick is also a fresh session_id, so the heartbeat counter restarts at
+# zero each time and can never throttle across ticks.
+#
+# The harness wraps a scheduled task's prompt in a `<scheduled-task name="..."
+# file="...">` element; it is the only available signal. See the matching guard
+# in memory-recall.sh for the full evidence on what was ruled out.
+case "$(printf '%s' "$PROMPT" | tr '\n' ' ' | sed 's/^ *//')" in
+  '<scheduled-task '*) exit 0 ;;
+esac
 
 # ──────────── Heartbeat interval ────────────
 INTERVAL="${WORKBENCH_MEMORY_NUDGE_INTERVAL:-8}"

@@ -18,13 +18,15 @@
 # 2026-06-26-claude-code-hook-context-cost and -memory-capture-authorization-drift):
 # UserPromptSubmit additionalContext ACCUMULATES in the transcript (N turns = N
 # copies, no dedup/throttle), and a per-turn nudge was removed once already for
-# context cost. So this hook holds three levers:
+# context cost. So this hook holds four levers:
 #   1. Per-session dedup — a memory path is injected AT MOST ONCE per session.
 #      Accumulation is bounded by the number of DISTINCT relevant memories, not
 #      turns. A recurring topic never re-injects the same note.
 #   2. Substance gate — trivial prompts (short, bare confirmations, slash
 #      commands) emit nothing, so most turns cost zero tokens.
-#   3. Small top-K — default 2 hits, each trimmed to a one-line summary.
+#   3. Scheduled-task guard — an unattended cron fire gets nothing at all. It
+#      has no human to serve, and its fresh-per-tick session_id defeats lever 1.
+#   4. Small top-K — default 2 hits, each trimmed to a one-line summary.
 #
 # TRANSPORT: this hook shells out to the `markdown-vault-mcp search` CLI — a
 # one-shot subprocess that loads the index, runs the query, prints JSON, and
@@ -109,6 +111,34 @@ if printf '%s' "$_trimmed" \
     | grep -Eiq '^(y|n|ok|okay|yes|no|yep|nope|sure|thanks|thank you|ty|go|go ahead|do it|continue|proceed|next|done|stop|wait)[.!? ]*$' 2>/dev/null; then
   exit 0
 fi
+
+# ──────────── Scheduled-task guard ────────────
+# A scheduled-task fire is not a human turn: nobody is present to benefit from
+# a recalled memory, the task prompt is a fixed skill body rather than a
+# question, and every tick gets a fresh session_id — so the per-session dedup
+# above never carries over and the SAME hits re-inject on every single tick,
+# forever. Worse, that injection is volatile text near the top of an otherwise
+# byte-identical prompt, which breaks prompt-cache reuse for everything
+# downstream (the confirmed cause of the dev-team Dispatch tick's ~36k-token
+# non-caching tail).
+#
+# Detection: the harness wraps a scheduled task's prompt in a `<scheduled-task
+# name="..." file="...">` element. That wrapper is the ONLY signal available —
+# there is no env var and no payload field. `CLAUDE_CODE_ENTRYPOINT` is
+# identical for scheduled and interactive runs; the UserPromptSubmit payload's
+# `source` field (whose enum includes `schedule_wakeup`) is documented as
+# "only set for Anthropic-internal sessions while the field is trialed" and is
+# compiled out of external builds. Re-check that field on harness upgrades: if
+# it ever ships externally, it is the more precise signal and also covers
+# `loop_wakeup`.
+#
+# Note the interaction with the liveness breadcrumb below: skipping here means
+# a scheduled fire does NOT stamp last-attempt, so the warmup's 48h staleness
+# check measures "recall fired for a real human prompt", not "the hook is
+# wired up". That is the more useful question of the two.
+case "$_trimmed" in
+  '<scheduled-task '*) exit 0 ;;
+esac
 
 # ──────────── Resolve vault env (source dir / index / cache) ────────────
 # Same resolution every other memory hook uses, so we always agree on where the

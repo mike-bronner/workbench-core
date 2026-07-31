@@ -48,8 +48,11 @@ no() { FAIL=$((FAIL + 1)); echo "  ❌ $1"; }
 echo "Under the cap — response passes through untouched:"
 GOT=$(run "mcp__the-index__list_review_items" "$(blob 500)" tu-small)
 assert_empty "small response emits nothing" "$GOT"
-GOT=$(run "mcp__x__y" "$(blob 40000)" tu-exact)
+GOT=$(run "mcp__x__y" "$(blob 60000)" tu-exact)
 assert_empty "response exactly at the cap is not truncated" "$GOT"
+# One byte over must flip it — pins the boundary from both sides.
+GOT=$(run "mcp__x__y" "$(blob 60001)" tu-over-by-one)
+assert_contains "one byte over the cap is truncated" "$GOT" '"updatedToolOutput"'
 
 echo "Over the cap — response is replaced and shrunk:"
 # A third-party server with no deliberate cap of its own — the case this hook
@@ -63,10 +66,10 @@ assert_contains "preserves the content-block shape"      "$GOT" '"type":"text"'
 
 # The point of the whole exercise: the replacement must actually be smaller.
 NEW_LEN=$(printf '%s' "$GOT" | jq -r '.hookSpecificOutput.updatedToolOutput[0].text | length' 2>/dev/null)
-if [ -n "$NEW_LEN" ] && [ "$NEW_LEN" -lt 120000 ] && [ "$NEW_LEN" -gt 40000 ]; then
+if [ -n "$NEW_LEN" ] && [ "$NEW_LEN" -lt 120000 ] && [ "$NEW_LEN" -gt 60000 ]; then
   ok "replacement is capped (${NEW_LEN} chars: cap + notice, well under 120000)"
 else
-  no "replacement length wrong — got '${NEW_LEN}', want between 40000 and 120000"
+  no "replacement length wrong — got '${NEW_LEN}', want between 60000 and 120000"
 fi
 
 echo "Nothing is lost — the full response is recoverable from disk:"
@@ -98,7 +101,7 @@ chmod 700 "$BAD_DIR"
 # design decision — "raise the limit, don't truncate" — and byte-truncating a
 # note the server chose to return whole would contradict the very standard
 # docs/mcp-output-capping.md sets out. Session logs and synthesis notes in the
-# 40 KB–256 KB range are ordinary in this vault, so this is a live case, not a
+# 60 KB–256 KB range are ordinary in this vault, so this is a live case, not a
 # hypothetical.
 echo "REGRESSION — a 256KB memory-vault read passes through untouched:"
 GOT=$(run "mcp__plugin_workbench-core_memory__read" "$(blob 262144)" tu-vault-ceiling)
@@ -110,8 +113,10 @@ else
 fi
 # Mid-band too: the conflict is worst between the default cap and the harness's
 # own ~100KB effective persistence point, where nothing else would truncate.
-GOT=$(run "mcp__plugin_workbench-core_memory__read" "$(blob 60000)" tu-vault-mid)
-assert_empty "60KB note read (default cap would truncate) is not capped" "$GOT"
+# Sized above the default so this stays a real test of the exemption rather than
+# passing merely because the response is under the cap.
+GOT=$(run "mcp__plugin_workbench-core_memory__read" "$(blob 80000)" tu-vault-mid)
+assert_empty "80KB note read (over the default cap) is not capped" "$GOT"
 
 echo "The exemption is specific, not a blanket:"
 # Same size, different tool — a server with no deliberate cap must still be cut.
@@ -163,6 +168,13 @@ GOT=$(run "mcp__x__y" "$(blob 5000)" tu-tinycap WORKBENCH_MCP_OUTPUT_MAX_BYTES=8
 assert_empty "absurd cap (<1024) falls back to the default" "$GOT"
 GOT=$(run "mcp__x__y" "$(blob 5000)" tu-junkcap WORKBENCH_MCP_OUTPUT_MAX_BYTES=banana)
 assert_empty "non-numeric cap falls back to the default" "$GOT"
+# Sized so the fallback VALUE matters, not just that some fallback happened:
+# 50000 is under the 60000 default and over the previous 40000 one, so a
+# fallback left at a stale number fails here instead of passing silently.
+GOT=$(run "mcp__x__y" "$(blob 50000)" tu-tinycap2 WORKBENCH_MCP_OUTPUT_MAX_BYTES=8)
+assert_empty "absurd cap falls back to the CURRENT default, not a stale one" "$GOT"
+GOT=$(run "mcp__x__y" "$(blob 50000)" tu-junkcap2 WORKBENCH_MCP_OUTPUT_MAX_BYTES=banana)
+assert_empty "non-numeric cap falls back to the CURRENT default, not a stale one" "$GOT"
 
 echo "Malformed input fails open (never breaks the tool call):"
 GOT=$(printf 'not json at all' | env HOME="$SANDBOX/home" WORKBENCH_MCP_OUTPUT_DIR="$OUT_DIR" bash "$HOOK" 2>/dev/null)

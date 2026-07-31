@@ -358,15 +358,24 @@ That handling happens *during the MCP tool call*, before `PostToolUse` hooks see
 `tool_response` — so a genuinely huge result arrives here already replaced by the
 harness's pointer. **The band this hook governs is roughly 0–100 KB.**
 
-The 40,000-byte default lands at ~10,000 estimated tokens, which is exactly where
-Claude Code itself starts warning *"Large MCP response (~N tokens), this can fill
-up context quickly"* — independent corroboration of the right order of magnitude.
+The 60,000-byte default lands at ~15,000 estimated tokens — above the 10,000-token
+point where Claude Code itself starts warning *"Large MCP response (~N tokens),
+this can fill up context quickly"*, and below its 25,000-token persistence limit.
+It was chosen empirically: across 2,762 recorded MCP calls in the dev-team
+pipeline the largest response was 40,986 bytes (median 53), so 60,000 clears all
+observed real traffic with headroom while still cutting the unbounded dumps this
+hook exists for.
+
+At that size the two layers can begin to meet — 60,000 chars is past the harness's
+50,000-char fast path, and dense JSON tokenizes nearer 2 chars/token than 4. If
+the harness persists first, this hook sees the resulting pointer and passes it
+through. Both layers do the same thing, so the overlap is harmless.
 
 **Deliberate caps are exempt.** Some servers set a large ceiling *on purpose* and
 raise rather than truncate — the correct design, and the one
 `docs/mcp-output-capping.md` argues for. markdown-vault-mcp, behind this plugin's
 own memory MCP, allows `.md` reads up to 262,144 bytes. Session logs and
-synthesis notes routinely sit in the 40 KB–256 KB range, and byte-truncating one
+synthesis notes routinely sit in the 60 KB–256 KB range, and byte-truncating one
 would destroy a document the server deliberately chose to return whole. Tool
 names matching `WORKBENCH_MCP_OUTPUT_EXEMPT` are therefore skipped outright.
 
@@ -384,7 +393,7 @@ image or resource block, an unfamiliar object shape) also pass through untouched
 | Variable | Default | Effect |
 |---|---|---|
 | `WORKBENCH_MCP_OUTPUT_CAP` | unset | `0` disables the hook entirely |
-| `WORKBENCH_MCP_OUTPUT_MAX_BYTES` | `40000` | Cap in bytes (~10k tokens). Values under 1024 are rejected as a footgun |
+| `WORKBENCH_MCP_OUTPUT_MAX_BYTES` | `60000` | Cap in bytes (~15k tokens). Values under 1024 are rejected as a footgun |
 | `WORKBENCH_MCP_OUTPUT_EXEMPT` | `^mcp__plugin_workbench-core_memory__read$` | Regex of tool names never capped. Set empty to exempt nothing |
 | `WORKBENCH_MCP_OUTPUT_DIR` | `~/.claude-workbench/mcp-output` | Where full responses are persisted (swept after 3 days) |
 

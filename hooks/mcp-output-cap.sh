@@ -29,17 +29,26 @@
 # reaches this hook already replaced by the harness's own pointer. The band this
 # hook actually governs is therefore roughly 0–100 KB.
 #
-# The default cap of 40,000 bytes lands at ~10,000 estimated tokens, which is
-# exactly where Claude Code itself starts warning "Large MCP response (~N
-# tokens), this can fill up context quickly" (bhb=1e4). Independent corroboration
-# that this is the right order of magnitude for "wasteful but legal".
+# The default cap of 60,000 bytes lands at ~15,000 estimated tokens — above the
+# 10,000-token point where Claude Code itself starts warning "Large MCP response
+# (~N tokens), this can fill up context quickly" (bhb=1e4), and below its 25,000
+# persistence limit. It was chosen empirically: across 2,762 recorded MCP calls
+# in the dev-team pipeline the largest response was 40,986 bytes (median 53), so
+# 60,000 clears all observed real traffic with headroom while still cutting the
+# unbounded dumps this hook exists for.
+#
+# Note that at this size the two layers can start to meet: 60,000 chars is past
+# the harness's 50,000-char fast path, so it runs its real tokenizer, and dense
+# JSON tokenizes nearer 2 chars/token than 4. If the harness decides to persist
+# first, this hook simply sees the resulting pointer and passes it through. Both
+# layers do the same thing — persist and point — so overlap is harmless.
 #
 # EXEMPTIONS — deliberate caps are not sloppiness. Some servers set a large
 # ceiling ON PURPOSE and raise rather than truncate when it is exceeded, which
 # is the correct design (see docs/mcp-output-capping.md). markdown-vault-mcp,
 # behind this plugin's own memory MCP, allows .md reads up to 262,144 bytes
 # (MARKDOWN_VAULT_MCP_MAX_NOTE_READ_BYTES). Session logs and synthesis notes
-# routinely sit in the 40 KB–256 KB range, and byte-truncating one would destroy
+# routinely sit in the 60 KB–256 KB range, and byte-truncating one would destroy
 # a document the server deliberately chose to return whole — while this hook's
 # own doc argues servers should do exactly what that one is doing.
 #
@@ -67,7 +76,7 @@
 #
 # Env knobs:
 #   WORKBENCH_MCP_OUTPUT_CAP=0          → disable entirely.
-#   WORKBENCH_MCP_OUTPUT_MAX_BYTES=N    → cap in bytes (default 40000, ~10k
+#   WORKBENCH_MCP_OUTPUT_MAX_BYTES=N    → cap in bytes (default 60000, ~15k
 #                                         tokens). Values under 1024 are
 #                                         rejected as a footgun and fall back
 #                                         to the default.
@@ -123,11 +132,11 @@ if [ -n "$EXEMPT" ] && printf '%s' "$TOOL_NAME" | grep -Eq "$EXEMPT" 2>/dev/null
 fi
 
 # ──────────── Cap resolution ────────────
-MAX_BYTES="${WORKBENCH_MCP_OUTPUT_MAX_BYTES:-40000}"
-case "$MAX_BYTES" in ''|*[!0-9]*) MAX_BYTES=40000 ;; esac
+MAX_BYTES="${WORKBENCH_MCP_OUTPUT_MAX_BYTES:-60000}"
+case "$MAX_BYTES" in ''|*[!0-9]*) MAX_BYTES=60000 ;; esac
 # A cap of a few bytes would shred every response into a file pointer. Treat an
 # absurd value as misconfiguration and use the default rather than honoring it.
-[ "$MAX_BYTES" -lt 1024 ] && MAX_BYTES=40000
+[ "$MAX_BYTES" -lt 1024 ] && MAX_BYTES=60000
 
 # ──────────── Extract the cappable text, or bail ────────────
 # SHAPE records what we found so the replacement preserves it. `empty` output

@@ -53,6 +53,33 @@ assert_contains "emits UserPromptSubmit additionalContext" "$OUT" "additionalCon
 OUT=$(run "We discussed this yesterday and it's still broken." sig-b)
 assert_contains "recurrence signal emits nudge"            "$OUT" "$NUDGE_CANARY"
 
+# (a2) A scheduled-task fire is skipped outright, before signal or heartbeat.
+echo "scheduled-task fire is skipped:"
+SCHEDULED_PROMPT='<scheduled-task name="workbench-dev-team-dispatch" file="/Users/x/.claude/scheduled-tasks/workbench-dev-team-dispatch/SKILL.md">
+This is an automated run of a scheduled task. The user is not present to answer questions.
+We decided the root cause is the loader; the fix is to always validate first.'
+# The body deliberately carries strong capture signals ("decided", "root cause",
+# "the fix is", "always") — without the guard this prompt fires the nudge, so
+# the assertion below is discriminating rather than incidental.
+OUT=$(run "$SCHEDULED_PROMPT" sched-a)
+assert_empty "scheduled fire emits nothing despite capture signals" "$OUT"
+OUT=$(run "
+
+$SCHEDULED_PROMPT" sched-ws)
+assert_empty "leading blank lines do not defeat the guard" "$OUT"
+# Forcing the heartbeat (interval 1) must not resurrect it either.
+OUT=$(run "$SCHEDULED_PROMPT" sched-hb 1)
+assert_empty "heartbeat cannot fire for a scheduled prompt" "$OUT"
+# Negative control: a human asking about scheduled tasks must still be nudged.
+OUT=$(run "We decided the <scheduled-task wrapper is the only usable signal." sched-neg)
+assert_contains "human prompt mentioning the wrapper still nudges" "$OUT" "$NUDGE_CANARY"
+# No per-session state should be created for a skipped fire.
+if [ ! -f "$SANDBOX/state/sched-a.count" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ scheduled fire leaves no heartbeat counter behind"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ scheduled fire created a heartbeat counter"
+fi
+
 # (b) A neutral prompt below the heartbeat threshold emits nothing.
 echo "neutral prompt below threshold is silent:"
 OUT=$(run "Please rename the variable foo to bar in this file." neutral-1 8)

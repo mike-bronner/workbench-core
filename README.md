@@ -218,6 +218,7 @@ core/
 │   ├── memory-server-down.sh   — shared-HTTP manual stop (disabled; retained)
 │   ├── memory-capture-nudge.sh — UserPromptSubmit: nudge proactive memory WRITES
 │   ├── memory-recall.sh        — UserPromptSubmit: inject relevant memory READS (recall)
+│   ├── mcp-output-cap.sh       — PostToolUse: cap oversized MCP tool responses
 │   ├── lib/                    — sourceable libs: memory-env / -probe / -vacuum / -install
 │   └── fixtures/               — test fixtures (fake-server stub, no real server)
 ├── references/
@@ -254,6 +255,7 @@ These hooks fire across the session lifecycle and on each turn:
 | Hook | Script | Purpose |
 |------|--------|---------|
 | `SessionStart` | `hooks/session-warmup.sh` | Identity injection, retention cleanup, housekeeping notices (written to a file, not injected) |
+| `PostToolUse` | `hooks/mcp-output-cap.sh` | Cap oversized MCP tool responses (matcher `^mcp__`) — see [MCP output capping](#mcp-output-capping) |
 | `PreCompact` | `hooks/session-log.sh` | Dump raw log checkpoint, spawn summary-writer |
 | `PostCompact` | `hooks/session-warmup.sh` | Re-inject identity after context compression |
 | `SessionEnd` | `hooks/session-log.sh` | Dump final log segment, spawn summary-writer |
@@ -328,6 +330,65 @@ carries only `source` (`startup`/`resume`/`clear`/`compact`/`fork`) plus
 distinguishes a cron fire from an interactive run. Making the payload
 unconditionally stable sidesteps the need for one, and benefits every session
 type at once.
+
+### MCP output capping
+
+A `PostToolUse` hook (`hooks/mcp-output-cap.sh`, matcher `^mcp__`) is a
+context-cost backstop for **every** MCP tool call in the session — including
+vendored third-party servers whose code no workbench plugin controls. It uses
+the harness's `updatedToolOutput` field ("Replaces the tool output before it is
+sent to the model"), so the replacement happens in place with no re-execution.
+
+Claude Code already enforces `MAX_MCP_OUTPUT_TOKENS`, persisting overflow to a
+file and swapping in a pointer. Its real behavior (read out of the 2.1.219
+binary) is worth knowing, because it sets the ceiling this hook works under:
+
+| | |
+|---|---|
+| Limit | 25,000 tokens |
+| Size estimate | `round(chars / 4)`, plus 1,600 tokens per image |
+| Cheap fast-path | estimate ≤ 50% of limit → returned untouched |
+| ⇒ never properly measured below | ~50,000 chars |
+| ⇒ persistence effectively begins around | ~100,000 chars |
+
+That handling happens *during the MCP tool call*, before `PostToolUse` hooks see
+`tool_response` — so a genuinely huge result arrives here already replaced by the
+harness's pointer. **The band this hook governs is roughly 0–100 KB.**
+
+The 40,000-byte default lands at ~10,000 estimated tokens, which is exactly where
+Claude Code itself starts warning *"Large MCP response (~N tokens), this can fill
+up context quickly"* — independent corroboration of the right order of magnitude.
+
+**Deliberate caps are exempt.** Some servers set a large ceiling *on purpose* and
+raise rather than truncate — the correct design, and the one
+`docs/mcp-output-capping.md` argues for. markdown-vault-mcp, behind this plugin's
+own memory MCP, allows `.md` reads up to 262,144 bytes. Session logs and
+synthesis notes routinely sit in the 40 KB–256 KB range, and byte-truncating one
+would destroy a document the server deliberately chose to return whole. Tool
+names matching `WORKBENCH_MCP_OUTPUT_EXEMPT` are therefore skipped outright.
+
+This does not reintroduce per-plugin opt-in: the list lives in core, and an
+unknown third-party server — the case this hook exists for — is still capped by
+default without anyone doing anything.
+
+Nothing is ever lost. The full response is written to
+`~/.claude-workbench/mcp-output/<tool_use_id>.txt` **before** truncation, and the
+replacement points at it. If that write fails or comes up short, the hook emits
+nothing and the original passes through — truncating without a recoverable copy
+would be data loss. Responses it doesn't recognise (a content array holding an
+image or resource block, an unfamiliar object shape) also pass through untouched.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `WORKBENCH_MCP_OUTPUT_CAP` | unset | `0` disables the hook entirely |
+| `WORKBENCH_MCP_OUTPUT_MAX_BYTES` | `40000` | Cap in bytes (~10k tokens). Values under 1024 are rejected as a footgun |
+| `WORKBENCH_MCP_OUTPUT_EXEMPT` | `^mcp__plugin_workbench-core_memory__read$` | Regex of tool names never capped. Set empty to exempt nothing |
+| `WORKBENCH_MCP_OUTPUT_DIR` | `~/.claude-workbench/mcp-output` | Where full responses are persisted (swept after 3 days) |
+
+This hook is a **backstop, not a substitute** for servers capping their own
+output: it can only truncate bytes, where a server knows to return its 10 best
+results with snippets. See `docs/mcp-output-capping.md` for the per-server
+standard.
 
 ### Guardrails
 

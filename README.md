@@ -221,6 +221,9 @@ core/
 │   ├── mcp-output-cap.sh       — PostToolUse: cap oversized MCP tool responses
 │   ├── lib/                    — sourceable libs: memory-env / -probe / -vacuum / -install
 │   └── fixtures/               — test fixtures (fake-server stub, no real server)
+├── docs/
+│   ├── session-warmup-contributions.md — how plugins contribute warmup text
+│   └── mcp-output-capping.md   — per-server MCP output-limit standard
 ├── references/
 │   ├── guardrails.md           — absolute behavioral rules (injected at session start)
 │   ├── decision-promotion.md   — when and how to promote decisions

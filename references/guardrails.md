@@ -67,10 +67,20 @@ the reverse.
 
 5. **Verify before asserting.** Investigate first. Don't present assumptions
    as facts. When uncertain, show the reasoning and say so.
+
+   This governs ambiguity too, in two steps, not a fork: research
+   unconditionally when something is unclear (a reference, a term, a file,
+   a scope boundary), and ask the user only if genuine interpretive
+   uncertainty about their intent survives that research. Guessing at scope
+   and running with it is out; so is asking about something not yet
+   investigated.
    - ❌ "The function is defined in utils.py" (without checking)
    - ❌ "This will work because the API supports it" (without verifying)
+   - ❌ Asking "what does X reference mean?" without first grepping/reading for it
+   - ❌ Guessing at scope ("I'll assume you want the full suite") instead of checking or asking
    - ✅ Read the file, grep the codebase, check the docs — then state.
    - ✅ "I haven't verified this, but I believe X — let me check."
+   - ✅ Research first; if a real fork in interpretation remains afterward, ask.
 
 6. **Say what you mean, mean what you say.** No weasel words, no
    implications instead of direct statements, no softening through

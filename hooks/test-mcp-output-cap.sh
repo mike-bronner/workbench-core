@@ -14,17 +14,36 @@ SANDBOX=$(mktemp -d)
 trap 'rm -rf "$SANDBOX"' EXIT
 OUT_DIR="$SANDBOX/mcp-output"
 
+# NOTHING BIG GOES THROUGH ARGV. The payloads here are deliberately larger than
+# anything a command line will carry: Linux caps a single argv entry at
+# MAX_ARG_STRLEN (32 pages = 131,072 bytes), so `jq --arg s "$(head -c 262144 …)"`
+# dies with "Argument list too long" — and a scaffold that dies during setup
+# hands the hook an empty payload, which silently satisfies every assert_empty.
+# That is how a real fail-open in the hook itself hid here. So: big values reach
+# jq through a FILE (--rawfile / --slurpfile) and reach a file through printf,
+# which is a bash builtin and never execs.
+FILL_N=0
+
+# fill: write exactly N bytes of 'x' to a file, echo its path.
+fill() {
+  local path="$SANDBOX/fill-$((FILL_N += 1)).txt"
+  head -c "$1" /dev/zero | tr '\0' 'x' > "$path"
+  printf '%s' "$path"
+}
+
 # run: pipe a PostToolUse payload into the hook.
 # Args: <tool_name> <tool_response JSON> <tool_use_id> [extra env assignments...]
 run() {
   local tool="$1" response="$2" tuid="$3"; shift 3
-  jq -cn --arg t "$tool" --argjson r "$response" --arg id "$tuid" \
-    '{hook_event_name:"PostToolUse", tool_name:$t, tool_input:{}, tool_response:$r, tool_use_id:$id}' \
+  local rfile="$SANDBOX/response-$tuid.json"
+  printf '%s' "$response" > "$rfile"
+  jq -cn --arg t "$tool" --slurpfile r "$rfile" --arg id "$tuid" \
+    '{hook_event_name:"PostToolUse", tool_name:$t, tool_input:{}, tool_response:$r[0], tool_use_id:$id}' \
     | env HOME="$SANDBOX/home" WORKBENCH_MCP_OUTPUT_DIR="$OUT_DIR" "$@" bash "$HOOK" 2>/dev/null
 }
 
 # Build a text content-block array whose text is exactly N bytes of 'x'.
-blob() { jq -cn --arg s "$(head -c "$1" /dev/zero | tr '\0' 'x')" '[{type:"text",text:$s}]'; }
+blob() { jq -cn --rawfile s "$(fill "$1")" '[{type:"text",text:$s}]'; }
 
 assert_empty() {
   local desc="$1" got="$2"
@@ -88,12 +107,46 @@ echo "Persist failure — passes through rather than truncating destructively:"
 # than the context cost this hook exists to save.
 BAD_DIR="$SANDBOX/readonly"
 mkdir -p "$BAD_DIR"; chmod 500 "$BAD_DIR"
-GOT=$(jq -cn --arg s "$(head -c 120000 /dev/zero | tr '\0' 'x')" \
+GOT=$(jq -cn --rawfile s "$(fill 120000)" \
   '{hook_event_name:"PostToolUse", tool_name:"mcp__x__y", tool_input:{},
     tool_response:[{type:"text",text:$s}], tool_use_id:"tu-ro"}' \
   | env HOME="$SANDBOX/home" WORKBENCH_MCP_OUTPUT_DIR="$BAD_DIR/nested" bash "$HOOK" 2>/dev/null)
 assert_empty "unwritable output dir → no truncation" "$GOT"
 chmod 700 "$BAD_DIR"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REGRESSION: responses past the kernel's argv ceiling must still be capped.
+# The hook used to hand the response text to jq as `--arg text "$TEXT"`. Linux
+# caps a single argv entry at MAX_ARG_STRLEN (32 pages = 131,072 bytes) and
+# macOS caps the whole argument block at ARG_MAX (1 MiB), so past that ceiling
+# the exec failed with E2BIG, the `2>/dev/null || true` swallowed it, and the
+# hook emitted nothing — which the harness reads as "leave the tool output
+# alone". It failed open on precisely the oversized responses it exists to cut,
+# and orphaned the full copy it had already written to disk.
+#
+# End-to-end, not just "some output appeared": each size below must produce a
+# replacement that is actually the capped head, and leave the complete original
+# recoverable. 262144 clears the Linux ceiling, 1200000 clears macOS's too, so
+# a regression fails on either platform rather than only in CI.
+echo "REGRESSION — responses past the kernel argv ceiling are still capped:"
+for size in 262144 1200000; do
+  GOT=$(run "mcp__ynab__list_transactions" "$(blob "$size")" "tu-argv-$size")
+  assert_contains "${size}-byte response is capped" "$GOT" '"updatedToolOutput"'
+  NEW_LEN=$(printf '%s' "$GOT" | jq -r '.hookSpecificOutput.updatedToolOutput[0].text | length' 2>/dev/null)
+  # Just over the cap: the 60000-char head plus the ~500-char notice. An upper
+  # bound of 62000 is what makes this discriminating — a hook that passed the
+  # whole response through would land at $size, not just past 60000.
+  if [ -n "$NEW_LEN" ] && [ "$NEW_LEN" -gt 60000 ] && [ "$NEW_LEN" -lt 62000 ]; then
+    ok "${size}-byte replacement is the capped head plus notice (${NEW_LEN} chars)"
+  else
+    no "${size}-byte replacement length wrong — got '${NEW_LEN}', want just over 60000"
+  fi
+  DISK=$(wc -c < "$OUT_DIR/tu-argv-$size.txt" 2>/dev/null | tr -d ' ')
+  [ "$DISK" = "$size" ] && ok "all $size bytes stay recoverable from disk" \
+                        || no "persisted copy is '$DISK' bytes, want $size"
+  assert_contains "${size}-byte replacement points at the persisted file" \
+    "$GOT" "$OUT_DIR/tu-argv-$size.txt"
+done
 
 # ─────────────────────────────────────────────────────────────────────────────
 # REGRESSION: markdown-vault-mcp deliberately allows .md reads up to 262,144
@@ -137,7 +190,8 @@ assert_contains "empty exempt regex exempts nothing" "$GOT" '"updatedToolOutput"
 
 echo "Shapes it refuses to touch:"
 # An image block would be destroyed by replacement with text.
-MIXED='[{"type":"text","text":"'"$(head -c 120000 /dev/zero | tr '\0' 'x')"'"},{"type":"image","source":{"type":"base64","data":"AAAA"}}]'
+MIXED=$(jq -cn --rawfile s "$(fill 120000)" \
+  '[{type:"text",text:$s},{type:"image",source:{type:"base64",data:"AAAA"}}]')
 GOT=$(run "mcp__x__y" "$MIXED" tu-img)
 assert_empty "content array containing a non-text block passes through" "$GOT"
 GOT=$(run "mcp__x__y" '{"some":"object","shape":"unrecognised"}' tu-obj)
@@ -146,7 +200,7 @@ GOT=$(run "mcp__x__y" '[]' tu-empty)
 assert_empty "empty content array passes through" "$GOT"
 
 echo "Bare-string responses are capped in kind (shape preserved):"
-BIGSTR=$(jq -cn --arg s "$(head -c 120000 /dev/zero | tr '\0' 'x')" '$s')
+BIGSTR=$(jq -cn --rawfile s "$(fill 120000)" '$s')
 GOT=$(run "mcp__x__y" "$BIGSTR" tu-str)
 STR_TYPE=$(printf '%s' "$GOT" | jq -r '.hookSpecificOutput.updatedToolOutput | type' 2>/dev/null)
 [ "$STR_TYPE" = "string" ] && ok "string response replaced with a string, not an array" \
@@ -198,8 +252,13 @@ fi
 # plausible timeout even on a large payload.
 echo "Runtime stays far below any plausible hook timeout:"
 START=$(date +%s)
-run "mcp__x__y" "$(blob 400000)" tu-perf >/dev/null
+GOT=$(run "mcp__x__y" "$(blob 400000)" tu-perf)
 ELAPSED=$(( $(date +%s) - START ))
+# Assert the work actually happened before timing it. A hook that bails out
+# early is trivially fast, so timing alone would have called the argv-ceiling
+# fail-open above a pass.
+assert_contains "400KB payload is capped (not just fast because it no-opped)" \
+  "$GOT" '"updatedToolOutput"'
 if [ "$ELAPSED" -le 5 ]; then
   ok "400KB payload handled in ${ELAPSED}s (fails open only if it ever exceeds the timeout)"
 else

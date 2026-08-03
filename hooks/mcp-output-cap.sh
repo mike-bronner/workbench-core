@@ -193,16 +193,25 @@ fi
 # could split a multibyte character and produce invalid UTF-8 that jq then
 # refuses to encode. MAX_BYTES codepoints is always <= MAX_BYTES bytes, so this
 # errs slightly under the cap — the safe direction.
+#
+# The text reaches jq via --rawfile, never `--arg text "$TEXT"`. Every response
+# that gets here is by definition over the cap, and passing one as a command-line
+# argument hits the kernel's argv ceiling — on Linux a single argv entry is
+# capped at MAX_ARG_STRLEN (32 pages = 131,072 bytes), well inside this hook's
+# operating band, so exec fails with E2BIG. The failure was silent and exactly
+# backwards: the biggest responses — the ones this hook exists for — passed
+# through uncapped while leaving an orphaned copy on disk. FULL_FILE is already
+# written and byte-verified above, so reading it back costs nothing extra.
 NOTICE=$(printf '\n\n---\n[workbench-core] This %s response was %s bytes; the cap is %s (WORKBENCH_MCP_OUTPUT_MAX_BYTES). The text above is the truncated head.\nFULL, UNTRUNCATED output: %s\nRead that file with offset/limit, grep it, or jq it for the parts you need. Better still: if %s accepts pagination, filter, or limit parameters, call it again with those rather than reading the whole file back into context.' \
   "$TOOL_NAME" "$SIZE" "$MAX_BYTES" "$FULL_FILE" "$TOOL_NAME")
 
 if [ "$SHAPE" = "array" ]; then
-  jq -cn --arg text "$TEXT" --argjson keep "$MAX_BYTES" --arg notice "$NOTICE" \
+  jq -cn --rawfile text "$FULL_FILE" --argjson keep "$MAX_BYTES" --arg notice "$NOTICE" \
     '{hookSpecificOutput: {hookEventName: "PostToolUse",
       updatedToolOutput: [{type: "text", text: (($text[:$keep]) + $notice)}]}}' \
     2>/dev/null || true
 else
-  jq -cn --arg text "$TEXT" --argjson keep "$MAX_BYTES" --arg notice "$NOTICE" \
+  jq -cn --rawfile text "$FULL_FILE" --argjson keep "$MAX_BYTES" --arg notice "$NOTICE" \
     '{hookSpecificOutput: {hookEventName: "PostToolUse",
       updatedToolOutput: (($text[:$keep]) + $notice)}}' \
     2>/dev/null || true

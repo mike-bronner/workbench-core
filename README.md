@@ -99,6 +99,8 @@ The plugin addresses this at three layers:
 
 Layers 2 and 3 are automatic — the plugin generates and maintains them on every startup. Layer 1 requires a one-line shell alias because `--append-system-prompt-file` is CLI-only (no settings.json equivalent exists).
 
+Layers 1 and 2 carry the behavioral overrides **fully inlined** — never a pointer. Each file is read later, by the CLI and by the model, against a version-pinned plugin path that may no longer be live, so a "see `references/…`" line would break its authority tier. What the two layers share is their *source*: the warmup hook renders both from `references/behavioral-overrides.md` at session start, when `CLAUDE_PLUGIN_ROOT` is guaranteed current. Edit the rules there — the two destinations converge on the next startup. If that file is missing or empty, the hook fails closed and leaves both destinations untouched rather than writing a hollow identity block.
+
 To activate Layer 1, add this to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.):
 
 ```bash
@@ -189,12 +191,13 @@ The `references/` directory contains single-source-of-truth documents shared acr
 | File | Used by | Purpose |
 |------|---------|---------|
 | `guardrails.md` | session-warmup, define-soul, define-profile | Absolute behavioral rules — injected last at session start, enforced during interviews |
+| `behavioral-overrides.md` | session-warmup | The persona's behavioral overrides — single source rendered, fully inlined, into both `~/.claude/system-overrides.md` (Layer 1) and the managed `~/.claude/CLAUDE.md` block (Layer 2) |
 | `summary-format.md` | summary-writer, log-now, summarize-session | Required frontmatter, body structure, JSONL parsing guidance |
 | `decision-promotion.md` | summary-writer, log-now, summarize-session | Promotion criteria, when NOT to promote, decision file template |
 | `vault-conventions.md` | summary-writer, log-now, summarize-session | Vault paths, required frontmatter, write vs edit rules |
 | `linking-synthesis.md` | summary-writer, log-now, summarize-session, memory-lint | Wikilink syntax, related-document linking, topic-page synthesis, vault index contract |
 
-Most references are loaded at execution time via `${CLAUDE_PLUGIN_ROOT}/references/`. The exception is `guardrails.md`, which is injected at every session start by the warmup hook.
+Most references are loaded at execution time via `${CLAUDE_PLUGIN_ROOT}/references/`. The exceptions are the two the warmup hook reads at every session start: `guardrails.md`, injected into context, and `behavioral-overrides.md`, rendered onto disk into the Layer 1 and Layer 2 files above.
 
 ## Plugin layout
 
@@ -226,6 +229,7 @@ core/
 │   └── mcp-output-capping.md   — per-server MCP output-limit standard
 ├── references/
 │   ├── guardrails.md           — absolute behavioral rules (injected at session start)
+│   ├── behavioral-overrides.md — persona overrides, rendered into layers 1 + 2 at startup
 │   ├── decision-promotion.md   — when and how to promote decisions
 │   ├── linking-synthesis.md    — wikilinks, topic pages, vault index contract
 │   ├── summary-format.md       — summary frontmatter + body template

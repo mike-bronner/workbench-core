@@ -41,7 +41,7 @@ run_warmup() {
 
 assert_contains() {
   local desc="$1" output="$2" needle="$3"
-  if printf '%s' "$output" | grep -qF "$needle"; then
+  if printf '%s' "$output" | grep -qF -- "$needle"; then
     PASS=$((PASS + 1)); echo "  ✅ $desc"
   else
     FAIL=$((FAIL + 1)); echo "  ❌ $desc — expected to find: $needle"
@@ -50,11 +50,23 @@ assert_contains() {
 
 assert_missing() {
   local desc="$1" output="$2" needle="$3"
-  if printf '%s' "$output" | grep -qF "$needle"; then
+  if printf '%s' "$output" | grep -qF -- "$needle"; then
     FAIL=$((FAIL + 1)); echo "  ❌ $desc — should NOT contain: $needle"
   else
     PASS=$((PASS + 1)); echo "  ✅ $desc"
   fi
+}
+
+# Contiguous multi-line containment. `grep -F` with a multi-line pattern matches
+# if ANY single line matches, which would pass on a file that merely mentions one
+# rule; a case-glob compares the whole block as one uninterrupted substring, which
+# is exactly the "fully inlined, in order, unedited" property under test.
+assert_block() {
+  local desc="$1" haystack="$2" needle="$3"
+  case "$haystack" in
+    *"$needle"*) PASS=$((PASS + 1)); echo "  ✅ $desc" ;;
+    *) FAIL=$((FAIL + 1)); echo "  ❌ $desc — block not found verbatim" ;;
+  esac
 }
 
 # Volatile notices are no longer injected into the warmup payload — they are
@@ -164,6 +176,106 @@ if [ -f "$UNSET_HOME/.claude/system-overrides.md" ]; then
   PASS=$((PASS + 1)); echo "  ✅ writes ~/.claude/system-overrides.md as before"
 else
   FAIL=$((FAIL + 1)); echo "  ❌ did not write ~/.claude/system-overrides.md when unset"
+fi
+
+echo "behavioral overrides — one shipped source, fully inlined into BOTH layers:"
+# Layer 1 (~/.claude/system-overrides.md, system-prompt tier) and layer 2 (the
+# managed CLAUDE.md block, user-message tier) are separate authority tiers that
+# must each carry the rules verbatim — a pointer in either destination would
+# break its tier. What they share is the SOURCE the hook renders from.
+OVERRIDES_SRC="$REPO_ROOT/references/behavioral-overrides.md"
+OV_HOME="$SANDBOX/overrides-home"
+OV_CONFIG_DIR="$OV_HOME/.claude/plugins/data/workbench-core-claude-workbench"
+mkdir -p "$OV_CONFIG_DIR"
+printf '{"agent_name":"OverrideCanary"}\n' > "$OV_CONFIG_DIR/config.json"
+printf '{"source":"startup"}' | \
+  HOME="$OV_HOME" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
+  WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
+  CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" >/dev/null 2>&1
+OV_SYSTEM="$(cat "$OV_HOME/.claude/system-overrides.md" 2>/dev/null)"
+OV_CLAUDE="$(cat "$OV_HOME/.claude/CLAUDE.md" 2>/dev/null)"
+
+# The shipped source is the union of what the two heredocs used to carry
+# separately: layer 2's numbered structure PLUS layer 1's anti-examples. Pin the
+# anti-examples on the source itself — if they are stripped there, both layers
+# "converge" on weaker content and the verbatim checks below would still pass.
+OV_SRC_TEXT="$(cat "$OVERRIDES_SRC" 2>/dev/null)"
+assert_contains "source keeps the emoji-override anti-example"   "$OV_SRC_TEXT" 'no emojis unless asked.'
+assert_contains "source keeps the sycophancy anti-examples"      "$OV_SRC_TEXT" 'No "Great question!"'
+assert_contains "source keeps the hedging anti-example"          "$OV_SRC_TEXT" '"that said"'
+assert_contains "source keeps the corporate-speak ban list"      "$OV_SRC_TEXT" 'circle back'
+assert_contains "source keeps the no-preambles rule"             "$OV_SRC_TEXT" 'No preambles.'
+assert_contains "source parameterizes the agent name"            "$OV_SRC_TEXT" 'AGENT_NAME_PLACEHOLDER'
+
+# Both destinations must contain the rendered block VERBATIM and CONTIGUOUS —
+# this is the convergence guarantee. Drift either heredoc away from the source
+# (or leave one layer on its old, thinner wording) and this goes red.
+EXPECTED_OVERRIDES="${OV_SRC_TEXT//AGENT_NAME_PLACEHOLDER/OverrideCanary}"
+assert_block "layer 1 inlines the shipped block verbatim" "$OV_SYSTEM" "$EXPECTED_OVERRIDES"
+assert_block "layer 2 inlines the shipped block verbatim" "$OV_CLAUDE" "$EXPECTED_OVERRIDES"
+
+# Inlined, not pointed at: neither destination may defer to the plugin path,
+# which is version-pinned and read long after this hook exits.
+assert_missing "layer 1 carries no pointer to the source" "$OV_SYSTEM" "references/behavioral-overrides.md"
+assert_missing "layer 2 carries no pointer to the source" "$OV_CLAUDE" "references/behavioral-overrides.md"
+assert_missing "layer 1 leaves no unsubstituted token"    "$OV_SYSTEM" "PLACEHOLDER"
+assert_missing "layer 2 leaves no unsubstituted token"    "$OV_CLAUDE" "PLACEHOLDER"
+assert_contains "layer 1 substitutes the agent name"      "$OV_SYSTEM" "OverrideCanary"
+assert_contains "layer 2 substitutes the agent name"      "$OV_CLAUDE" "OverrideCanary"
+
+# Per-destination chrome survives the convergence — each tier keeps its own
+# wrapper around the shared body.
+assert_contains "layer 1 keeps its load-instruction banner" "$OV_SYSTEM" "--append-system-prompt-file"
+assert_contains "layer 2 keeps its start marker"            "$OV_CLAUDE" "<!-- workbench-identity:start -->"
+assert_contains "layer 2 keeps its end marker"              "$OV_CLAUDE" "<!-- workbench-identity:end -->"
+assert_contains "layer 2 keeps the identity-files section"  "$OV_CLAUDE" "## Identity files (loaded by SessionStart hook)"
+assert_contains "layer 2 keeps the authority sentence"      "$OV_CLAUDE" "the identity files win."
+
+echo "behavioral overrides — an unreadable source fails CLOSED, never blanks a layer:"
+# A missing shipped source must leave both destinations exactly as they were.
+# Stale-but-good content beats a truncated or emptied identity block.
+FC_HOME="$SANDBOX/failclosed-home"
+FC_ROOT="$SANDBOX/failclosed-root"
+mkdir -p "$FC_HOME/.claude" "$FC_ROOT/references"
+# A plugin root that is otherwise intact — the hook still sources its libs from
+# here — but ships no behavioral-overrides.md. Isolating the one missing file is
+# the point: a wholesale-bogus root would die in the library source instead.
+ln -sfn "$REPO_ROOT/hooks" "$FC_ROOT/hooks"
+printf 'SENTINEL-SYSTEM previously rendered overrides\n'  > "$FC_HOME/.claude/system-overrides.md"
+printf 'SENTINEL-CLAUDE previously rendered identity\n'   > "$FC_HOME/.claude/CLAUDE.md"
+cp "$FC_HOME/.claude/system-overrides.md" "$SANDBOX/fc-system.before"
+cp "$FC_HOME/.claude/CLAUDE.md" "$SANDBOX/fc-claude.before"
+if printf '{"source":"startup"}' | \
+  HOME="$FC_HOME" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
+  WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
+  CLAUDE_PLUGIN_ROOT="$FC_ROOT" bash "$WARMUP" >/dev/null 2>&1; then
+  PASS=$((PASS + 1)); echo "  ✅ still exits 0 with the source missing"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ exited non-zero with the source missing"
+fi
+if cmp -s "$SANDBOX/fc-system.before" "$FC_HOME/.claude/system-overrides.md"; then
+  PASS=$((PASS + 1)); echo "  ✅ system-overrides.md left byte-for-byte untouched"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ system-overrides.md was rewritten without a source"
+fi
+if cmp -s "$SANDBOX/fc-claude.before" "$FC_HOME/.claude/CLAUDE.md"; then
+  PASS=$((PASS + 1)); echo "  ✅ CLAUDE.md left byte-for-byte untouched"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ CLAUDE.md was rewritten without a source"
+fi
+
+# Same for an EMPTY source — a zero-byte file is a broken install, not a licence
+# to render an identity block with no rules in it.
+printf '' > "$FC_ROOT/references/behavioral-overrides.md"
+printf '{"source":"startup"}' | \
+  HOME="$FC_HOME" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
+  WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
+  CLAUDE_PLUGIN_ROOT="$FC_ROOT" bash "$WARMUP" >/dev/null 2>&1
+if cmp -s "$SANDBOX/fc-system.before" "$FC_HOME/.claude/system-overrides.md" && \
+   cmp -s "$SANDBOX/fc-claude.before" "$FC_HOME/.claude/CLAUDE.md"; then
+  PASS=$((PASS + 1)); echo "  ✅ empty source also leaves both layers untouched"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ empty source rewrote a layer"
 fi
 
 echo "missing files degrade gracefully:"

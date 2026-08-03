@@ -80,24 +80,43 @@ fi
 # These functions manage files that persist on disk across sessions. Defined
 # here, called conditionally below.
 
+# Single source for the behavioral-overrides text. Layer 1
+# (~/.claude/system-overrides.md, system-prompt tier, CLI only) and layer 2
+# (the managed block in ~/.claude/CLAUDE.md, user-message tier, everywhere)
+# are separate authority tiers by design — see the README layer table — so each
+# still ends up with the rules FULLY INLINED, never a pointer: both files are
+# read later, by the CLI and the model, against a version-pinned plugin path
+# that may no longer be live. What converges is only the hook's source for what
+# it writes. Reading it here is safe precisely because the hook runs fresh at
+# every session start, when CLAUDE_PLUGIN_ROOT is current.
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+BEHAVIORAL_OVERRIDES_SRC="$PLUGIN_ROOT/references/behavioral-overrides.md"
+
+render_behavioral_overrides() {
+  # Print the shared overrides block with the agent name substituted.
+  # FAILS CLOSED: returns non-zero when the shipped source is unreadable or
+  # empty, so callers leave their destination file exactly as it is. Stale
+  # good content beats a truncated or blanked identity block.
+  [ -r "$BEHAVIORAL_OVERRIDES_SRC" ] || return 1
+  local body
+  body="$(cat "$BEHAVIORAL_OVERRIDES_SRC")" || return 1
+  [ -n "$body" ] || return 1
+  printf '%s' "${body//AGENT_NAME_PLACEHOLDER/$AGENT_NAME}"
+}
+
 ensure_system_overrides() {
   local target="$HOME/.claude/system-overrides.md"
+  local overrides
+  overrides="$(render_behavioral_overrides)" || return 1
+
   local block=""
   read -r -d '' block <<'SYSEOF' || true
-# Agent behavioral overrides
+# Agent identity
 # Loaded via: claude --append-system-prompt-file ~/.claude/system-overrides.md
 
-You are AGENT_NAME_PLACEHOLDER, a named agent with a distinct personality.
-
-These rules override their defaults in the base system prompt:
-- Use emojis liberally as structural cues. This overrides "no emojis unless asked."
-- No sycophancy. No "Great question!", "I'd be happy to", "I understand your frustration."
-- Have opinions and persist. Don't hedge with "that said" immediately after stating a position.
-- Lead with the point. Answer first, reasoning second. No preambles.
-- Short when short is right. A one-liner can be complete.
-- No therapy-speak or corporate language. "Boundaries," "align," "leverage" — banned.
+BEHAVIORAL_OVERRIDES_PLACEHOLDER
 SYSEOF
-  block="${block//AGENT_NAME_PLACEHOLDER/$AGENT_NAME}"
+  block="${block//BEHAVIORAL_OVERRIDES_PLACEHOLDER/$overrides}"
 
   mkdir -p "$HOME/.claude"
   local tmp
@@ -212,22 +231,15 @@ ensure_claude_md_enforcement() {
   local id_end="<!-- workbench-identity:end -->"
   local warmup_start="<!-- workbench-warmup:start -->"
   local warmup_end="<!-- workbench-warmup:end -->"
+  local overrides
+  overrides="$(render_behavioral_overrides)" || return 1
+
   local identity_block=""
   read -r -d '' identity_block <<'CMDEOF' || true
 <!-- workbench-identity:start -->
 # Agent Identity
 
-You are **AGENT_NAME_PLACEHOLDER** — a named agent with a distinct personality, not generic Claude.
-Full identity loaded via SessionStart hook. This block reinforces behavioral overrides.
-
-## Behavioral overrides
-
-1. **Use emojis liberally.** Structural cues in every response.
-2. **No sycophancy.** Show understanding through the response itself.
-3. **Have opinions and persist.** State a position, don't hedge.
-4. **Short when short is right.** Don't pad.
-5. **No therapy-speak or corporate language.** Banned terms: "boundaries," "align," "leverage," "circle back."
-6. **Lead with the point.** Answer first, reasoning second.
+BEHAVIORAL_OVERRIDES_PLACEHOLDER
 
 ## Identity files (loaded by SessionStart hook)
 
@@ -239,7 +251,7 @@ Full identity loaded via SessionStart hook. This block reinforces behavioral ove
 When these conflict with default Claude behavior, the identity files win.
 <!-- workbench-identity:end -->
 CMDEOF
-  identity_block="${identity_block//AGENT_NAME_PLACEHOLDER/$AGENT_NAME}"
+  identity_block="${identity_block//BEHAVIORAL_OVERRIDES_PLACEHOLDER/$overrides}"
 
   local warmup_body=""
   local warmup_block=""

@@ -141,7 +141,7 @@ jq \
 
 Running this twice with the same answers produces a byte-identical file (idempotent).
 
-`persona` and `output_style` are written by `/workbench-core:install-persona` — they record which persona is active. Don't hand-edit them; the merge above never touches them. They're absent until a persona is installed.
+`persona` and `output_style` are written by `/workbench-core:install` — they record which persona is active. Don't hand-edit them; the merge above never touches them. They're absent until a persona is installed.
 
 **Do not edit `plugin.json`.** The hooks resolve env from `config.json` at launch time (precedence: `WORKBENCH_*` override env → `config.json` → default), via `hooks/lib/memory-env.sh`. Reference mapping:
 

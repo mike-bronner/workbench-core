@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# install-persona.sh — propagate a shipped persona from the installed plugin
-# into the live locations Claude Code loads identity from.
+# install.sh — propagate the plugin's shipped persona into the live locations
+# Claude Code loads identity from.
 #
-# A persona is a directory at assets/personas/<name>/ containing any of:
+# The plugin ships exactly one persona, a directory at assets/personas/<name>/
+# containing any of:
 #   soul-hot.md      → $MEMORY_PATH/identity/soul-hot.md   (vault, context layer)
 #   soul-core.md     → $MEMORY_PATH/identity/soul-core.md  (vault, context layer)
 #   output-style.md  → ~/.claude/output-styles/<name>.md   (system-prompt layer)
@@ -13,12 +14,12 @@
 # The plugin SHIPS the persona (read-only at runtime via CLAUDE_PLUGIN_ROOT);
 # this script COPIES it to the user's editable live locations. Soul files are
 # hand-editable, so a differing soul file is never overwritten without --force
-# (the install-persona skill diffs + confirms first). The output style and the
+# (the install skill diffs + confirms first). The output style and the
 # settings key are content-addressed idempotent writes.
 #
 # Usage:
-#   install-persona.sh <name> [--dry-run] [--force]
-#   install-persona.sh --set-output-style <StyleName> [--dry-run]
+#   install.sh [--dry-run] [--force]
+#   install.sh --set-output-style <StyleName> [--dry-run]
 #
 # Env overrides (for testing): WORKBENCH_MEMORY_PATH, WORKBENCH_SETTINGS_FILE,
 # WORKBENCH_OUTPUT_STYLES_DIR.
@@ -132,7 +133,7 @@ set_output_style() {
 if [ "${1:-}" = "--set-output-style" ]; then
   STYLE_NAME="${2:-}"
   if [ -z "$STYLE_NAME" ]; then
-    echo "Usage: install-persona.sh --set-output-style <StyleName> [--dry-run]"
+    echo "Usage: install.sh --set-output-style <StyleName> [--dry-run]"
     exit 2
   fi
   if [ "${3:-}" = "--dry-run" ]; then
@@ -144,12 +145,6 @@ if [ "${1:-}" = "--set-output-style" ]; then
 fi
 
 # ──────────── persona mode ────────────
-PERSONA="${1:-}"
-if [ -z "$PERSONA" ]; then
-  echo "Usage: install-persona.sh <name> [--dry-run] [--force]"
-  exit 2
-fi
-shift || true
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
@@ -158,11 +153,18 @@ for arg in "$@"; do
   esac
 done
 
-PERSONA_DIR="$PLUGIN_ROOT/assets/personas/$PERSONA"
-if [ ! -d "$PERSONA_DIR" ]; then
-  echo "❌ Persona '$PERSONA' not found at $PERSONA_DIR"
+PERSONAS_DIR="$PLUGIN_ROOT/assets/personas"
+PERSONA_DIRS=("$PERSONAS_DIR"/*/)
+if [ ! -d "$PERSONAS_DIR" ] || [ ! -d "${PERSONA_DIRS[0]}" ]; then
+  echo "❌ No persona shipped at $PERSONAS_DIR"
   exit 1
 fi
+if [ "${#PERSONA_DIRS[@]}" -ne 1 ]; then
+  echo "❌ Expected exactly one shipped persona at $PERSONAS_DIR, found ${#PERSONA_DIRS[@]}"
+  exit 1
+fi
+PERSONA_DIR="${PERSONA_DIRS[0]%/}"
+PERSONA="$(basename "$PERSONA_DIR")"
 
 RUN_LABEL=""
 if [ "$DRY_RUN" -eq 1 ]; then

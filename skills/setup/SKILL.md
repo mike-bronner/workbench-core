@@ -1,5 +1,5 @@
 ---
-description: Configure the workbench — agent name, memory paths, MCP server name, and identity file paths. Config lives in the plugin data directory and is read at MCP start time, so plugin updates never clobber settings.
+description: Configure the workbench — agent name, memory paths, MCP server name, identity file paths, and the permission safety rails (defaultMode plus deny/ask rules) written to ~/.claude/settings.json. Config lives in the plugin data directory and is read at MCP start time, so plugin updates never clobber settings.
 ---
 
 The user has invoked `/workbench:setup`. Walk them through configuring all workbench settings interactively.
@@ -203,6 +203,96 @@ Notes:
 - **Restart required:** settings.json `.env` is read at Claude Code launch, so the token/port reach the MCP client on the **next restart**, not just the next session. Mention this in the Step 7 restart reminder.
 - **Self-heal:** if the token file is ever lost, the supervisor re-mints one at next start; re-running setup re-syncs settings.json to it.
 
+## Step 2c — Permission safety rails (default-on)
+
+Claude Code evaluates permission rules **deny → ask → allow, before the auto-mode classifier**, in every permission mode including `bypassPermissions`. That matters because a boundary stated only in conversation — "don't push until I review" — is re-read from the transcript on every check and is **lost when context is compacted**. A deny rule is not. This step installs the durable half of that pair.
+
+The rules ship as data at `${CLAUDE_PLUGIN_ROOT}/assets/permissions/rails.json`, and `scripts/permissions.sh` merges them into `~/.claude/settings.json`. The merge is **additive**: an entry is added when absent, left alone when present, existing entries keep their position, and `permissions.allow` is never touched.
+
+### 2c.1 — Pick the posture (`defaultMode`)
+
+Starting **August 14, 2026**, `auto` becomes the default permission mode for new sessions on Pro, Max, and Team plans — but *a default the user set themselves stays in place*. Setting this explicitly is how the user keeps the choice.
+
+Show the current value first:
+
+```bash
+jq -r '.permissions.defaultMode // "unset (Claude Code default)"' ~/.claude/settings.json 2>/dev/null
+```
+
+Then ask with AskUserQuestion:
+
+- **Question:** "Which permission mode should sessions start in?"
+- **Options:**
+  - `auto` — "A classifier reviews each action and blocks anything destructive or out-of-scope. Fewest prompts. Anthropic's own caveat: it *does not guarantee safety*." *(Recommended)*
+  - `acceptEdits` — "File edits and common filesystem commands run without asking; everything else prompts."
+  - `plan` — "Read-only until you approve a plan."
+  - `default` — "Manual. Prompts for everything but reads."
+- The auto-provided **Other** covers `dontAsk` and `bypassPermissions`, which are deliberately not offered as one-click options.
+
+If the user would rather leave the current value alone, skip `--mode` in 2c.3 — the script then merges the rails and leaves `defaultMode` untouched.
+
+⚠️ **`auto` is only honoured from user settings.** Claude Code ignores `defaultMode: "auto"` in `.claude/settings.json` and `.claude/settings.local.json` so a cloned repo can't promote itself. This script writes to `~/.claude/settings.json`, which is correct.
+
+### 2c.2 — Show the rules before applying them
+
+Never install security rules the user hasn't read. Print them:
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/permissions.sh" --list
+```
+
+Output is `kind<TAB>rule<TAB>why`. Render it as two short tables — 🔴 deny and 🟡 ask — and say plainly what each kind does:
+
+- **deny** — hard wall. Blocks before the classifier, in every mode, with no prompt and no override.
+- **ask** — always prompts, even in `auto`, even when a narrower allow rule matches.
+
+There is a third kind in the list, on a different layer:
+
+- **autoMode.allow** — prose exceptions to the auto-mode classifier's built-in *soft-deny* rules. Not a tool pattern; the classifier reads it as natural language. The shipped entry unblocks `workbench-dev-team` dispatch (see 2c.5).
+
+Three behaviours worth calling out by name:
+
+- `Bash(git push --force:*)` also blocks `--force-with-lease`, since that string starts with `--force`.
+- `Read(**/.env)` covers bare `.env` only. A `**/.env.*` rule would also catch `.env.example`, which holds no secrets and is read routinely. Note the cost of the rule that *is* there: a `Read` deny blocks `Edit` on the same path, so a broken `.env` can be neither read nor repaired.
+- **There is deliberately no `rm` deny rule.** `Bash(rm -rf:*)` sits in `ask` instead. A deny on `rm -rf /` would match every absolute-path delete — `*` is always a wildcard, and deny beats allow regardless of specificity, so no `/tmp` exception is expressible. Claude Code already gates the catastrophic case semantically: the classifier decides root and home removals in `auto` (including inside `$(...)` and `<(...)` substitution), and they still prompt under `bypassPermissions` as a circuit breaker.
+
+Then offer a dry run — it prints exactly what would change and writes nothing:
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/permissions.sh" --dry-run --mode <chosen-mode>
+```
+
+### 2c.3 — Apply
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/permissions.sh" --mode <chosen-mode>
+```
+
+Idempotent — re-running with the same answers reports `all shipped rails already present` and writes nothing.
+
+If the user wants to edit the lists, point them at `~/.claude/settings.json` `permissions.deny` / `permissions.ask`. Entries they remove by hand **will be re-added** the next time setup runs, since the merge only knows how to add. Removing a rule permanently means editing `assets/permissions/rails.json` in the plugin.
+
+### 2c.4 — The headless constraint (do not "improve" the ask list)
+
+An `ask` rule *always* forces a prompt, and a `claude -p` run has nobody to prompt — so the call is **blocked** instead. `workbench-dev-team` dispatches Watson unattended via `nohup claude -p --agent`, and Watson pushes branches, commits, and opens PRs.
+
+`Bash(git push:*)`, `Bash(git commit:*)`, and `Bash(gh pr create:*)` are therefore **deliberately absent** from the ask list. Adding them would kill the pipeline silently. `hooks/test-permissions.sh` asserts their absence so the mistake can't land quietly.
+
+The git-commit approval gate stays a `PreToolUse` hook for the same reason: a hook can force a prompt *and* carry a pipeline exemption. An ask rule cannot.
+
+### 2c.5 — Why an `autoMode.allow` entry ships alongside the rules
+
+The classifier's built-in **soft-deny** list includes *auto-mode bypass*. The Dispatch task launches agents with `nohup claude -p --agent workbench-dev-team:<name> --dangerously-skip-permissions`, which reads exactly like Claude removing its own oversight — so the classifier blocks it. A soft deny clears on explicit user intent, but a scheduled task has no user message to clear it, so dispatch fails non-deterministically tick to tick.
+
+`autoMode.allow` is the documented mechanism for an exception to a soft deny, so the rails file carries one. `permissions.allow` is the wrong lever: auto mode deliberately suspends broad shell allow rules that grant arbitrary code execution, which is precisely this command's shape.
+
+🛑 **The literal string `"$defaults"` must stay in `autoMode.allow`.** Without it, Claude Code replaces the *entire* built-in soft-deny list — force push, `curl | bash`, production deploys, auto-mode bypass, all of it. `permissions.sh` prepends `"$defaults"` whenever it is missing, including on a list a user had emptied of it. Never hand-edit it out.
+
+Two more facts about this layer:
+
+- The classifier reads `autoMode` **only** from `~/.claude/settings.json` and managed settings — never from `.claude/settings.json` or `.claude/settings.local.json`, so a checked-in repo cannot grant itself exceptions.
+- After applying, confirm the effective rules with `claude auto-mode config`, which prints the four lists with `"$defaults"` expanded in place.
+
 ## Step 3 — Re-templatize identity files (if `agent_name` changed)
 
 If `agent_name` changed from its previous value (or this is a first-time setup):
@@ -234,6 +324,7 @@ Tell the user:
 - Config saved to `{CONFIG_FILE}`
 - MCP env vars will be re-read from config.json on next Claude Code restart
 - The memory server's bearer token was provisioned (and the port, if non-default) into `~/.claude/settings.json`
+- The permission mode that is now set, and how many deny/ask rails were added (the script reports both)
 - Whether identity files were created/updated
 
 ## Step 4.5 — Deploy the nightly decision-quality task (opt-in)
@@ -319,7 +410,7 @@ The profile is completed first intentionally — define-soul benefits from knowi
 
 ## Step 7 — Restart reminder
 
-After both interviews complete (or are skipped), remind the user to **start a new session (or restart Claude Code) for the changes to take effect.** Under the default per-session stdio transport, memory config (`config.json`) is re-read when the host respawns the stdio server for the next session — nothing needs to reach `settings.json`, so there's no "first session lacks memory" gap. (If you re-enabled the optional shared HTTP server in Step 2b, its port + bearer token in `settings.json` `.env` are read only at Claude Code **launch**, so that path does need a full restart, not just a new session.)
+After both interviews complete (or are skipped), remind the user to **start a new session (or restart Claude Code) for the changes to take effect.** Permission rules and `defaultMode` from Step 2c are read at session start, so `/clear` or a new session is enough for those. Under the default per-session stdio transport, memory config (`config.json`) is re-read when the host respawns the stdio server for the next session — nothing needs to reach `settings.json`, so there's no "first session lacks memory" gap. (If you re-enabled the optional shared HTTP server in Step 2b, its port + bearer token in `settings.json` `.env` are read only at Claude Code **launch**, so that path does need a full restart, not just a new session.)
 
 ## Notes
 

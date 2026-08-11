@@ -1,0 +1,101 @@
+{
+  "_comment": [
+    "Permission safety rails shipped by workbench-core and merged into",
+    "~/.claude/settings.json by scripts/permissions.sh (additively — an entry is",
+    "only ever added, never removed).",
+    "",
+    "Rules are evaluated deny → ask → allow, before the auto-mode classifier, in",
+    "every permission mode including bypassPermissions. That is the point: a",
+    "boundary stated only in conversation is lost when context is compacted, but",
+    "a deny rule is not.",
+    "",
+    "HEADLESS CONSTRAINT — read before adding to `ask`:",
+    "An ask rule always forces a prompt, and a `claude -p` run has nobody to",
+    "prompt, so the call is blocked instead. workbench-dev-team dispatches Watson",
+    "unattended via `nohup claude -p --agent`, and Watson pushes branches, commits,",
+    "and opens PRs. So `Bash(git push:*)`, `Bash(git commit:*)`, and",
+    "`Bash(gh pr create:*)` are deliberately NOT in `ask` — putting them there",
+    "would kill the pipeline silently. The git-commit approval gate stays a",
+    "PreToolUse hook, which can carry a pipeline exemption; an ask rule cannot."
+  ],
+
+  "deny": [
+    { "rule": "Bash(sudo:*)",
+      "why": "Nothing the agent does should need root." },
+    { "rule": "Bash(dd:*)",
+      "why": "Raw block-device writes destroy disks with no undo." },
+    { "rule": "Bash(diskutil:*)",
+      "why": "macOS disk format/erase/partition." },
+    { "rule": "Bash(mkfs:*)",
+      "why": "Filesystem creation over an existing volume." },
+    { "rule": "Bash(gh repo delete:*)",
+      "why": "Irreversible and outward-facing." },
+    { "rule": "Bash(git push --force:*)",
+      "why": "Rewrites remote history. Prefix matching means this also blocks `--force-with-lease` — accepted tradeoff." },
+    { "rule": "Bash(git filter-branch:*)",
+      "why": "Bulk history rewriting." },
+    { "rule": "Bash(git reflog expire:*)",
+      "why": "Destroys the reflog, which is the undo rope for every other git mistake." },
+    { "rule": "Bash(security dump-keychain:*)",
+      "why": "Bulk credential dump. Scoped find/add/delete are handled by ask rules instead, since plugin setup skills use them." },
+    { "rule": "Read(~/.ssh/**)",
+      "why": "Private keys. A Read deny also blocks Edit on the same paths." },
+    { "rule": "Read(~/.aws/**)",
+      "why": "Cloud credentials." },
+    { "rule": "Read(~/.gnupg/**)",
+      "why": "GPG private keyring." },
+    { "rule": "Read(**/.env)",
+      "why": "Application secrets at any depth. Note the cost: a Read deny also blocks Edit, so a broken .env can be neither read nor repaired. Variants like .env.local and .env.production are NOT covered — a `**/.env.*` rule would also catch .env.example, which holds no secrets and is read routinely." }
+  ],
+
+  "ask": [
+    { "rule": "Bash(rm -rf:*)",
+      "why": "The only rm guard, by design. A deny on `rm -rf /` would match every absolute-path delete (prefix matching, and `*` is always a wildcard), and cannot carry a /tmp exception since deny beats allow regardless of specificity. Claude Code already handles root and home removals semantically: the classifier decides them in auto mode — including inside $(...) and <(...) substitution — and they still prompt in bypassPermissions as a circuit breaker. So prompt here and let the built-in breaker cover the catastrophic case." },
+    { "rule": "Bash(git reset --hard:*)",
+      "why": "Discards uncommitted work." },
+    { "rule": "Bash(git clean -fd:*)",
+      "why": "Deletes untracked files, including ones never staged." },
+    { "rule": "Bash(git stash drop:*)",
+      "why": "Discards stashed work." },
+    { "rule": "Bash(git stash clear:*)",
+      "why": "Discards every stash at once." },
+    { "rule": "Bash(gh pr merge:*)",
+      "why": "Human merge is already the pipeline's gate — make it enforced, not conventional." },
+    { "rule": "Bash(gh release create:*)",
+      "why": "Outward-facing and hard to retract. No dev-team agent does this unattended." },
+    { "rule": "Bash(npm publish:*)",
+      "why": "Publishing to a public registry is effectively permanent." },
+    { "rule": "Bash(brew uninstall:*)",
+      "why": "Removes system tooling other work depends on." },
+    { "rule": "Bash(launchctl:*)",
+      "why": "Installs or removes background persistence." },
+    { "rule": "Bash(crontab:*)",
+      "why": "Installs or removes scheduled persistence." },
+    { "rule": "Bash(security add-generic-password:*)",
+      "why": "Keychain write. Plugin setup skills use this, and those run interactively, so a prompt is fine." },
+    { "rule": "Bash(security delete-generic-password:*)",
+      "why": "Keychain deletion." }
+  ],
+
+  "_autoMode_comment": [
+    "`autoMode.allow` entries are prose exceptions to the classifier's built-in",
+    "soft-deny rules — a different layer from permissions.deny/ask, which are tool",
+    "patterns evaluated BEFORE the classifier runs.",
+    "",
+    "DANGER: the literal string \"$defaults\" must appear in the array. Without it,",
+    "Claude Code replaces the entire built-in soft-deny list — force push,",
+    "`curl | bash`, production deploys, auto-mode bypass, all of it. permissions.sh",
+    "guarantees \"$defaults\" is present and first.",
+    "",
+    "The classifier reads autoMode only from ~/.claude/settings.json and managed",
+    "settings — never from .claude/settings.json or settings.local.json, so a repo",
+    "cannot grant itself exceptions."
+  ],
+
+  "autoMode": {
+    "allow": [
+      { "rule": "Dispatching workbench-dev-team agents is allowed: the scheduled Dispatch task launches `nohup claude -p --agent workbench-dev-team:<lestrade|watson|holmes> --dangerously-skip-permissions` as a detached subprocess. This is the sanctioned pipeline entry point, not Claude removing its own oversight — each dispatched agent runs under its own guardrails, work is scoped to one board item, and every result lands in a human-reviewed pull request.",
+        "why": "The classifier's built-in soft-deny list includes auto-mode bypass, and this command is Claude spawning itself with --dangerously-skip-permissions — which reads exactly like an oversight bypass. A soft deny clears on explicit user intent, but a scheduled task has no user message to clear it, so dispatch is blocked non-deterministically. Confirmed live 2026-07-22 (x2), 2026-07-25 (Holmes and Watson both denied), still open 2026-07-29. This entry is the documented fix: an exception to a soft deny is precisely what autoMode.allow is for. A permissions.allow rule is the wrong lever — auto mode deliberately suspends broad shell allow rules that grant arbitrary code execution." }
+    ]
+  }
+}

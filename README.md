@@ -125,6 +125,8 @@ The memory MCP server ships unconfigured. Run `/workbench:setup` on first instal
 | `auto_summarize` | Spawn background summary-writer on session end | `true` |
 | `summary_model` | Model for the background summary-writer | `sonnet` |
 
+Setup also installs **permission safety rails** into `~/.claude/settings.json` — a `permissions.defaultMode` you pick, plus `deny` and `ask` rules shipped at `assets/permissions/rails.json`. Claude Code evaluates those rules deny → ask → allow *before* the auto-mode classifier, in every mode including `bypassPermissions`, which makes them the durable counterpart to a boundary stated in conversation (that one is lost when context is compacted). The merge is additive and never touches `permissions.allow`. See [Permission safety rails](#permission-safety-rails).
+
 Configuration is stored in `~/.claude/plugins/data/workbench-core-claude-workbench/config.json` and survives plugin updates. The hooks resolve env from this file at launch (via `hooks/lib/memory-env.sh`), so a plugin version bump never clobbers your settings. Per-session stdio needs no port or bearer token in `settings.json` — those are provisioned by `/workbench-core:setup` only if you re-enable the optional shared HTTP server (see [Memory server transport](#memory-server-transport)).
 
 ### Set up identity files
@@ -249,6 +251,7 @@ core/
 ├── scripts/
 │   ├── install-chat-skills.sh  — package + install skills into Claude Chat
 │   ├── install.sh              — propagate the shipped persona to live locations
+│   ├── permissions.sh          — merge the shipped permission rails into settings.json
 │   └── memory-status.sh        — report the per-session stdio memory server's facts
 └── README.md
 ```
@@ -428,6 +431,28 @@ soul-hot.md (character-specific — user-defined)
 profile.md (user context — user-defined)
 ```
 
+### Permission safety rails
+
+Guardrails are prose in the model's context. Permission rails are enforcement in the harness. They solve the same problem at different layers, and the second one holds when the first is gone.
+
+**The problem:** From August 14, 2026, `auto` is the default permission mode on Pro, Max, and Team plans — a classifier reviews actions instead of prompting you. Anthropic's own documentation is blunt that this *does not guarantee safety*. Worse for an agent with a long-running session: a boundary you state in conversation ("don't force-push") is re-read from the transcript on every classifier check, so **context compaction can erase it**.
+
+**The solution:** `assets/permissions/rails.json` ships a curated `deny` and `ask` list, merged into `~/.claude/settings.json` by `scripts/permissions.sh` during `/workbench-core:setup`. Permission rules are evaluated **deny → ask → allow, before the classifier**, in every mode including `bypassPermissions`. Nothing compacts them away.
+
+- **deny** — hard wall. No prompt, no override, no classifier opinion. Reserved for the irreversible: `sudo`, disk formatting, `git push --force`, history rewriting, reads of `~/.ssh`, `~/.aws`, `~/.gnupg`, and `.env`.
+- **ask** — always prompts, even in `auto`, even when a narrower allow rule matches. Used for destructive-but-legitimate work: `rm -rf`, `git reset --hard`, `gh pr merge`, `npm publish`, keychain writes, `launchctl`/`crontab` persistence.
+- **autoMode.allow** — a different layer: prose exceptions to the classifier's built-in *soft-deny* rules, read as natural language rather than tool patterns.
+
+The merge is **additive**: entries are added when absent, existing rules keep their position, and `permissions.allow` is never touched. `--dry-run` previews; `--list` prints every rule with its rationale.
+
+**Why an `autoMode.allow` entry ships.** The classifier's built-in soft-deny list includes *auto-mode bypass*, and the dev-team Dispatch task launches agents with `nohup claude -p --agent ... --dangerously-skip-permissions` — which reads exactly like Claude removing its own oversight, so the classifier blocks it. A soft deny clears on explicit user intent, but a scheduled task has no user message to clear it. `autoMode.allow` is the documented mechanism for that exception; `permissions.allow` is not, because auto mode deliberately suspends broad shell allow rules that grant arbitrary code execution. The literal `"$defaults"` must stay in the array — omitting it discards every built-in soft-deny rule — so `permissions.sh` prepends it whenever missing.
+
+**The constraint that shapes the ask list.** An `ask` rule always forces a prompt, and a `claude -p` run has nobody to prompt — so the call is *blocked*. `workbench-dev-team` dispatches Watson unattended via `nohup claude -p --agent`, and Watson pushes branches, commits, and opens PRs. `Bash(git push:*)`, `Bash(git commit:*)`, and `Bash(gh pr create:*)` are therefore deliberately absent from the ask list; adding them kills the pipeline silently. `hooks/test-permissions.sh` asserts their absence. The git-commit approval gate stays a `PreToolUse` hook because a hook can force a prompt *and* carry a pipeline exemption — an ask rule cannot.
+
+**Why there is no `rm` deny rule.** `Bash(rm -rf:*)` sits in `ask` instead. A deny on `rm -rf /` would match every absolute-path delete — `*` is always a wildcard, and a deny rule can't carry an allowlist exception, so no `/tmp` carve-out is expressible. Claude Code already gates the catastrophic case semantically: the classifier decides root and home removals in `auto`, including inside `$(...)` and `<(...)` substitution, and they still prompt under `bypassPermissions` as a circuit breaker. A textual rule would add friction without adding coverage.
+
+Two more matching behaviours worth knowing: `Bash(git push --force:*)` also blocks `--force-with-lease`, and `Read(**/.env)` covers bare `.env` only — a `**/.env.*` rule would also catch `.env.example`. Note that a `Read` deny blocks `Edit` on the same path, so a denied `.env` can be neither read nor repaired.
+
 ### Memory vault
 
 The vault at `{memory_path}` is served by markdown-vault-mcp with:
@@ -580,8 +605,9 @@ All config values can be overridden via environment variables for testing:
 | `WORKBENCH_MCP_SERVER_NAME` | `memory_mcp_server_name` |
 | `WORKBENCH_MEMORY_RECALL` | Set to `0` to disable proactive vault recall (`memory-recall.sh`) |
 | `WORKBENCH_MEMORY_RECALL_LIMIT` | Max memories the recall hook injects per turn (default `2`) |
-| `WORKBENCH_SETTINGS_FILE` | `~/.claude/settings.json` path (used by `install.sh` for testing) |
+| `WORKBENCH_SETTINGS_FILE` | `~/.claude/settings.json` path (used by `install.sh` and `permissions.sh` for testing) |
 | `WORKBENCH_OUTPUT_STYLES_DIR` | `~/.claude/output-styles` path (used by `install.sh` for testing) |
+| `WORKBENCH_RAILS_FILE` | `assets/permissions/rails.json` path (used by `permissions.sh` for testing) |
 
 ## Known limitations
 

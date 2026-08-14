@@ -38,6 +38,16 @@ CACHE_PATH="${CACHE_PATH:-$HOME/.claude-memory-cache}"
 PENDING_SUMMARIES_DIR="$CACHE_PATH/pending-summaries"
 CHECKPOINTS_DIR="$CACHE_PATH/log-checkpoints"
 
+# Shared writer-spawn helpers. Sourced after MEMORY_PATH/CACHE_PATH/_cfg exist —
+# the lib reads all three. Honor CLAUDE_PLUGIN_ROOT (set by Claude Code's hook
+# host) and fall back to a BASH_SOURCE-relative path so manual and test
+# invocations still resolve hooks/lib, matching session-warmup.sh.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HOOKS_DIR="${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/hooks}"
+HOOKS_DIR="${HOOKS_DIR:-$SCRIPT_DIR}"
+# shellcheck source=hooks/lib/summary-dispatch.sh
+. "$HOOKS_DIR/lib/summary-dispatch.sh"
+
 # ──────────── Recursion guard ────────────
 # The dispatch block at the bottom of this script spawns a detached claude
 # process with WORKBENCH_SKIP_LOG=1 set. That process's own SessionEnd hook
@@ -194,71 +204,30 @@ cat > "$PENDING_SUMMARY_FILE" <<EOF
 EOF
 
 # ──────────── Dispatch background summary-writer ────────────
-# Spawn a detached claude process on every log write. With one rolling file
-# per session, each summary-writer reads the full log and writes a complete
-# summary. Checkpoint summaries get overwritten by the final one — the last
-# writer wins, which is always the most complete.
+# Spawn a detached claude process — but ONLY when this session is going to stay
+# alive long enough to host it. With one rolling file per session, each writer
+# reads the full log and writes a complete summary; checkpoint summaries get
+# overwritten by the final one, so the last writer wins and is the most complete.
 #
-# Defense in depth: if the spawn fails or the background claude errors out,
-# the marker stays in place and the next session's warmup hook picks it up.
+# SessionEnd is deliberately excluded. A child spawned as the parent CLI exits is
+# killed during teardown — `nohup` covers SIGHUP, not a process-group SIGTERM or
+# the OS reaping the job when the parent goes away. From 2026-07-31 to
+# 2026-08-14 that stranded 968 markers, every one of them `event: SessionEnd`
+# and not one PreCompact: the asymmetry that identified the bug. Those sessions
+# are not lost — the marker persists and session-warmup.sh drains it at the next
+# session start, where the parent is alive by definition. That was always the
+# documented fallback; it is now an actual drain rather than a nudge.
 #
-# Safeguards:
-#   - WORKBENCH_SKIP_LOG=1 prevents the spawned claude's own SessionEnd hook
-#     from recursing into another summary-writer.
-#   - WORKBENCH_SKIP_WARMUP=1 prevents identity injection and pending-summary
-#     scanning in the spawned process.
-#   - --no-session-persistence prevents the spawned claude from leaving a
-#     transcript that would become a new pending summary.
-#   - nohup + & + disown fully detaches so this hook returns immediately.
-#   - The child is launched FROM the vault dir (cd "$MEMORY_PATH") and granted
-#     it via --add-dir, and inherits WORKBENCH_MEMORY_PATH. This anchors every
-#     write to the vault: hooks run with cwd = the source project, so without
-#     this the detached writer inherited that project's cwd and an accidental
-#     relative filesystem write landed a .summary.md inside the project instead
-#     of the vault. See the summary-misroute RCA.
-#   - WORKBENCH_SUMMARY_WRITER=1 marks the child so the PreToolUse guard
-#     (hooks/summary-writer-guard.sh) can hard-block any Bash write to a .md
-#     file — belt-and-suspenders over the agent's MCP-only write instruction.
-if [[ "${WORKBENCH_AUTO_SUMMARIZE:-$(_cfg '.auto_summarize')}" =~ ^(1|true)$ ]] \
-    && command -v claude >/dev/null 2>&1; then
-  SUMMARY_MODEL="${WORKBENCH_SUMMARY_MODEL:-$(_cfg '.summary_model')}"
-  SUMMARY_MODEL="${SUMMARY_MODEL:-sonnet}"
-  SUMMARY_WRITER_PROMPT="Process pending session summary.
-
-session_id: ${SESSION_ID}
-marker_path: ${PENDING_SUMMARY_FILE}
-log_path: ${SEG_FILE}
-memory_vault: ${MEMORY_PATH}
-
-Follow your agent definition. Write the summary via the memory MCP using a
-vault-relative path (starting with 'sessions/'), promote any decisions, delete
-the marker, and exit. Never write summary files with Bash."
-
-  if [ "${WORKBENCH_DISPATCH_DRY_RUN:-}" = "1" ]; then
-    # Test hook (hooks/test-session-log.sh): print the resolved invocation
-    # instead of spawning. Set only by tests; never in production.
-    printf 'DISPATCH cwd=%s\n' "$MEMORY_PATH"
-    printf 'DISPATCH env WORKBENCH_MEMORY_PATH=%s\n' "$MEMORY_PATH"
-    printf 'DISPATCH env WORKBENCH_SUMMARY_WRITER=1\n'
-    printf 'DISPATCH model=%s\n' "$SUMMARY_MODEL"
-    printf 'DISPATCH args=%s\n' "--add-dir $MEMORY_PATH --model $SUMMARY_MODEL --agent summary-writer"
-  else
-    (
-      cd "$MEMORY_PATH" 2>/dev/null || exit 0
-      WORKBENCH_SKIP_LOG=1 WORKBENCH_SKIP_WARMUP=1 \
-        WORKBENCH_MEMORY_PATH="$MEMORY_PATH" \
-        WORKBENCH_SUMMARY_WRITER=1 \
-        nohup claude -p \
-        --no-session-persistence \
-        --permission-mode bypassPermissions \
-        --add-dir "$MEMORY_PATH" \
-        --model "$SUMMARY_MODEL" \
-        --agent summary-writer \
-        "$SUMMARY_WRITER_PROMPT" \
-        > /dev/null 2>&1 &
-      disown 2>/dev/null || true
-    )
-  fi
+# PreCompact (mode=checkpoint) and /log-now (mode=manual) still dispatch inline:
+# both fire mid-session with the parent alive and staying alive, which is exactly
+# why PreCompact markers never accumulated.
+#
+# The guard is on MODE, not EVENT. MODE=final is the "this is a terminal log
+# write" signal, and an unrecognised event falls through to final by design — so
+# any future teardown-time hook inherits the safe path (write the marker, let the
+# next session start drain it) instead of the one that loses work.
+if [ "$MODE" != "final" ] && summary_dispatch_enabled; then
+  summary_dispatch_spawn "$SESSION_ID" "$PENDING_SUMMARY_FILE" "$SEG_FILE" || true
 fi
 
 exit 0

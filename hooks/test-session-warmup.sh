@@ -437,6 +437,139 @@ assert_contains "profile pointer present"             "$OUT" "User profile: re-r
 assert_missing  "no pending block on PostCompact"     "$(notices)" "Pending session summaries"
 rm -f "$SANDBOX/cache/pending-summaries"/sid-*.json
 
+# ──────────── Pending-summary drain ────────────
+# session-log.sh no longer spawns a writer at SessionEnd (the child is killed
+# during teardown — 968 stranded markers). This drain is the other half of that
+# fix, so these assertions are the ones that prove those sessions still get
+# summarized. WORKBENCH_DISPATCH_DRY_RUN makes the shared spawn helper print its
+# resolved invocation instead of launching claude.
+mkdir -p "$SANDBOX/bin"
+printf '#!/bin/sh\nexit 0\n' > "$SANDBOX/bin/claude"
+chmod +x "$SANDBOX/bin/claude"
+DRAIN_LOGDIR="$SANDBOX/memory/sessions/2026-02-02"
+
+# Create marker $1 with mtime $2 (touch -t stamp). Writes a matching log unless
+# $3 is "nolog", so the undrainable path can be exercised.
+make_marker() {
+  local sid="$1" stamp="$2" mode="${3:-log}"
+  local logpath="$DRAIN_LOGDIR/$sid.log.md"
+  mkdir -p "$DRAIN_LOGDIR" "$SANDBOX/cache/pending-summaries"
+  [ "$mode" = "nolog" ] || printf '# log for %s\n' "$sid" > "$logpath"
+  printf '{"session_id":"%s","log_path":"%s","mode":"final","event":"SessionEnd"}\n' \
+    "$sid" "$logpath" > "$SANDBOX/cache/pending-summaries/$sid.json"
+  touch -t "$stamp" "$SANDBOX/cache/pending-summaries/$sid.json"
+}
+
+reset_drain() {
+  rm -f "$SANDBOX/cache/pending-summaries"/*.json 2>/dev/null
+  rm -rf "$DRAIN_LOGDIR" "$SANDBOX/cache/summary-drain.lock" 2>/dev/null
+  rm -f "$SANDBOX/cache/summary-drain.stamp" "$SANDBOX/cache/summary-dispatch-errors.log" 2>/dev/null
+}
+
+# $1: source, $2: extra env assignments
+run_drain() {
+  local source="$1" extra="${2:-}"
+  printf '{"source":"%s"}' "$source" | \
+    env HOME="$SANDBOX/home" \
+      PATH="$SANDBOX/bin:$PATH" \
+      WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
+      WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
+      CLAUDE_PLUGIN_ROOT="$REPO_ROOT" \
+      WORKBENCH_DISPATCH_DRY_RUN=1 \
+      WORKBENCH_AUTO_SUMMARIZE=1 \
+      $extra \
+      bash "$WARMUP" 2>/dev/null
+}
+
+echo "drain — spawns writers at startup, oldest first, bounded by batch:"
+reset_drain
+make_marker "drain-old"  "202601010000"
+make_marker "drain-mid"  "202601020000"
+make_marker "drain-new"  "202601030000"
+OUT=$(run_drain startup "WORKBENCH_DRAIN_BATCH=2")
+assert_contains "oldest marker dispatched"        "$OUT" "DISPATCH sid=drain-old"
+assert_contains "second-oldest dispatched"        "$OUT" "DISPATCH sid=drain-mid"
+assert_missing  "batch bound stops at 2"          "$OUT" "DISPATCH sid=drain-new"
+
+echo "drain — batch of 1 takes the OLDEST, not the newest:"
+# Oldest-first matters: the startup retention sweep refuses to delete any raw log
+# that still has a marker, so newest-first would pin the oldest logs forever.
+reset_drain
+make_marker "pin-old" "202601010000"
+make_marker "pin-new" "202601050000"
+OUT=$(run_drain startup "WORKBENCH_DRAIN_BATCH=1")
+assert_contains "oldest chosen"                   "$OUT" "DISPATCH sid=pin-old"
+assert_missing  "newest skipped"                  "$OUT" "DISPATCH sid=pin-new"
+
+echo "drain — runs on resume, not on clear or compact:"
+reset_drain
+make_marker "src-probe" "202601010000"
+OUT=$(run_drain resume "WORKBENCH_DRAIN_BATCH=1")
+assert_contains "resume drains"                   "$OUT" "DISPATCH sid=src-probe"
+reset_drain
+make_marker "src-probe" "202601010000"
+OUT=$(run_drain clear "WORKBENCH_DRAIN_BATCH=1")
+assert_missing  "clear does not drain"            "$OUT" "DISPATCH sid=src-probe"
+reset_drain
+make_marker "src-probe" "202601010000"
+OUT=$(run_drain compact "WORKBENCH_DRAIN_BATCH=1")
+assert_missing  "compact does not drain"          "$OUT" "DISPATCH sid=src-probe"
+
+echo "drain — cooldown suppresses a second start inside the window:"
+reset_drain
+make_marker "cool-1" "202601010000"
+make_marker "cool-2" "202601020000"
+OUT=$(run_drain startup "WORKBENCH_DRAIN_BATCH=1")
+assert_contains "first start drains"              "$OUT" "DISPATCH sid=cool-1"
+OUT=$(run_drain startup "WORKBENCH_DRAIN_BATCH=1")
+assert_missing  "second start inside cooldown is suppressed" "$OUT" "DISPATCH sid="
+# ...and lifting the cooldown lets it through again, proving the suppression was
+# the cooldown and not some unrelated failure to dispatch.
+OUT=$(run_drain startup "WORKBENCH_DRAIN_BATCH=1 WORKBENCH_DRAIN_COOLDOWN_MIN=0")
+assert_contains "cooldown of 0 drains again"      "$OUT" "DISPATCH sid=cool-1"
+
+echo "drain — undrainable marker is logged and does NOT consume a batch slot:"
+reset_drain
+make_marker "gone-log" "202601010000" nolog
+make_marker "good-1"   "202601020000"
+make_marker "good-2"   "202601030000"
+OUT=$(run_drain startup "WORKBENCH_DRAIN_BATCH=2")
+assert_missing  "marker with no log not dispatched" "$OUT" "DISPATCH sid=gone-log"
+assert_contains "slot passed to next marker"        "$OUT" "DISPATCH sid=good-1"
+assert_contains "second slot still available"       "$OUT" "DISPATCH sid=good-2"
+if grep -q "undrainable marker=.*gone-log" "$SANDBOX/cache/summary-dispatch-errors.log" 2>/dev/null; then
+  PASS=$((PASS + 1)); echo "  ✅ undrainable marker recorded to the dispatch log"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ undrainable marker not recorded to the dispatch log"
+fi
+
+echo "drain — disabled and zero-batch paths spawn nothing:"
+reset_drain
+make_marker "off-probe" "202601010000"
+OUT=$(printf '{"source":"startup"}' | \
+  env HOME="$SANDBOX/home" PATH="$SANDBOX/bin:$PATH" \
+    WORKBENCH_MEMORY_PATH="$SANDBOX/memory" WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
+    CLAUDE_PLUGIN_ROOT="$REPO_ROOT" WORKBENCH_DISPATCH_DRY_RUN=1 \
+    WORKBENCH_AUTO_SUMMARIZE=0 bash "$WARMUP" 2>/dev/null)
+assert_missing "auto-summarize off drains nothing" "$OUT" "DISPATCH sid="
+reset_drain
+make_marker "zero-probe" "202601010000"
+OUT=$(run_drain startup "WORKBENCH_DRAIN_BATCH=0")
+assert_missing "batch of 0 drains nothing"         "$OUT" "DISPATCH sid="
+
+echo "drain — a held lock blocks a concurrent start:"
+reset_drain
+make_marker "lock-probe" "202601010000"
+mkdir -p "$SANDBOX/cache/summary-drain.lock"
+OUT=$(run_drain startup "WORKBENCH_DRAIN_BATCH=1")
+assert_missing "fresh lock suppresses the drain"   "$OUT" "DISPATCH sid=lock-probe"
+# A lock older than a minute is debris from a session that died mid-drain and
+# must be broken, or the drain wedges permanently.
+touch -t "202601010000" "$SANDBOX/cache/summary-drain.lock"
+OUT=$(run_drain startup "WORKBENCH_DRAIN_BATCH=1")
+assert_contains "stale lock is broken"             "$OUT" "DISPATCH sid=lock-probe"
+reset_drain
+
 echo "exit code is always 0:"
 if printf '{"source":"compact"}' | HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" >/dev/null 2>&1; then
   PASS=$((PASS + 1)); echo "  ✅ compact exits 0"

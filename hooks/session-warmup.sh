@@ -40,6 +40,13 @@ HOOKS_DIR="${HOOKS_DIR:-$SCRIPT_DIR}"
 . "$HOOKS_DIR/lib/memory-env.sh"
 memory_load_env
 
+# Shared summary-writer spawn helpers, used by the pending-summary drain below.
+# Sourced here (not at the drain site) so the file resolves from the same
+# HOOKS_DIR as memory-env.sh; the helpers read MEMORY_PATH, CACHE_PATH and _cfg,
+# all of which exist by the time the drain runs.
+# shellcheck source=hooks/lib/summary-dispatch.sh
+. "$HOOKS_DIR/lib/summary-dispatch.sh"
+
 # Config resolution for warmup-only fields (agent_name, identity_files).
 # Prefer the current data dir; fall back to the pre-rename location so users
 # who customized before the workbench → workbench-core rename keep working.
@@ -502,6 +509,84 @@ if [ -r "$SKILLS_PROTOCOL" ]; then
   printf -- '- Skills protocol: read `%s` before executing workbench skills.\n\n' "$SKILLS_PROTOCOL"
 fi
 
+# ──────────── Pending-summary drain (startup + resume) ────────────
+# THIS BLOCK EMITS NOTHING in production. It runs before the notices section on
+# purpose: it is an action, not a report, and the warmup payload must stay
+# byte-stable. (Under WORKBENCH_DISPATCH_DRY_RUN the shared spawn helper prints
+# its resolved invocation to stdout so tests can assert it — that variable is set
+# only by hooks/test-*.sh and never in production.)
+#
+# session-log.sh no longer dispatches on SessionEnd — a child spawned as the
+# parent exits is killed during teardown, which silently stranded 968 markers.
+# Draining here is the other half of that fix: at session start the parent is
+# alive by definition and stays alive, so a detached writer survives to finish.
+#
+# Only startup and resume. `clear` fires mid-session, which already drained at
+# its own startup, and `compact` is excluded for the same reason the notices
+# block excludes it — do not pile work onto a context that was just shed.
+#
+# A bounded batch, not the whole directory. At the default of 3 per session a
+# backlog drains steadily without turning a session start into a fork bomb, and
+# each writer finishes well inside a normal session's lifetime. OLDEST first:
+# the startup log-retention sweep refuses to delete any raw log that still has a
+# marker, so the oldest markers are the ones pinning old logs on disk. Draining
+# newest-first would let them pin indefinitely.
+if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
+  DRAIN_BATCH="${WORKBENCH_DRAIN_BATCH:-3}"
+  DRAIN_COOLDOWN_MIN="${WORKBENCH_DRAIN_COOLDOWN_MIN:-5}"
+  DRAIN_LOCK="$CACHE_PATH/summary-drain.lock"
+  DRAIN_STAMP="$CACHE_PATH/summary-drain.stamp"
+
+  if [ "$DRAIN_BATCH" -gt 0 ] 2>/dev/null && command -v jq >/dev/null 2>&1 \
+     && summary_dispatch_enabled; then
+    # Break a lock left by a session that died mid-drain. The critical section
+    # below is a few spawns long, so anything older than a minute is debris.
+    if [ -d "$DRAIN_LOCK" ] && [ -z "$(find "$DRAIN_LOCK" -mmin -1 2>/dev/null)" ]; then
+      rmdir "$DRAIN_LOCK" 2>/dev/null || true
+    fi
+
+    # mkdir is the atomic test-and-set. It guards the stamp check below, so two
+    # sessions starting at the same instant cannot both read a stale stamp and
+    # both spawn a batch. Released as soon as the spawns are away — the writers
+    # are detached and outlive it.
+    if mkdir "$DRAIN_LOCK" 2>/dev/null; then
+      # Cooldown: rapid successive session starts (a crash loop, a burst of
+      # scripted launches) must not multiply the batch size. A cooldown of 0
+      # disables the window outright — checked explicitly rather than leaning on
+      # `find -mmin -0`, whose BSD rounding makes it match or miss depending on
+      # sub-minute timing.
+      if [ "$DRAIN_COOLDOWN_MIN" -gt 0 ] 2>/dev/null \
+         && [ -f "$DRAIN_STAMP" ] \
+         && [ -n "$(find "$DRAIN_STAMP" -mmin "-$DRAIN_COOLDOWN_MIN" 2>/dev/null)" ]; then
+        : # still cooling down
+      else
+        : > "$DRAIN_STAMP" 2>/dev/null || true
+        DRAINED=0
+        while IFS= read -r marker; do
+          [ "$DRAINED" -ge "$DRAIN_BATCH" ] && break
+          [ -f "$marker" ] || continue
+          DRAIN_SID="$(jq -r '.session_id // empty' "$marker" 2>/dev/null)"
+          DRAIN_LOG="$(jq -r '.log_path // empty' "$marker" 2>/dev/null)"
+          # Fail closed on a marker we cannot act on. A malformed marker, or one
+          # whose log has been deleted, would otherwise be retried on every
+          # session start forever, permanently consuming batch slots that the
+          # drainable markers behind it need.
+          if [ -z "$DRAIN_SID" ] || [ -z "$DRAIN_LOG" ] || [ ! -r "$DRAIN_LOG" ]; then
+            printf '%s undrainable marker=%s sid=%s log=%s\n' \
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$marker" "${DRAIN_SID:-?}" "${DRAIN_LOG:-?}" \
+              >> "$(summary_dispatch_logfile)" 2>/dev/null || true
+            continue
+          fi
+          if summary_dispatch_spawn "$DRAIN_SID" "$marker" "$DRAIN_LOG"; then
+            DRAINED=$((DRAINED + 1))
+          fi
+        done <<< "$(ls -tr "$PENDING_SUMMARIES_DIR"/*.json 2>/dev/null)"
+      fi
+      rmdir "$DRAIN_LOCK" 2>/dev/null || true
+    fi
+  fi
+fi
+
 # ──────────── VOLATILE NOTICES — written to a file, never injected ────────────
 # Every block below varies run to run: a live file count, a wall-clock flag, a
 # marker-directory listing, a plugin-version diff. Injecting any of them makes
@@ -577,11 +662,15 @@ if [ "$SOURCE" != "compact" ]; then
     printf -- '- marker directory: `%s`\n\n' "$PENDING_SUMMARIES_DIR"
 
     cat <<NOTICE
-**Run \`/workbench-core:process-pending-summaries\` to handle these in the background.**
+**This session already spawned writers for the oldest few — no action needed for
+those.** The drain is bounded per session start, so a large backlog clears over
+several sessions rather than all at once.
+
+**To clear the rest now, run \`/workbench-core:process-pending-summaries\`.**
 Do NOT block the session — the skill dispatches agents and returns immediately.
 
-If the skill is unavailable, note the pending summaries and move on.
-They will be picked up by the next session or manual \`/workbench-core:log-now\`.
+If the skill is unavailable, note the pending summaries and move on. The
+remainder is picked up by subsequent session starts automatically.
 NOTICE
     printf '\n'
   fi

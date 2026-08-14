@@ -122,7 +122,7 @@ The memory MCP server ships unconfigured. Run `/workbench:setup` on first instal
 | `memory_cache` | Where indexes, server artifacts, and checkpoints are stored | `~/.claude-memory-cache` |
 | `memory_mcp_server_name` | MCP server name for the vault (`serverInfo.name`) | `workbench-memory` |
 | `memory_port` | Loopback port for the **optional** shared HTTP server (inert under per-session stdio) | `8765` |
-| `auto_summarize` | Spawn background summary-writer on session end | `true` |
+| `auto_summarize` | Spawn background summary-writer (PreCompact, `/log-now`, and the session-start drain) | `true` |
 | `summary_model` | Model for the background summary-writer | `sonnet` |
 
 Setup also installs **permission safety rails** into `~/.claude/settings.json` — a `permissions.defaultMode` you pick, plus `deny` and `ask` rules shipped at `assets/permissions/rails.json`. Claude Code evaluates those rules deny → ask → allow *before* the auto-mode classifier, in every mode including `bypassPermissions`, which makes them the durable counterpart to a boundary stated in conversation (that one is lost when context is compacted). The merge is additive and never touches `permissions.allow`. See [Permission safety rails](#permission-safety-rails).
@@ -215,8 +215,8 @@ core/
 │   └── templates/              — identity + protocol templates
 ├── hooks/
 │   ├── hooks.json              — hook → script bindings
-│   ├── session-log.sh          — raw log capture + summary-writer dispatch
-│   ├── session-warmup.sh       — identity injection + retention cleanup
+│   ├── session-log.sh          — raw log capture + summary-writer dispatch (not at SessionEnd)
+│   ├── session-warmup.sh       — identity injection + retention cleanup + summary drain
 │   ├── mcp-memory.sh           — per-session stdio launcher (the memory MCP) + gated VACUUM
 │   ├── memory-server-up.sh     — shared-HTTP SessionStart kicker (disabled; retained for re-enable)
 │   ├── memory-server-spawn.sh  — shared-HTTP detached supervisor (disabled; retained)
@@ -224,7 +224,7 @@ core/
 │   ├── memory-capture-nudge.sh — UserPromptSubmit: nudge proactive memory WRITES
 │   ├── memory-recall.sh        — UserPromptSubmit: inject relevant memory READS (recall)
 │   ├── mcp-output-cap.sh       — PostToolUse: cap oversized MCP tool responses
-│   ├── lib/                    — sourceable libs: memory-env / -probe / -vacuum / -install
+│   ├── lib/                    — sourceable libs: memory-env / -probe / -vacuum / -install, summary-dispatch
 │   └── fixtures/               — test fixtures (fake-server stub, no real server)
 ├── docs/
 │   ├── session-warmup-contributions.md — how plugins contribute warmup text
@@ -264,11 +264,11 @@ These hooks fire across the session lifecycle and on each turn:
 
 | Hook | Script | Purpose |
 |------|--------|---------|
-| `SessionStart` | `hooks/session-warmup.sh` | Identity injection, retention cleanup, housekeeping notices (written to a file, not injected) |
+| `SessionStart` | `hooks/session-warmup.sh` | Identity injection, retention cleanup, pending-summary drain, housekeeping notices (written to a file, not injected) |
 | `PostToolUse` | `hooks/mcp-output-cap.sh` | Cap oversized MCP tool responses (matcher `^mcp__`) — see [MCP output capping](#mcp-output-capping) |
 | `PreCompact` | `hooks/session-log.sh` | Dump raw log checkpoint, spawn summary-writer |
 | `PostCompact` | `hooks/session-warmup.sh` | Re-inject identity after context compression |
-| `SessionEnd` | `hooks/session-log.sh` | Dump final log segment, spawn summary-writer |
+| `SessionEnd` | `hooks/session-log.sh` | Dump final log segment and write the pending-summary marker — **no writer is spawned here** (see [Why SessionEnd does not spawn](#why-sessionend-does-not-spawn)) |
 | `UserPromptSubmit` | `hooks/memory-capture-nudge.sh` | Sparse nudge to capture durable knowledge to the vault (memory **writes**) |
 | `UserPromptSubmit` | `hooks/memory-recall.sh` | Proactive recall — search the vault with the prompt and inject relevant memories, **once per session** per memory (memory **reads**) |
 
@@ -284,6 +284,12 @@ hooks/session-log.sh
     ├── Update checkpoint
     ├── Write pending-summary marker
     └── Spawn background summary-writer (sonnet, detached)
+        — PreCompact and manual ONLY; mode=final stops at the marker
+
+Next session start
+    ↓
+hooks/session-warmup.sh
+    └── Drain: spawn a writer for the N oldest markers (default 3)
             ↓
         summary-writer agent
             ├── Read the rolling log
@@ -293,7 +299,15 @@ hooks/session-log.sh
             └── Delete the marker
 ```
 
-One rolling log file per session. Checkpoint and final segments are appended to the same file. The summary-writer spawns on every log write — later runs overwrite earlier summaries with the most complete picture.
+One rolling log file per session. Checkpoint and final segments are appended to the same file. Later writer runs overwrite earlier summaries with the most complete picture.
+
+#### Why SessionEnd does not spawn
+
+A child process started as the parent CLI exits is killed during teardown. `nohup` immunises against `SIGHUP` only — not a process-group `SIGTERM`, and not the OS reaping the job when the parent goes away. Between 2026-07-31 and 2026-08-14 this stranded 968 markers on one install: every one of them `event: SessionEnd`, and not a single `PreCompact`. That asymmetry is what identified the bug, since PreCompact fires mid-session with the parent alive and its writers always completed.
+
+So `mode=final` writes the marker and stops. The next session start drains it, where the parent is alive by definition. Work triggered at process death cannot be made to outlive the process by backgrounding it harder.
+
+The drain is bounded (`WORKBENCH_DRAIN_BATCH`, default 3) and rate-limited (`WORKBENCH_DRAIN_COOLDOWN_MIN`, default 5) so a large backlog clears over several sessions instead of forking a swarm at one session start. It takes the **oldest** markers first: the retention sweep refuses to delete any raw log that still has a marker, so draining newest-first would pin the oldest logs on disk indefinitely. Writer stdout and stderr go to `{memory_cache}/summary-dispatch-errors.log` — the original dispatch discarded both to `/dev/null`, which is why a two-week outage went unnoticed.
 
 ### Identity injection
 
@@ -301,8 +315,8 @@ Identity files are injected on **every** warmup source:
 
 | Source | When | What happens |
 |--------|------|--------------|
-| `startup` | Fresh session | Full warmup: retention cleanup + identity + notices refresh |
-| `resume` | Reconnecting | Identity refresh + notices refresh |
+| `startup` | Fresh session | Full warmup: retention cleanup + identity + pending-summary drain + notices refresh |
+| `resume` | Reconnecting | Identity refresh + pending-summary drain + notices refresh |
 | `clear` | After `/clear` | Identity refresh + notices refresh |
 | `compact` | After compression | Identity refresh only (via PostCompact hook) |
 

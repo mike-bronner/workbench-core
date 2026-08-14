@@ -59,7 +59,9 @@ Present each field to the user one at a time. Show the current value (from exist
 ### 6. `auto_summarize`
 - **Prompt:** "Auto-summarize sessions on end?"
 - **Default:** `true`
-- **Note:** When true, spawns a background summary-writer on every log write (PreCompact, SessionEnd, /log-now).
+- **Note:** When true, spawns a background summary-writer on PreCompact and `/log-now`, and drains pending
+  markers at session start. SessionEnd deliberately does NOT spawn — a child started as the parent exits is
+  killed during teardown; the marker it writes is drained by the next session's warmup instead.
 
 ### 7. `identity_files`
 - **Prompt:** "Identity file paths (relative to memory store)"

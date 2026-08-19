@@ -54,11 +54,42 @@ The difference is the set of files skipped for missing or invalid frontmatter �
 
 If the disk-vs-index diff looks implausible (indexed files missing from disk, or the index appears stale relative to recent disk changes), call `reindex` once **before** the fix pass and re-run the comparison. Never call `reindex` after `write`/`edit` — those update the index immediately.
 
+### 1d. Sync-collision detection — run this BEFORE anything resolves a link
+
+The vault lives inside iCloud-synced `~/Documents` and is written from more than one machine. That is deliberate — sessions are meant to sync — but it means iCloud will periodically leave **conflict copies** when the same path is written from two machines before a sync completes:
+
+```bash
+find "$MEMORY_PATH" -type d -name '* [0-9]'      # e.g. "sessions/2026-07-23 2"
+find "$MEMORY_PATH" -type f -name '* [0-9].md'   # e.g. "topics/foo 2.md"
+```
+
+**Detect these first and repair them before any link work** (Step 2a′). A conflict copy is not link rot — it is the *filesystem* being wrong while the links are right — and every link-resolution heuristic this skill uses will happily "resolve" a correct link *into* the conflict folder, because the file genuinely is sitting there. Applying that rewrite cements the corruption and makes the damage permanent. On 2026-08-19 this affected 165 broken links, including all 62 in one topic page that looked like the single best fix-to-link ratio on the board.
+
+Whatever survives into the link buckets must exclude them: `grep -v ' [0-9]/'`.
+
 ## Step 2 — Fix pass
 
-**Hard cap: 50 file-fixes per run.** A fix is any file written or edited (frontmatter rescues, broken-link repairs, link additions). The cap bounds session cost — a 160-file backlog is three monthly runs, not one marathon. When you hit the cap, stop fixing and record the remainder in the report; the next run picks it up.
+**Hard cap: 50 file-fixes per run.** A fix is any file written or edited (frontmatter rescues, broken-link repairs, link additions). The cap bounds session cost — a 160-file backlog is three monthly runs, not one marathon. When you hit the cap, stop fixing and record the remainder in the report; the next run picks it up. **Sync-collision merges (2a′) are exempt from the cap** — they are filesystem repairs, not document edits, and leaving one half-done is worse than not starting.
 
-Prioritize within the cap: frontmatter rescues first (they restore invisible memories to search), then broken links, then conservative linking, then index drift.
+Prioritize within the cap: sync-collision merges first (they poison everything downstream), then frontmatter rescues (they restore invisible memories to search), then broken links, then conservative linking, then index drift.
+
+### 2a′. Sync-collision merge
+
+For each conflict copy found in 1d. **Back up first** — `cp -Rp` the whole conflict path to the scratchpad before touching anything; the vault has no version control, so this backup is the only undo.
+
+**Directory collisions** (`<dir> 2/` beside `<dir>/`):
+
+1. Move every file whose name does **not** already exist in the canonical directory. This is the bulk of the work and is always safe.
+2. For each name that exists in **both**, compare content — `shasum` first, then look at the files:
+   - **Identical** → delete the conflict copy. It is a true duplicate.
+   - **Different** → **keep both.** Move the copy in under a distinguishing name (`<stem>.part1.log.md`, `<stem>.conflict-<n>.md`) and flag the pair in the report. Never resolve by picking one.
+3. `rmdir` the conflict directory only once it is empty. If it will not empty, something was missed — stop and report.
+
+**File collisions** (`<name> 2.md` beside `<name>.md`): same content comparison — identical means delete the copy, different means rename it to `<name>.conflict-<n>.md`, keep both, and flag.
+
+**Never resolve a collision on file metadata.** "Keep the larger" and "keep the newer" both sound reasonable and both destroy data: on 2026-08-19 the two colliding files had larger-but-older on one side, and the `.log.md` pair turned out to be complementary *segments* of one log (`start_line: 1` vs `start_line: 20`), not duplicates at all — either heuristic would have thrown away unique content. Size and mtime cannot distinguish a duplicate from a fragment. Only content can, so read it.
+
+Reindex once after the merge, then re-run Step 1's link gathering — the resolution map from before the merge is stale.
 
 ### 2a. Frontmatter rescue
 
@@ -144,6 +175,9 @@ summary: "N frontmatter rescues, N broken links repaired, N links added, N index
 
 ## Fixes applied
 
+### Sync collisions merged (N)
+- `sessions/<date> 2/` → `sessions/<date>/`: N files moved, N identical duplicates removed, N kept under both names
+
 ### Frontmatter rescues (N)
 - `path` — inferred type, name
 
@@ -158,6 +192,7 @@ summary: "N frontmatter rescues, N broken links repaired, N links added, N index
 
 ## Flagged for human review
 - duplicate/contradiction pairs, ambiguous broken links
+- collision pairs kept under both names (content differed — a human decides which survives, or whether both should)
 
 ## Remainder
 N skipped files remain (cap hit) — next run resumes there.
@@ -193,10 +228,11 @@ Running this skill does not register the schedule by itself — `/workbench-core
 
 ## Safety rails
 
-- **Never touch `*.log.md`.** Raw transcripts are write-only archival, excluded from indexing by design. They are not lint targets — not for frontmatter, not for links, not for anything.
-- **Never delete documents.** Broken-link repair removes link markup at most, never content, never files.
-- **Cap of 50 file-fixes per run.** Bounded session cost beats heroics. Report the remainder.
-- **Flag, don't merge.** Duplicates and contradictions go in the report for the human; this skill never consolidates documents on its own.
+- **Never touch `*.log.md`.** Raw transcripts are write-only archival, excluded from indexing by design. They are not lint targets — not for frontmatter, not for links, not for anything. The one exception is moving them during a sync-collision merge (2a′), where the file is relocated verbatim and never edited.
+- **Never delete unique content.** Broken-link repair removes link markup at most, never content, never files. The single sanctioned deletion is a sync-collision copy whose content is **byte-identical** to the file it collides with — that is removing a duplicate, not a document. Anything that differs, however slightly, is kept under both names and flagged.
+- **Cap of 50 file-fixes per run.** Bounded session cost beats heroics. Report the remainder. Sync-collision merges are exempt — see 2a′.
+- **Flag, don't merge — for *documents*.** Two files on the same topic go in the report for the human; this skill never consolidates documents on its own. Sync-collision *folders* are the exception and are merged automatically: nothing is being consolidated there, the filesystem is simply being put back the way it already was before iCloud forked it.
+- **Never resolve a collision on size or mtime.** Only content distinguishes a duplicate from a fragment. See 2a′.
 - **All writes go through the MCP** (`write`/`edit`) so the index stays consistent with disk. The only filesystem reads are for skipped (unindexed) files; never write with the filesystem tools. Never call `reindex` after MCP writes — the index updates immediately.
 - **Verify before batching.** The first frontmatter rescue must round-trip through `search` before the rest are processed.
 

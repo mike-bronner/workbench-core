@@ -45,6 +45,25 @@ Bad:   [[Prefer X over Y]]               (title — never resolves)
   wikilinks all count).
 - **At most one topic page touched per session** — the central theme only,
   never every tangent.
+- **Never link a document you have not confirmed exists.** Only write a
+  wikilink to a path that a `search` or `list_documents` call actually
+  returned in this session. Do **not** construct a path from a naming
+  convention and assume the file is there.
+- **Never link a session summary you are not yourself writing.** In
+  particular, never build `sessions/<date>/<session-id>.summary` from a
+  session id you saw in a log, a scheduled-task record, or another page.
+  Idle ticks are *deliberately* never summarised (see the idle-tick skip in
+  `agents/summary-writer.md`), so a constructed link to one is broken from
+  birth — and because topic pages are append-only narrative, nothing ever
+  revisits that line to repair it. Refer to such a session by its id as
+  **plain text**, not as a wikilink.
+
+Why these two rules exist: the 2026-08-19 memory-lint found 61 session
+summaries linked from vault pages that exist nowhere on disk, unrecoverable
+(no logs, no transcripts). 33 of them were idle ticks that were never going to
+have a summary. Every one of those links was written by an agent that inferred
+a path instead of verifying one. A link is a claim about the vault's contents —
+do not make the claim without checking.
 
 ## Step A — Search for related documents
 

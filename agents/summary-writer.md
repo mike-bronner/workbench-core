@@ -48,6 +48,8 @@ Instead: delete the marker (`rm "$marker_path"`), print `summary-writer: skipped
 
 **The bar is strict**: any dispatched item, any error worth remembering, any human interaction → not an idle tick; write the summary.
 
+**A skipped idle tick has no summary document — so never link one.** If you narrate this tick (or any other idle tick) on a topic page, refer to it by session id as **plain text**. Do not write `[[sessions/<date>/<id>.summary|…]]` for a session whose summary you skipped, and never construct that path for a sibling tick you did not summarise yourself. The link would be broken from the moment it is written, and topic pages are append-only — nothing revisits the line to fix it. See the hard rules in `references/linking-synthesis.md`.
+
 ### 3. Write the narrative summary
 
 Read `references/summary-format.md` in the plugin directory (`${CLAUDE_PLUGIN_ROOT}/references/summary-format.md`) for the required frontmatter, body structure, and JSONL parsing guidance. Follow it exactly.

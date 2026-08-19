@@ -106,12 +106,16 @@ Scan `list_documents` titles/names (and the orphan list) for near-duplicates —
 
 ### 2e. Index drift
 
-`index.md` at the vault root catalogs the curated layer (see `${CLAUDE_PLUGIN_ROOT}/references/linking-synthesis.md` for its contract). Check it in both directions:
+`index.md` at the vault root is the **orientation entry point** — the map an agent reads on demand *before* searching, not a manifest of everything in the vault (see `${CLAUDE_PLUGIN_ROOT}/references/linking-synthesis.md` Step E, which is the authoritative contract). Search is the exhaustive-lookup mechanism; the index exists to be read end-to-end by a human or an agent, so it must stay short enough to scan.
 
-1. **Missing entries** — every indexed document under `topics/` and `decisions/` must have an index line. For each one missing, `edit` the index to add a line: path-qualified wikilink + one-line hook (derive the hook from the document's `summary` frontmatter).
+Check it in both directions:
+
+1. **Missing entries** — every `topics/` page gets an index line, and so does every **promoted** decision (one a topic page or another decision actually references — not every file in `decisions/`). For each one missing, `edit` the index to add a line: path-qualified wikilink + one-line hook (derive the hook from the document's `summary` frontmatter).
 2. **Stale entries** — no index line may point at a document that no longer exists. Remove stale lines via `edit`.
 
-If `index.md` doesn't exist at all, create it per the linking-synthesis contract, populated from the indexed `topics/`, `decisions/`, and `identity/` documents. Sessions are never indexed.
+**Do not index every document under `decisions/`.** A line-per-document index is actively harmful: it grows without bound, stops being readable at exactly the moment it stops being scannable, duplicates what `search` already does better, and — because every line is a wikilink — converts the entire curated layer into broken-link surface area for this same skill to police. If a run reports a triple-digit "missing entries" backlog, that is the signal this rule has drifted back toward manifest semantics, not that the vault has rotted.
+
+If `index.md` doesn't exist at all, create it per the linking-synthesis contract, populated from the indexed `topics/` and `identity/` documents plus referenced decisions. Sessions are never indexed.
 
 Each index `edit`/`write` counts against the per-run fix cap.
 

@@ -1,0 +1,5 @@
+# Machine-local CLI state (gh device id, etc.) — never belongs in the repo.
+.local/
+
+# macOS
+.DS_Store

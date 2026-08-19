@@ -18,30 +18,39 @@ If none exist, tell the user there's nothing pending and exit.
 
 ## Step 2 — Partition markers by whether their log still exists
 
-**Do this before sorting or dispatching anything.** Raw logs are pruned on a 7-day retention window; a marker whose `log_path` no longer exists is **unprocessable by definition** — `summary-writer` will print `log-missing`, leave the marker in place, and exit. Dispatching an agent at one accomplishes nothing and costs a full agent.
+**Do this before sorting or dispatching anything.** A marker carries **two** pointers with different lifetimes: `log_path` (vault cache, pruned at 7 days) and `transcript_path` (the original Claude Code JSONL, ~30 days). `summary-writer` reads the log when present and falls back to the transcript when it is not, so a marker is processable if **either** exists. Only when both are gone is it genuinely unrecoverable.
 
 ```bash
 M=~/.claude-memory-cache/pending-summaries
 live=(); dead=()
 for f in "$M"/*.json; do
   lp=$(jq -r '.log_path // empty' "$f" 2>/dev/null)
-  if [ -n "$lp" ] && [ -f "$lp" ]; then live+=("$f"); else dead+=("$f"); fi
+  tp=$(jq -r '.transcript_path // empty' "$f" 2>/dev/null)
+  if { [ -n "$lp" ] && [ -f "$lp" ]; } || { [ -n "$tp" ] && [ -f "$tp" ]; }; then
+    live+=("$f")
+  else
+    dead+=("$f")
+  fi
 done
 echo "live=${#live[@]} dead=${#dead[@]}"
 ```
 
-- **Live markers** (log present) are the only dispatch candidates.
-- **Dead markers** (log gone) are never dispatched. Count them, report them, and leave them alone — purging them is a deliberate, separately-approved sweep, because a marker is the only surviving record that a session went unsummarised.
+- **Live markers** (log **or** transcript present) are the dispatch candidates.
+- **Dead markers** (both gone) are never dispatched — retrying one can only fail. Count them, report them, and leave them alone: purging is a deliberate, separately-approved sweep, because a marker is the only surviving record that a session went unsummarised.
 
-If there are no live markers, say so plainly — *"N markers pending, 0 processable (logs past retention)"* — and exit without dispatching. That is a real, reportable state, not a no-op.
+**Do not partition on `log_path` alone.** Doing so classified 739 recoverable sessions as dead on 2026-08-19 and nearly justified deleting them. The log expiring is a cache miss; the transcript is the source.
 
-## Step 3 — Dispatch background agents (batched, **newest** live marker first)
+If there are no live markers, say so plainly — *"N markers pending, 0 processable (log and transcript both past retention)"* — and exit without dispatching. That is a real, reportable state, not a no-op.
 
-Sort the **live** markers **newest first** by `marked_at` (fallback: file mtime).
+## Step 3 — Dispatch background agents (batched, **oldest live** marker first)
 
-Newest-first is deliberate and load-bearing. Under a retention TTL the newest markers are the ones whose logs still exist and whose summaries are still recoverable; the oldest are the ones about to expire or already expired. Oldest-first ordering combined with never-evicting dead markers deadlocks the queue permanently — every run selects the 10 markers most likely to have lost their logs, does zero work, and leaves the backlog untouched while live markers age out behind the wall. That is exactly what happened between 2026-07-18 and 2026-08-19: 775 of 1,107 markers unprocessable, all 10 next-dispatch candidates dead, queue never advanced. See `insights/2026-08-19-pending-summary-drain-is-deadlocked` in the vault.
+Sort the **live** markers **oldest first** by `marked_at` (fallback: file mtime).
 
-Take at most **10** markers from the front of the sorted live list. For each, read it to get the `session_id`, `marker_path`, and `log_path`. Then spawn a background `summary-writer` agent:
+Oldest-**live**-first is earliest-deadline-first scheduling, and it is what maximises the number of sessions actually recovered. The binding deadline is **transcript retention (~30 days)**, not log retention (7 days): a pruned log costs only a cache miss, but once the transcript is gone the session is unrecoverable for good. The oldest live markers are the ones nearest that cliff; the newest have weeks of slack and will still be there next run. Processing newest-first would let the near-expiry markers fall off the cliff while spending the batch on ones in no danger.
+
+**The word `live` is the entire fix — the ordering was never the bug.** The deadlock of 2026-07-18 → 2026-08-19 came from sorting oldest-first across *all* markers without filtering: every run selected the 10 markers most likely to have lost their source, did zero work, and left the backlog untouched — 775 of 1,107 unprocessable, all 10 next-dispatch candidates dead, queue never advanced. Filter first (step 2), then oldest-first is correct. See `insights/2026-08-19-pending-summary-drain-is-deadlocked` in the vault.
+
+Take at most **10** markers from the front of the sorted live list. For each, read it to get the `session_id`, `marker_path`, `log_path`, and `transcript_path`. Then spawn a background `summary-writer` agent:
 
 ```
 Agent tool:
@@ -52,7 +61,8 @@ Agent tool:
     session_id: {session_id}
     marker_path: {marker_path}
     log_path: {log_path}
-    Follow your agent definition. Write the summary, promote any decisions, delete the marker, and exit.
+    transcript_path: {transcript_path}
+    Follow your agent definition. If log_path no longer exists, summarize from transcript_path — a pruned log is a cache miss, not a lost session. Write the summary, promote any decisions, delete the marker, and exit.
 ```
 
 Dispatch the batch in a single turn — don't wait for one to finish before starting the next. Never dispatch more than 10 at once: each agent reads a full session log, so an uncapped dispatch over a large backlog is a token burst with no upside.

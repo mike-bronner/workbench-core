@@ -33,10 +33,19 @@ You do **not** have in-session memory. `/log-now` runs inside the source session
 1. Read the marker JSON at `marker_path`.
 2. Confirm `session_id` matches your prompt. If mismatch, abort.
 3. Note the marker's `log_path` — if it differs from the prompt, trust the marker.
+4. Note the marker's `transcript_path` too. It is your fallback source (step 2), and you need it before you can decide the log is unusable.
 
-### 2. Read the log file
+### 2. Read the session content — log first, transcript as fallback
 
-Read the log at `log_path`. Each session produces a single rolling log file (`{session_id}.log.md`) containing all segments in order. Read the whole file.
+**The marker gives you two pointers to the same session, with different lifetimes.** `log_path` is a 7-day cache in the vault (`session-warmup.sh` prunes at `-mtime +7`); `transcript_path` is the original Claude Code JSONL, which lives ~30 days. A missing log therefore means "the cache expired", **not** "the session is lost".
+
+1. **If `log_path` exists** — read it. Each session produces a single rolling log file (`{session_id}.log.md`) containing all segments in order. Read the whole file. This is the normal path.
+2. **If `log_path` is missing but `transcript_path` exists** — summarize from the transcript instead. Extract the session's lines from the JSONL exactly as you would read the log; the log is only ever a rendering of this same content, so nothing is lost by going to the source. Note in the summary's frontmatter that it was reconstructed from the transcript after the log had been pruned (`source: transcript`), so a later reader knows the log is not retrievable.
+3. **If both are missing** — only then follow the **Log missing** failure mode below.
+
+Never treat a missing log as terminal while the transcript is on disk. On 2026-08-19 this gap had stranded 739 recoverable sessions as "unprocessable" markers, and nearly got them purged: the drain retried them forever, every retry read only `log_path`, and each one reported the session lost while its transcript sat untouched in `~/.claude/projects/`. Transcript retention is the real deadline — once it passes, the session genuinely is gone.
+
+**Scratch files must be session-unique.** Multiple summary-writers run concurrently and may share a scratchpad directory — any intermediate extract you write MUST embed your `session_id` in the filename (e.g. `{session_id}-extract.jsonl`), never a generic name like `session.jsonl`. A shared scratch name lets a parallel agent overwrite your extract mid-run and cross-contaminate the summary. If your extract ever contains a foreign `sessionId`, stop, re-extract from the source, and verify before writing.
 
 **Scratch files must be session-unique.** Multiple summary-writers run concurrently and may share a scratchpad directory — any intermediate extract you write MUST embed your `session_id` in the filename (e.g. `{session_id}-extract.jsonl`), never a generic name like `session.jsonl`. A shared scratch name lets a parallel agent overwrite your extract mid-run and cross-contaminate the summary. If your extract ever contains a foreign `sessionId`, stop, re-extract from the raw log, and verify before writing.
 
@@ -94,7 +103,8 @@ Then stop.
 ## Failure modes
 
 - **Marker missing**: Print `summary-writer: noop sid={sid} marker=already-gone` and exit. Not an error.
-- **Log missing**: Print `summary-writer: error sid={sid} log-missing={log_path}`, leave marker, exit.
+- **Log missing, transcript present**: not a failure. Summarize from `transcript_path` per step 2 and print `summary-writer: ok sid={sid} source=transcript summary={path} …`.
+- **Log AND transcript both missing**: Print `summary-writer: error sid={sid} unrecoverable log-missing={log_path} transcript-missing={transcript_path}`, leave marker, exit. This is the only genuinely lost case — both the 7-day cache and the ~30-day source are gone. A marker in this state will never succeed on retry; it is a record that the session went unsummarised, and purging it is a deliberate human call, not the drain's.
 - **Summary write fails** (MCP `write` errors or the memory MCP is unavailable): Print `summary-writer: error sid={sid} summary-write-failed`, leave the marker, and exit. **Never** fall back to a Bash/filesystem write — a missed summary is recovered on the next session's warmup, but a misrouted one is silent corruption.
 - **Short/unfamiliar log**: Write a thin 2-3 line summary. Don't hallucinate. Delete the marker.
 

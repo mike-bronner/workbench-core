@@ -81,6 +81,32 @@ if [ -z "$SESSION_ID" ] || [ -z "$TRANSCRIPT" ] || [ ! -r "$TRANSCRIPT" ]; then
   exit 0
 fi
 
+# ──────────── Disposable-workspace filter ────────────
+# Sessions run in throwaway scratch, eval, or probe roots must never produce a
+# log or a marker. They are real sessions with real prompts, so the
+# summary-writer's idle-tick check (step 2.5) correctly lets them through — but
+# the pollution here is COLLECTIVE, not per-session: on 2026-08-19 a single
+# `.../scratchpad/evalroot` fixture accounted for 274 of 332 processable markers
+# (83%), each of which would have become a defensible, near-identical summary of
+# a two-file repo. A per-document quality bar cannot see that shape, so the
+# filter belongs here, at the source, before a marker is ever queued.
+#
+# Filtering at summary time is too late: the marker already exists, already
+# queues, and already costs a full agent dispatch to reject.
+# See `insights/2026-08-19-eval-fixture-sessions-dominate-the-summary-backlog`.
+case "$TRANSCRIPT" in
+  */scratchpad/*|*/evalroot/*|*evalroot*|*/probe-root/*|*probe-root*)
+    exit 0
+    ;;
+esac
+# Claude Code encodes the session cwd into the transcript directory name, so a
+# scratch cwd shows up as a flattened path segment rather than a real directory.
+case "$TRANSCRIPT" in
+  */projects/-private-tmp-claude-*|*-scratchpad-*)
+    exit 0
+    ;;
+esac
+
 # ──────────── Per-session checkpoint ────────────
 CHECKPOINT="$CHECKPOINTS_DIR/${SESSION_ID}.json"
 

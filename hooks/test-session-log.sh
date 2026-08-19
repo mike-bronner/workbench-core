@@ -132,6 +132,55 @@ echo "auto-summarize off — no dispatch:"
 OUT=$(run_dispatch "WORKBENCH_AUTO_SUMMARIZE=0" "PreCompact" "sid-off")
 assert_missing "no writer dispatched when disabled"    "$OUT" "DISPATCH cwd="
 
+echo "disposable-workspace filter — scratch/eval roots produce no marker:"
+# 2026-08-19: one `.../scratchpad/evalroot` fixture produced 274 of 332
+# processable markers. These are real sessions with real prompts, so the
+# summary-writer's idle-tick check correctly passes them — the filter has to be
+# here, at the source, or the noise is only rejected after costing an agent each.
+run_scratch() {
+  local sid="$1" transcript="$2"
+  printf '{"line":1}\n{"line":2}\n' > "$transcript"
+  printf '{"session_id":"%s","transcript_path":"%s","hook_event_name":"SessionEnd"}' \
+    "$sid" "$transcript" | \
+    env HOME="$SANDBOX/home" PATH="$SANDBOX/bin:$PATH" \
+      WORKBENCH_MEMORY_PATH="$SANDBOX/memory" WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
+      WORKBENCH_DISPATCH_DRY_RUN=1 WORKBENCH_AUTO_SUMMARIZE=1 \
+      bash "$LOG_HOOK" >/dev/null 2>&1
+}
+
+assert_no_file() {
+  local desc="$1" path="$2"
+  if [ -e "$path" ]; then
+    FAIL=$((FAIL + 1)); echo "  ❌ $desc — marker should NOT exist: $path"
+  else
+    PASS=$((PASS + 1)); echo "  ✅ $desc"
+  fi
+}
+
+mkdir -p "$SANDBOX/scratchpad/evalroot" "$SANDBOX/probe-root" \
+         "$SANDBOX/projects/-private-tmp-claude-503--Users-mike-scratchpad-evalroot"
+
+run_scratch "sid-evalroot" "$SANDBOX/scratchpad/evalroot/t.jsonl"
+assert_no_file "scratchpad/evalroot writes no marker" "$SANDBOX/cache/pending-summaries/sid-evalroot.json"
+
+run_scratch "sid-proberoot" "$SANDBOX/probe-root/t.jsonl"
+assert_no_file "probe-root writes no marker"          "$SANDBOX/cache/pending-summaries/sid-proberoot.json"
+
+# Claude Code flattens the session cwd into the transcript DIRECTORY name, so a
+# scratch cwd never appears as a real path component — this is the shape that
+# actually occurs in `~/.claude/projects/`, and the one a naive `*/scratchpad/*`
+# glob alone would miss.
+run_scratch "sid-flattened" \
+  "$SANDBOX/projects/-private-tmp-claude-503--Users-mike-scratchpad-evalroot/t.jsonl"
+assert_no_file "flattened scratch cwd writes no marker" "$SANDBOX/cache/pending-summaries/sid-flattened.json"
+
+# Guard against over-matching: a real project must still be logged. This is the
+# assertion that fails if the filter globs ever widen carelessly.
+mkdir -p "$SANDBOX/projects/-Users-mike-Developer-workbench-core"
+run_scratch "sid-realproject" \
+  "$SANDBOX/projects/-Users-mike-Developer-workbench-core/t.jsonl"
+assert_file "real project still writes a marker"      "$SANDBOX/cache/pending-summaries/sid-realproject.json"
+
 echo "exit code is always 0:"
 if printf '{"session_id":"testsid","transcript_path":"%s","hook_event_name":"SessionEnd"}' "$TRANSCRIPT" | \
     env HOME="$SANDBOX/home" PATH="$SANDBOX/bin:$PATH" \

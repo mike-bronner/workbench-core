@@ -295,6 +295,48 @@ Two more facts about this layer:
 - The classifier reads `autoMode` **only** from `~/.claude/settings.json` and managed settings — never from `.claude/settings.json` or `.claude/settings.local.json`, so a checked-in repo cannot grant itself exceptions.
 - After applying, confirm the effective rules with `claude auto-mode config`, which prints the four lists with `"$defaults"` expanded in place.
 
+## Step 2d — Deploy the stale-bundle guard (default-on)
+
+The Claude **desktop app** serves plugin bundles from a server-ingested `rpm/` cache
+(`api.anthropic.com`, keyed per `marketplaceId`), separate from the CLI's local install.
+That ingest can freeze weeks behind: observed 2026-08-27 with `workbench-core` pinned at
+**0.13.2** in the app while the CLI held **0.17.0**, and `workbench-dev-team` at **0.35.0**
+against **0.37.6**. `claude plugin marketplace update` refreshes only the CLI side, so no
+number of updates or restarts moves the app.
+
+The failure is not merely "old code". A stale slash command can **overwrite state a newer
+version deployed** — the 0.35.0 `dev-team` setup would have rewritten a live scheduled task
+with a month-old orchestrator body, stripping the per-item dispatch lock added in 0.37.x.
+
+So this step deploys a `UserPromptSubmit` guard: on any `/workbench-*` prompt it resolves the
+authoritative `installPath` from `~/.claude/plugins/installed_plugins.json`, compares it to the
+version this session was served, and — when they differ — tells the agent to read and execute
+the current body instead of the injected one. It is silent when the versions agree.
+
+🛑 **This cannot ship in `hooks/hooks.json`.** The plugin is the thing that freezes, so a
+plugin-declared hook never activates in the app it exists to protect, and `${CLAUDE_PLUGIN_ROOT}`
+resolves *into* the frozen bundle, where a newly-added script does not exist. User settings are
+the only layer outside the freeze. The entries therefore ship as data in
+`assets/hooks/settings-hooks.json` and are merged into `~/.claude/settings.json`.
+
+Run it:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/settings-hooks.sh"
+```
+
+Preview first with `--dry-run`, or list what would be deployed with `--list`.
+
+The merge is **additive and idempotent**: the entry is added when its command is absent, left
+alone when present, and a user's own `UserPromptSubmit` hooks are appended alongside, never
+replaced. No other settings key is touched. A malformed `settings.json` is refused rather than
+clobbered. Re-running setup also **refreshes the deployed script**, which is how a stale copy at
+`~/.claude/hooks/` gets updated.
+
+Because the guard reports drift rather than repairing it, the underlying freeze still needs
+escalating upstream (`anthropics/claude-code#45810`). The guard makes the freeze *visible and
+safe*; it does not unfreeze anything.
+
 ## Step 3 — Re-templatize identity files (if `agent_name` changed)
 
 If `agent_name` changed from its previous value (or this is a first-time setup):

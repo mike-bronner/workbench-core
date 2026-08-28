@@ -9,6 +9,15 @@
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/summary-writer-guard.sh\""
           }
         ]
+      },
+      {
+        "matcher": "mcp__.*memory__search",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-search-mode.sh\""
+          }
+        ]
       }
     ],
     "SessionStart": [

@@ -111,16 +111,47 @@ summary: |
 Decide for the session's **central theme only** (one topic page per session
 maximum):
 
-- **A topic page for the theme already exists** → `edit` it (read first).
-  Append a dated entry — 1–2 lines plus a wikilink to the new summary
-  and/or decision — and **integrate**: update any statement on the page
-  that the session made outdated, refresh `date` and `summary` if the
-  state changed. Keep the page a synthesis; never let it degrade into a
-  chronological dump.
+- **A topic page for the theme already exists** → `edit` it (read first),
+  **but only if the session changed what the page says**. See "What earns
+  an entry" below. When it does: add a dated entry — 1–2 lines plus a
+  wikilink to the new summary and/or decision — and **integrate**: update
+  any statement on the page that the session made outdated, refresh `date`
+  and `summary` if the state changed. Keep the page a synthesis; never let
+  it degrade into a chronological dump.
 - **No topic page exists AND the vault now holds ≥2 related documents on
   the theme** (from Step A) → create one: synthesize the current state in
   2–5 sentences from those documents and wikilink each of them.
 - **Neither** → skip. Most sessions don't move a topic.
+
+### What earns an entry
+
+"Append a dated entry every session" and "never let it degrade into a
+chronological dump" cannot both hold without a bound. Unbounded, the
+append wins: `topics/dev-team-orchestration.md` reached **393 KB / 1,311
+lines** under a single heading, one paragraph per 20-minute scheduled
+tick, past the `read` cap and unreadable whole. The bound is what the
+entry is *for*.
+
+An entry earns its place when the session **changed what the page says**:
+
+- a new failure mode, root cause, or constraint the page did not describe
+- a policy or architecture decision that supersedes something on the page
+- a correction — the page asserts something the session proved wrong
+- a milestone that moves the theme's state (shipped, reverted, abandoned)
+
+It does **not** earn a place when the session merely *exercised* the
+theme. Routine runs, scheduled ticks, and repeat instances of a pattern
+already described are already recorded in their session summary; a
+pointer to each one on the topic page adds a line and no understanding.
+
+The test: **would a reader who already knows this page be told something
+new?** If not, the summary is the record. Skipping is the common case for
+recurring machinery, exactly as skipping a decision promotion is.
+
+When the theme's Nth instance *does* matter — a pattern recurring is
+itself the finding — update the existing sentence to say so ("seen
+four times, most recently 2026-08-27") rather than appending a fourth
+near-identical paragraph.
 
 ## Step D — Decision cross-links
 

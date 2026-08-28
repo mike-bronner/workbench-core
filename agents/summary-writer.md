@@ -80,6 +80,10 @@ Read `references/decision-promotion.md` for the promotion criteria and file temp
 
 Follow `references/linking-synthesis.md` Steps C–E for the session's central theme only: `edit` the existing topic page in `topics/` (dated 1–2 line entry + wikilink, integrate rather than append-dump), or create one if the theme now has ≥2 related vault documents — one topic page per session maximum, and skipping is common. Whenever you touch a topic page or promote a decision, update its line in `index.md` in the same pass (create `index.md` with what you know if it doesn't exist yet).
 
+**Only write an entry if this session changed what the page says** — read Step C's "What earns an entry" and apply it. A session that merely exercised the theme (a routine run, a scheduled tick, another instance of a pattern the page already describes) gets no topic-page entry; its session summary is the record. Unbounded appending is what turned one topic page into a 393 KB chronological dump. When a recurrence is itself the point, edit the existing sentence to note it rather than appending a near-duplicate paragraph.
+
+**`topics/` holds topic pages only.** Before writing to `topics/`, check the `type` you are about to give the document: only `type: topic` belongs there. An `insight`, `decision`, `reference`, or `project` goes in its own folder — `insights/`, `decisions/`, `Reference/`, `projects/` — with the topic page linking to it. One page per discovered fact is a session log with better frontmatter, not a synthesis.
+
 ### 6. Update profile.md if preferences shifted
 
 Read `references/vault-conventions.md` for the profile update conventions. Only update on explicit, repeated signal. Common case is skip.

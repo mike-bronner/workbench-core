@@ -67,6 +67,48 @@ find "$MEMORY_PATH" -type f -name '* [0-9].md'   # e.g. "topics/foo 2.md"
 
 Whatever survives into the link buckets must exclude them: `grep -v ' [0-9]/'`.
 
+### 1e. Frontmatter health — the failures the skipped-file diff cannot see
+
+Step 1c finds files the indexer *rejected*. It cannot find files the indexer
+**accepted with a mutilated field**, and those are the more expensive half.
+
+In a plain (unquoted) YAML scalar, ` #` — space then hash — begins a comment. A
+value that mentions an issue or PR number therefore ends early:
+
+```yaml
+summary: Mike corrected me on laravel-lsp PR #284. I enabled class rename but…
+#                                              ^ everything from here is discarded
+```
+
+That indexes as `Mike corrected me on laravel-lsp PR`. **No error, no warning, no
+entry in `skipped_files`** — the document looks healthy and simply never matches
+the search it should. On 2026-08-28 four indexed fields were losing 438, 136, 80,
+and 31 characters this way, and had been for weeks.
+
+Run the scan (it needs PyYAML, which the vault server already depends on; it exits
+0 and skips cleanly if the import fails):
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/skills/memory-lint/scripts/check-frontmatter-health.py" "$MEMORY_PATH"
+```
+
+The scan reports two shapes, both repaired in Step 2a″:
+
+- **Truncated** — an indexed field (`name`, `type`, `tags`, `summary`, `date`,
+  `scope`, `log_files`) whose parsed value is shorter than what was written.
+- **Misfiled** — an abstract under `description:` with no `summary:`. Only the
+  indexed fields are searchable, so however good that abstract is, it is weighted
+  at zero. This is the shape Claude Code's auto-memory schema emits (see
+  `insights/2026-08-01-vault-frontmatter-schema-drift`); on 2026-08-28 it accounted
+  for 145 documents and 28,829 characters of invisible text.
+
+Exit 1 when either shape is present. A truncated value in a key that was already
+unsearchable is reported but exits 0 — it costs nothing extra.
+
+The scan compares **only string values**. Lists, dates, and numbers legitimately
+differ from their source text — an early version of this check flagged all 814
+`tags: [a, b]` lines in the vault before that was corrected.
+
 ## Step 2 — Fix pass
 
 **Hard cap: 50 file-fixes per run.** A fix is any file written or edited (frontmatter rescues, broken-link repairs, link additions). The cap bounds session cost — a 160-file backlog is three monthly runs, not one marathon. When you hit the cap, stop fixing and record the remainder in the report; the next run picks it up. **Sync-collision merges (2a′) are exempt from the cap** — they are filesystem repairs, not document edits, and leaving one half-done is worse than not starting.
@@ -115,6 +157,43 @@ For each skipped file:
 4. **Infer `date`/`tags`/`summary` only where confidently derivable** — a `YYYY-MM-DD` in the filename or path, an explicit date line in the body, obvious topical tags. Don't fabricate; `name` and `type` are the only required fields.
 5. **Write via the MCP `write` tool**: relative path, `content` = the existing body (minus any broken partial frontmatter you're replacing — the body itself must survive byte-for-byte), `frontmatter` = the inferred dict. Writing through the MCP updates the index immediately.
 6. **Round-trip verify the first file before batch-processing the rest**: `search` for its name and confirm it now appears. If it doesn't, stop the rescue pass, diagnose, and report — don't batch-write on a broken assumption.
+
+### 2a″. Frontmatter health repairs
+
+For each **truncated** hit from Step 1e:
+
+1. `read` the document through the MCP — it is indexed, so this works normally.
+2. Re-emit the offending value as a **folded block scalar**, which makes `#`, `:`,
+   and quotes all literal and needs no escaping:
+
+   ```yaml
+   summary: >-
+     Mike corrected me on laravel-lsp PR #284. I enabled class rename but carved
+     out three shapes as "deliberately fail-closed".
+   ```
+
+   A single-line value can instead be single-quoted (`name: 'zed-laravel PR #336'`),
+   doubling any internal `'`.
+3. **Recover the lost text from the file itself, never from memory.** The full value
+   is still on disk in the raw frontmatter — the loss is at parse time, not write
+   time. Copy it verbatim; do not paraphrase what you think it said.
+4. Apply with MCP `edit`, not `write` — a targeted replacement of the one value.
+   Re-typing a whole document to fix one line is how `index.md` was destroyed on
+   2026-08-26.
+5. Re-run the Step 1e scan and confirm the file no longer appears.
+
+For each **misfiled** hit, rename the key:
+
+1. `read` the document; take the `description:` value **from the raw file**, not
+   from the parsed frontmatter — if it also contains ` #`, the parsed copy is
+   already short.
+2. Re-emit it as `summary: >-` with the full text. Where a `summary:` already
+   exists, the `description:` is a leftover duplicate — drop it rather than merge,
+   after confirming the `summary` is the richer of the two.
+3. Never rewrite the body. This is a frontmatter-only edit.
+
+Each repair counts against the 50-fix cap. A large backlog is several runs, not one
+marathon — except where the human has explicitly asked for a single sweep.
 
 ### 2b. Broken links
 

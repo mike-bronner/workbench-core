@@ -42,6 +42,10 @@ fresh_settings
 "$MERGER" >/dev/null 2>&1
 check "adds the UserPromptSubmit entry" \
   "$(jq '.hooks.UserPromptSubmit | length' "$WORKBENCH_SETTINGS_FILE")" "1"
+check "adds the PreToolUse(Skill) entry — the prose path" \
+  "$(jq '[.hooks.PreToolUse[]? | select(.matcher=="Skill")] | length' "$WORKBENCH_SETTINGS_FILE")" "1"
+check "preserves the pre-existing PostToolUse entry" \
+  "$(jq '.hooks.PostToolUse | length' "$WORKBENCH_SETTINGS_FILE")" "1"
 
 check "entry points at the deployed user path (not the plugin root)" \
   "$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' "$WORKBENCH_SETTINGS_FILE")" \
@@ -112,6 +116,94 @@ if [ -f "$HOME/.claude/plugins/installed_plugins.json" ]; then
 else
   ok "no plugin registry on this host — skipped drift case"
 fi
+
+
+echo
+echo "workbench-stale-bundle-guard.sh — PreToolUse(Skill), the prose path"
+
+# A deterministic fixture: a registry holding workbench-core 0.18.0 and a served
+# bundle manifest pinned at 0.13.2. Without this the drift assertions depend on
+# whatever this host has installed, and silently skip when the versions agree —
+# which let three mutations survive on 2026-08-28.
+FIX="$SANDBOX/fix"
+mkdir -p "$FIX/install" "$FIX/sessions/s1/rpm/p-core/.claude-plugin"
+cat > "$FIX/registry.json" <<'EOF'
+{ "plugins": { "workbench-core@claude-workbench": [
+    { "installPath": "__INSTALL__", "version": "0.18.0" } ] } }
+EOF
+sed -i.bak "s|__INSTALL__|$FIX/install|" "$FIX/registry.json" && rm -f "$FIX/registry.json.bak"
+printf '{"plugins":[{"name":"workbench-core","id":"p-core"}]}' > "$FIX/sessions/s1/rpm/manifest.json"
+printf '{"version":"0.13.2"}' > "$FIX/sessions/s1/rpm/p-core/.claude-plugin/plugin.json"
+
+guard() {  # guard <json-payload>
+  printf '%s' "$1" | WORKBENCH_REGISTRY_FILE="$FIX/registry.json" \
+    WORKBENCH_SESSIONS_DIR="$FIX/sessions" "$GUARD"
+}
+skillp() { printf '{"hook_event_name":"PreToolUse","tool_name":"Skill","tool_input":{"skill":"%s"}}' "$1"; }
+
+# --- the regression this exists for -------------------------------------
+out=$(guard "$(skillp workbench-core:memory-lint)")
+if printf '%s' "$out" | jq empty 2>/dev/null; then ok "emits valid JSON on drift"; else bad "emits valid JSON on drift" "${out:-EMPTY}"; fi
+check "uses the PreToolUse event name" \
+  "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.hookEventName')" "PreToolUse"
+check "allows the call rather than denying it" \
+  "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision')" "allow"
+check "carries the warning as a systemMessage" \
+  "$(printf '%s' "$out" | jq -r 'if .systemMessage then "present" else "MISSING" end')" "present"
+check "names both versions in the message" \
+  "$(printf '%s' "$out" | jq -r '.systemMessage | if test("0.13.2") and test("0.18.0") then "both" else "incomplete" end')" "both"
+
+# --- scope: must not fire on anything else ------------------------------
+out=$(guard '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"skill":"workbench-core:memory-lint"}}')
+check "silent on a non-Skill tool even when the input carries a skill key" "${out:-EMPTY}" "EMPTY"
+
+out=$(guard "$(skillp dataviz)")
+check "silent on a bare non-workbench skill" "${out:-EMPTY}" "EMPTY"
+
+out=$(guard "$(skillp other-plugin:memory-lint)")
+check "silent on a non-workbench plugin skill" "${out:-EMPTY}" "EMPTY"
+
+# The registry lookup alone is not enough scope. A non-workbench plugin can live in
+# the same marketplace — none do today, but the guard is about the workbench freeze
+# and must not speak for anything else. Registered here so the check stays honest.
+cat > "$FIX/registry.json" <<'EOF'
+{ "plugins": {
+    "workbench-core@claude-workbench": [ { "installPath": "__INSTALL__", "version": "0.18.0" } ],
+    "pdf-viewer@claude-workbench":     [ { "installPath": "__INSTALL__", "version": "9.9.9" } ] } }
+EOF
+sed -i.bak "s|__INSTALL__|$FIX/install|g" "$FIX/registry.json" && rm -f "$FIX/registry.json.bak"
+printf '{"plugins":[{"name":"workbench-core","id":"p-core"},{"name":"pdf-viewer","id":"p-pdf"}]}' \
+  > "$FIX/sessions/s1/rpm/manifest.json"
+mkdir -p "$FIX/sessions/s1/rpm/p-pdf/.claude-plugin"
+printf '{"version":"1.0.0"}' > "$FIX/sessions/s1/rpm/p-pdf/.claude-plugin/plugin.json"
+
+out=$(guard "$(skillp pdf-viewer:open)")
+check "silent on a drifted NON-workbench plugin in the same marketplace" "${out:-EMPTY}" "EMPTY"
+
+out=$(guard "$(skillp workbench-core:memory-lint)")
+check "still fires for workbench-core alongside it" \
+  "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.hookEventName')" "PreToolUse"
+
+printf '{"plugins":[{"name":"workbench-core","id":"p-core"}]}' > "$FIX/sessions/s1/rpm/manifest.json"
+
+out=$(guard '{"hook_event_name":"PreToolUse","tool_name":"Skill","tool_input":{}}')
+check "silent when the skill name is absent" "${out:-EMPTY}" "EMPTY"
+
+# --- no drift -> no noise ------------------------------------------------
+printf '{"version":"0.18.0"}' > "$FIX/sessions/s1/rpm/p-core/.claude-plugin/plugin.json"
+out=$(guard "$(skillp workbench-core:memory-lint)")
+check "silent when the served bundle matches the install" "${out:-EMPTY}" "EMPTY"
+printf '{"version":"0.13.2"}' > "$FIX/sessions/s1/rpm/p-core/.claude-plugin/plugin.json"
+
+# --- the UserPromptSubmit path still works on the same fixture -----------
+out=$(guard '{"hook_event_name":"UserPromptSubmit","prompt":"/workbench-core:setup"}')
+check "UserPromptSubmit still emits its own envelope" \
+  "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.hookEventName')" "UserPromptSubmit"
+check "UserPromptSubmit uses additionalContext" \
+  "$(printf '%s' "$out" | jq -r 'if .hookSpecificOutput.additionalContext then "present" else "MISSING" end')" "present"
+
+out=$(guard '{"hook_event_name":"UserPromptSubmit","prompt":"run the memory lint"}')
+check "prose still silent on UserPromptSubmit — that is why PreToolUse exists" "${out:-EMPTY}" "EMPTY"
 
 echo
 echo "passed: $PASS   failed: $FAIL"

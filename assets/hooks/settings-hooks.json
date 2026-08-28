@@ -5,11 +5,23 @@
     "server-ingested rpm/ cache that can freeze weeks behind the CLI install, so a plugin-declared",
     "hook never activates in the very environment it exists to protect, and ${CLAUDE_PLUGIN_ROOT}",
     "resolves into that frozen bundle. User settings are the only layer outside the freeze.",
-    "__WORKBENCH_HOOKS_DIR__ is substituted at deploy time."
+    "__WORKBENCH_HOOKS_DIR__ is substituted at deploy time.",
+    "The same guard is registered twice on purpose: UserPromptSubmit catches a typed /workbench-* command early, PreToolUse(Skill) catches a skill invoked from prose. Only the second fires when the user says 'run the memory lint'."
   ],
   "hooks": {
     "UserPromptSubmit": [
       {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__WORKBENCH_HOOKS_DIR__/workbench-stale-bundle-guard.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Skill",
         "hooks": [
           {
             "type": "command",

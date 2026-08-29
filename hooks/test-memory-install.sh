@@ -217,8 +217,8 @@ echo "$KEEPALIVE" > "${VENV_W}.lock/pid"
   echo "$WHEEL_HASH" > "$VENV_W/.installed-wheel-hash"
   rm -rf "${VENV_W}.lock"
 ) & INSTALLER=$!
-disown 2>/dev/null || true
 OUT=$(run_install "$H4" "$C4" UV_FAIL=1 WORKBENCH_MEMORY_INSTALL_LOCK_TIMEOUT=30); RC=$?
+wait "$INSTALLER" 2>/dev/null          # the holder is done; don't race the sandbox teardown
 kill "$KEEPALIVE" 2>/dev/null
 assert_rc           "succeeds via the under-lock re-check" "$RC" 0
 assert_contains     "logs the re-check skip"               "$OUT" "installed while we waited"

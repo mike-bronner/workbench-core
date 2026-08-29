@@ -61,9 +61,12 @@ memory_vacuum_locked "$MARKDOWN_VAULT_MCP_INDEX_PATH" _log
 # -----------------------------------------------------------------------------
 
 # --- Resolve/install the server binary via the shared install library --------
-# The bundled-wheel-into-persistent-venv install (with SHA-256 wheel-hash cache
-# key and git/pipx fallback) is shared with the lazy-start HTTP supervisor, so
-# it lives in hooks/lib/memory-install.sh. memory_install_server sets SERVER_BIN
+# The bundled-wheel-into-persistent-venv install is shared with the lazy-start
+# HTTP supervisor and the per-prompt recall hook, so it lives in
+# hooks/lib/memory-install.sh. The venv there is keyed by the wheel's SHA-256
+# and installed under a blocking lock, so concurrent sessions — including ones
+# launched from orphaned plugin roots carrying an older wheel — can neither tear
+# an install nor fight over one directory. memory_install_server sets SERVER_BIN
 # on success; all install chatter goes to stderr via _log (stdout is the MCP
 # stdio channel). On unrecoverable failure it returns non-zero and we exit.
 # shellcheck source=hooks/lib/memory-install.sh

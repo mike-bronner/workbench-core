@@ -38,8 +38,39 @@ trap cleanup EXIT
 # high ephemeral band, well clear of the plugin's 8765 default.
 PORT_BASE=$(( 20000 + (RANDOM % 20000) ))
 PORT_COUNTER="$SANDBOX/.port"; echo "$PORT_BASE" > "$PORT_COUNTER"
+
+# port_is_free <port> — nothing is LISTENing on it. A connect probe is the right
+# test (not a bind probe): the fixture is a python http.server, which sets
+# allow_reuse_address, so a port in TIME_WAIT binds fine and only a live listener
+# can actually collide. Same /dev/tcp idiom the squatter case below uses.
+port_is_free() {
+  ! (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
+}
+
+# port_owner <port> — who is LISTENing, as "cmd/pid" pairs. Empty when nobody is.
+# Used only to make a failure name its own cause.
+port_owner() {
+  lsof -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null | tail -n +2 | awk '{print $1"/"$2}' | tr '\n' ' '
+}
+
+# next_port — the next port in this run's sequence that is genuinely free.
+# Randomizing the base alone is not enough: the band holds real listeners on any
+# developer machine, and handing out an occupied port produces exactly the shapes
+# these tests assert against (a probe matching a foreign server, or two listeners
+# where the lock guarantees one). Walk forward past anything already in use.
 next_port() {
-  local n; n=$(( $(cat "$PORT_COUNTER") + 1 )); echo "$n" > "$PORT_COUNTER"; echo "$n"
+  local n tries=0
+  while [ "$tries" -lt 500 ]; do
+    n=$(( $(cat "$PORT_COUNTER") + 1 )); echo "$n" > "$PORT_COUNTER"
+    if port_is_free "$n"; then printf '%s' "$n"; return 0; fi
+    tries=$((tries + 1))
+  done
+  # Fail closed and loudly. Handing back an occupied port would produce a
+  # mystifying red assertion somewhere far from here — which is the whole
+  # failure mode this function exists to prevent.
+  echo "FATAL: no free TCP port in 500 candidates from $PORT_BASE" >&2
+  kill -TERM $$
+  return 1
 }
 
 # kick <case-dir> <port> <name> [extra env...] — run the kicker in a sandboxed
@@ -100,12 +131,44 @@ wait_reparented() {
 ok()   { PASS=$((PASS + 1)); echo "  ✅ $1"; }
 no()   { FAIL=$((FAIL + 1)); echo "  ❌ $1"; }
 
+# ──────────── 0. the harness's own port allocator ────────────
+# The allocator is test infrastructure, but a wrong port here surfaces as a red
+# assertion in a case far below — "server never came up", or two listeners where
+# the lock guarantees one — with nothing pointing back at the real cause. That is
+# what made the 2026-08-29 flake opaque, so the allocator gets its own case.
+echo "port allocator hands out only free ports:"
+ALLOC_PORT=$(( $(cat "$PORT_COUNTER") + 1 ))
+python3 -c '
+import socket, sys, time
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(1)
+print("ready", flush=True)
+time.sleep(30)
+' "$ALLOC_PORT" > "$SANDBOX/squat.out" 2>/dev/null &
+ALLOC_SQUAT=$!; STARTED_PIDS+=("$ALLOC_SQUAT")
+disown 2>/dev/null || true   # silence the job-control "Terminated" notice on kill
+i=0; while [ "$i" -lt 100 ]; do grep -q ready "$SANDBOX/squat.out" 2>/dev/null && break; i=$((i+1)); sleep 0.05; done
+
+if grep -q ready "$SANDBOX/squat.out" 2>/dev/null; then
+  GOT=$(next_port)
+  [ "$GOT" != "$ALLOC_PORT" ] \
+    && ok "walks past an occupied port ($ALLOC_PORT taken → handed $GOT)" \
+    || no "handed out the occupied port $ALLOC_PORT"
+  port_is_free "$GOT" && ok "the port it handed out is genuinely free" \
+    || no "handed out $GOT, which is in use by: $(port_owner "$GOT")"
+  port_owner "$ALLOC_PORT" | grep -q . && ok "port_owner names a live holder" \
+    || no "port_owner reported nothing for the squatted port $ALLOC_PORT"
+else
+  no "could not stand up the squatter fixture on :$ALLOC_PORT"
+fi
+kill "$ALLOC_SQUAT" 2>/dev/null
+
 # ──────────── 1. cold start spawns exactly one server ────────────
 echo "cold start: kicker brings up exactly one server, lock released:"
 D="$SANDBOX/cold"; P=$(next_port)
 OUT=$(kick "$D" "$P" cold-vault)
 [ -z "$OUT" ] && ok "kicker stdout is empty" || no "kicker emitted stdout: $OUT"
-if wait_up "$D/cache" "$P" cold-vault; then ok "server came up"; else no "server never came up"; fi
+if wait_up "$D/cache" "$P" cold-vault; then ok "server came up"; else no "server never came up on :$P (port held by: $(port_owner "$P"))"; fi
 [ -f "$D/cache/server.pid" ] && ok "server.pid written" || no "no server.pid"
 wait_lock_released "$D/cache" && ok "spawn lock released" || no "spawn lock left behind"
 [ -s "$D/cache/server.token" ] && ok "bearer token minted (0600)" || no "no token minted"
@@ -140,7 +203,8 @@ wait_lock_released "$D/cache" || true
 # invariant — a single mkdir winner means a single launched server). lsof is the
 # ground truth; the recorded server.pid must be that live process.
 LISTENERS=$(lsof -nP -iTCP:"$P" -sTCP:LISTEN -t 2>/dev/null | sort -u | grep -c .)
-[ "$LISTENERS" -eq 1 ] && ok "exactly one process listening on the port" || no "expected 1 listener, found $LISTENERS"
+[ "$LISTENERS" -eq 1 ] && ok "exactly one process listening on the port" \
+  || no "expected 1 listener on :$P, found $LISTENERS — holders: $(port_owner "$P")"
 PIDF="$D/cache/server.pid"
 if [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF")" 2>/dev/null; then
   ok "recorded server.pid is live"
@@ -150,7 +214,8 @@ fi
 # And exactly one supervisor logged a spawn — the lock guaranteed a single
 # winner. (Read after lock release so the log has settled.)
 STARTS=$(grep -c "spawn starting" "$D/cache/server.log" 2>/dev/null)
-[ "${STARTS:-0}" -eq 1 ] && ok "exactly one 'spawn starting' log line" || no "expected 1 spawn, log shows ${STARTS:-0}"
+[ "${STARTS:-0}" -eq 1 ] && ok "exactly one 'spawn starting' log line" \
+  || no "expected 1 spawn on :$P, log shows ${STARTS:-0} — $(grep -c . "$D/cache/server.log" 2>/dev/null || echo 0) log lines, holders: $(port_owner "$P")"
 
 # ──────────── 4. live claimer held → no second spawn ────────────
 echo "a live claimer holds the lock → a concurrent kick does not spawn:"
@@ -175,7 +240,7 @@ sleep 0.01 & DEAD=$!; wait "$DEAD" 2>/dev/null
 echo "$DEAD" > "$D/cache/server.lock/claimer.pid"
 OUT=$(kick "$D" "$P" dead-vault)
 [ -z "$OUT" ] && ok "kick stdout empty" || no "kick emitted: $OUT"
-if wait_up "$D/cache" "$P" dead-vault; then ok "server spawned after stealing stale lock"; else no "no respawn after stale lock"; fi
+if wait_up "$D/cache" "$P" dead-vault; then ok "server spawned after stealing stale lock"; else no "no respawn after stale lock on :$P (port held by: $(port_owner "$P"))"; fi
 wait_lock_released "$D/cache" && ok "stolen lock released after spawn" || no "lock left behind"
 
 # ──────────── 5b. wedged lock (killed mid-kick, no claimer pid) self-heals ──
@@ -185,7 +250,7 @@ D="$SANDBOX/wedged"; P=$(next_port); mkdir -p "$D/cache" "$D/vault"
 mkdir -p "$D/cache/server.lock"   # lock dir exists, claimer.pid absent
 OUT=$(kick "$D" "$P" wedged-vault)
 [ -z "$OUT" ] && ok "kick stdout empty" || no "kick emitted: $OUT"
-if wait_up "$D/cache" "$P" wedged-vault; then ok "server spawned (wedged lock stolen)"; else no "no respawn over wedged lock"; fi
+if wait_up "$D/cache" "$P" wedged-vault; then ok "server spawned (wedged lock stolen)"; else no "no respawn over wedged lock on :$P (port held by: $(port_owner "$P"))"; fi
 wait_lock_released "$D/cache" && ok "wedged lock released after spawn" || no "lock left behind"
 
 # ──────────── 6. refuse-to-bind → .server-failed + lock released + exit 0 ──

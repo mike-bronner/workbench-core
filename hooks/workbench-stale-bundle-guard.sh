@@ -1,12 +1,12 @@
 #!/bin/bash
-# workbench-stale-bundle-guard — UserPromptSubmit + PreToolUse(Skill) hook.
+# workbench-stale-bundle-guard — SessionStart + UserPromptSubmit + PreToolUse(Skill) hook.
 #
 # The Claude desktop app serves plugin bundles from a server-ingested rpm/ cache
 # (api.anthropic.com, per-marketplaceId). That ingest can freeze weeks behind the
 # CLI-installed copy, so a workbench command or skill can be expanded from stale
 # code and silently overwrite state a newer version deployed.
 #
-# Two entry points, because a skill reaches execution by two routes:
+# Three entry points, because staleness reaches the user by three routes:
 #
 #   UserPromptSubmit  — the user typed `/workbench-…`. Fires early, before Claude
 #                       plans, so the warning can shape the whole turn.
@@ -16,10 +16,19 @@
 #                       because the prompt carried no slash command for the
 #                       UserPromptSubmit gate to match. The tool call is the event
 #                       that always happens, whatever the user typed.
+#   SessionStart      — nothing was invoked at all. Both gates above key on the user
+#                       reaching for a skill; a frozen bundle also ships stale HOOKS
+#                       and stale MCP SERVERS, which fail with no skill in sight. On
+#                       2026-08-29 a frozen workbench-core 0.13.2 served a memory
+#                       server whose venv layout predated the installed fix; every
+#                       memory MCP in every session died, and neither gate above had
+#                       anything to hook. This one sweeps EVERY workbench plugin at
+#                       session start, so drift is reported before it can bite.
 #
-# Either way: resolve the authoritative install path from the CLI plugin registry
-# and tell Claude to execute THAT body instead of the injected one. Silent when the
-# served bundle already matches the installed version.
+# The invocation paths resolve the authoritative install path from the CLI plugin
+# registry and tell Claude to execute THAT body instead of the injected one. The
+# SessionStart path has no body to redirect, so it reports the drift and the remedy.
+# Silent whenever the served bundles already match the installed versions.
 
 set -u
 
@@ -34,7 +43,61 @@ payload=$(cat)
 command -v jq >/dev/null 2>&1 || exit 0
 event=$(printf '%s' "$payload" | jq -r '.hook_event_name // empty' 2>/dev/null)
 
-# Resolve "<plugin>:<cmd>" from whichever event delivered us here.
+# What did this app actually serve? Resolved LAZILY and once: the find walks the
+# sessions tree, and UserPromptSubmit fires on every prompt — the overwhelming
+# majority of which exit before ever needing this.
+_manifest=""
+_manifest_resolved=0
+_bundle_version() {  # _bundle_version <plugin-name> -> served version, or empty
+  if [ "$_manifest_resolved" = "0" ]; then
+    _manifest_resolved=1
+    _manifest=$(find "$SESSIONS_DIR" \
+      -maxdepth 5 -path "*/rpm/manifest.json" -print 2>/dev/null | while read -r m; do
+        printf '%s\t%s\n' "$(stat -f '%m' "$m" 2>/dev/null)" "$m"
+      done | sort -rn | head -1 | cut -f2-)
+  fi
+  [ -n "$_manifest" ] || return 0
+  local pid
+  pid=$(jq -r --arg n "$1" '.plugins[]? | select(.name==$n) | .id' "$_manifest" 2>/dev/null | head -1)
+  [ -n "$pid" ] || return 0
+  jq -r '.version // empty' \
+    "$(dirname "$_manifest")/$pid/.claude-plugin/plugin.json" 2>/dev/null
+}
+
+[ -f "$REGISTRY" ] || exit 0
+
+# ──────────── SessionStart: sweep every workbench plugin ────────────
+# No spec to resolve — nothing has been invoked. Report every drifted plugin at
+# once so a single warning covers the whole freeze rather than one plugin at a time.
+if [ "$event" = "SessionStart" ]; then
+  drifted=""
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    plugin=${key%@*}
+    # Same scope as the invocation paths: this guard speaks for the workbench
+    # freeze, not for anything else sharing the marketplace.
+    case "$key" in workbench-*@"$MARKETPLACE") ;; *) continue ;; esac
+    version=$(jq -r --arg k "$key" '.plugins[$k][0].version // empty' "$REGISTRY" 2>/dev/null)
+    [ -n "$version" ] || continue
+    bundle_ver=$(_bundle_version "$plugin")
+    # Not served from a bundle at all (CLI-only session) -> nothing to compare.
+    [ -n "$bundle_ver" ] || continue
+    [ "$bundle_ver" = "$version" ] && continue
+    drifted="${drifted}${drifted:+, }${plugin} (serving ${bundle_ver}, installed ${version})"
+  done <<EOF
+$(jq -r '.plugins | keys[]?' "$REGISTRY" 2>/dev/null)
+EOF
+
+  [ -n "$drifted" ] || exit 0
+
+  msg="STALE-BUNDLE GUARD - this desktop session is serving frozen plugin bundles that do not match the CLI-installed versions: ${drifted}. A frozen bundle ships stale skill bodies, commands, hooks AND MCP servers. On 2026-08-29 a frozen workbench-core 0.13.2 served a memory server whose venv layout predated the installed fix, and every memory MCP in every session failed with no warning naming the cause. Remedy: a marketplace update plus an app relaunch is NOT sufficient - that was tried and did not clear it - a full reinstall of the plugin is what evicts the frozen bundle. Until then, read any workbench skill or command body from its installed path before executing it, and treat a failing workbench MCP server as stale-bundle drift first. Do not edit anything under ~/.claude/plugins/cache - it is a read-only reference."
+
+  jq -n --arg c "$msg" \
+    '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$c}}'
+  exit 0
+fi
+
+# ──────────── Invocation paths: resolve "<plugin>:<cmd>" ────────────
 case "$event" in
   PreToolUse)
     # The Skill tool carries `skill: "<plugin>:<name>"`, or a bare name for a
@@ -59,8 +122,6 @@ case "$spec" in
   *) exit 0 ;;
 esac
 
-[ -f "$REGISTRY" ] || exit 0
-
 # "workbench-dev-team:setup" -> plugin=workbench-dev-team cmd=setup
 plugin=${spec%%:*}
 cmd=${spec#*:}
@@ -71,17 +132,7 @@ version=$(jq -r --arg k "$plugin@$MARKETPLACE" '.plugins[$k][0].version // empty
 
 [ -n "$install_path" ] && [ -d "$install_path" ] || exit 0
 
-# What did this app actually serve? Used only to report real drift and stay quiet otherwise.
-bundle_ver=""
-manifest=$(find "$SESSIONS_DIR" \
-  -maxdepth 5 -path "*/rpm/manifest.json" -print 2>/dev/null | while read -r m; do
-    printf '%s\t%s\n' "$(stat -f '%m' "$m" 2>/dev/null)" "$m"
-  done | sort -rn | head -1 | cut -f2-)
-if [ -n "$manifest" ]; then
-  pid=$(jq -r --arg n "$plugin" '.plugins[]? | select(.name==$n) | .id' "$manifest" 2>/dev/null | head -1)
-  [ -n "$pid" ] && bundle_ver=$(jq -r '.version // empty' \
-    "$(dirname "$manifest")/$pid/.claude-plugin/plugin.json" 2>/dev/null)
-fi
+bundle_ver=$(_bundle_version "$plugin")
 
 # Versions agree -> nothing to warn about.
 [ -n "$bundle_ver" ] && [ "$bundle_ver" = "$version" ] && exit 0

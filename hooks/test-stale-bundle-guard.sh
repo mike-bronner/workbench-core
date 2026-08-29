@@ -44,6 +44,8 @@ check "adds the UserPromptSubmit entry" \
   "$(jq '.hooks.UserPromptSubmit | length' "$WORKBENCH_SETTINGS_FILE")" "1"
 check "adds the PreToolUse(Skill) entry — the prose path" \
   "$(jq '[.hooks.PreToolUse[]? | select(.matcher=="Skill")] | length' "$WORKBENCH_SETTINGS_FILE")" "1"
+check "adds the SessionStart entry — the nothing-invoked path" \
+  "$(jq '.hooks.SessionStart | length' "$WORKBENCH_SETTINGS_FILE")" "1"
 check "preserves the pre-existing PostToolUse entry" \
   "$(jq '.hooks.PostToolUse | length' "$WORKBENCH_SETTINGS_FILE")" "1"
 
@@ -204,6 +206,104 @@ check "UserPromptSubmit uses additionalContext" \
 
 out=$(guard '{"hook_event_name":"UserPromptSubmit","prompt":"run the memory lint"}')
 check "prose still silent on UserPromptSubmit — that is why PreToolUse exists" "${out:-EMPTY}" "EMPTY"
+
+echo
+echo "workbench-stale-bundle-guard.sh — SessionStart, the nothing-invoked path"
+
+# Its own fixture rather than reusing the one above: this path sweeps the WHOLE
+# registry, so the set of plugins in it is the thing under test and must not be
+# whatever a previous case happened to leave behind.
+S="$SANDBOX/ss"
+mkdir -p "$S/install" "$S/sessions/s1/rpm"
+for p in p-core p-bujo p-pdf p-solo; do mkdir -p "$S/sessions/s1/rpm/$p/.claude-plugin"; done
+
+ssreg()      { printf '{ "plugins": %s }' "$1" | sed "s|__I__|$S/install|g" > "$S/registry.json"; }
+ssmanifest() { printf '%s' "$1" > "$S/sessions/s1/rpm/manifest.json"; }
+ssver()      { printf '{"version":"%s"}' "$2" > "$S/sessions/s1/rpm/$1/.claude-plugin/plugin.json"; }
+sguard()     { printf '{"hook_event_name":"SessionStart","source":"startup"}' \
+                 | WORKBENCH_REGISTRY_FILE="$S/registry.json" \
+                   WORKBENCH_SESSIONS_DIR="$S/sessions" "$GUARD"; }
+ctx()        { printf '%s' "$1" | jq -r '.hookSpecificOutput.additionalContext // ""'; }
+
+# --- the regression this exists for: drift with nothing invoked ----------
+ssreg '{"workbench-core@claude-workbench":[{"installPath":"__I__","version":"0.18.2"}]}'
+ssmanifest '{"plugins":[{"name":"workbench-core","id":"p-core"}]}'
+ssver p-core 0.13.2
+
+out=$(sguard)
+if printf '%s' "$out" | jq empty 2>/dev/null; then ok "emits valid JSON on drift"; else bad "emits valid JSON on drift" "${out:-EMPTY}"; fi
+check "uses the SessionStart event name" \
+  "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.hookEventName')" "SessionStart"
+check "carries the warning as additionalContext" \
+  "$(printf '%s' "$out" | jq -r 'if .hookSpecificOutput.additionalContext then "present" else "MISSING" end')" "present"
+# Match the LIST ENTRY, not the bare name: the static prose in the message also
+# says "workbench-core 0.13.2", so grepping the name alone passes even when the
+# drift list is empty or truncated. Cost one surviving mutation to learn.
+check "names the plugin and both versions" \
+  "$(ctx "$out" | grep -qF 'workbench-core (serving 0.13.2, installed 0.18.2)' && echo all || echo incomplete)" "all"
+check "names the remedy that actually works" \
+  "$(ctx "$out" | grep -qi 'full reinstall' && echo yes || echo no)" "yes"
+
+# --- sweeps the CLASS, not just the plugin that bit ----------------------
+# The whole point of this entry point. A guard that reports only the first
+# drifted plugin leaves the rest silently stale.
+ssreg '{"workbench-core@claude-workbench":[{"installPath":"__I__","version":"0.18.2"}],
+        "workbench-bujo@claude-workbench":[{"installPath":"__I__","version":"0.14.0"}]}'
+ssmanifest '{"plugins":[{"name":"workbench-core","id":"p-core"},{"name":"workbench-bujo","id":"p-bujo"}]}'
+ssver p-core 0.13.2
+ssver p-bujo 0.12.2
+
+out=$(sguard)
+check "reports EVERY drifted workbench plugin, not just the first" \
+  "$(ctx "$out" | grep -qF 'workbench-core (serving' && ctx "$out" | grep -qF 'workbench-bujo (serving' && echo both || echo partial)" "both"
+check "carries each plugin's own served and installed version" \
+  "$(ctx "$out" | grep -qF 'workbench-bujo (serving 0.12.2, installed 0.14.0)' \
+     && ctx "$out" | grep -qF 'workbench-core (serving 0.13.2, installed 0.18.2)' && echo both || echo partial)" "both"
+
+# --- scope: same marketplace, non-workbench plugin ----------------------
+ssreg '{"workbench-core@claude-workbench":[{"installPath":"__I__","version":"0.18.2"}],
+        "pdf-viewer@claude-workbench":[{"installPath":"__I__","version":"9.9.9"}]}'
+ssmanifest '{"plugins":[{"name":"workbench-core","id":"p-core"},{"name":"pdf-viewer","id":"p-pdf"}]}'
+ssver p-pdf 1.0.0
+
+out=$(sguard)
+check "excludes a drifted NON-workbench plugin in the same marketplace" \
+  "$(ctx "$out" | grep -q 'pdf-viewer' && echo leaked || echo excluded)" "excluded"
+check "still reports workbench-core alongside it" \
+  "$(ctx "$out" | grep -qF 'workbench-core (serving' && echo yes || echo no)" "yes"
+
+# --- scope: workbench-named plugin from a DIFFERENT marketplace ---------
+# The key is "<plugin>@<marketplace>"; matching on the plugin prefix alone would
+# let another marketplace's workbench-* plugin in.
+ssreg '{"workbench-solo@other-market":[{"installPath":"__I__","version":"5.0.0"}]}'
+ssmanifest '{"plugins":[{"name":"workbench-solo","id":"p-solo"}]}'
+ssver p-solo 1.0.0
+
+out=$(sguard)
+check "silent for a workbench-* plugin from another marketplace" "${out:-EMPTY}" "EMPTY"
+
+# --- no drift -> no noise ------------------------------------------------
+ssreg '{"workbench-core@claude-workbench":[{"installPath":"__I__","version":"0.18.2"}]}'
+ssmanifest '{"plugins":[{"name":"workbench-core","id":"p-core"}]}'
+ssver p-core 0.18.2
+out=$(sguard)
+check "silent when the served bundle matches the install" "${out:-EMPTY}" "EMPTY"
+
+# --- served-by-nothing is not drift -------------------------------------
+# A CLI-only session serves no bundle. Reporting "installed 0.18.2, serving
+# nothing" as drift would fire on every terminal session forever.
+ssmanifest '{"plugins":[]}'
+out=$(sguard)
+check "silent when the plugin is in no served bundle" "${out:-EMPTY}" "EMPTY"
+
+rm -f "$S/sessions/s1/rpm/manifest.json"
+out=$(sguard)
+check "silent when no bundle manifest exists at all" "${out:-EMPTY}" "EMPTY"
+
+# --- absent registry ------------------------------------------------------
+out=$(printf '{"hook_event_name":"SessionStart","source":"startup"}' \
+        | WORKBENCH_REGISTRY_FILE="$S/nope.json" WORKBENCH_SESSIONS_DIR="$S/sessions" "$GUARD")
+check "silent when the registry is absent" "${out:-EMPTY}" "EMPTY"
 
 echo
 echo "passed: $PASS   failed: $FAIL"

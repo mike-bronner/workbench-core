@@ -31,7 +31,26 @@ cleanup() {
 trap cleanup EXIT
 
 PORT_COUNTER="$SANDBOX/.port"; echo $(( 33000 + (RANDOM % 10000) )) > "$PORT_COUNTER"
-next_port() { local n; n=$(( $(cat "$PORT_COUNTER") + 1 )); echo "$n" > "$PORT_COUNTER"; echo "$n"; }
+# port_is_free <port> — nothing is LISTENing on it. A connect probe is the right
+# test (not a bind probe): the fixtures set SO_REUSEADDR, so a port in TIME_WAIT
+# binds fine and only a live listener can actually collide.
+port_is_free() {
+  ! (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
+}
+
+next_port() {
+  local n tries=0
+  while [ "$tries" -lt 500 ]; do
+    n=$(( $(cat "$PORT_COUNTER") + 1 )); echo "$n" > "$PORT_COUNTER"
+    if port_is_free "$n"; then printf '%s' "$n"; return 0; fi
+    tries=$((tries + 1))
+  done
+  # Fail closed and loudly. Handing back an occupied port produces a mystifying
+  # red assertion far from here — the failure mode this guard exists to prevent.
+  echo "FATAL: no free TCP port in 500 candidates" >&2
+  kill -TERM $$
+  return 1
+}
 
 ok() { PASS=$((PASS + 1)); echo "  ✅ $1"; }
 no() { FAIL=$((FAIL + 1)); echo "  ❌ $1"; }
@@ -69,6 +88,30 @@ run_supervisor() {
     WORKBENCH_MEMORY_SERVER_BIN="$FAKE" \
     bash "$SPAWN" >/dev/null 2>&1
 }
+
+echo "port allocator hands out only free ports:"
+# Same guard as the sibling suites: an occupied port here surfaces as a red
+# assertion below with nothing pointing at the real cause (2026-08-29).
+ALLOC_PORT=$(( $(cat "$PORT_COUNTER") + 1 ))
+python3 -c '
+import socket, sys, time
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(1)
+print("ready", flush=True)
+time.sleep(30)
+' "$ALLOC_PORT" > "$SANDBOX/alloc.out" 2>/dev/null &
+ALLOC_SQUAT=$!; TRACK_PIDS+=("$ALLOC_SQUAT")
+disown 2>/dev/null || true
+i=0; while [ "$i" -lt 100 ]; do grep -q ready "$SANDBOX/alloc.out" 2>/dev/null && break; i=$((i+1)); sleep 0.05; done
+if grep -q ready "$SANDBOX/alloc.out" 2>/dev/null; then
+  GOT=$(next_port)
+  [ "$GOT" != "$ALLOC_PORT" ] \
+    && ok "walks past an occupied port ($ALLOC_PORT taken → handed $GOT)" \
+    || no "handed out the occupied port $ALLOC_PORT"
+else
+  no "could not stand up the allocator fixture on :$ALLOC_PORT"
+fi
+kill "$ALLOC_SQUAT" 2>/dev/null
 
 echo "first shared start reaps an orphan but spares a live-parented server:"
 D="$SANDBOX/sweep"; P=$(next_port)

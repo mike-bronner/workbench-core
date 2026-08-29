@@ -308,10 +308,22 @@ The failure is not merely "old code". A stale slash command can **overwrite stat
 version deployed** — the 0.35.0 `dev-team` setup would have rewritten a live scheduled task
 with a month-old orchestrator body, stripping the per-item dispatch lock added in 0.37.x.
 
-So this step deploys a `UserPromptSubmit` guard: on any `/workbench-*` prompt it resolves the
-authoritative `installPath` from `~/.claude/plugins/installed_plugins.json`, compares it to the
-version this session was served, and — when they differ — tells the agent to read and execute
-the current body instead of the injected one. It is silent when the versions agree.
+So this step deploys one guard on **three** events, because staleness reaches you by three
+routes. `UserPromptSubmit` catches a typed `/workbench-*` command. `PreToolUse(Skill)` catches a
+skill invoked from prose ("run the memory lint"), which the first gate never sees. Both resolve
+the authoritative `installPath` from `~/.claude/plugins/installed_plugins.json`, compare it to
+the version this session was served, and — when they differ — tell the agent to read and execute
+the current body instead of the injected one.
+
+`SessionStart` covers the case where **nothing is invoked at all**. A frozen bundle ships stale
+hooks and stale **MCP servers**, which fail with no skill in sight: on 2026-08-29 a frozen
+`workbench-core` **0.13.2** served a memory server whose venv layout predated the installed fix,
+and every memory MCP in every session died with no warning naming the cause. This entry point
+sweeps *every* `workbench-*` plugin in the registry at session start and reports each drifted one
+in a single message, with the remedy — note that a marketplace update plus a relaunch is **not**
+sufficient; only a full reinstall evicts the frozen bundle.
+
+All three are silent when the served bundles match the installed versions.
 
 🛑 **This cannot ship in `hooks/hooks.json`.** The plugin is the thing that freezes, so a
 plugin-declared hook never activates in the app it exists to protect, and `${CLAUDE_PLUGIN_ROOT}`

@@ -28,12 +28,30 @@ trap cleanup EXIT
 # plain shell variable increment would not persist to the parent — every call
 # would return the same port. A file survives the subshell.
 PORT_COUNTER="$SANDBOX/.port"
-echo 18760 > "$PORT_COUNTER"
+# Randomize the base. A fixed base (this was 18760) hands out the SAME ports on
+# every run, so anything holding one of them — including a fake leaked by this
+# suite's own earlier run — breaks it identically every time. Band chosen clear
+# of the sibling suites' ranges.
+echo $(( 40000 + (RANDOM % 15000) )) > "$PORT_COUNTER"
+# port_is_free <port> — nothing is LISTENing on it. A connect probe is the right
+# test (not a bind probe): the fixtures set SO_REUSEADDR, so a port in TIME_WAIT
+# binds fine and only a live listener can actually collide.
+port_is_free() {
+  ! (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
+}
+
 next_port() {
-  local n
-  n=$(( $(cat "$PORT_COUNTER") + 1 ))
-  echo "$n" > "$PORT_COUNTER"
-  echo "$n"
+  local n tries=0
+  while [ "$tries" -lt 500 ]; do
+    n=$(( $(cat "$PORT_COUNTER") + 1 )); echo "$n" > "$PORT_COUNTER"
+    if port_is_free "$n"; then printf '%s' "$n"; return 0; fi
+    tries=$((tries + 1))
+  done
+  # Fail closed and loudly. Handing back an occupied port produces a mystifying
+  # red assertion far from here — the failure mode this guard exists to prevent.
+  echo "FATAL: no free TCP port in 500 candidates" >&2
+  kill -TERM $$
+  return 1
 }
 
 # start_fake <port> <server_name> [VAR=value ...] — launch the fixture and wait
@@ -76,6 +94,27 @@ assert_status() {
     FAIL=$((FAIL + 1)); echo "  ❌ $desc — expected $want, got $got"
   fi
 }
+
+echo "port allocator — hands out only free ports:"
+# An occupied port here reads as a wrong probe STATUS several cases down, with
+# nothing naming the real cause. Assert the allocator itself (2026-08-29).
+ALLOC_PORT=$(( $(cat "$PORT_COUNTER") + 1 ))
+python3 -c '
+import socket, sys, time
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(1)
+print("ready", flush=True)
+time.sleep(30)
+' "$ALLOC_PORT" > "$SANDBOX/alloc.out" 2>/dev/null &
+ALLOC_SQUAT=$!; FAKE_PIDS+=("$ALLOC_SQUAT")
+disown 2>/dev/null || true
+i=0; while [ "$i" -lt 100 ]; do grep -q ready "$SANDBOX/alloc.out" 2>/dev/null && break; i=$((i+1)); sleep 0.05; done
+GOT=$(next_port)
+assert_status "walks past an occupied port" \
+  "$([ "$GOT" != "$ALLOC_PORT" ] && echo skipped || echo reused)" "skipped"
+assert_status "the port it handed out is free" \
+  "$(port_is_free "$GOT" && echo free || echo taken)" "free"
+kill "$ALLOC_SQUAT" 2>/dev/null
 
 echo "DOWN_NONE — nothing listening, no failure marker:"
 CACHE="$SANDBOX/none"; mkdir -p "$CACHE"

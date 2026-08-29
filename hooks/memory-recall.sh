@@ -167,7 +167,12 @@ case "$TIMEOUT" in ''|*[!0-9]*) TIMEOUT=8 ;; esac
 if [ -n "${WORKBENCH_MEMORY_SERVER_BIN:-}" ]; then
   SERVER_BIN="$WORKBENCH_MEMORY_SERVER_BIN"
 else
-  memory_install_server _memory_recall_noop_log 2>/dev/null || exit 0
+  # Never block a prompt on another session's install: a 0s lock timeout makes
+  # the resolve fail closed instead of waiting, and this hook's contract is a
+  # silent no-op on any failure. The installing session gets memory; this
+  # prompt simply goes without recall.
+  WORKBENCH_MEMORY_INSTALL_LOCK_TIMEOUT=0 \
+    memory_install_server _memory_recall_noop_log 2>/dev/null || exit 0
 fi
 [ -n "${SERVER_BIN:-}" ] && [ -x "$SERVER_BIN" ] || exit 0
 

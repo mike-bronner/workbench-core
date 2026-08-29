@@ -53,10 +53,17 @@ else
   echo "launcher         : $LAUNCHER (MISSING — plugin.json's memory MCP points here)"
 fi
 
-# Server binary: the persistent venv the launcher installs into, under the cache.
-SERVER_BIN="$CACHE_PATH/server-venv/bin/markdown-vault-mcp"
-if [ -x "$SERVER_BIN" ]; then
+# Server binary: the wheel-keyed venv the launcher installs into, under the
+# cache. The path is derived by the installer (it hashes the bundled wheel), so
+# ask it rather than rebuilding the path here and drifting from it.
+# shellcheck source=hooks/lib/memory-install.sh
+. "$HOOKS_DIR/lib/memory-install.sh"
+VENV="$(memory_venv_path 2>/dev/null || true)"
+SERVER_BIN="${VENV:+$VENV/bin/markdown-vault-mcp}"
+if [ -n "$SERVER_BIN" ] && [ -x "$SERVER_BIN" ]; then
   echo "server binary    : installed ($SERVER_BIN)"
+elif [ -z "$VENV" ]; then
+  echo "server binary    : no bundled wheel found — the launcher falls back to a git/pipx install"
 else
   echo "server binary    : not installed yet — the launcher installs it on first session (needs uv or pipx)"
 fi

@@ -501,6 +501,7 @@ The vault is served by a **per-session stdio** markdown-vault-mcp server (the de
 
 - **Why stdio (again).** v0.10.0–v0.12.0 used a single shared HTTP server on `127.0.0.1:8765` to avoid N sessions each building embeddings and racing one SQLite WAL. But Cowork runs in a remote sandbox that can't reach a loopback port on your Mac, so the shared server made memory unreachable there. Per-session stdio spawns the server in-process in *every* environment, so memory works in both terminal Claude Code and Cowork. The tradeoff — concurrent sessions on the Mac each run their own indexer and can contend on the index — is knowingly re-accepted.
 - **Index maintenance.** A gated, once/day full VACUUM reclaims index space out-of-band from the launcher (`hooks/mcp-memory.sh` → `hooks/lib/memory-vacuum.sh`), guarded by a non-blocking `mkdir` lock so concurrent launchers don't collide: one session VACUUMs, the rest skip. A VACUUM that still contends with a live sibling server's writes skips safely via SQLite's busy timeout — no blocking, no corruption.
+- **Server install (concurrency).** The server venv is keyed by the SHA-256 of the bundled wheel (`{memory_cache}/server-venv-<hash>/`), and the install itself runs under a blocking `mkdir` lock (`hooks/lib/memory-install.sh`). Both are required: N sessions start whenever the user starts them, so concurrent `uv pip install --force-reinstall` runs into one directory produced torn venvs, and orphaned plugin roots kept launching an older wheel that fought the current one for the same directory (52 reinstalls in one day, 2026-08-28). Keying by wheel hash means two wheels never share an environment; the lock serializes the remaining same-wheel races. The per-prompt recall hook passes a 0s timeout so a prompt never waits on an install.
 - **No port or token.** Per-session stdio needs neither. `WORKBENCH_MEMORY_PORT` / `WORKBENCH_MEMORY_TOKEN` in `settings.json` are inert unless the shared HTTP server is re-enabled.
 
 Cache layout under `{memory_cache}` (default `~/.claude-memory-cache`):
@@ -509,7 +510,8 @@ Cache layout under `{memory_cache}` (default `~/.claude-memory-cache`):
 {memory_cache}/
 ├── vault-index.sqlite   — FTS index
 ├── embeddings/          — FastEmbed vectors
-├── server-venv/         — the installed server (survives plugin updates)
+├── server-venv-<hash>/  — the installed server, keyed by bundled-wheel hash
+│                          (survives plugin updates; idle ones reclaimed after 30d)
 └── .last-vacuum         — cooldown stamp for the gated index VACUUM
 ```
 

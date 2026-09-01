@@ -97,6 +97,33 @@ else
   no "recognised transport" "plugin.json declares '$TRANSPORT'"
 fi
 
+# ── Install source: upstream, never the retired fork ─────────────────────────
+#
+# The plugin installed markdown-vault-mcp from a mikebronner fork while the
+# index-state fixes were unreleased. They merged upstream 2026-06-11 and shipped
+# in PyPI 3.0.0 on 2026-06-17, after which the fork carried zero commits upstream
+# lacked while falling 33 behind. A reintroduced fork reference silently pins a
+# stale server, so assert the whole class is gone — not just the lines that were
+# swapped.
+#
+# Matches the fork URL only, not the bare name: the README documents the switch
+# as history, and that prose is worth keeping. A URL is the actionable form —
+# it is what an install command resolves and what would re-pin the stale tree.
+echo
+echo "the install source is upstream, with no fork URL anywhere:"
+FORK_REFS=$(grep -rIn 'github\.com/mikebronner/markdown-vault-mcp' \
+  --exclude-dir=.git "$ROOT" 2>/dev/null || true)
+if [ -z "$FORK_REFS" ]; then
+  ok "no fork install URLs in the tree"
+else
+  no "no fork install URLs in the tree" \
+     "$(echo "$FORK_REFS" | head -2 | cut -c1-90)"
+fi
+
+grep -q 'pvliesdonk/markdown-vault-mcp' "$ROOT/hooks/lib/memory-install.sh" \
+  && ok "memory-install.sh installs from upstream" \
+  || no "memory-install.sh installs from upstream" "no pvliesdonk remote found"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

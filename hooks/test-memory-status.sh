@@ -56,7 +56,7 @@ assert_contains "reports the vault path"            "$OUT" "$SANDBOX/vault"
 assert_contains "reports the cache path"            "$OUT" "$SANDBOX/cache"
 assert_contains "reports the configured server name" "$OUT" "test-vault"
 assert_contains "reports probe health"              "$OUT" "health"
-assert_contains "reports live session refs"         "$OUT" "live session refs"
+assert_contains "reports live processes"            "$OUT" "live processes"
 assert_contains "reports git sync state"            "$OUT" "git sync"
 [ "$RC" -eq 0 ] && { PASS=$((PASS+1)); echo "  ✅ exits 0"; } || { FAIL=$((FAIL+1)); echo "  ❌ non-zero exit ($RC)"; }
 

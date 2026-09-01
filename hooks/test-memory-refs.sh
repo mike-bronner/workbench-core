@@ -4,8 +4,8 @@
 # Run directly: ./test-memory-refs.sh
 #
 # Covers the contract that decides when the shared HTTP server may be reaped:
-# register/release, idempotence, the pid sweep that survives a crashed session,
-# the "last one out schedules the reaper" rule, and the reaper's own
+# register/release, the pid keying that makes the count mean "live Claude Code
+# processes", the sweep that survives a crash, and the reaper's own
 # grace/settle/self-correct behaviour.
 #
 # No real server and no network: liveness is asserted against `sleep` processes
@@ -50,37 +50,47 @@ spawn_owner() {
 
 echo "register / count / release:"
 is "empty registry counts zero" "$(memory_refs_count)" "0"
-A=$(spawn_owner); memory_ref_register "sess-a" "$A"
+A=$(spawn_owner); memory_ref_register "$A"
 is "one ref counts one" "$(memory_refs_count)" "1"
-B=$(spawn_owner); memory_ref_register "sess-b" "$B"
+B=$(spawn_owner); memory_ref_register "$B"
 is "two refs count two" "$(memory_refs_count)" "2"
-memory_ref_release "sess-a"
+memory_ref_release "$A"
 is "release drops the count" "$(memory_refs_count)" "1"
-memory_ref_release "sess-b"
+memory_ref_release "$B"
 is "releasing all returns to zero" "$(memory_refs_count)" "0"
 
-echo "registration is idempotent (SessionStart can fire more than once):"
+# THE REGRESSION THIS KEYING FIXES. Refs were keyed by session id, and one
+# Claude Code process owns many session ids over its life (resume, /clear,
+# plugin reload). That made a single live process register a ref per session —
+# observed reading 7 for one process. The pid is the key now, so every
+# SessionStart in one process re-stamps the same file.
+echo "many sessions in ONE process count as one live process:"
 C=$(spawn_owner)
-memory_ref_register "sess-c" "$C"
-memory_ref_register "sess-c" "$C"
-memory_ref_register "sess-c" "$C"
-is "re-registering does not inflate the count" "$(memory_refs_count)" "1"
-memory_ref_release "sess-c"
+memory_ref_register "$C"   # startup
+memory_ref_register "$C"   # resume
+memory_ref_register "$C"   # /clear
+memory_ref_register "$C"   # plugin reload
+is "four SessionStarts in one process count 1" "$(memory_refs_count)" "1"
+D=$(spawn_owner); memory_ref_register "$D"
+is "a second process counts 2" "$(memory_refs_count)" "2"
+memory_ref_release "$C"; memory_ref_release "$D"
+is "back to zero" "$(memory_refs_count)" "0"
 
-echo "the pid sweep reclaims a crashed session's ref:"
-D=$(spawn_owner); memory_ref_register "sess-d" "$D"
-E=$(spawn_owner); memory_ref_register "sess-e" "$E"
+echo "the pid sweep reclaims a crashed process's ref:"
+E=$(spawn_owner); memory_ref_register "$E"
+F=$(spawn_owner); memory_ref_register "$F"
 is "both live" "$(memory_refs_count)" "2"
-kill "$D" 2>/dev/null; wait "$D" 2>/dev/null
-# A crashed session never runs SessionEnd — the sweep is what stops its ref from
-# pinning the server on forever. This is the whole reason refs record a pid.
+kill "$E" 2>/dev/null; wait "$E" 2>/dev/null
+# A crashed process never runs SessionEnd, and SessionEnd deliberately does not
+# delete its own ref either (the process is still alive when it fires). So the
+# sweep is not a backstop here — it is the ONLY thing that reclaims a ref.
 is "dead owner's ref is swept" "$(memory_refs_count)" "1"
-if [ ! -f "$WORKBENCH_MEMORY_REFS_DIR/s-sess-d.ref" ]; then
+if [ ! -f "$WORKBENCH_MEMORY_REFS_DIR/p-$E.ref" ]; then
   ok "swept ref file is actually removed"
 else
-  bad "swept ref file is actually removed" "sess-d.ref still present"
+  bad "swept ref file is actually removed" "p-$E.ref still present"
 fi
-memory_ref_release "sess-e"
+memory_ref_release "$F"
 
 echo "malformed refs cannot pin the server:"
 mkdir -p "$WORKBENCH_MEMORY_REFS_DIR"
@@ -88,17 +98,25 @@ mkdir -p "$WORKBENCH_MEMORY_REFS_DIR"
 printf 'not-a-pid' > "$WORKBENCH_MEMORY_REFS_DIR/garbage.ref"
 is "empty and malformed refs sweep to zero" "$(memory_refs_count)" "0"
 
-echo "session ids are sanitized before becoming filenames:"
-F=$(spawn_owner)
-memory_ref_register "../../etc/passwd" "$F"
-if [ -z "$(find "$WORKBENCH_MEMORY_REFS_DIR" -name '*passwd*' -maxdepth 1 2>/dev/null | grep -v '_' )" ]; then
-  ok "path traversal in a session id is neutralized"
+echo "a non-numeric owner is refused, not turned into a path:"
+memory_ref_register "../../etc/passwd"
+if [ -z "$(find "$WORKBENCH_MEMORY_REFS_DIR" -maxdepth 1 -name '*passwd*' 2>/dev/null)" ]; then
+  ok "path traversal cannot create a ref file"
 else
-  bad "path traversal in a session id is neutralized" "unsanitized name written"
+  bad "path traversal cannot create a ref file" "a file was written"
 fi
-is "sanitized ref still counts" "$(memory_refs_count)" "1"
-memory_ref_release "../../etc/passwd"
-is "sanitized ref releases by the same key" "$(memory_refs_count)" "0"
+is "and nothing was counted" "$(memory_refs_count)" "0"
+
+echo "legacy session-keyed refs are migrated away:"
+mkdir -p "$WORKBENCH_MEMORY_REFS_DIR"
+printf '%s' "$$" > "$WORKBENCH_MEMORY_REFS_DIR/s-old-session.ref"
+is "legacy refs are not counted" "$(memory_refs_count)" "0"
+memory_refs_migrate_legacy
+if [ ! -f "$WORKBENCH_MEMORY_REFS_DIR/s-old-session.ref" ]; then
+  ok "legacy ref file is removed"
+else
+  bad "legacy ref file is removed" "s-old-session.ref still present"
+fi
 
 # ──────────────────────────────────────────────────────────────────────────
 # Reaper behaviour. Point the reaper at stub down/up scripts so we observe its
@@ -132,10 +150,10 @@ echo "the reaper stops the server only when no session is live:"
 reap 1 1
 is "reaps when the registry is empty" "$(cat "$SANDBOX/down.calls" 2>/dev/null)" "stopped"
 
-G=$(spawn_owner); memory_ref_register "sess-g" "$G"
+G=$(spawn_owner); memory_ref_register "$G"
 reap 1 1
 is "does NOT reap while a session is live" "$(cat "$SANDBOX/down.calls" 2>/dev/null)" ""
-memory_ref_release "sess-g"
+memory_ref_release "$G"
 
 echo "the reaper can be disabled outright:"
 reap 0 1
@@ -144,13 +162,13 @@ is "grace=0 disables the reaper" "$(cat "$SANDBOX/down.calls" 2>/dev/null)" ""
 echo "a session arriving during the settle window cancels the reap:"
 rm -f "$SANDBOX/down.calls"
 H=$(spawn_owner)
-( sleep 1; memory_ref_register "sess-h" "$H" ) &
+( sleep 1; memory_ref_register "$H" ) &
 OWNED_PIDS+=("$!")
 WORKBENCH_MEMORY_IDLE_GRACE=1 WORKBENCH_MEMORY_IDLE_SETTLE=3 \
   CLAUDE_PLUGIN_ROOT="" WORKBENCH_MEMORY_REFS_DIR="$WORKBENCH_MEMORY_REFS_DIR" \
   bash "$STUBS/memory-server-idle-stop.sh" 2>/dev/null
 is "settle check catches the late arrival" "$(cat "$SANDBOX/down.calls" 2>/dev/null)" ""
-memory_ref_release "sess-h"
+memory_ref_release "$H"
 
 echo "two reapers cannot both drive a stop:"
 rm -f "$SANDBOX/down.calls"
@@ -163,6 +181,65 @@ if [ "$COUNT" -le 1 ]; then
   ok "stop lock serializes concurrent reapers (stops: $COUNT)"
 else
   bad "stop lock serializes concurrent reapers" "stopped $COUNT times"
+fi
+
+# ──────────────────────────────────────────────────────────────────────────
+# memory-server-release.sh — the SessionEnd hook. Its defining property is what
+# it does NOT do: delete its own ref. SessionEnd fires while the process is
+# still alive and may still have other sessions using the server, so deleting
+# there would drop the count to zero under live sessions and let the reaper kill
+# a server still in use.
+# ──────────────────────────────────────────────────────────────────────────
+cp "$HOOKS/memory-server-release.sh" "$STUBS/"
+cat > "$STUBS/memory-server-idle-stop.sh" <<EOF
+#!/usr/bin/env bash
+echo scheduled >> "$SANDBOX/reaper.calls"
+EOF
+chmod +x "$STUBS"/*.sh
+
+release() {
+  rm -f "$SANDBOX/reaper.calls"
+  CLAUDE_PLUGIN_ROOT="" WORKBENCH_MEMORY_REFS_DIR="$WORKBENCH_MEMORY_REFS_DIR" \
+    bash "$STUBS/memory-server-release.sh" </dev/null 2>/dev/null
+}
+
+# The reaper is reparented via perl-setsid and runs ASYNCHRONOUSLY, so reading
+# its marker the instant release() returns races it. Poll briefly instead — and
+# only for the positive case; the negative case is asserted after this same
+# bounded wait has elapsed, so "still empty" means genuinely not scheduled.
+wait_reaper() {
+  local i=0
+  while [ "$i" -lt 40 ]; do
+    [ -s "$SANDBOX/reaper.calls" ] && return 0
+    i=$((i + 1)); sleep 0.05
+  done
+  return 1
+}
+
+echo "SessionEnd does NOT delete the ref of a still-live process:"
+J=$(spawn_owner); memory_ref_register "$J"
+release
+wait_reaper || true
+is "the live process keeps its ref" "$(memory_refs_count)" "1"
+is "and the reaper is still scheduled" "$(cat "$SANDBOX/reaper.calls" 2>/dev/null)" "scheduled"
+
+echo "SessionEnd stands down while ANOTHER process is live:"
+K=$(spawn_owner); memory_ref_register "$K"
+release
+wait_reaper || true   # same bounded wait, so an empty marker means it never fired
+is "two live processes, no reaper scheduled" "$(cat "$SANDBOX/reaper.calls" 2>/dev/null)" ""
+is "both refs intact" "$(memory_refs_count)" "2"
+
+echo "the ref clears only once the process is actually gone:"
+kill "$J" 2>/dev/null; wait "$J" 2>/dev/null
+kill "$K" 2>/dev/null; wait "$K" 2>/dev/null
+is "sweep reclaims both dead processes" "$(memory_refs_count)" "0"
+
+echo "the release hook needs no jq (it no longer parses the payload):"
+if grep -qE '^[^#]*\bjq\b' "$HOOKS/memory-server-release.sh"; then
+  bad "no executable jq reference" "jq still called"
+else
+  ok "no executable jq reference"
 fi
 
 echo

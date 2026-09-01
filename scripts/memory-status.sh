@@ -76,7 +76,8 @@ fi
 # Refs are what hold the server up; zero means the reaper may take it down.
 # shellcheck source=hooks/lib/memory-refs.sh
 if . "$HOOKS_DIR/lib/memory-refs.sh" 2>/dev/null; then
-  echo "live session refs: $(memory_refs_count) (auto-stop grace: ${WORKBENCH_MEMORY_IDLE_GRACE:-120}s)"
+  memory_refs_migrate_legacy
+  echo "live processes   : $(memory_refs_count) Claude Code process(es) holding the server up (auto-stop grace: ${WORKBENCH_MEMORY_IDLE_GRACE:-120}s)"
 fi
 
 # Git sync is off unless a remote is configured; say which, so "my machines

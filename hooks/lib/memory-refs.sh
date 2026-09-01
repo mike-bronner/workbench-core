@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# memory-refs: live-session reference counting for the shared HTTP memory server.
+# memory-refs: live-process reference counting for the shared HTTP memory server.
 #
 # The shared server historically followed a "single never-stop model" — once up,
 # it stayed up until someone ran memory-server-down.sh by hand. That is wrong for
@@ -8,46 +8,60 @@
 # hundred MB) and keeps a git pull loop running for an empty room.
 #
 # This library is the other half of the lazy-start machinery. memory-server-up.sh
-# brings the server up on demand; these refs decide when the last session has
-# gone so memory-server-idle-stop.sh can take it back down.
+# brings the server up on demand; these refs decide when the last Claude Code
+# process has gone so memory-server-idle-stop.sh can take it back down.
 #
 # Sourceable and side-effect-free: sourcing only DEFINES functions. Callers must
 # source lib/memory-env.sh and call memory_load_env first, so CACHE_PATH is set.
 #
-# ── Why PIDs and not just SessionEnd ────────────────────────────────────────
-# A ref released only by SessionEnd leaks forever the first time a session is
-# SIGKILLed, the terminal is closed, or the machine loses power — and one leaked
-# ref pins the server on permanently, which is precisely the bug this is meant to
-# fix. So a ref records the owning `claude` process id, and liveness is a
-# `kill -0` on that pid rather than a promise that a hook will fire. SessionEnd
-# is the fast path; the sweep is the correctness guarantee.
+# ── A ref is one PROCESS, not one session ──────────────────────────────────
+# Refs were originally keyed by session id, which was wrong in a way that only
+# showed up in use: one Claude Code process owns MANY session ids over its life
+# (a resume, a /clear, a plugin reload each mint a new one), so a single running
+# process accumulated a ref per session and the count read 7 when one process
+# was live. Nothing broke — every ref pointed at the same live pid, so they all
+# swept together when it exited — but the number meant nothing, and the reaper
+# could only ever fire on process exit rather than at the moment it claimed to.
 #
-# ── Why the owner pid is walked, not $PPID ──────────────────────────────────
+# Keying by the owning `claude` pid makes the count mean what it says: how many
+# Claude Code processes are live. It is also naturally idempotent — a resume or
+# reload re-stamps the same key instead of adding another.
+#
+# ── Liveness is a pid check, not a promise ─────────────────────────────────
+# A ref released only by SessionEnd leaks the first time a process is SIGKILLed,
+# its terminal is closed, or the machine loses power — and one leaked ref pins
+# the server on forever, which is precisely the bug this exists to prevent. So a
+# ref IS a pid, and liveness is `kill -0` on it. The sweep is the correctness
+# guarantee; nothing has to be promised by a hook that may never run.
+#
+# This is also why SessionEnd does not delete its own ref: at the moment that
+# hook runs, the process is still alive, and its other sessions may still need
+# the server. The dying process is reclaimed by the sweep instead — which the
+# reaper performs after its grace period, by which time the process is gone.
+#
+# ── Why the owner pid is walked, not $PPID ─────────────────────────────────
 # A hook's immediate parent is whatever shell the harness used to invoke it, not
 # the session. Recording that pid would mark every ref dead the instant the hook
 # returned. So walk up the process tree to the nearest `claude` ancestor and
-# record THAT — it lives exactly as long as the session does, which is the
-# lifetime we actually want to track. $PPID is the fallback when no such ancestor
-# is found (an unusual harness, or a test), which degrades to "dies early" rather
-# than "pins forever" — the safe direction.
+# record THAT — it lives exactly as long as the Claude Code process does, which
+# is the lifetime we actually want to track. $PPID is the fallback when no such
+# ancestor is found (an unusual harness, or a test), which degrades to "dies
+# early" rather than "pins forever" — the safe direction.
 
-# memory_refs_dir: echo the ref registry directory. One file per live session.
+# memory_refs_dir: echo the ref registry directory. One file per live process.
 memory_refs_dir() {
   printf '%s' "${WORKBENCH_MEMORY_REFS_DIR:-${CACHE_PATH:?CACHE_PATH must be set}/refs}"
 }
 
-# _memory_refs_file: the ref file path for a session id.
+# _memory_refs_file <pid>: the ref file path for an owner pid.
 #
-# The id is sanitized (never trust an external value that becomes a path) and
-# then prefixed with a literal `s-`. The prefix is load-bearing, not decoration:
-# sanitizing preserves dots, so an id like `../x` becomes `.._x` — a leading dot,
-# which the `*.ref` glob in the sweep and the count would both skip. Such a ref
-# would be invisible: never counted, so never able to hold the server up for the
-# session that owns it. The prefix guarantees every ref file is globbable.
+# The pid is digits-only by construction, but it is sanitized anyway (never
+# build a path from an unvalidated value) and prefixed with a literal `p-` so
+# every ref file is matched by the `p-*.ref` glob the sweep and count use.
 _memory_refs_file() {
   local safe
-  safe="$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_')"
-  printf '%s/s-%s.ref' "$(memory_refs_dir)" "$safe"
+  safe="$(printf '%s' "$1" | tr -c '0-9' '_')"
+  printf '%s/p-%s.ref' "$(memory_refs_dir)" "$safe"
 }
 
 # _memory_refs_owner_pid: nearest `claude` ancestor of $1 (default: our parent),
@@ -72,40 +86,45 @@ _memory_refs_owner_pid() {
   printf '%s' "$start"
 }
 
-# memory_ref_register <session_id> [owner_pid]: record this session as live.
+# memory_ref_register [owner_pid]: record this Claude Code process as live.
 #
-# Idempotent — re-registering the same session id overwrites its ref rather than
-# double-counting, so a SessionStart that fires twice (startup then clear/compact)
-# cannot inflate the count. Never fails the caller: an unwritable cache degrades
-# to "no ref", which loses auto-stop precision but breaks nothing.
+# Idempotent by construction — the pid IS the key, so every SessionStart in one
+# process re-stamps the same file rather than adding another. Never fails the
+# caller: an unwritable cache degrades to "no ref", which loses auto-stop
+# precision but breaks nothing.
 memory_ref_register() {
-  local sid="$1" owner refs
-  [ -n "$sid" ] || return 0
-  owner="${2:-$(_memory_refs_owner_pid)}"
+  local owner refs
+  owner="${1:-$(_memory_refs_owner_pid)}"
+  case "$owner" in ''|*[!0-9]*) return 0 ;; esac
   refs="$(memory_refs_dir)"
   mkdir -p "$refs" 2>/dev/null || return 0
-  printf '%s' "$owner" > "$(_memory_refs_file "$sid")" 2>/dev/null || true
+  printf '%s' "$owner" > "$(_memory_refs_file "$owner")" 2>/dev/null || true
   return 0
 }
 
-# memory_ref_release <session_id>: drop this session's ref. Always succeeds.
+# memory_ref_release [owner_pid]: drop a ref explicitly.
+#
+# NOT called on SessionEnd — see the header. It exists for a caller that knows a
+# process is finished (and for tests). Always succeeds.
 memory_ref_release() {
-  local sid="$1"
-  [ -n "$sid" ] || return 0
-  rm -f "$(_memory_refs_file "$sid")" 2>/dev/null || true
+  local owner
+  owner="${1:-$(_memory_refs_owner_pid)}"
+  case "$owner" in ''|*[!0-9]*) return 0 ;; esac
+  rm -f "$(_memory_refs_file "$owner")" 2>/dev/null || true
   return 0
 }
 
 # memory_refs_sweep: delete refs whose owning process is gone.
 #
-# This is what makes the count self-healing after a crash. A ref file that is
+# This is what makes the count self-healing after a crash, and it is the only
+# mechanism that reclaims a ref at all in normal operation. A ref file that is
 # empty or malformed is also swept — it can never be proven live, and leaving it
 # would pin the server exactly as a leaked ref does.
 memory_refs_sweep() {
   local refs f pid
   refs="$(memory_refs_dir)"
   [ -d "$refs" ] || return 0
-  for f in "$refs"/s-*.ref; do
+  for f in "$refs"/p-*.ref; do
     [ -e "$f" ] || continue
     pid="$(cat "$f" 2>/dev/null)"
     case "$pid" in
@@ -116,16 +135,27 @@ memory_refs_sweep() {
   return 0
 }
 
-# memory_refs_count: sweep, then echo the number of live sessions. Always echoes
-# an integer, so callers can compare without guarding for empty output.
+# memory_refs_count: sweep, then echo the number of live Claude Code processes.
+# Always echoes an integer, so callers can compare without guarding for empty.
 memory_refs_count() {
   local refs n=0 f
   memory_refs_sweep
   refs="$(memory_refs_dir)"
   if [ -d "$refs" ]; then
-    for f in "$refs"/s-*.ref; do
+    for f in "$refs"/p-*.ref; do
       [ -e "$f" ] && n=$((n + 1))
     done
   fi
   printf '%s' "$n"
+}
+
+# memory_refs_migrate_legacy: remove session-keyed ref files from before refs
+# were keyed by pid. They use the `s-` prefix, so the current glob ignores them
+# and they would otherwise sit in the cache forever. Cheap and idempotent.
+memory_refs_migrate_legacy() {
+  local refs
+  refs="$(memory_refs_dir)"
+  [ -d "$refs" ] || return 0
+  rm -f "$refs"/s-*.ref 2>/dev/null || true
+  return 0
 }

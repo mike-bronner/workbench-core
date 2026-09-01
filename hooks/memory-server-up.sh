@@ -39,23 +39,18 @@ memory_load_env
 LOCK_DIR="$CACHE_PATH/server.lock"
 CLAIMER_PID_FILE="$LOCK_DIR/claimer.pid"
 
-# ──────────── Register this session as a live ref ────────────
+# ──────────── Register this Claude Code process as a live ref ────────────
 # Deliberately BEFORE the already-serving fast path below: a session that joins
-# a running server must still be counted, or the reaper would take the server
-# down under it the moment the session that originally started it exits.
+# a RUNNING server must still be counted, or the reaper would take the server
+# down under it the moment the process that originally started it exits.
 #
-# memory_ref_register is idempotent, so a SessionStart that fires again for
-# `clear` or a compaction re-stamps the same ref instead of double-counting.
-# It never fails; an unwritable cache costs auto-stop precision, nothing else.
-if [ -n "${CLAUDE_SESSION_ID:-}" ]; then
-  memory_ref_register "$CLAUDE_SESSION_ID"
-else
-  # The SessionStart payload carries session_id, but this hook is on the locked
-  # latency-sensitive path and deliberately does not parse stdin. Fall back to
-  # the owning claude pid as the identity — it is stable for the session's whole
-  # life, which is exactly the property the registry needs.
-  memory_ref_register "pid-$(_memory_refs_owner_pid)"
-fi
+# The ref is keyed by the owning `claude` pid, not the session id — one process
+# owns many session ids over its life (resume, /clear, plugin reload), and
+# keying by session made the count read 7 for a single live process. The pid
+# key is idempotent for free: every SessionStart in one process re-stamps the
+# same file. Never fails; an unwritable cache costs auto-stop precision only.
+memory_refs_migrate_legacy
+memory_ref_register
 
 # ──────────── Clear stale transient markers ────────────
 # .server-failed and .port-conflict are single-attempt breadcrumbs from a prior

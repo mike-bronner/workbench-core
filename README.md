@@ -199,7 +199,7 @@ The `references/` directory contains single-source-of-truth documents shared acr
 | `summary-format.md` | summary-writer, log-now, summarize-session | Required frontmatter, body structure, JSONL parsing guidance |
 | `decision-promotion.md` | summary-writer, log-now, summarize-session | Promotion criteria, when NOT to promote, decision file template |
 | `vault-conventions.md` | summary-writer, log-now, summarize-session | Vault paths, required frontmatter, write vs edit rules |
-| `linking-synthesis.md` | summary-writer, log-now, summarize-session, memory-lint | Wikilink syntax, related-document linking, topic-page synthesis, vault index contract |
+| `linking-synthesis.md` | summary-writer, log-now, summarize-session, memory-lint | Link syntax, related-document linking, topic-page synthesis, vault index contract |
 
 Most references are loaded at execution time via `${CLAUDE_PLUGIN_ROOT}/references/`. The exceptions are the two the warmup hook reads at every session start: `guardrails.md`, injected into context, and `behavioral-overrides.md`, rendered onto disk into the Layer 1 and Layer 2 files above.
 
@@ -235,7 +235,7 @@ core/
 │   ├── guardrails.md           — absolute behavioral rules (injected at session start)
 │   ├── behavioral-overrides.md — persona overrides, rendered into layers 1 + 2 at startup
 │   ├── decision-promotion.md   — when and how to promote decisions
-│   ├── linking-synthesis.md    — wikilinks, topic pages, vault index contract
+│   ├── linking-synthesis.md    — link syntax, topic pages, vault index contract
 │   ├── summary-format.md       — summary frontmatter + body template
 │   └── vault-conventions.md    — paths, frontmatter rules, write conventions
 ├── skills/
@@ -497,7 +497,7 @@ Vault structure:
 ├── skills/            — per-skill learnings files
 ├── infrastructure/    — systems and tools documentation
 ├── maintenance/       — memory-lint audit reports
-├── index.md           — catalog of the curated layer (topics, decisions, identity, reference)
+├── README.md           — catalog of the curated layer (topics, decisions, identity, reference)
 └── CLAUDE.md          — vault map (metadata only)
 ```
 
@@ -589,13 +589,13 @@ The vault is the **canonical durable memory store**. Claude Code's harness also 
 
 #### Wiki layer and vault index
 
-Session summaries are chronological sediment; left alone they accumulate as unlinked orphans. Every ingest path (the summary-writer agent, `/workbench:log-now`, `/workbench:summarize-session`) therefore follows `references/linking-synthesis.md`: search the vault for related decisions, topics, and prior summaries; add a `## Related` section of path-qualified wikilinks (`[[folder/file-stem|display text]]` — the form markdown-vault-mcp resolves immediately); maintain at most one topical synthesis page in `topics/` per session; and cross-link promoted decisions to their summaries and topics. Linking is deliberately conservative — only high-confidence connections, capped per ingest, because an orphan beats a forced link.
+Session summaries are chronological sediment; left alone they accumulate as unlinked orphans. Every ingest path (the summary-writer agent, `/workbench:log-now`, `/workbench:summarize-session`) therefore follows `references/linking-synthesis.md`: search the vault for related decisions, topics, and prior summaries; add a `## Related` section of root-absolute markdown links (`[display text](/folder/file-stem.md)` — the form markdown-vault-mcp resolves immediately); maintain at most one topical synthesis page in `topics/` per session; and cross-link promoted decisions to their summaries and topics. Linking is deliberately conservative — only high-confidence connections, capped per ingest, because an orphan beats a forced link.
 
-`index.md` at the vault root is the catalog of the curated layer — one wikilink + one-line hook per topic, decision, identity, and reference document (never sessions). It's the orientation entry point: agents read it **on demand** to get the lay of the vault before searching — it is **not** auto-loaded into context. The summary writers keep it current as they create topics and promote decisions; the lint ritual repairs drift.
+`README.md` at the vault root is the catalog of the curated layer — one markdown link + one-line hook per topic, decision, identity, and reference document (never sessions). It's the orientation entry point: agents read it **on demand** to get the lay of the vault before searching — it is **not** auto-loaded into context. The summary writers keep it current as they create topics and promote decisions; the lint ritual repairs drift.
 
 #### Lint ritual
 
-Vaults rot silently: files written without the required `name`/`type` frontmatter are skipped at index time (on disk but invisible to search), links break when targets move, orphans accumulate. `/workbench-core:memory-lint` is the periodic repair pass — it diffs the filesystem against the index to find skipped files and rescues their frontmatter, repairs or removes broken links, adds only high-confidence links (never mass-links orphans), repairs `index.md` drift in both directions (missing entries for `topics/` and `decisions/` documents, stale entries pointing at deleted ones), and flags duplicates/contradictions for the human instead of merging. Each run is capped at 50 file-fixes and writes an audit report to `maintenance/` with before/after stats. Intended cadence: monthly, deployed via the scheduled-tasks MCP. Raw `*.log.md` transcripts are never touched.
+Vaults rot silently: files written without the required `name`/`type` frontmatter are skipped at index time (on disk but invisible to search), links break when targets move, orphans accumulate. `/workbench-core:memory-lint` is the periodic repair pass — it diffs the filesystem against the index to find skipped files and rescues their frontmatter, repairs or removes broken links, adds only high-confidence links (never mass-links orphans), repairs `README.md` drift in both directions (missing entries for `topics/` and `decisions/` documents, stale entries pointing at deleted ones), and flags duplicates/contradictions for the human instead of merging. Each run is capped at 50 file-fixes and writes an audit report to `maintenance/` with before/after stats. Intended cadence: monthly, deployed via the scheduled-tasks MCP. Raw `*.log.md` transcripts are never touched.
 
 #### Decision-quality loop
 

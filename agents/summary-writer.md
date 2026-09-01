@@ -57,7 +57,7 @@ Instead: delete the marker (`rm "$marker_path"`), print `summary-writer: skipped
 
 **The bar is strict**: any dispatched item, any error worth remembering, any human interaction → not an idle tick; write the summary.
 
-**A skipped idle tick has no summary document — so never link one.** If you narrate this tick (or any other idle tick) on a topic page, refer to it by session id as **plain text**. Do not write `[[sessions/<date>/<id>.summary|…]]` for a session whose summary you skipped, and never construct that path for a sibling tick you did not summarise yourself. The link would be broken from the moment it is written, and topic pages are append-only — nothing revisits the line to fix it. See the hard rules in `references/linking-synthesis.md`.
+**A skipped idle tick has no summary document — so never link one.** If you narrate this tick (or any other idle tick) on a topic page, refer to it by session id as **plain text**. Do not write `[…](/sessions/<date>/<id>.summary.md)` for a session whose summary you skipped, and never construct that path for a sibling tick you did not summarise yourself. The link would be broken from the moment it is written, and topic pages are append-only — nothing revisits the line to fix it. See the hard rules in `references/linking-synthesis.md`.
 
 ### 3. Write the narrative summary
 
@@ -70,7 +70,7 @@ Read `references/summary-format.md` in the plugin directory (`${CLAUDE_PLUGIN_RO
 - The path must **not** begin with `memory/` and must **not** be absolute — `sessions/…` is already relative to the vault root the MCP is anchored to.
 - **Verify after writing:** confirm the file exists via `mcp__plugin_workbench-core_memory__read` (or `list_documents`) at the path you wrote. If the write errored or the memory MCP is unavailable, follow the **Summary write fails** failure mode — leave the marker and exit. Do **not** fall back to Bash.
 
-After drafting and before writing: read `references/linking-synthesis.md` and run its Steps A–B — `search` the vault for related decisions, topic pages, and prior summaries on the session's main themes, and add a `## Related` section with path-qualified wikilinks to the confident hits. Conservative linking is a hard rule: an orphan is better than a forced connection, and the per-ingest link cap applies. Omit the section if nothing clears the bar.
+After drafting and before writing: read `references/linking-synthesis.md` and run its Steps A–B — `search` the vault for related decisions, topic pages, and prior summaries on the session's main themes, and add a `## Related` section with root-absolute markdown links to the confident hits. Conservative linking is a hard rule: an orphan is better than a forced connection, and the per-ingest link cap applies. Omit the section if nothing clears the bar.
 
 ### 4. Promote decisions (only if the bar is met)
 
@@ -78,7 +78,7 @@ Read `references/decision-promotion.md` for the promotion criteria and file temp
 
 ### 5. Synthesize topic and update the vault index
 
-Follow `references/linking-synthesis.md` Steps C–E for the session's central theme only: `edit` the existing topic page in `topics/` (dated 1–2 line entry + wikilink, integrate rather than append-dump), or create one if the theme now has ≥2 related vault documents — one topic page per session maximum, and skipping is common. Whenever you touch a topic page or promote a decision, update its line in `index.md` in the same pass (create `index.md` with what you know if it doesn't exist yet).
+Follow `references/linking-synthesis.md` Steps C–E for the session's central theme only: `edit` the existing topic page in `topics/` (dated 1–2 line entry + markdown link, integrate rather than append-dump), or create one if the theme now has ≥2 related vault documents — one topic page per session maximum, and skipping is common. Whenever you touch a topic page or promote a decision, update its line in `README.md` in the same pass (create `README.md` with what you know if it doesn't exist yet).
 
 **Only write an entry if this session changed what the page says** — read Step C's "What earns an entry" and apply it. A session that merely exercised the theme (a routine run, a scheduled tick, another instance of a pattern the page already describes) gets no topic-page entry; its session summary is the record. Unbounded appending is what turned one topic page into a 393 KB chronological dump. When a recurrence is itself the point, edit the existing sentence to note it rather than appending a near-duplicate paragraph.
 

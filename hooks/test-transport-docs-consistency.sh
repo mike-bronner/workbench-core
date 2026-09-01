@@ -124,6 +124,42 @@ grep -q 'pvliesdonk/markdown-vault-mcp' "$ROOT/hooks/lib/memory-install.sh" \
   && ok "memory-install.sh installs from upstream" \
   || no "memory-install.sh installs from upstream" "no pvliesdonk remote found"
 
+# ── Git sync: the capability is documented, and so is its footgun ────────────
+#
+# memory-env.sh gates the whole sync feature on memory_git_repo_url. While that
+# key was reachable only by hand-editing config.json, the capability was
+# undiscoverable. Worse, MARKDOWN_VAULT_MCP_EXCLUDE keeps raw transcripts out of
+# the INDEX but not out of GIT — measured on a real vault, 425 MB total against
+# 15.2 MB without sessions/. Enabling sync with no .gitignore pushes all of it,
+# permanently, in history. If the code supports sync, the setup skill must
+# document both the switch and the exclusion.
+SETUP="$ROOT/skills/setup/SKILL.md"
+if grep -q 'MARKDOWN_VAULT_MCP_GIT_REPO_URL' "$ROOT/hooks/lib/memory-env.sh"; then
+  echo
+  echo "memory-env.sh supports git sync, so setup must document it:"
+
+  grep -q 'memory_git_repo_url' "$SETUP" \
+    && ok "setup documents the memory_git_repo_url switch" \
+    || no "setup documents the memory_git_repo_url switch" "key never mentioned"
+
+  # The footgun. Without this line a first push ships every raw transcript.
+  grep -q 'sessions/\*\*/\*\.log\.md' "$SETUP" \
+    && ok "setup excludes raw transcripts from the sync" \
+    || no "setup excludes raw transcripts from the sync" \
+          "no sessions/**/*.log.md ignore rule documented"
+
+  # Single-writer is a correctness precondition, not a nicety: N stdio servers
+  # would be N independent in-process locks committing into one .git.
+  grep -qiE 'single writer|shared HTTP transport only' "$SETUP" \
+    && ok "setup states the single-writer precondition" \
+    || no "setup states the single-writer precondition" "precondition not stated"
+
+  # A token must never be read into the agent's context or pasted into chat.
+  grep -qiE '[Nn]ever ask the user to paste a token' "$SETUP" \
+    && ok "setup forbids handling the sync token in chat" \
+    || no "setup forbids handling the sync token in chat" "no such instruction"
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -349,6 +349,164 @@ Because the guard reports drift rather than repairing it, the underlying freeze 
 escalating upstream (`anthropics/claude-code#45810`). The guard makes the freeze *visible and
 safe*; it does not unfreeze anything.
 
+## Step 2e — Git sync for the vault (opt-in)
+
+The server can keep the vault in sync with a git remote itself — fetch and fast-forward before
+the initial index build, a pull loop whose `on_pull` callback is `reindex`, and a deferred-commit
+queue for writes. `hooks/lib/memory-env.sh` already exports every `MARKDOWN_VAULT_MCP_GIT_*`
+variable this needs, gated entirely on one key: `memory_git_repo_url`. Absent that key, nothing
+in this step has ever run and behaviour is byte-identical to a vault with no sync.
+
+This step exists because that key was reachable only by hand-editing `config.json` — a
+capability nobody discovers, wired to a footgun nobody sees coming (below).
+
+🛑 **Two hard preconditions. Check both before asking anything.**
+
+1. **Shared HTTP transport only.** The strategy's write-quiescing uses in-process `threading`
+   locks. Under the retired one-server-per-session model those would be N independent locks
+   committing into one `.git`, where git's own `index.lock` fails fast rather than waiting.
+   Verify:
+   ```bash
+   jq -r '.mcpServers.memory.type // "stdio"' "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json"
+   ```
+   Anything but `http` → skip this step and say why.
+2. **Single writer.** One machine at a time may write. Two machines syncing the same remote is
+   the supported case (that is the point); two servers on *one* machine is not.
+
+### 2e.1 — Ask whether to enable it
+
+Show what it costs and what it buys, then ask with AskUserQuestion:
+
+- **Question:** "Sync the memory vault to a git remote? Cross-machine shared memory, with every
+  memory change revertible."
+- **Options:** "Yes — set it up now" · "Skip (I'll run setup again later)"
+
+If they decline, skip the rest of this step. Nothing is written.
+
+### 2e.2 — Size the payload BEFORE creating anything
+
+⚠️ **The footgun.** `memory-env.sh` sets `MARKDOWN_VAULT_MCP_EXCLUDE="sessions/**/*.log.md"`,
+which keeps raw transcripts out of the **search index**. It does nothing about **git**. On a
+mature vault the transcripts are the overwhelming majority of the bytes — measured 2026-09-01 on
+a real vault: **425 MB total, 15.2 MB once `sessions/` is excluded**, with an 11 MB single
+`.log.md`. Enable sync without a `.gitignore` and the first push sends all of it to the remote,
+permanently, in history.
+
+Measure the actual vault before proposing a remote — never quote the numbers above as if they
+were this user's:
+
+```bash
+M="$MEMORY_PATH"
+tot() { find "$M" -type f "$@" -exec stat -f%z {} + 2>/dev/null | awk '{s+=$1} END {printf "%.1f MB", s/1048576}'; }
+echo "everything:      $(tot)"
+echo "without sessions: $(tot ! -path "$M/sessions/*")"
+```
+
+Report both numbers to the user. If the excluded figure is still above ~100 MB, stop and show
+`du -sh "$M"/* | sort -rh | head` so they can decide what else to exclude before anything is
+committed.
+
+### 2e.3 — Write the `.gitignore` first, before `git init`
+
+Order matters: the ignore file must exist before the first `git add`, or the transcripts land in
+history and only a rewrite removes them.
+
+A **denylist**, deliberately — it mirrors `MARKDOWN_VAULT_MCP_EXCLUDE` so index and git share one
+mental model, and a memory folder the user creates later syncs by default. An allowlist would
+silently fail to sync new content, and a memory that never reaches the other machine gives no
+signal that it is missing. For a memory vault, failing toward *keeping* the memory is the correct
+direction.
+
+Write `{memory_path}/.gitignore`, preserving any lines already there:
+
+```gitignore
+# Raw session transcripts — excluded from the search index by
+# MARKDOWN_VAULT_MCP_EXCLUDE, and far too large to sync. Keep them machine-local.
+sessions/**/*.log.md
+
+# Bulk session exports.
+archive/**/*.zip
+
+# macOS / editor junk.
+.DS_Store
+*.swp
+```
+
+Then confirm the ignore actually bites, *before* committing:
+
+```bash
+git -C "$MEMORY_PATH" init -q
+git -C "$MEMORY_PATH" add -A
+git -C "$MEMORY_PATH" diff --cached --name-only | wc -l          # files that WOULD be committed
+git -C "$MEMORY_PATH" diff --cached --name-only | grep -c '\.log\.md$'   # MUST be 0
+```
+
+If that last count is not `0`, the ignore is wrong — fix it and re-stage. Do not commit.
+
+### 2e.4 — Remote and authentication
+
+Ask which auth the user wants, with AskUserQuestion, and branch:
+
+- **SSH** — remote of the form `git@github.com:<user>/<repo>.git`. Uses the existing SSH agent.
+  **No credential is prompted for, stored, or written by this skill.** Prefer it when the user
+  already pushes to GitHub over SSH.
+- **HTTPS + token** — remote of the form `https://github.com/<user>/<repo>.git`, plus a personal
+  access token with `repo` scope.
+
+🛑 **Never ask the user to paste a token into the chat, and never read one out of a file into
+your context.** Have them place it themselves, then verify only that it is non-empty:
+
+```bash
+# The user runs this; you do not.
+#   jq '.env.WORKBENCH_MEMORY_GIT_TOKEN = "<paste-token>"' ~/.claude/settings.json > /tmp/s && mv /tmp/s ~/.claude/settings.json && chmod 600 ~/.claude/settings.json
+jq -e '(.env.WORKBENCH_MEMORY_GIT_TOKEN // "") | length > 0' ~/.claude/settings.json >/dev/null \
+  && echo "token present" || echo "token NOT set"
+```
+
+The token belongs in `settings.json` `.env`, not `config.json` — `config.json` is plain-text
+plugin data, and `memory-env.sh` reads the environment first for exactly this reason. It falls
+back to `.memory_git_token` in `config.json`; treat that fallback as legacy and do not write it.
+
+**The remote must already exist and must be private.** This skill does not create repositories —
+a vault holds personal and possibly entrusted material, and repo creation with a visibility flag
+is not a decision to make on someone's behalf. Have the user create an empty private repo and
+give you the URL. Verify it is reachable and private before writing any config:
+
+```bash
+gh repo view <owner>/<repo> --json visibility,isEmpty 2>&1
+```
+
+If `visibility` is not `PRIVATE`, stop and say so plainly. Do not proceed.
+
+### 2e.5 — Write the config
+
+Merge onto `config.json` with the same read-modify-write discipline as Step 2 — never clobber:
+
+```bash
+tmp="$(mktemp)"
+jq --arg url "$GIT_REPO_URL" '.memory_git_repo_url = $url' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
+```
+
+Optionally also set `memory_git_commit_name` / `memory_git_commit_email` if the user wants
+vault commits attributed differently from their global git identity. Leave
+`memory_git_pull_interval_s` (120) and `memory_git_push_delay_s` (30) alone unless asked —
+`memory-env.sh` already tightens both from the server's defaults for interactive use, and
+`memory_git_lfs` is deliberately `false` for a vault of small markdown files.
+
+### 2e.6 — First push is the user's call
+
+Present the staged file count and the measured size, then let them run it. Pushing a personal
+vault to a remote is outward-facing and effectively irreversible once history exists:
+
+```bash
+git -C "$MEMORY_PATH" commit -qm "chore: 🎉 Seed memory vault." && \
+git -C "$MEMORY_PATH" remote add origin "$GIT_REPO_URL" && \
+git -C "$MEMORY_PATH" push -u origin main
+```
+
+Confirm afterwards that the server picked it up — the sync loop only starts on the next server
+launch, which means the **relaunch in Step 7**, not merely a new session.
+
 ## Step 3 — Re-templatize identity files (if `agent_name` changed)
 
 If `agent_name` changed from its previous value (or this is a first-time setup):
@@ -381,6 +539,7 @@ Tell the user:
 - MCP env vars will be re-read from config.json on next Claude Code restart
 - The memory server's bearer token was provisioned (and the port, if non-default) into `~/.claude/settings.json`
 - The permission mode that is now set, and how many deny/ask rails were added (the script reports both)
+- Whether git sync was enabled, and if so the remote and the measured synced size (Step 2e)
 - Whether identity files were created/updated
 
 ## Step 4.5 — Deploy the nightly decision-quality task (opt-in)
@@ -471,6 +630,7 @@ After both interviews complete (or are skipped), remind the user to **fully rest
 ## Notes
 
 - **Plugin updates are a non-event.** `plugin.json` points the memory MCP at `127.0.0.1:{memory_port}/mcp`; the hooks resolve env from `config.json` at launch via `hooks/lib/memory-env.sh`. A version bump replaces the plugin dir but the hooks still read the same config, and the token in `settings.json` is untouched. No re-customization needed.
-- **Env var overrides still work:** `WORKBENCH_MEMORY_PATH`, `WORKBENCH_MEMORY_CACHE`, `WORKBENCH_MEMORY_PORT`, `WORKBENCH_MCP_SERVER_NAME`, and `WORKBENCH_LOG_MODE` override config.json values in the hook scripts. Useful for testing (e.g., dry-run with temp paths/ports).
+- **Env var overrides still work:** `WORKBENCH_MEMORY_PATH`, `WORKBENCH_MEMORY_CACHE`, `WORKBENCH_MEMORY_PORT`, `WORKBENCH_MCP_SERVER_NAME`, and `WORKBENCH_LOG_MODE` override config.json values in the hook scripts. Useful for testing (e.g., dry-run with temp paths/ports). The Step 2e git-sync keys override the same way — `WORKBENCH_MEMORY_GIT_REPO_URL`, `WORKBENCH_MEMORY_GIT_TOKEN`, `WORKBENCH_MEMORY_GIT_USERNAME`, `WORKBENCH_MEMORY_GIT_PULL_INTERVAL`, `WORKBENCH_MEMORY_GIT_PUSH_DELAY`, `WORKBENCH_MEMORY_GIT_COMMIT_NAME`, `WORKBENCH_MEMORY_GIT_COMMIT_EMAIL`, `WORKBENCH_MEMORY_GIT_LFS`.
+- **Git sync is off until a repo URL exists.** Setting `memory_git_repo_url` is the entire switch; `memory-env.sh` exports no `MARKDOWN_VAULT_MCP_GIT_*` variable without it. Remove the key to turn sync back off — the vault's `.git` and its remote are left alone, so nothing is lost.
 - **Token security:** `server.token` is `0600` under the cache and `settings.json` is `chmod 600` after the merge (it now carries a secret). Never commit either.
 - **First-time setup:** If this is the first run and no config exists, all fields start at their hardcoded defaults. The user confirms or changes each one.

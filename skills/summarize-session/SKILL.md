@@ -30,7 +30,7 @@ Read `${CLAUDE_PLUGIN_ROOT}/references/summary-format.md` for the required shape
 
 If a `.summary.md` already exists for this session, read it first and ask the user: "A summary already exists — overwrite it, or skip?"
 
-After drafting and before writing, read `${CLAUDE_PLUGIN_ROOT}/references/linking-synthesis.md` and apply Steps A–B: 2–3 targeted vault searches on the session's main themes, then a `## Related` section with path-qualified wikilinks to the confident hits only. The conservative rule and link cap bind; omit the section if nothing clears the bar.
+After drafting and before writing, read `${CLAUDE_PLUGIN_ROOT}/references/linking-synthesis.md` and apply Steps A–B: 2–3 targeted vault searches on the session's main themes, then a `## Related` section with root-absolute markdown links to the confident hits only. The conservative rule and link cap bind; omit the section if nothing clears the bar.
 
 Write via `mcp__plugin_workbench-core_memory__write`.
 
@@ -40,7 +40,7 @@ Read `${CLAUDE_PLUGIN_ROOT}/references/decision-promotion.md` for criteria. Appl
 
 ## Step 5 — Synthesize topic and update the vault index
 
-Follow linking-synthesis Steps C–E for the session's central theme only: update (or, with ≥2 related docs, create) its `topics/` page, and keep the matching `index.md` line current in the same pass. One topic page per session maximum; skipping is common.
+Follow linking-synthesis Steps C–E for the session's central theme only: update (or, with ≥2 related docs, create) its `topics/` page, and keep the matching `README.md` line current in the same pass. One topic page per session maximum; skipping is common.
 
 ## Step 6 — Update profile if shifted
 

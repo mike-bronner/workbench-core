@@ -82,7 +82,7 @@ summary: "N findings — A recurrence, B contradiction/duplicate, C gaps, D reve
 - **Axis:** recurrence | contradiction | duplicate | gap | reversed | accuracy | efficiency | speed
 - **Metric(s):** accuracy | efficiency | speed
 - **Severity:** high | med | low
-- **Evidence:** [[decisions/…|…]], [[sessions/…|…]]   (path-qualified wikilinks)
+- **Evidence:** […](/decisions/….md), […](/sessions/….md)   (root-absolute markdown links)
 - **Observation:** what the record shows (one or two sentences).
 - **Direction:** the *kind* of fix (correction to X / record missing process Y) — NOT the fix itself.
 
@@ -98,7 +98,7 @@ summary: "N findings — A recurrence, B contradiction/duplicate, C gaps, D reve
 - One line noting areas graded with no findings (so a clean axis is visible, not silent).
 ```
 
-Link findings to their evidence with path-qualified wikilinks (`[[folder/file-stem|display]]`) per `linking-synthesis.md`, so Propose and the human can navigate straight to the source.
+Link findings to their evidence with root-absolute markdown links (`[display](/folder/file-stem.md)`) per `linking-synthesis.md`, so Propose and the human can navigate straight to the source.
 
 ## Step 3 — Report in chat
 

@@ -160,6 +160,55 @@ if grep -q 'MARKDOWN_VAULT_MCP_GIT_REPO_URL' "$ROOT/hooks/lib/memory-env.sh"; th
     || no "setup forbids handling the sync token in chat" "no such instruction"
 fi
 
+# ── Link convention: root-absolute markdown, never wikilinks ────────────────
+#
+# The vault was converted from [[wikilinks]] to [label](/path.md) on 2026-09-01
+# (7,620 links, graph preserved). markdown-vault-mcp resolves both, so nothing
+# broke — but every doc that still TELLS an agent to write wikilinks makes the
+# next write reintroduce the old format against a converted vault, which is the
+# treadmill the lint runs already fight. Guard the instructions, not the data.
+#
+# The historical mention in linking-synthesis.md ("converted from [[wikilinks]]")
+# is deliberately allowed: explaining the switch is what stops it being undone.
+echo
+echo "docs teach root-absolute markdown links, not wikilinks:"
+
+LINKDOC="$ROOT/references/linking-synthesis.md"
+grep -q '\[display text\](/path/to/note\.md)' "$LINKDOC" \
+  && ok "linking-synthesis documents the [label](/path.md) form" \
+  || no "linking-synthesis documents the [label](/path.md) form" "form not stated"
+
+# Without the leading slash a markdown link resolves from the SOURCE note's own
+# folder, not the vault root — the exact trap that produced six non-resolving
+# "repairs" on 2026-08-19.
+# Match the rule itself, not the phrase: "leading slash" also appears in the
+# Bad example below it, so a looser grep stays green when the rule is deleted.
+grep -q 'Always write a leading slash' "$LINKDOC" \
+  && ok "linking-synthesis warns that the leading slash is required" \
+  || no "linking-synthesis warns about the leading slash" "the rule is missing"
+
+# Prose that instructs writing wikilinks, excluding lines that discuss the
+# migration itself.
+BADWL=$(grep -rin 'wikilink' "$ROOT" --include='*.md' 2>/dev/null \
+  | grep -v '/\.git/' \
+  | grep -viE 'converted from|still resolves|which wikilinks do not|Unlike a wikilink' || true)
+if [ -z "$BADWL" ]; then
+  ok "no plugin doc instructs writing wikilinks"
+else
+  no "no plugin doc instructs writing wikilinks" \
+     "$(echo "$BADWL" | head -2 | sed "s|$ROOT/||" | cut -c1-90)"
+fi
+
+# The vault's root catalog was renamed index.md -> README.md so GitHub renders
+# it. A doc still naming index.md sends an agent at a file that is not there.
+BADIDX=$(grep -rn 'index\.md' "$ROOT" --include='*.md' 2>/dev/null | grep -v '/\.git/' || true)
+if [ -z "$BADIDX" ]; then
+  ok "no plugin doc references the renamed vault index.md"
+else
+  no "no plugin doc references the renamed vault index.md" \
+     "$(echo "$BADIDX" | head -2 | sed "s|$ROOT/||" | cut -c1-90)"
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

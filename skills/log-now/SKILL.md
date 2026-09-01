@@ -36,7 +36,7 @@ Read `${CLAUDE_PLUGIN_ROOT}/references/summary-format.md` for the required shape
 
 Because you're in-session, your summary should be richer than what the auto summary-writer produces — you have context the raw JSONL doesn't capture.
 
-After drafting and before writing, read `${CLAUDE_PLUGIN_ROOT}/references/linking-synthesis.md` and apply Steps A–B: 2–3 targeted vault searches on the session's main themes, then a `## Related` section with path-qualified wikilinks to the confident hits only. Your lived context makes you better at judging relatedness than the headless writer — but the conservative rule and link cap still bind. Omit the section if nothing clears the bar.
+After drafting and before writing, read `${CLAUDE_PLUGIN_ROOT}/references/linking-synthesis.md` and apply Steps A–B: 2–3 targeted vault searches on the session's main themes, then a `## Related` section with root-absolute markdown links to the confident hits only. Your lived context makes you better at judging relatedness than the headless writer — but the conservative rule and link cap still bind. Omit the section if nothing clears the bar.
 
 ## Step 3 — Promote decisions
 
@@ -44,7 +44,7 @@ Read `${CLAUDE_PLUGIN_ROOT}/references/decision-promotion.md` for criteria. Cros
 
 ## Step 4 — Synthesize topic and update the vault index
 
-Follow linking-synthesis Steps C–E for the session's central theme only: update (or, with ≥2 related docs, create) its `topics/` page, and keep the matching `index.md` line current in the same pass. One topic page per session maximum; skipping is common.
+Follow linking-synthesis Steps C–E for the session's central theme only: update (or, with ≥2 related docs, create) its `topics/` page, and keep the matching `README.md` line current in the same pass. One topic page per session maximum; skipping is common.
 
 ## Step 5 — Update profile if shifted
 

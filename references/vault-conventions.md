@@ -64,13 +64,13 @@ sessions/        — session logs (.log.md) and summaries (.summary.md)
 skills/          — per-skill learnings files
 infrastructure/  — systems and tools documentation
 maintenance/     — memory-lint audit reports
-index.md         — catalog of the curated layer (see linking-synthesis.md)
+README.md         — catalog of the curated layer (see linking-synthesis.md)
 ```
 
 ## Linking
 
-Documents connect via path-qualified wikilinks —
-`[[folder/file-stem|display text]]`, vault-relative, no `.md` extension.
+Documents connect via root-absolute markdown links —
+`[display text](/folder/file-stem.md)`, resolved from the vault root.
 See `linking-synthesis.md` for the full syntax rules, the topic-page
-contract, the `index.md` maintenance contract, and the conservative-linking
+contract, the `README.md` maintenance contract, and the conservative-linking
 rules that bind every ingest.

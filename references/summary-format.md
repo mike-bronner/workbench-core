@@ -63,7 +63,7 @@ Loose ends, next steps, anything flagged as TODO or blocked. If none, write "Not
 
 ## Related
 
-- Path-qualified wikilinks to confidently-related vault documents, one per
+- Root-absolute markdown links to confidently-related vault documents, one per
   line with a short reason — see `linking-synthesis.md` for the search
   procedure, link syntax, and the conservative-linking rules. Omit this
   section entirely when nothing clears the confidence bar.

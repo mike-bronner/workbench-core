@@ -15,7 +15,7 @@ Load the memory MCP tools in one ToolSearch call (query: `"memory"`, generous `m
 Read before drafting (a proposal must obey these):
 - `${CLAUDE_PLUGIN_ROOT}/references/decision-promotion.md` — the bar for what's worth recording.
 - `${CLAUDE_PLUGIN_ROOT}/references/vault-conventions.md` — frontmatter, types, write-vs-edit, relative paths.
-- `${CLAUDE_PLUGIN_ROOT}/references/linking-synthesis.md` — wikilinks and cross-linking.
+- `${CLAUDE_PLUGIN_ROOT}/references/linking-synthesis.md` — link syntax and cross-linking.
 
 ## Step 1 — Load the evaluation and the rejection ledger
 
@@ -49,7 +49,7 @@ Write via MCP `write` to `proposals/YYYY-MM-DD.md`. The digest **is** the sign-o
 name: "Upgrade proposals — YYYY-MM-DD"
 type: proposal
 date: YYYY-MM-DD
-source: "[[learnings/YYYY-MM-DD-eval|evaluation]]"
+source: "[evaluation](/learnings/YYYY-MM-DD-eval.md)"
 status: pending          # pending → signed-off when every item is decided
 tags: [proposal, upgrade, decision-quality]
 summary: "N proposals — C corrections, P new-process, R promotions, … awaiting sign-off."
@@ -60,7 +60,7 @@ summary: "N proposals — C corrections, P new-process, R promotions, … awaiti
 - **Metric:** accuracy | efficiency | speed
 - **Severity:** high | med | low
 - **Target:** `decisions/…` | `feedback/…` (path the change lands on)
-- **Evidence:** [[…|…]], [[…|…]]
+- **Evidence:** […](/…md), […](/…md)
 - **Proposed change:** the exact write/edit (for a correction, the before → after).
 - **Recommendation:** approve | reject — one-line why (and how it improves the metric).
 - **Decision:** ☐ approve  ☐ reject        <!-- filled at sign-off -->

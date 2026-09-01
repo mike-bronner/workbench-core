@@ -1,12 +1,12 @@
 ---
-description: Report the memory server's facts — vault/cache paths, whether the launcher and server binary are installed, and index/maintenance state. Use when memory search/write is failing or to confirm the per-session stdio server is wired.
+description: Report the shared memory server's facts — vault/cache paths, probe health, bearer token, live session refs, server binary, and index/maintenance state. Use when memory search/write is failing or to confirm the server is wired.
 ---
 
-The user has invoked `/workbench-core:memory-status`. Report the per-session stdio memory server's facts.
+The user has invoked `/workbench-core:memory-status`. Report the shared memory server's facts.
 
 ## What this checks
 
-Since v0.13.0 the memory vault is served by a **per-session stdio server** that the MCP host (Claude Code / Cowork) spawns **in-process** via `hooks/mcp-memory.sh` — one per session, no shared listener, no port, no bearer token. This is what makes memory work inside Claude Cowork's remote sandbox, where nothing can reach a loopback port on your Mac. Because the server is in-process and per-session, there is **no out-of-band server to probe, start, or stop** — so this skill reports the things that actually determine whether memory works.
+Since 0.19.0 the vault is served by a **lazy-started, reference-counted shared HTTP server** on `127.0.0.1:{memory_port}`. `memory-server-up.sh` starts it at SessionStart on a probe miss; `memory-server-release.sh` drops the session ref and, when it was the last, schedules the reaper. So there IS an out-of-band server, and this skill reports whether it is up, whether it is *ours*, and what is holding it up.
 
 ## How to run it
 
@@ -25,11 +25,11 @@ It prints: the resolved **vault/cache** paths and **server name**, whether the *
 - **index not built yet** — normal on a fresh install; it builds on the first session.
 - **launcher MISSING** — the plugin tree is broken (`plugin.json`'s memory MCP points at `hooks/mcp-memory.sh`); reinstall the plugin.
 
-The stdio server has no health probe: the real signal for a broken launcher is the **MCP host's own connection error** at startup, and whether the `mcp__…memory__*` tools are available in-session.
+Health comes from the **identity-checked probe** (`hooks/lib/memory-probe.sh`), not a bare TCP connect: the port could be held by a stale orphan or an unrelated process, and connecting blindly would attach the session to the wrong vault. The probe POSTs a real MCP `initialize` and asserts `serverInfo.name` matches the configured vault, so a squatter reports as `DOWN_FOREIGN` rather than being silently adopted.
 
 ## Notes
 
 - **No start/stop.** The MCP host owns the per-session server's lifecycle — it spawns it in-process at session start and tears it down at session end. `memory-status.sh start|stop` just prints a note and the status; restart Claude Code to re-spawn.
-- **No port or token.** Per-session stdio needs neither. `WORKBENCH_MEMORY_PORT` / `WORKBENCH_MEMORY_TOKEN` in `~/.claude/settings.json` are inert unless you re-enable the shared HTTP server.
+- **The bearer token is the most common failure.** `plugin.json` interpolates `${WORKBENCH_MEMORY_TOKEN}` into the `Authorization` header. Without it Claude Code rejects the MCP config outright (`Missing environment variables`) and never starts a server — which presents as memory being broken rather than unconfigured. Fix: `/workbench-core:setup`, then **quit and relaunch** Claude Code; `settings.json` `.env` is read at launch, so a new session is not enough.
 - **Index maintenance** (gated, once/day VACUUM) runs out-of-band from the launcher under a race-safe lock — see `last VACUUM` in the report.
 - **Re-enabling the shared HTTP server** (its port/token/health reporting included) is documented in `README.md`, section "Memory server transport — re-enabling the shared HTTP server (optional)".

@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 #
-# memory-status.sh — report the per-session stdio memory server's facts.
+# memory-status.sh — report the shared memory server's facts.
 #
-# Since v0.13.0 the memory vault is served by a per-session STDIO server that the
-# MCP host (Claude Code / Cowork) spawns in-process via hooks/mcp-memory.sh — one
-# per session, no shared listener, no port, no bearer token. There is therefore
-# no out-of-band server to probe, start, or stop. This reports the things that
-# actually determine whether memory works: the resolved vault/cache, whether the
-# launcher and server binary are installed, and index / maintenance facts.
+# Since 0.19.0 the vault is served by a lazy-started, reference-counted shared
+# HTTP server on 127.0.0.1:{memory_port}. So there IS an out-of-band server here,
+# and the two questions that actually matter when memory is broken are "is it
+# up, and is it OURS" — answered by the identity-checked probe rather than a bare
+# TCP connect, which would happily report a foreign squatter as healthy.
 #
-# (The shared HTTP server is retained but disabled. To re-enable it — and its
-# port/token/health reporting — see README, section "Memory server transport".)
+# Reports: resolved vault/cache, probe health, live session refs (what holds the
+# server up), server binary install state, and index / maintenance facts.
 #
 # Usage:
 #   memory-status.sh          # print status (read-only)
@@ -27,30 +26,65 @@ HOOKS_DIR="${HOOKS_DIR:-$(cd "$SCRIPT_DIR/../hooks" && pwd)}"
 . "$HOOKS_DIR/lib/memory-env.sh"
 memory_load_env
 
-# start/stop don't apply to a per-session stdio server — the MCP host owns its
-# lifecycle. Accept them for muscle-memory, but explain and fall through to status.
+# start/stop are real operations again. Point at the scripts that own them rather
+# than duplicating their logic (and their identity guards) here.
 case "${1:-status}" in
-  start|stop)
-    echo "Note: '$1' does not apply to the per-session stdio server — the MCP host"
-    echo "spawns it in-process per session and stops it when the session ends."
-    echo "Restart Claude Code to re-spawn it. Showing status instead:"
+  start)
+    echo "Note: the server starts itself — memory-server-up.sh runs at SessionStart"
+    echo "and spawns it on a probe miss. To force one now: hooks/memory-server-up.sh"
+    echo
+    ;;
+  stop)
+    echo "Note: the server stops on its own a grace period after the last session"
+    echo "exits (WORKBENCH_MEMORY_IDLE_GRACE, default 120s). To stop it now:"
+    echo "hooks/memory-server-down.sh"
     echo
     ;;
 esac
 
-echo "Memory server status (per-session stdio)"
-echo "========================================"
-echo "transport        : per-session stdio (in-process; spawned by the MCP host)"
+echo "Memory server status (shared HTTP)"
+echo "=================================="
+echo "transport        : shared HTTP on 127.0.0.1:$MEMORY_PORT/mcp (lazy-started, refcounted)"
 echo "vault (source)   : $MEMORY_PATH"
 echo "cache            : $CACHE_PATH"
 echo "server name      : $MCP_NAME"
 
-# Launcher: plugin.json points the memory MCP at this script.
-LAUNCHER="$HOOKS_DIR/mcp-memory.sh"
-if [ -x "$LAUNCHER" ]; then
-  echo "launcher         : $LAUNCHER (present)"
+# Health: identity-checked, so a foreign process squatting the port is reported
+# as a conflict rather than silently adopted as our vault.
+# shellcheck source=hooks/lib/memory-probe.sh
+. "$HOOKS_DIR/lib/memory-probe.sh"
+STATUS="$(memory_probe 2>/dev/null || echo DOWN_NONE)"
+case "$STATUS" in
+  UP)           echo "health           : UP (serving, index built)" ;;
+  BUILDING)     echo "health           : BUILDING (bound; index still building, search available)" ;;
+  PORT_DRIFT)   echo "health           : PORT_DRIFT — recorded server.port != configured $MEMORY_PORT" ;;
+  DOWN_FOREIGN) echo "health           : DOWN_FOREIGN — something else holds :$MEMORY_PORT (not the $MCP_NAME vault)" ;;
+  DOWN_FAILED)  echo "health           : DOWN_FAILED — last spawn failed; see $CACHE_PATH/server.log" ;;
+  *)            echo "health           : DOWN — nothing listening (starts at next SessionStart)" ;;
+esac
+
+# The bearer token is what plugin.json interpolates into the Authorization
+# header. Absent, Claude Code rejects the MCP config outright and no server is
+# ever started — the single most common "memory is broken" cause on a fresh
+# install, so name it explicitly rather than leaving it to be inferred.
+if [ -s "$CACHE_PATH/server.token" ]; then
+  echo "bearer token     : present ($CACHE_PATH/server.token)"
 else
-  echo "launcher         : $LAUNCHER (MISSING — plugin.json's memory MCP points here)"
+  echo "bearer token     : MISSING — run /workbench-core:setup, then restart Claude Code"
+fi
+
+# Refs are what hold the server up; zero means the reaper may take it down.
+# shellcheck source=hooks/lib/memory-refs.sh
+if . "$HOOKS_DIR/lib/memory-refs.sh" 2>/dev/null; then
+  echo "live session refs: $(memory_refs_count) (auto-stop grace: ${WORKBENCH_MEMORY_IDLE_GRACE:-120}s)"
+fi
+
+# Git sync is off unless a remote is configured; say which, so "my machines
+# aren't sharing memory" has a one-line answer.
+if [ -n "${MARKDOWN_VAULT_MCP_GIT_REPO_URL:-}" ]; then
+  echo "git sync         : $MARKDOWN_VAULT_MCP_GIT_REPO_URL (pull ${MARKDOWN_VAULT_MCP_GIT_PULL_INTERVAL_S}s)"
+else
+  echo "git sync         : off (set memory_git_repo_url in config.json to share across machines)"
 fi
 
 # Server binary: the wheel-keyed venv the launcher installs into, under the
@@ -83,7 +117,10 @@ else
 fi
 
 echo
-echo "Memory runs in-process per session — there is no shared server to start or stop."
-echo "If memory tools are unavailable: confirm 'uv' (or 'pipx') is on PATH, then restart"
-echo "Claude Code so the MCP host re-spawns the stdio launcher."
+echo "If memory tools are unavailable, in order of likelihood:"
+echo "  1. bearer token missing above  -> /workbench-core:setup, then QUIT and relaunch"
+echo "     Claude Code (settings.json .env is read at launch; a new session is not enough)."
+echo "  2. health DOWN                 -> starts at the next SessionStart; check server.log."
+echo "  3. health DOWN_FOREIGN         -> free :$MEMORY_PORT or set a different memory_port."
+echo "  4. server binary not installed -> confirm 'uv' (or 'pipx') is on PATH."
 exit 0

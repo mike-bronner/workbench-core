@@ -41,9 +41,9 @@ Present each field to the user one at a time. Show the current value (from exist
 - **Note:** This is the `MARKDOWN_VAULT_MCP_SERVER_NAME` value (`serverInfo.name`).
 
 ### 4b. `memory_port`
-- **Prompt:** "Memory server port — only the **optional** shared HTTP server uses it; keep the default under the per-session stdio transport (the default since v0.13.0)"
+- **Prompt:** "Memory server port — the loopback port the shared memory server binds and the MCP client connects to"
 - **Default:** `8765`
-- **Note:** Inert under per-session stdio — nothing binds a port there. It only matters if you re-enable the shared HTTP server (see README, "Memory server transport"), which then binds `127.0.0.1:{memory_port}`. If you do set a non-default value, **preflight the port** first:
+- **Note:** The shared server binds `127.0.0.1:{memory_port}` and `plugin.json` interpolates the same value into the MCP URL, so the two must agree — a mismatch is what the probe reports as `PORT_DRIFT`. If you set a non-default value, **preflight the port** first (`lsof` on macOS, `ss` on a stock Linux box):
   ```bash
   if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
     echo "WARNING: port $PORT is already in use — pick another or stop the squatter."
@@ -155,13 +155,13 @@ Running this twice with the same answers produces a byte-identical file (idempot
 | `memory_cache` | `MARKDOWN_VAULT_MCP_STATE_PATH` (+ `/state.json`) |
 | `memory_cache` | `MARKDOWN_VAULT_MCP_KV_STORE_URL` (+ `/kv`), `…_EVENT_STORE_URL` (+ `/events`) |
 | `memory_mcp_server_name` | `MARKDOWN_VAULT_MCP_SERVER_NAME` |
-| `memory_port` | the optional shared HTTP server's `--port` (inert under per-session stdio) |
+| `memory_port` | the shared HTTP server's `--port`, and the port in `plugin.json`'s MCP URL |
 
 Optionally write `config.example.json` alongside `config.json` with placeholder values and inline comments — useful for anyone setting up the plugin manually.
 
 ## Step 2b — Provision the bearer token + settings.json env (shared HTTP server only)
 
-> **Skip this step under the default per-session stdio transport (v0.13.0+).** Stdio needs no port or bearer token — the MCP host spawns the server in-process per session, and memory works from the very first session with nothing in `settings.json`. Run this step **only if you have re-enabled the optional shared HTTP server** (see README, "Memory server transport — re-enabling the shared HTTP server"). Under stdio, doing nothing here is correct.
+> **Required — do not skip.** The transport is the shared HTTP server (restored in 0.19.0, when dropping Cowork removed the remote-sandbox constraint that forced per-session stdio in v0.13.0). `plugin.json` interpolates `${WORKBENCH_MEMORY_TOKEN}` into the `Authorization` header, so **without this step Claude Code rejects the memory MCP outright** with `Invalid MCP server config for "memory": Missing environment variables: WORKBENCH_MEMORY_TOKEN`, and no server is ever started. That presents as memory being broken rather than unconfigured.
 
 When the shared HTTP server is enabled it authenticates with a per-install **bearer token**, and the MCP client reads the port + token from `~/.claude/settings.json` `.env` (the only channel that reaches the host's config parse — a hook can't). Provision both with **zero user involvement**, idempotently:
 
@@ -466,11 +466,11 @@ The profile is completed first intentionally — define-soul benefits from knowi
 
 ## Step 7 — Restart reminder
 
-After both interviews complete (or are skipped), remind the user to **start a new session (or restart Claude Code) for the changes to take effect.** Permission rules and `defaultMode` from Step 2c are read at session start, so `/clear` or a new session is enough for those. Under the default per-session stdio transport, memory config (`config.json`) is re-read when the host respawns the stdio server for the next session — nothing needs to reach `settings.json`, so there's no "first session lacks memory" gap. (If you re-enabled the optional shared HTTP server in Step 2b, its port + bearer token in `settings.json` `.env` are read only at Claude Code **launch**, so that path does need a full restart, not just a new session.)
+After both interviews complete (or are skipped), remind the user to **fully restart Claude Code — quit and relaunch, not just `/clear` or a new session.** Permission rules and `defaultMode` from Step 2c would be satisfied by a new session, but the bearer token from Step 2b reaches the MCP client only through `settings.json` `.env`, which Claude Code reads **at launch**. A new session in the same process re-reads neither, and the memory MCP fails identically. Say this plainly: a new session is not enough.
 
 ## Notes
 
-- **Plugin updates are a non-event.** `plugin.json` points the memory MCP at the per-session stdio launcher (`hooks/mcp-memory.sh`); the hooks resolve env from `config.json` at launch via `hooks/lib/memory-env.sh`. A version bump replaces the plugin dir but the hooks still read the same config. No re-customization needed.
+- **Plugin updates are a non-event.** `plugin.json` points the memory MCP at `127.0.0.1:{memory_port}/mcp`; the hooks resolve env from `config.json` at launch via `hooks/lib/memory-env.sh`. A version bump replaces the plugin dir but the hooks still read the same config, and the token in `settings.json` is untouched. No re-customization needed.
 - **Env var overrides still work:** `WORKBENCH_MEMORY_PATH`, `WORKBENCH_MEMORY_CACHE`, `WORKBENCH_MEMORY_PORT`, `WORKBENCH_MCP_SERVER_NAME`, and `WORKBENCH_LOG_MODE` override config.json values in the hook scripts. Useful for testing (e.g., dry-run with temp paths/ports).
-- **Token security (shared HTTP server only):** if you ran Step 2b to re-enable the shared HTTP server, `server.token` is `0600` under the cache and `settings.json` is `chmod 600` after the merge (it then carries the token). Never commit either. Per-session stdio mints no token.
+- **Token security:** `server.token` is `0600` under the cache and `settings.json` is `chmod 600` after the merge (it now carries a secret). Never commit either.
 - **First-time setup:** If this is the first run and no config exists, all fields start at their hardcoded defaults. The user confirms or changes each one.

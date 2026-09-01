@@ -36,6 +36,18 @@ assert() {
   else FAIL=$((FAIL + 1)); echo "  ❌ $desc"; fi
 }
 eq() { [ "$1" = "$2" ] && echo true || echo false; }
+# bash 3.2 — the system bash on macOS — cannot parse a `case` inside $( ), so a
+# glob test written inline as "$(case "$X" in pat) ...)" is a syntax error there
+# and every such assertion reports false regardless of the value. Keeping the
+# `case` inside a function body avoids the parser bug, so the suite runs on the
+# maintainer's own machine and not only on CI's bash 5.
+# SC2254: $2 is deliberately unquoted — callers pass a glob ('http://127.0.0.1:*')
+# and quoting it would match the pattern literally, which is the opposite of the
+# intent. Every caller passes a single-quoted literal, so there is no word-splitting
+# risk. Patterns carrying ${...} are matched literally: $2 expands once and the
+# result is not rescanned.
+# shellcheck disable=SC2254
+like() { case "$1" in $2) echo true ;; *) echo false ;; esac; }
 
 echo "plugin.json is valid JSON:"
 assert "valid JSON" "$(jq empty "$PLUGIN_JSON" 2>/dev/null && echo true || echo false)"
@@ -46,17 +58,17 @@ echo "memory server uses the shared HTTP transport:"
 assert "type == http" "$(eq "$(jq -r "$MEM.type // empty" "$PLUGIN_JSON")" "http")"
 
 URL=$(jq -r "$MEM.url // empty" "$PLUGIN_JSON")
-assert "url is loopback" "$(case "$URL" in http://127.0.0.1:*) echo true ;; *) echo false ;; esac)"
+assert "url is loopback" "$(like "$URL" 'http://127.0.0.1:*')"
 # The port must stay overridable: WORKBENCH_MEMORY_PORT in settings.json is what
 # the host connects to, and a hardcoded port here would silently diverge from the
 # recorded server.port — the exact drift the probe reports as PORT_DRIFT.
 assert "port honours WORKBENCH_MEMORY_PORT with a default" \
-  "$(case "$URL" in *'${WORKBENCH_MEMORY_PORT:-8765}'*) echo true ;; *) echo false ;; esac)"
-assert "url mounts /mcp" "$(case "$URL" in */mcp) echo true ;; *) echo false ;; esac)"
+  "$(like "$URL" '*${WORKBENCH_MEMORY_PORT:-8765}*')"
+assert "url mounts /mcp" "$(like "$URL" '*/mcp')"
 
 AUTH=$(jq -r "$MEM.headers.Authorization // empty" "$PLUGIN_JSON")
 assert "bearer token header present" \
-  "$(case "$AUTH" in 'Bearer ${WORKBENCH_MEMORY_TOKEN}') echo true ;; *) echo false ;; esac)"
+  "$(like "$AUTH" 'Bearer ${WORKBENCH_MEMORY_TOKEN}')"
 
 echo "the per-session stdio launcher keys are gone:"
 for key in command args; do
@@ -68,16 +80,16 @@ echo "the server has a lifetime — it comes up on demand and goes away after:"
 SS=$(jq -r '.hooks.SessionStart[0].hooks[].command' "$HOOKS_JSON")
 SE=$(jq -r '.hooks.SessionEnd[0].hooks[].command' "$HOOKS_JSON")
 assert "SessionStart kicks memory-server-up.sh" \
-  "$(case "$SS" in *memory-server-up.sh*) echo true ;; *) echo false ;; esac)"
+  "$(like "$SS" '*memory-server-up.sh*')"
 assert "SessionEnd runs memory-server-release.sh" \
-  "$(case "$SE" in *memory-server-release.sh*) echo true ;; *) echo false ;; esac)"
+  "$(like "$SE" '*memory-server-release.sh*')"
 
 # Ordering is load-bearing: session-warmup.sh probes the server to decide which
 # health notice to print, so the hook that kicks the spawn has to run first or
 # every cold start reports "Memory server starting" for a server nothing asked for.
 FIRST=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$HOOKS_JSON")
 assert "memory-server-up precedes session-warmup" \
-  "$(case "$FIRST" in *memory-server-up.sh*) echo true ;; *) echo false ;; esac)"
+  "$(like "$FIRST" '*memory-server-up.sh*')"
 
 echo "the lifetime scripts exist and are executable:"
 for f in memory-server-up.sh memory-server-release.sh memory-server-idle-stop.sh memory-server-down.sh; do

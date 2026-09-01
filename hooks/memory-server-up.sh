@@ -31,11 +31,31 @@ HOOKS_DIR="${HOOKS_DIR:-$SCRIPT_DIR}"
 . "$HOOKS_DIR/lib/memory-env.sh"
 # shellcheck source=hooks/lib/memory-probe.sh
 . "$HOOKS_DIR/lib/memory-probe.sh"
+# shellcheck source=hooks/lib/memory-refs.sh
+. "$HOOKS_DIR/lib/memory-refs.sh"
 
 memory_load_env
 
 LOCK_DIR="$CACHE_PATH/server.lock"
 CLAIMER_PID_FILE="$LOCK_DIR/claimer.pid"
+
+# ──────────── Register this session as a live ref ────────────
+# Deliberately BEFORE the already-serving fast path below: a session that joins
+# a running server must still be counted, or the reaper would take the server
+# down under it the moment the session that originally started it exits.
+#
+# memory_ref_register is idempotent, so a SessionStart that fires again for
+# `clear` or a compaction re-stamps the same ref instead of double-counting.
+# It never fails; an unwritable cache costs auto-stop precision, nothing else.
+if [ -n "${CLAUDE_SESSION_ID:-}" ]; then
+  memory_ref_register "$CLAUDE_SESSION_ID"
+else
+  # The SessionStart payload carries session_id, but this hook is on the locked
+  # latency-sensitive path and deliberately does not parse stdin. Fall back to
+  # the owning claude pid as the identity — it is stable for the session's whole
+  # life, which is exactly the property the registry needs.
+  memory_ref_register "pid-$(_memory_refs_owner_pid)"
+fi
 
 # ──────────── Clear stale transient markers ────────────
 # .server-failed and .port-conflict are single-attempt breadcrumbs from a prior

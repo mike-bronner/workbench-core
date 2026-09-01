@@ -84,14 +84,31 @@ assert_contains "guardrails exempt memory vault"   "$OUT" "personal memory vault
 assert_missing  "skills-protocol not inlined"      "$OUT" "SKILLSPROTO-CANARY"
 assert_contains "skills-protocol pointer present"  "$OUT" "Skills protocol: read \`$SANDBOX/memory/identity/skills-protocol.md\`"
 
-echo "startup — no phantom shared-server health notices (per-session stdio):"
-# $OUT still holds the startup run above. The v0.12 shared-HTTP health probe
-# printed "Memory server starting" (plus port-drift/conflict notices) on EVERY
-# startup once the transport reverted to stdio, because nothing listens on the
-# loopback port. That block was removed; assert its notices never appear.
-assert_missing "no phantom 'server starting' notice" "$OUT" "Memory server starting"
-assert_missing "no shared-server port-drift notice"  "$OUT" "Memory server port drift"
-assert_missing "no shared-server conflict notice"    "$OUT" "Memory server port conflict"
+echo "startup — the shared-server health probe reports a server that is not up:"
+# $OUT still holds the startup run above, where nothing is listening on the
+# configured port — so the probe returns DOWN_NONE and the warmup should say the
+# server is starting. This assertion is the inverse of the one it replaced: under
+# per-session stdio there was no external listener to probe, so the notice was
+# pure noise and the block was removed. With the shared HTTP transport restored
+# there IS a listener to speak for, and staying silent about a down server would
+# hide the one failure the user most needs to see.
+assert_contains "reports a server that is not yet up" "$OUT" "Memory server starting"
+
+# The other probe branches must stay quiet in this state: a down server is not a
+# port conflict and not a config drift, and conflating them would send the user
+# chasing the wrong fix.
+assert_missing "no port-drift notice when merely down" "$OUT" "Memory server port drift"
+assert_missing "no conflict notice when merely down"   "$OUT" "Memory server port conflict"
+
+# A healthy server must produce NO health notice at all — the common case needs
+# no words. Simulated by pointing the probe at a stub that reports UP.
+PROBE_STUB="$SANDBOX/probe-up"
+mkdir -p "$PROBE_STUB"
+cat > "$PROBE_STUB/memory-probe.sh" <<'STUB'
+memory_probe() { echo UP; }
+STUB
+OUT_UP=$(WORKBENCH_PROBE_OVERRIDE="$PROBE_STUB/memory-probe.sh" run_warmup startup)
+assert_missing "healthy server prints no notice" "$OUT_UP" "Memory server"
 
 echo "clear — wiped context gets full identity:"
 OUT=$(run_warmup clear)

@@ -107,5 +107,67 @@ memory_load_env() {
   export MARKDOWN_VAULT_MCP_KV_STORE_URL="file://$CACHE_PATH/kv"
   export MARKDOWN_VAULT_MCP_EVENT_STORE_URL="file://$CACHE_PATH/events"
 
+  # ──────────── Git sync (cross-machine shared memory) ────────────
+  # The server can keep the vault in sync with a git remote itself: fetch +
+  # fast-forward before the initial index build, then a pull loop whose on_pull
+  # callback is `reindex`, plus a deferred-commit queue for writes.
+  #
+  # Why this and not a file-sync tool: a synced FILE is not a searchable memory.
+  # Syncthing would drop the other machine's notes into the vault, but nothing
+  # would tell the index they arrived, so they stay unfindable until something
+  # forces a rescan. The pull loop reindexes on every pull by design. Git also
+  # merges markdown (a sync tool leaves you a .sync-conflict copy) and gives
+  # every memory change a revertible history.
+  #
+  # ONLY the markdown syncs. The SQLite index, the embeddings and the venv stay
+  # machine-local under CACHE_PATH — a WAL database copied by a file syncer with
+  # no transactional grouping is a corrupted database.
+  #
+  # REQUIRES A SINGLE WRITER. The strategy's write-quiescing (pause writes, drain
+  # the commit queue, merge on a clean tree) is built from `threading` locks —
+  # in-process only. N per-session servers would be N independent locks all
+  # committing into one .git, where git's own index.lock fails fast rather than
+  # waiting. That is exactly why this is wired only now that the transport is the
+  # single shared HTTP server; do NOT enable it alongside per-session stdio.
+  #
+  # Everything stays off unless a repo URL is configured, so a user who has not
+  # opted in gets byte-identical behaviour to before.
+  GIT_REPO_URL="${WORKBENCH_MEMORY_GIT_REPO_URL:-$(_cfg '.memory_git_repo_url')}"
+  if [ -n "$GIT_REPO_URL" ]; then
+    export MARKDOWN_VAULT_MCP_GIT_REPO_URL="$GIT_REPO_URL"
+
+    # The token is read from the environment FIRST so it can live in
+    # ~/.claude/settings.json `.env` beside WORKBENCH_MEMORY_TOKEN rather than in
+    # config.json, which is plain-text plugin data. config.json remains a
+    # fallback for convenience, but it is the worse place for a credential.
+    GIT_TOKEN="${WORKBENCH_MEMORY_GIT_TOKEN:-$(_cfg '.memory_git_token')}"
+    [ -n "$GIT_TOKEN" ] && export MARKDOWN_VAULT_MCP_GIT_TOKEN="$GIT_TOKEN"
+
+    GIT_USERNAME="${WORKBENCH_MEMORY_GIT_USERNAME:-$(_cfg '.memory_git_username')}"
+    [ -n "$GIT_USERNAME" ] && export MARKDOWN_VAULT_MCP_GIT_USERNAME="$GIT_USERNAME"
+
+    # 120s, not the server's own 600s default: this is interactive shared memory
+    # between two machines the same person is using, and ten minutes of staleness
+    # is long enough to re-derive a decision the other machine already recorded.
+    GIT_PULL="${WORKBENCH_MEMORY_GIT_PULL_INTERVAL:-$(_cfg '.memory_git_pull_interval_s')}"
+    export MARKDOWN_VAULT_MCP_GIT_PULL_INTERVAL_S="${GIT_PULL:-120}"
+
+    # Seconds of write-IDLE before pushing (not a fixed timer): a burst of
+    # captures in one turn coalesces into a single push.
+    GIT_PUSH="${WORKBENCH_MEMORY_GIT_PUSH_DELAY:-$(_cfg '.memory_git_push_delay_s')}"
+    export MARKDOWN_VAULT_MCP_GIT_PUSH_DELAY_S="${GIT_PUSH:-30}"
+
+    GIT_NAME="${WORKBENCH_MEMORY_GIT_COMMIT_NAME:-$(_cfg '.memory_git_commit_name')}"
+    [ -n "$GIT_NAME" ] && export MARKDOWN_VAULT_MCP_GIT_COMMIT_NAME="$GIT_NAME"
+    GIT_EMAIL="${WORKBENCH_MEMORY_GIT_COMMIT_EMAIL:-$(_cfg '.memory_git_commit_email')}"
+    [ -n "$GIT_EMAIL" ] && export MARKDOWN_VAULT_MCP_GIT_COMMIT_EMAIL="$GIT_EMAIL"
+
+    # LFS defaults to TRUE upstream and earns nothing on a vault of small
+    # markdown files — it only adds a filter that has to be installed on both
+    # machines before a clone works. Off unless deliberately asked for.
+    GIT_LFS="${WORKBENCH_MEMORY_GIT_LFS:-$(_cfg '.memory_git_lfs')}"
+    export MARKDOWN_VAULT_MCP_GIT_LFS="${GIT_LFS:-false}"
+  fi
+
   unset -f _cfg
 }

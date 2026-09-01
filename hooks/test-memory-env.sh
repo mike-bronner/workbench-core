@@ -139,6 +139,68 @@ OUT=$(env -i HOME="$SANDBOX/home" PATH="$PATH" \
   bash -c '. "'"$LIB"'"; printf "SRC=[%s]\n" "${MARKDOWN_VAULT_MCP_SOURCE_DIR:-}"')
 assert_line "no SOURCE_DIR exported on bare source" "$OUT" "SRC=[]"
 
+# ──────────────────────────────────────────────────────────────────────────
+# Git sync. The whole feature is gated on a repo URL, and the gate is the
+# safety property worth asserting: a user who has not opted in must get exactly
+# the behaviour they had before, with no GIT_* variable reaching the server.
+# ──────────────────────────────────────────────────────────────────────────
+gitenv() {  # gitenv <config-or-empty> [ENV=VAL ...] -> the exported GIT_* set
+  local config="$1"; shift
+  env -i HOME="$SANDBOX/home" PATH="$PATH" \
+    ${config:+WORKBENCH_CONFIG_FILE="$config"} \
+    "$@" \
+    bash -c '. "'"$LIB"'"; memory_load_env; env | grep "^MARKDOWN_VAULT_MCP_GIT_" | sort'
+}
+
+cat > "$SANDBOX/cfgdir/git.json" <<'EOF'
+{
+  "memory_path": "/cfg/mem",
+  "memory_cache": "/cfg/cache",
+  "memory_git_repo_url": "https://example.invalid/mem.git",
+  "memory_git_commit_email": "cfg@example.invalid"
+}
+EOF
+
+echo "git sync stays OFF unless a repo URL is configured:"
+OUT=$(gitenv "$SANDBOX/cfgdir/config.json")
+if [ -z "$OUT" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ no GIT_* exported without a repo url"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ no GIT_* exported without a repo url — got: $OUT"
+fi
+
+echo "git sync turns on from config.json:"
+OUT=$(gitenv "$SANDBOX/cfgdir/git.json")
+assert_line "repo url exported" "$OUT" "MARKDOWN_VAULT_MCP_GIT_REPO_URL=https://example.invalid/mem.git"
+assert_line "commit email exported" "$OUT" "MARKDOWN_VAULT_MCP_GIT_COMMIT_EMAIL=cfg@example.invalid"
+
+# 120s, not the server's own 600s default — see the rationale in memory-env.sh.
+assert_line "pull interval tightened to 120s" "$OUT" "MARKDOWN_VAULT_MCP_GIT_PULL_INTERVAL_S=120"
+assert_line "push debounce is 30s"            "$OUT" "MARKDOWN_VAULT_MCP_GIT_PUSH_DELAY_S=30"
+
+# LFS defaults to TRUE upstream. A markdown vault gains nothing from it and a
+# clone then needs the filter installed on both machines, so it must be forced off.
+assert_line "LFS forced off" "$OUT" "MARKDOWN_VAULT_MCP_GIT_LFS=false"
+
+# A credential belongs in settings.json .env, not in plain-text plugin config —
+# so the env override has to win, and config.json is only the fallback.
+echo "the token prefers the environment over config.json:"
+OUT=$(gitenv "$SANDBOX/cfgdir/git.json" WORKBENCH_MEMORY_GIT_TOKEN=from-env)
+assert_line "env token wins" "$OUT" "MARKDOWN_VAULT_MCP_GIT_TOKEN=from-env"
+
+echo "override env beats config.json for every git field:"
+OUT=$(gitenv "$SANDBOX/cfgdir/git.json" \
+  WORKBENCH_MEMORY_GIT_REPO_URL=https://override.invalid/o.git \
+  WORKBENCH_MEMORY_GIT_PULL_INTERVAL=45 \
+  WORKBENCH_MEMORY_GIT_LFS=true)
+assert_line "repo url overridden" "$OUT" "MARKDOWN_VAULT_MCP_GIT_REPO_URL=https://override.invalid/o.git"
+assert_line "pull interval overridden" "$OUT" "MARKDOWN_VAULT_MCP_GIT_PULL_INTERVAL_S=45"
+assert_line "LFS can be turned back on deliberately" "$OUT" "MARKDOWN_VAULT_MCP_GIT_LFS=true"
+
+echo "an env-only repo url needs no config file at all:"
+OUT=$(gitenv "" WORKBENCH_MEMORY_GIT_REPO_URL=https://envonly.invalid/e.git)
+assert_line "repo url from env alone" "$OUT" "MARKDOWN_VAULT_MCP_GIT_REPO_URL=https://envonly.invalid/e.git"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

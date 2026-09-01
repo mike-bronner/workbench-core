@@ -9,10 +9,11 @@
   "repository": "https://github.com/mike-bronner/core",
   "mcpServers": {
     "memory": {
-      "command": "bash",
-      "args": [
-        "${CLAUDE_PLUGIN_ROOT}/hooks/mcp-memory.sh"
-      ]
+      "type": "http",
+      "url": "http://127.0.0.1:${WORKBENCH_MEMORY_PORT:-8765}/mcp",
+      "headers": {
+        "Authorization": "Bearer ${WORKBENCH_MEMORY_TOKEN}"
+      }
     }
   }
 }

@@ -9,7 +9,7 @@ The infrastructure layer that turns Claude Code from a stateless coding assistan
 - **Persistent identity** — persona files (`soul-hot.md`, `profile.md`) injected at session start and re-injected after context compression so the agent never drifts.
 - **Guardrails** — absolute behavioral rules that ship with the plugin, load last (highest authority), and are enforced by the interview skills. Guardrails can't be overridden by persona or profile choices.
 - **Session logging** — every session is captured as a rolling JSONL log, then summarized by a background agent into a searchable narrative.
-- **Operational memory** — a local MCP server (markdown-vault-mcp) fronts a searchable vault of decisions, projects, insights, and session history.
+- **Operational memory** — a shared, lazy-started local MCP server (markdown-vault-mcp) fronts a searchable vault of decisions, projects, insights, and session history, optionally kept in sync across machines over git.
 - **Execution-aware skills** — a behavioral protocol that gives any skill persistent memory via vault-backed learnings files.
 - **Retention management** — automatic cleanup of raw logs (28 days) and checkpoints (7 days); summaries and decisions persist indefinitely.
 
@@ -38,9 +38,9 @@ sudo dnf install jq
 
 #### 3. `markdown-vault-mcp` — the MCP server backing the memory vault
 
-**You normally don't need to install this yourself** — the plugin self-installs the server from the fork on first run. All it needs is [`uv`](https://docs.astral.sh/uv/) or [`pipx`](https://pipx.pypa.io/) on your PATH (`uv` preferred). The plugin's `.claude-plugin/plugin.json` declares the `memory` MCP server (a per-session **stdio** server launched via `hooks/mcp-memory.sh`) and Claude Code auto-wires it on plugin install, so there's no `claude mcp add` step either.
+**You normally don't need to install this yourself** — the plugin self-installs the server from the fork on first run. All it needs is [`uv`](https://docs.astral.sh/uv/) or [`pipx`](https://pipx.pypa.io/) on your PATH (`uv` preferred). The plugin's `.claude-plugin/plugin.json` declares the `memory` MCP server (the shared **HTTP** server on a loopback port) and Claude Code auto-wires it on plugin install, so there's no `claude mcp add` step either.
 
-Since v0.13.0 the server is a **per-session stdio server**: the MCP host (Claude Code or Cowork) spawns one in-process for each session via `hooks/mcp-memory.sh`, with no shared listener, port, or token. This is what lets memory work inside **Claude Cowork's remote sandbox**, where nothing can reach a loopback port on your Mac. Memory is available from the very first session on a fresh install — no token or restart dance. (v0.10.0–v0.12.0 used a single shared HTTP server; that architecture is retained but disabled — see [Memory server transport](#memory-server-transport) below.)
+The server is a **lazy-started, reference-counted shared HTTP server**: the first session that needs it starts it in the background, every session registers a ref, and it is stopped a grace period after the last session leaves. One server means one embedding model resident instead of one per session, one writer serializing index updates, and one process able to own the git sync loop. It needs a port and a bearer token, both provisioned by `/workbench-core:setup` — so run setup and restart before memory works on a fresh install. See [Memory server transport](#memory-server-transport) and [Server lifetime](#server-lifetime) below.
 
 The launcher installs from the [mikebronner/markdown-vault-mcp](https://github.com/mikebronner/markdown-vault-mcp) fork — the canonical source for this plugin. The fork carries index-state fixes the plugin relies on (persistent-index adoption at boot, offline-change reconciliation, tracker skip-state, embedding convergence, raw-transcript exclusion support) that are not yet in any PyPI release. They have been contributed upstream ([pvliesdonk/markdown-vault-mcp#665](https://github.com/pvliesdonk/markdown-vault-mcp/issues/665)); once an upstream release carries them, plain PyPI installs will work again — until then, installing from PyPI gets you a server that can exceed Claude Code's 30s MCP startup timeout on first boot.
 
@@ -121,7 +121,7 @@ The memory MCP server ships unconfigured. Run `/workbench:setup` on first instal
 | `memory_path` | Where your operational memory lives on disk | `~/Documents/Claude/Memory` |
 | `memory_cache` | Where indexes, server artifacts, and checkpoints are stored | `~/.claude-memory-cache` |
 | `memory_mcp_server_name` | MCP server name for the vault (`serverInfo.name`) | `workbench-memory` |
-| `memory_port` | Loopback port for the **optional** shared HTTP server (inert under per-session stdio) | `8765` |
+| `memory_port` | Loopback port the shared HTTP memory server binds and the MCP client connects to | `8765` |
 | `auto_summarize` | Spawn background summary-writer (PreCompact, `/log-now`, and the session-start drain) | `true` |
 | `summary_model` | Model for the background summary-writer | `sonnet` |
 
@@ -217,7 +217,7 @@ core/
 │   ├── hooks.json              — hook → script bindings
 │   ├── session-log.sh          — raw log capture + summary-writer dispatch (not at SessionEnd)
 │   ├── session-warmup.sh       — identity injection + retention cleanup + summary drain
-│   ├── mcp-memory.sh           — per-session stdio launcher (the memory MCP) + gated VACUUM
+│   ├── mcp-memory.sh           — stdio launcher, retained but unwired (see Memory server transport)
 │   ├── memory-server-up.sh     — shared-HTTP SessionStart kicker (disabled; retained for re-enable)
 │   ├── memory-server-spawn.sh  — shared-HTTP detached supervisor (disabled; retained)
 │   ├── memory-server-down.sh   — shared-HTTP manual stop (disabled; retained)
@@ -252,7 +252,7 @@ core/
 │   ├── install-chat-skills.sh  — package + install skills into Claude Chat
 │   ├── install.sh              — propagate the shipped persona to live locations
 │   ├── permissions.sh          — merge the shipped permission rails into settings.json
-│   └── memory-status.sh        — report the per-session stdio memory server's facts
+│   └── memory-status.sh        — report the shared memory server's facts
 └── README.md
 ```
 
@@ -453,8 +453,8 @@ Guardrails are prose in the model's context. Permission rails are enforcement in
 
 **The solution:** `assets/permissions/rails.json` ships a curated `deny` and `ask` list, merged into `~/.claude/settings.json` by `scripts/permissions.sh` during `/workbench-core:setup`. Permission rules are evaluated **deny → ask → allow, before the classifier**, in every mode including `bypassPermissions`. Nothing compacts them away.
 
-- **deny** — hard wall. No prompt, no override, no classifier opinion. Reserved for the irreversible: `sudo`, disk formatting, `git push --force`, history rewriting, reads of `~/.ssh`, `~/.aws`, `~/.gnupg`, and `.env`.
-- **ask** — always prompts, even in `auto`, even when a narrower allow rule matches. Used for destructive-but-legitimate work: `rm -rf`, `git reset --hard`, `gh pr merge`, `npm publish`, keychain writes, `launchctl`/`crontab` persistence.
+- **deny** — hard wall. No prompt, no override, no classifier opinion. Reserved for the irreversible: `sudo`, disk formatting and partitioning, `shred`, `btrfs`, `git push --force`, history rewriting, reads of `~/.ssh`, `~/.aws`, `~/.gnupg`, and `.env`.
+- **ask** — always prompts, even in `auto`, even when a narrower allow rule matches. Used for destructive-but-legitimate work: `rm -rf`, `git reset --hard`, `gh pr merge`, `npm publish`, keychain and libsecret writes, `launchctl`/`systemctl`/`crontab` persistence, AUR helpers.
 - **autoMode.allow** — a different layer: prose exceptions to the classifier's built-in *soft-deny* rules, read as natural language rather than tool patterns.
 
 The merge is **additive**: entries are added when absent, existing rules keep their position, and `permissions.allow` is never touched. `--dry-run` previews; `--list` prints every rule with its rationale.
@@ -465,7 +465,11 @@ The merge is **additive**: entries are added when absent, existing rules keep th
 
 **Why there is no `rm` deny rule.** `Bash(rm -rf:*)` sits in `ask` instead. A deny on `rm -rf /` would match every absolute-path delete — `*` is always a wildcard, and a deny rule can't carry an allowlist exception, so no `/tmp` carve-out is expressible. Claude Code already gates the catastrophic case semantically: the classifier decides root and home removals in `auto`, including inside `$(...)` and `<(...)` substitution, and they still prompt under `bypassPermissions` as a circuit breaker. A textual rule would add friction without adding coverage.
 
-Two more matching behaviours worth knowing: `Bash(git push --force:*)` also blocks `--force-with-lease`, and `Read(**/.env)` covers bare `.env` only — a `**/.env.*` rule would also catch `.env.example`. Note that a `Read` deny blocks `Edit` on the same path, so a denied `.env` can be neither read nor repaired.
+**What the Linux rails cover, and what they deliberately don't.** The `sudo` deny does most of the work: every mutating `pacman`/`apt`/`dnf` operation needs root, so those managers are already walled and get no rule of their own — a blanket one would prompt on every harmless `-Q` query and buy nothing. The rails added for Linux close the paths that *don't* go through sudo: AUR helpers (`yay`, `paru`) run as your user and elevate internally, `systemctl --user` and `systemd-run --user` need no root, `udisksctl` mounts and powers off devices through polkit, and `secret-tool` is the libsecret keychain. Disk tools (`parted`, `fdisk`, `sfdisk`, `sgdisk`, `wipefs`, `blkdiscard`) are denied as defense in depth on the same footing as `dd` and `mkfs` — root-requiring, but the deny costs nothing and doesn't depend on the sudo rule staying put. `btrfs` is denied because `btrfs subvolume delete` destroys snapshots, which on a btrfs root are the undo rope for every other mistake — the same reasoning as the reflog rule. `shred` is denied rather than asked because, unlike `rm`, an agent has no routine reason to securely wipe a file.
+
+Three matching behaviours worth knowing: `Bash(git push --force:*)` also blocks `--force-with-lease`; `Read(**/.env)` covers bare `.env` only — a `**/.env.*` rule would also catch `.env.example`; and `Bash(mkfs:*)` covers the per-filesystem variants (`mkfs.ext4`, `mkfs.btrfs`) by prefix. Note that a `Read` deny blocks `Edit` on the same path, so a denied `.env` can be neither read nor repaired.
+
+**Why `systemctl` is blanket rather than scoped.** A rule like `Bash(systemctl enable:*)` reads tighter, but it would never match `systemctl --user enable foo` — the flag precedes the verb, and matching is by prefix. That rootless invocation is exactly the one most in need of the rail, since it needs no sudo to install persistence. `secret-tool` *is* scoped (`store`, `clear`) because it always takes its verb as the first argument, which leaves `lookup` unprompted, mirroring `security find-generic-password` on macOS. `hooks/test-permissions.sh` asserts both shapes.
 
 ### Memory vault
 
@@ -497,12 +501,13 @@ Vault structure:
 
 #### Memory server transport
 
-The vault is served by a **per-session stdio** markdown-vault-mcp server (the default through v0.9, restored in v0.13.0). `plugin.json` points the `memory` MCP at `hooks/mcp-memory.sh`, and the MCP host (Claude Code or Cowork) spawns one server **in-process per session** — so the server runs wherever the session runs, including **Cowork's remote sandbox**. There is no shared listener, no port, and no bearer token.
+The vault is served by a **lazy-started, reference-counted shared HTTP** markdown-vault-mcp server on `127.0.0.1:8765`. `plugin.json` points the `memory` MCP at that URL with a bearer token; the first session that needs the server starts it, and it is stopped a grace period after the last session leaves.
 
-- **Why stdio (again).** v0.10.0–v0.12.0 used a single shared HTTP server on `127.0.0.1:8765` to avoid N sessions each building embeddings and racing one SQLite WAL. But Cowork runs in a remote sandbox that can't reach a loopback port on your Mac, so the shared server made memory unreachable there. Per-session stdio spawns the server in-process in *every* environment, so memory works in both terminal Claude Code and Cowork. The tradeoff — concurrent sessions on the Mac each run their own indexer and can contend on the index — is knowingly re-accepted.
-- **Index maintenance.** A gated, once/day full VACUUM reclaims index space out-of-band from the launcher (`hooks/mcp-memory.sh` → `hooks/lib/memory-vacuum.sh`), guarded by a non-blocking `mkdir` lock so concurrent launchers don't collide: one session VACUUMs, the rest skip. A VACUUM that still contends with a live sibling server's writes skips safely via SQLite's busy timeout — no blocking, no corruption.
+- **Why shared HTTP.** Per-session stdio (v0.13.0–) existed for one reason: Cowork's remote sandbox cannot reach a loopback port on your Mac. With Cowork out of scope that constraint is gone, and the shared server is the better answer on every axis that remains — **one embedding model resident instead of N** (a few hundred MB each), one **single-owner `IndexWriter`** thread serializing every write instead of N indexers racing one SQLite WAL, and **one process for the git sync loop**, which matters because the server's write-quiescing locks are `threading` locks and are therefore only correct with a single writer.
+- **Lifetime — up on demand, down when idle.** `memory-server-up.sh` (SessionStart) probes, and on a miss wins an atomic `mkdir` lock and reparents `memory-server-spawn.sh` out of the hook's process group via `perl-setsid`, so the slow work (venv install, embedding build) runs off the hook's critical path. It also **registers a session ref**. `memory-server-release.sh` (SessionEnd) drops the ref and, when it was the last one, reparents `memory-server-idle-stop.sh`. See [Server lifetime](#server-lifetime) below.
+- **Index maintenance.** A gated, once/day full VACUUM reclaims index space, run by the spawn supervisor (`hooks/memory-server-spawn.sh` → `hooks/lib/memory-vacuum.sh`) before the server binds. Under the shared transport the supervisor already owns the spawn lock, so it calls `memory_vacuum` directly rather than the `_locked` variant the stdio launcher needed. Spawns are rarer than sessions now, but the reaper restarts the server after any idle gap, so the once/day gate still fires.
 - **Server install (concurrency).** The server venv is keyed by the SHA-256 of the bundled wheel (`{memory_cache}/server-venv-<hash>/`), and the install itself runs under a blocking `mkdir` lock (`hooks/lib/memory-install.sh`). Both are required: N sessions start whenever the user starts them, so concurrent `uv pip install --force-reinstall` runs into one directory produced torn venvs, and orphaned plugin roots kept launching an older wheel that fought the current one for the same directory (52 reinstalls in one day, 2026-08-28). Keying by wheel hash means two wheels never share an environment; the lock serializes the remaining same-wheel races. The per-prompt recall hook passes a 0s timeout so a prompt never waits on an install.
-- **No port or token.** Per-session stdio needs neither. `WORKBENCH_MEMORY_PORT` / `WORKBENCH_MEMORY_TOKEN` in `settings.json` are inert unless the shared HTTP server is re-enabled.
+- **Port and token.** The shared server needs both. `/workbench-core:setup` provisions `WORKBENCH_MEMORY_PORT` and a minted `WORKBENCH_MEMORY_TOKEN` into `~/.claude/settings.json` `.env`; `plugin.json` interpolates them into the URL and the `Authorization` header. The probe is **identity-checked** rather than a bare TCP connect — it POSTs a real MCP `initialize` and asserts `serverInfo.name` matches the configured vault, so a stale orphan or an unrelated squatter on the port is reported as `DOWN_FOREIGN` instead of being silently adopted.
 
 Cache layout under `{memory_cache}` (default `~/.claude-memory-cache`):
 
@@ -512,10 +517,26 @@ Cache layout under `{memory_cache}` (default `~/.claude-memory-cache`):
 ├── embeddings/          — FastEmbed vectors
 ├── server-venv-<hash>/  — the installed server, keyed by bundled-wheel hash
 │                          (survives plugin updates; idle ones reclaimed after 30d)
+├── refs/                — one file per live session, holding its claude pid
+├── server.lock/         — atomic mkdir spawn mutex (claimer.pid + generation nonce)
+├── stop.lock/           — serializes idle reapers
 └── .last-vacuum         — cooldown stamp for the gated index VACUUM
 ```
 
 (`kv/`, `events/`, `server.log`, `server.pid`, `server.port`, and `server.token` appear only when the shared HTTP server is enabled — they back the HTTP transport, not stdio.)
+
+##### Server lifetime
+
+The shared server used to follow a "single never-stop model" — once up it stayed up until `memory-server-down.sh` was run by hand. That is wrong for a laptop: a server nobody is using holds the embedding model resident and runs a git pull loop for an empty room. It now has a real lifetime, built from a small ref registry (`hooks/lib/memory-refs.sh`).
+
+- **A ref records a pid, not a promise.** `memory-server-up.sh` writes one ref file per live session under `{memory_cache}/refs/`, containing the owning `claude` process id. Liveness is a `kill -0` on that pid. A ref released only by SessionEnd would leak the first time a session was SIGKILLed or its terminal closed — and one leaked ref pins the server on forever, which is exactly the bug this exists to prevent. SessionEnd is the fast path; **the pid sweep is the correctness guarantee.**
+- **The owner pid is walked, not `$PPID`.** A hook's immediate parent is whatever shell the harness invoked it with, which dies the instant the hook returns. The registry walks up to the nearest `claude` ancestor instead, because that process lives exactly as long as the session does.
+- **Registration precedes the already-serving fast path.** A session joining a *running* server must still be counted, or the reaper would take the server down underneath it the moment the session that originally started it exited.
+- **Reaping waits out a grace period** (`WORKBENCH_MEMORY_IDLE_GRACE`, default 120s). Three reasons: session churn should not bounce the server; an unattended `claude -p` dispatch whose SessionStart has not registered yet must not have the server pulled out from under it; and a server idle two minutes longer costs nothing, while one yanked from a live session breaks that session's memory for good.
+- **The start/stop race is handled in three layers.** The ref count is checked twice, separated by a settle interval (`WORKBENCH_MEMORY_IDLE_SETTLE`, default 3s); a `stop.lock` admits only one reaper; and **after** the kill the count is checked once more, bringing the server straight back up if a session arrived during the stop. The residual exposure is a session connecting in the milliseconds around the kill itself — the same exposure as any server restart, reachable only after a full grace period of zero sessions.
+- **Set `WORKBENCH_MEMORY_IDLE_GRACE=0` to disable auto-stop** and return to the never-stop model.
+
+`hooks/test-memory-refs.sh` covers the registry and the reaper; `hooks/test-plugin-http-config.sh` asserts the transport shape and that the lifetime hooks stay wired in the right order.
 
 ##### Re-enabling the shared HTTP server (optional)
 
@@ -527,6 +548,37 @@ The shared-HTTP implementation is **retained, not deleted** — only its invocat
 4. **`/workbench-core:setup`** — re-run to provision the bearer token + `WORKBENCH_MEMORY_PORT` into `~/.claude/settings.json` `.env`, then restart Claude Code.
 
 The supervisor (`hooks/memory-server-spawn.sh`), the identity-checked health probe (`hooks/lib/memory-probe.sh`), the manual stop (`hooks/memory-server-down.sh`), the bearer-token minting, and the one-shot orphan sweep all remain in the tree and work as before once re-wired.
+
+#### Cross-machine sync (optional)
+
+Two machines can share one memory. The server does this itself — no file-sync tool involved — via a git remote: a fetch + fast-forward before the initial index build, then a pull loop whose `on_pull` callback is `reindex`, plus a deferred-commit queue for writes and write-quiescing around each merge.
+
+**Why git and not Syncthing.** A synced *file* is not a searchable memory. A file-sync tool drops the other machine's notes into the vault, but nothing tells the index they arrived, so they stay unfindable until something forces a rescan. The pull loop reindexes on every pull by design. Git also merges markdown — a sync tool hands you a `.sync-conflict` copy and walks away — and gives every memory change a revertible history, which pairs well with the decision-quality loop.
+
+**Only the markdown syncs.** The SQLite index, the embeddings and the venv stay machine-local under `{memory_cache}`. A WAL database copied by a file syncer with no transactional grouping is a corrupted database. Each machine rebuilds its own index incrementally, and because change detection is a content SHA-256 rather than an mtime, sync-induced timestamp churn triggers no reindexing at all. Vault paths are stored relative to the vault root, so `/Users/you` and `/home/you` index identically.
+
+**It requires the shared HTTP transport.** The write-quiescing that makes a merge safe is built from `threading` locks — in-process only. N per-session stdio servers would be N independent locks committing into one `.git`, where git's own `index.lock` fails fast rather than waiting. This is safe *because* there is exactly one server process.
+
+Configure via `config.json` (or the matching `WORKBENCH_*` override):
+
+| `config.json` key | Override env | Default |
+|---|---|---|
+| `memory_git_repo_url` | `WORKBENCH_MEMORY_GIT_REPO_URL` | unset — **the whole feature is off until this is set** |
+| `memory_git_token` | `WORKBENCH_MEMORY_GIT_TOKEN` | unset |
+| `memory_git_username` | `WORKBENCH_MEMORY_GIT_USERNAME` | `x-access-token` |
+| `memory_git_pull_interval_s` | `WORKBENCH_MEMORY_GIT_PULL_INTERVAL` | `120` |
+| `memory_git_push_delay_s` | `WORKBENCH_MEMORY_GIT_PUSH_DELAY` | `30` (write-**idle** seconds, so a burst of captures coalesces into one push) |
+| `memory_git_commit_name` / `_email` | `WORKBENCH_MEMORY_GIT_COMMIT_NAME` / `_EMAIL` | server default |
+| `memory_git_lfs` | `WORKBENCH_MEMORY_GIT_LFS` | `false` |
+
+Four things to get right:
+
+1. **Use a private repository.** The vault holds identity, profile, and operational memory.
+2. **Put the token in `~/.claude/settings.json` `.env`**, beside `WORKBENCH_MEMORY_TOKEN`. The env override is read first for exactly this reason; `config.json` is plain-text plugin data and the worse place for a credential.
+3. **`.gitignore` the raw transcripts.** `sessions/**/*.log.md` are excluded from indexing and reaped at 7 days — committing them and then committing their deletion a week later is pure churn.
+4. **The pull interval is 120s, not the server's own 600s default.** This is interactive shared memory between two machines the same person is using; ten minutes of staleness is long enough to re-derive a decision the other machine already recorded.
+
+The default pull interval is deliberately tighter than upstream's, and `git_lfs` is deliberately inverted — it defaults on upstream and earns nothing on small markdown files while requiring the filter on both machines before a clone works.
 
 #### Canonical store & routing
 
@@ -578,7 +630,7 @@ Runs on every `startup` warmup:
 | `/workbench-core:evaluate-decisions` | Grade recorded decisions & memories for decision quality (correctness, accuracy/efficiency/speed, consistency/recurrence, gaps) → learnings report. Decision-quality loop, gear 2 |
 | `/workbench-core:propose-upgrades` | Turn an evaluation into concrete corrections & new process recordings, walk human sign-off, apply only what's approved. Decision-quality loop, gears 3+4 |
 | `/workbench-core:memory-lint` | Monthly health-and-repair pass over the memory vault — frontmatter rescue, broken-link repair, conservative orphan linking, vault-index drift repair, duplicate flagging, audit report |
-| `/workbench-core:memory-status` | Report the per-session stdio memory server's facts — vault/cache, launcher & server-binary presence, index & last-VACUUM |
+| `/workbench-core:memory-status` | Report the shared memory server's facts — vault/cache, server-binary presence, index & last-VACUUM |
 | `/workbench-core:install-chat-skills` | Discover skills in `@claude-workbench` plugins and install them into the Claude Mac app's Chat surface via `.skill` packaging |
 
 All skills are **execution-aware** — they check for a `skills/{name}.learnings.md` file in the vault before running and apply any accumulated learnings from prior executions.
@@ -611,8 +663,8 @@ All config values can be overridden via environment variables for testing:
 |----------|-----------|
 | `WORKBENCH_MEMORY_PATH` | `memory_path` |
 | `WORKBENCH_MEMORY_CACHE` | `memory_cache` |
-| `WORKBENCH_MEMORY_PORT` | `memory_port` — the optional shared HTTP server's port (inert under per-session stdio) |
-| `WORKBENCH_MEMORY_TOKEN` | the optional shared HTTP server's bearer token (inert under per-session stdio) |
+| `WORKBENCH_MEMORY_PORT` | `memory_port` — the shared HTTP server's port; the MCP client connects here |
+| `WORKBENCH_MEMORY_TOKEN` | the shared HTTP server's bearer token, minted by `/workbench-core:setup` |
 | `WORKBENCH_SUMMARY_MODEL` | `summary_model` |
 | `WORKBENCH_AUTO_SUMMARIZE` | `auto_summarize` |
 | `WORKBENCH_LOG_MODE` | Force log mode (`checkpoint`, `final`, `manual`) |
@@ -623,12 +675,20 @@ All config values can be overridden via environment variables for testing:
 | `WORKBENCH_MEMORY_RECALL_LIMIT` | Max memories the recall hook injects per turn (default `2`) |
 | `WORKBENCH_SETTINGS_FILE` | `~/.claude/settings.json` path (used by `install.sh` and `permissions.sh` for testing) |
 | `WORKBENCH_OUTPUT_STYLES_DIR` | `~/.claude/output-styles` path (used by `install.sh` for testing) |
+| `WORKBENCH_MEMORY_GIT_REPO_URL` | Vault git remote; unset disables cross-machine sync entirely |
+| `WORKBENCH_MEMORY_GIT_TOKEN` | Credential for that remote (prefer this over `config.json`) |
+| `WORKBENCH_MEMORY_GIT_PULL_INTERVAL` | Seconds between fetch + fast-forward pulls (default 120) |
+| `WORKBENCH_MEMORY_GIT_PUSH_DELAY` | Seconds of write-idle before pushing (default 30) |
+| `WORKBENCH_MEMORY_GIT_LFS` | Git LFS for the vault (default `false`) |
+| `WORKBENCH_MEMORY_IDLE_GRACE` | Seconds after the last session leaves before the shared server is stopped (default 120; `0` disables auto-stop) |
+| `WORKBENCH_MEMORY_IDLE_SETTLE` | Seconds between the reaper's two pre-kill ref checks (default 3) |
+| `WORKBENCH_MEMORY_REFS_DIR` | Session ref registry location (default `{memory_cache}/refs`; used by tests) |
 | `WORKBENCH_RAILS_FILE` | `assets/permissions/rails.json` path (used by `permissions.sh` for testing) |
 
 ## Known limitations
 
 - **Restart after plugin update.** `CLAUDE_PLUGIN_ROOT` is resolved once at session startup. After updating, restart Claude Code to pick up changes.
-- **Concurrent sessions share one index.** Per-session stdio spawns a server per session, all pointed at the same `{memory_cache}` index. Multiple simultaneous sessions each run their own indexer and can contend on the SQLite index (the gated VACUUM skips safely when contended). This is the knowingly-accepted tradeoff of stdio; the optional shared HTTP server (see [Memory server transport](#memory-server-transport)) avoids it at the cost of not working in Cowork.
+- **Server lifetime is decoupled from session lifetime.** This is the tradeoff the shared server buys its efficiency with, and it runs the opposite way to stdio. A stdio server could not outlive or predecease its session; a shared one can. If the server dies mid-session — a crash, an OOM, a plugin update, or a laptop sleep/wake dropping the connection — that session's memory tools stay dead, because the SessionStart probe and the lazy-start supervisor only cover a *cold* start, not a mid-session death. The reaper's own exposure is bounded (see [Server lifetime](#server-lifetime)); an external restart is not.
 - **Summary-writer race on rapid compactions.** If a session compacts multiple times in quick succession, multiple summary-writers may run concurrently. The last one wins (overwrites the summary), which is always the most complete — but intermediate writers do wasted work.
 
 ## Design philosophy

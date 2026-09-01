@@ -61,8 +61,18 @@ jobs:
       - name: shellcheck hooks + libs + fixtures + scripts
         run: |
           set -euo pipefail
+          # PINNED. The runner image's shellcheck floats, and a developer's local
+          # copy does not track it: 0.11.0 does not raise SC2120 where the image's
+          # older build does, so main sat red across 0.19.0-0.19.3 while every
+          # local run reported clean. A lint gate that disagrees with the machine
+          # people actually run it on is not a gate. Bump this deliberately.
+          SC_VERSION=v0.11.0
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/${SC_VERSION}/shellcheck-${SC_VERSION}.linux.x86_64.tar.xz" \
+            | tar -xJf - -C /tmp
+          SHELLCHECK="/tmp/shellcheck-${SC_VERSION}/shellcheck"
+          "$SHELLCHECK" --version
           # -x lets shellcheck follow `source`d libraries under hooks/lib.
-          shellcheck --severity=warning -x \
+          "$SHELLCHECK" --severity=warning -x \
             hooks/*.sh hooks/lib/*.sh hooks/fixtures/*.sh scripts/*.sh
 
       - name: bash -n on hooks + libs + fixtures + scripts

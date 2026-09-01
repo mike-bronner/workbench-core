@@ -67,13 +67,21 @@ start_fake() {
     >/dev/null 2>&1 &
   local pid=$!
   FAKE_PIDS+=("$pid")
-  # Wait up to ~6s for the port to actually LISTEN. Use lsof as the readiness
-  # ground truth, not a bash /dev/tcp connect: /dev/tcp connects can spuriously
-  # fail under a restricted-network sandbox even while the port is genuinely
-  # bound, which would let the probe run before the fixture is reachable.
+  # Wait up to ~6s for the port to actually LISTEN. Use the socket table as the
+  # readiness ground truth, not a bash /dev/tcp connect: /dev/tcp connects can
+  # spuriously fail under a restricted-network sandbox even while the port is
+  # genuinely bound, which would let the probe run before the fixture is
+  # reachable. lsof ships with macOS; a stock Arch/Omarchy box has `ss` instead,
+  # so probe for whichever exists rather than assuming lsof.
   local i=0
   while [ "$i" -lt 120 ]; do
-    if lsof -nP -iTCP:"$port" -sTCP:LISTEN -t >/dev/null 2>&1; then return 0; fi
+    if command -v lsof >/dev/null 2>&1; then
+      lsof -nP -iTCP:"$port" -sTCP:LISTEN -t >/dev/null 2>&1 && return 0
+    elif command -v ss >/dev/null 2>&1; then
+      ss -Hltn "sport = :$port" 2>/dev/null | grep -q . && return 0
+    else
+      return 0   # no socket tool at all — fall through to the caller's own wait
+    fi
     i=$((i + 1)); sleep 0.05
   done
   return 0

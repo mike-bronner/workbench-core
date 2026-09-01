@@ -16,9 +16,11 @@
 #   - On failure: write $CACHE_PATH/.server-failed (with a log tail) → release
 #     the lock. The next SessionStart will see DOWN_FAILED and retry.
 #
-# Single never-stop model: once up, the server stays up across sessions (the
-# client's per-tool timeout is NOT a server idle reaper). Nothing here stops it;
-# memory-server-down.sh is the only stop path, and it is manual.
+# Lifetime: this supervisor only ever brings the server UP. Stopping it belongs
+# to memory-server-idle-stop.sh, which is reparented by memory-server-release.sh
+# once the last session ref is dropped — see hooks/lib/memory-refs.sh. (Through
+# v0.18 there was no reaper at all and memory-server-down.sh was the only, manual,
+# stop path.) The client's per-tool timeout is still NOT a server idle reaper.
 
 set -u
 
@@ -93,6 +95,38 @@ fail() {
   exit 0
 }
 
+# _parent_is_reaper <ppid> — true when a process with this parent has been
+# ORPHANED and adopted, rather than still being owned by a live session.
+#
+# "Orphan == ppid 1" is a macOS assumption and is WRONG on Linux. When a parent
+# dies, the kernel reparents its children to the nearest ancestor marked
+# PR_SET_CHILD_SUBREAPER, falling back to pid 1 only when there is none. Under
+# systemd every user session runs a `systemd --user` manager that sets exactly
+# that flag, so an orphan reparents to it — a live process, with a pid that is
+# not 1. The old gate read that as "has a live parent, therefore in use" and
+# skipped it, which meant **orphaned stdio servers were never reaped on Linux**
+# (verified on Omarchy: an orphan landed on ppid 1245 = systemd --user, not 1).
+#
+# So treat as orphaned: no parent, a dead parent, pid 1 (init/launchd), or a
+# parent that IS an init/subreaper by name. The name check is the Linux half;
+# macOS orphans still land on launchd at pid 1 and are caught by the pid test.
+#
+# This cannot mis-reap a live session's server: for the name branch to fire, the
+# server's own launcher must already have exited, which is what orphaned means.
+_parent_is_reaper() {
+  local ppid="$1" comm
+  [ -z "$ppid" ] && return 0                 # no parent reported at all
+  case "$ppid" in
+    0|1) return 0 ;;                         # init / launchd
+  esac
+  kill -0 "$ppid" 2>/dev/null || return 0    # parent is dead
+  comm="$(ps -o comm= -p "$ppid" 2>/dev/null | tr -d ' ')"
+  case "${comm##*/}" in
+    systemd|init|launchd) return 0 ;;        # adopted by a subreaper
+  esac
+  return 1
+}
+
 # sweep_orphan_stdio_servers: one-shot migration. Before the shared-server model,
 # every session launched its OWN stdio markdown-vault-mcp. When those sessions
 # ended uncleanly their servers could leak as orphans (parent dead → reparented
@@ -104,8 +138,9 @@ fail() {
 #   - UID-scoped: only our own processes (pgrep -u $(id -u)).
 #   - Command matches the resolved venv SERVER_BIN path (the per-session stdio
 #     launcher's binary) — never a random "markdown-vault-mcp" substring.
-#   - ORPHAN only: parent is dead or PID 1. A server with a LIVE parent is an
-#     in-flight session's server — NEVER touch it.
+#   - ORPHAN only, per _parent_is_reaper below: the parent is dead, is init, or
+#     is a subreaper that adopted it. A server with a live session-owned parent
+#     is an in-flight session's server — NEVER touch it.
 #   - Excludes our own shared server, this supervisor ($$), and our parent
 #     ($PPID).
 # WAL checkpoint runs only if, after the sweep, zero servers remain holding the
@@ -133,10 +168,11 @@ sweep_orphan_stdio_servers() {
     # editor that happens to have the path in argv.
     cmd="$(ps -o command= -p "$pid" 2>/dev/null)"
     case "$cmd" in *markdown-vault-mcp*|*"$bin"*) : ;; *) continue ;; esac
-    # ORPHAN gate: parent must be dead or PID 1. A live, non-init parent means a
-    # live session owns this server — leave it strictly alone.
+    # ORPHAN gate: the parent must be dead, or an init/subreaper that ADOPTED
+    # this process after its real parent died. A live, session-owned parent means
+    # a live session owns this server — leave it strictly alone.
     ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
-    if [ "$ppid" != "1" ] && [ -n "$ppid" ] && kill -0 "$ppid" 2>/dev/null; then
+    if ! _parent_is_reaper "$ppid"; then
       continue
     fi
     _log "sweep: reaping orphan stdio server pid=$pid (ppid=$ppid)"

@@ -49,8 +49,29 @@ port_is_free() {
 
 # port_owner <port> — who is LISTENing, as "cmd/pid" pairs. Empty when nobody is.
 # Used only to make a failure name its own cause.
+#
+# lsof ships with macOS but is NOT installed on a stock Arch/Omarchy system, where
+# `ss` is the equivalent. Without a fallback every port assertion here reported
+# "nothing listening" on Linux regardless of the truth — a harness gap that reads
+# as a product failure. Prefer lsof when present, else ss.
 port_owner() {
-  lsof -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null | tail -n +2 | awk '{print $1"/"$2}' | tr '\n' ' '
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null | tail -n +2 | awk '{print $1"/"$2}' | tr '\n' ' '
+  elif command -v ss >/dev/null 2>&1; then
+    # ss -H omits the header; users:(("cmd",pid=123,fd=4)) carries the owner.
+    ss -Hltnp "sport = :$1" 2>/dev/null \
+      | grep -oE '\(\("[^"]+",pid=[0-9]+' \
+      | sed -E 's/\(\("([^"]+)",pid=([0-9]+)/\1\/\2/' | tr '\n' ' '
+  fi
+}
+
+# listener_pids <port> — pids LISTENing on the port, one per line.
+listener_pids() {
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null
+  elif command -v ss >/dev/null 2>&1; then
+    ss -Hltnp "sport = :$1" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2
+  fi
 }
 
 # next_port — the next port in this run's sequence that is genuinely free.
@@ -115,14 +136,27 @@ wait_lock_released() {
   return 1
 }
 
-# wait_reparented <pid> — the server's parent (the supervisor) re-parents the
-# server to init only once the supervisor itself exits, which happens just after
-# lock release. Poll until PPID is 1 (bounded).
+# wait_reparented <pid> — the supervisor re-parents the server once it exits
+# itself, just after lock release. Poll (bounded) until that has happened.
+#
+# "Reparented == PPID 1" holds on macOS, where orphans go to launchd at pid 1.
+# It is WRONG on Linux: the kernel hands an orphan to the nearest ancestor marked
+# PR_SET_CHILD_SUBREAPER, and under systemd every user session runs a
+# `systemd --user` that sets it — so a correctly detached server lands on that
+# manager's pid, not 1, and this asserted a detach failure that had not happened.
+# The same wrong assumption was live in the orphan sweep itself; see
+# _parent_is_reaper in memory-server-spawn.sh.
+#
+# So accept either: pid 1, or a parent that IS an init/subreaper by name.
 wait_reparented() {
-  local pid="$1" i=0 ppid
+  local pid="$1" i=0 ppid comm
   while [ "$i" -lt 80 ]; do
     ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
-    [ "$ppid" = "1" ] && return 0
+    if [ "$ppid" = "1" ]; then return 0; fi
+    if [ -n "$ppid" ]; then
+      comm=$(ps -o comm= -p "$ppid" 2>/dev/null | tr -d ' ')
+      case "${comm##*/}" in systemd|init|launchd) return 0 ;; esac
+    fi
     i=$((i + 1)); sleep 0.1
   done
   return 1
@@ -202,7 +236,7 @@ wait_lock_released "$D/cache" || true
 # Exactly one server: precisely one process listening on the port (the real
 # invariant — a single mkdir winner means a single launched server). lsof is the
 # ground truth; the recorded server.pid must be that live process.
-LISTENERS=$(lsof -nP -iTCP:"$P" -sTCP:LISTEN -t 2>/dev/null | sort -u | grep -c .)
+LISTENERS=$(listener_pids "$P" | sort -u | grep -c .)
 [ "$LISTENERS" -eq 1 ] && ok "exactly one process listening on the port" \
   || no "expected 1 listener on :$P, found $LISTENERS — holders: $(port_owner "$P")"
 PIDF="$D/cache/server.pid"
@@ -292,9 +326,9 @@ kick "$D" "$P" detach-vault
 wait_up "$D/cache" "$P" detach-vault || true
 SPID=$(cat "$D/cache/server.pid" 2>/dev/null)
 if wait_reparented "$SPID"; then
-  ok "server PPID is 1 (reparented; survives kicker pgroup signals)"
+  ok "server reparented to init/subreaper (survives kicker pgroup signals)"
 else
-  no "server PPID never became 1 (not detached)"
+  no "server never reparented to init/subreaper (not detached)"
 fi
 
 echo "issue 2 — only the supervisor writes claimer.pid (no late-kicker clobber):"

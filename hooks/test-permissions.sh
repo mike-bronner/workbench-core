@@ -257,6 +257,36 @@ assert_jq "no .env.* rule (would catch .env.example)" "$SHIPPED_RAILS" \
 # workbench-dev-team dispatches Watson via `nohup claude -p`, where an ask rule
 # blocks instead of prompting. If one of these ever lands in ask, the pipeline
 # dies silently — so assert it here rather than trusting a comment.
+# The Linux rails close the paths the `sudo` deny does NOT cover. Two of those
+# calls are non-obvious enough that a future edit could plausibly "tidy" them
+# into something that silently stops working, so assert them.
+echo "Linux rails cover the rootless paths:"
+assert_jq "systemctl is blanket, not scoped to a verb" "$SHIPPED_RAILS" \
+  '[.ask[] | select(.rule == "Bash(systemctl:*)")] | length' "1"
+# `systemctl --user enable foo` puts the flag BEFORE the verb, so a scoped
+# `Bash(systemctl enable:*)` rule would never match the rootless case — which is
+# the one case that most needs the rail, since it needs no sudo.
+assert_jq "no scoped systemctl verb rules" "$SHIPPED_RAILS" \
+  '[.ask[] | select(.rule | startswith("Bash(systemctl "))] | length' "0"
+for RULE in "Bash(yay:*)" "Bash(paru:*)" "Bash(systemd-run:*)" "Bash(udisksctl:*)"; do
+  assert_jq "$RULE asks" "$SHIPPED_RAILS" \
+    "[.ask[] | select(.rule == \"$RULE\")] | length" "1"
+done
+
+# pacman/apt/dnf need root for every mutating operation, so `Bash(sudo:*)`
+# already walls them. A blanket rule would prompt on every harmless `-Q` query
+# and buy nothing. If one ever appears here, the reasoning above was lost.
+echo "system package managers rely on the sudo deny, not their own rule:"
+for MGR in pacman apt apt-get dnf yum zypper; do
+  COUNT="$(jq -r --arg m "Bash($MGR" \
+    '[(.deny + .ask)[] | select(.rule | startswith($m))] | length' "$SHIPPED_RAILS")"
+  if [ "$COUNT" = "0" ]; then
+    PASS=$((PASS + 1)); echo "  ✅ no $MGR rule"
+  else
+    FAIL=$((FAIL + 1)); echo "  ❌ $MGR rule present — prompts on read-only queries for no gain"
+  fi
+done
+
 echo "ask list never blocks the unattended dev-team pipeline:"
 for RULE in "Bash(git push:*)" "Bash(git commit:*)" "Bash(gh pr create:*)"; do
   COUNT="$(jq -r --arg r "$RULE" '[.ask[] | select(.rule == $r)] | length' "$SHIPPED_RAILS")"

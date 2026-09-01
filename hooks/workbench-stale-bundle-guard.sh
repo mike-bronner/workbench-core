@@ -46,6 +46,19 @@ event=$(printf '%s' "$payload" | jq -r '.hook_event_name // empty' 2>/dev/null)
 # What did this app actually serve? Resolved LAZILY and once: the find walks the
 # sessions tree, and UserPromptSubmit fires on every prompt — the overwhelming
 # majority of which exit before ever needing this.
+# Epoch mtime, portably. GNU `stat -c` is probed FIRST because on GNU `stat -f`
+# means "filesystem status" and prints something unrelated instead of failing —
+# probing BSD first would yield garbage on Linux rather than falling through.
+# Same ordering convention as workbench-ynab's octal-perms reads.
+#
+# This hook only ever finds manifests under the desktop app's bundle cache, which
+# exists on macOS alone — so on Linux the find returns nothing and this is never
+# called. It stays portable anyway because WORKBENCH_SESSIONS_DIR can point the
+# hook at any directory, and the test suite does exactly that.
+_mtime() {
+  stat -c '%Y' "$1" 2>/dev/null || stat -f '%m' "$1" 2>/dev/null
+}
+
 _manifest=""
 _manifest_resolved=0
 _bundle_version() {  # _bundle_version <plugin-name> -> served version, or empty
@@ -53,7 +66,7 @@ _bundle_version() {  # _bundle_version <plugin-name> -> served version, or empty
     _manifest_resolved=1
     _manifest=$(find "$SESSIONS_DIR" \
       -maxdepth 5 -path "*/rpm/manifest.json" -print 2>/dev/null | while read -r m; do
-        printf '%s\t%s\n' "$(stat -f '%m' "$m" 2>/dev/null)" "$m"
+        printf '%s\t%s\n' "$(_mtime "$m")" "$m"
       done | sort -rn | head -1 | cut -f2-)
   fi
   [ -n "$_manifest" ] || return 0

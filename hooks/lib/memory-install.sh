@@ -177,16 +177,16 @@ _memory_venv_gc() {
 }
 
 # _memory_install_from_git: legacy resilience path — install the global binary
-# from the mikebronner fork when no bundled wheel is available or uv is missing.
+# from upstream when no bundled wheel is available or uv is missing.
 # On success sets SERVER_BIN to the global binary's path and returns 0; returns
 # non-zero when the binary cannot be made available. Does NOT exec — the caller
 # launches with its own transport flags.
 _memory_install_from_git() {
   local logger="$1"
   if ! command -v markdown-vault-mcp >/dev/null 2>&1; then
-    "$logger" "markdown-vault-mcp not found; installing from mikebronner fork (~60-90s, first run only)"
+    "$logger" "markdown-vault-mcp not found; installing from upstream (~60-90s, first run only)"
     if command -v uv >/dev/null 2>&1; then
-      if uv tool install --from git+https://github.com/mikebronner/markdown-vault-mcp \
+      if uv tool install --from git+https://github.com/pvliesdonk/markdown-vault-mcp \
           markdown-vault-mcp --with fastmcp --with fastembed 1>&2; then
         "$logger" "installed markdown-vault-mcp via uv"
       else
@@ -194,7 +194,7 @@ _memory_install_from_git() {
         return 1
       fi
     elif command -v pipx >/dev/null 2>&1; then
-      if pipx install git+https://github.com/mikebronner/markdown-vault-mcp 1>&2; then
+      if pipx install git+https://github.com/pvliesdonk/markdown-vault-mcp 1>&2; then
         "$logger" "installed markdown-vault-mcp via pipx"
       else
         "$logger" "ERROR: pipx install failed (see installer output above)"
@@ -204,8 +204,8 @@ _memory_install_from_git() {
       "$logger" "ERROR: markdown-vault-mcp is not installed and neither uv nor pipx is on PATH."
       "$logger" "Install uv (https://docs.astral.sh/uv/) or pipx (https://pipx.pypa.io/) and restart Claude Code,"
       "$logger" "or install the server manually with one of:"
-      "$logger" "  uv tool install --from git+https://github.com/mikebronner/markdown-vault-mcp markdown-vault-mcp --with fastmcp --with fastembed"
-      "$logger" "  pipx install git+https://github.com/mikebronner/markdown-vault-mcp"
+      "$logger" "  uv tool install --from git+https://github.com/pvliesdonk/markdown-vault-mcp markdown-vault-mcp --with fastmcp --with fastembed"
+      "$logger" "  pipx install git+https://github.com/pvliesdonk/markdown-vault-mcp"
       "$logger" "See README.md, section '3. markdown-vault-mcp — the MCP server backing the memory vault'."
       return 1
     fi

@@ -26,6 +26,27 @@ printf 'SOULHOT-CANARY soul rules\n' > "$SANDBOX/memory/identity/soul-hot.md"
 printf 'PROFILE-CANARY user facts\n' > "$SANDBOX/memory/identity/profile.md"
 printf 'SKILLSPROTO-CANARY skill learnings\n' > "$SANDBOX/memory/identity/skills-protocol.md"
 
+# The health probe reads the CONFIGURED port, and without a pin that resolves to
+# the plugin's 8765 default — where a developer running this plugin has a real
+# memory server listening. The probe then correctly reports a foreign listener,
+# and the "server is merely down" assertions below go red on a working machine
+# while staying green on CI, which has nothing on 8765. Pin a genuinely free port
+# in the high ephemeral band instead, the same defence test-memory-server-up.sh
+# applies for the same reason.
+port_is_free() { ! (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+PROBE_PORT=""
+_candidate=$(( 20000 + (RANDOM % 20000) ))
+for _ in $(seq 1 500); do
+  if port_is_free "$_candidate"; then PROBE_PORT="$_candidate"; break; fi
+  _candidate=$((_candidate + 1))
+done
+if [ -z "$PROBE_PORT" ]; then
+  # Fail closed: handing back an occupied port reproduces the exact red the pin
+  # exists to prevent, but somewhere far from here.
+  echo "FATAL: no free TCP port found for the probe" >&2
+  exit 1
+fi
+
 run_warmup() {
   local source="$1"
   local agent="${2:-}"
@@ -34,6 +55,7 @@ run_warmup() {
     HOME="$SANDBOX/home" \
     WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
     WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
+    WORKBENCH_MEMORY_PORT="$PROBE_PORT" \
     CLAUDE_PLUGIN_ROOT="$REPO_ROOT" \
     bash "$WARMUP" 2>/dev/null
   )

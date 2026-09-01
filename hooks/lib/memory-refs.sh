@@ -70,6 +70,15 @@ _memory_refs_file() {
 #
 # `ps -o comm=` prints a bare name on Linux and sometimes a full path on macOS,
 # so compare on the basename to stay portable across both.
+#
+# SC2120: nothing currently passes $1 — both call sites below take the $PPID
+# default, and the tests bypass this function entirely by handing an explicit
+# owner to memory_ref_register. The parameter is kept deliberately: it is the
+# only seam for driving the ancestor walk without spawning a real process tree,
+# which is what a test of THIS function (as opposed to the ref-file bookkeeping
+# around it) would need. Suppressed rather than deleted so that test stays
+# cheap to write.
+# shellcheck disable=SC2120
 _memory_refs_owner_pid() {
   local start="${1:-$PPID}" pid hops=0 comm
   pid="$start"

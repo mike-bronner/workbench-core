@@ -187,7 +187,7 @@ summary: |
 
 ## Decisions
 
-- [[decisions/2026-05-02-vault-mcp-fork|Vault MCP fork]] — install from the mikebronner fork, not PyPI
+- [[decisions/2026-05-02-vault-mcp-fork|Vault MCP fork]] — superseded 2026-09-01: upstream merged the fixes, so the plugin installs from upstream
 
 ## Identity
 

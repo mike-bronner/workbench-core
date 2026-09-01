@@ -360,9 +360,15 @@ release_lock_in() {  # <cache-dir> <captured-nonce>
   ( export HOME="$1/home" CLAUDE_PLUGIN_ROOT="$REPO_ROOT" \
       WORKBENCH_MEMORY_CACHE="$1/cache" WORKBENCH_MEMORY_PATH="$1/vault" \
       MEMORY_SPAWN_LIB_ONLY=1
-    # GEN_NONCE is consumed by release_lock, sourced from $SPAWN on this line.
-    # shellcheck source=hooks/memory-server-spawn.sh disable=SC2034
-    . "$SPAWN"; GEN_NONCE="$2"; release_lock ) >/dev/null 2>&1
+    # shellcheck source=hooks/memory-server-spawn.sh
+    . "$SPAWN"
+    # GEN_NONCE is consumed by release_lock, sourced from $SPAWN above. Split off
+    # its own line because a directive applies to the NEXT command only — on the
+    # old one-line form the disable covered the `.` and never reached this
+    # assignment, so the suppression silently did nothing.
+    # shellcheck disable=SC2034
+    GEN_NONCE="$2"
+    release_lock ) >/dev/null 2>&1
 }
 
 D="$SANDBOX/nonce-match"; mkdir -p "$D/cache/server.lock" "$D/home"

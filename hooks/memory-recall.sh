@@ -145,6 +145,10 @@ esac
 # vault and its index live. memory_load_env exports the MARKDOWN_VAULT_MCP_*
 # env the CLI reads (precedence: WORKBENCH_* override → config.json → default).
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# SC2034: HOOKS_DIR is not read in this file — it is read by memory-install.sh
+# (`${HOOKS_DIR:?HOOKS_DIR must be set}/wheels`), which memory-env.sh pulls in
+# transitively. shellcheck cannot follow that far, so the use is invisible here.
+# shellcheck disable=SC2034
 HOOKS_DIR="$HOOK_DIR"
 # shellcheck source=hooks/lib/memory-env.sh
 . "$HOOK_DIR/lib/memory-env.sh" 2>/dev/null || exit 0

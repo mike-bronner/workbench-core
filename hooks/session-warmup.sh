@@ -258,10 +258,9 @@ BEHAVIORAL_OVERRIDES_PLACEHOLDER
 
 ## Identity files (loaded by SessionStart hook)
 
-- `soul-hot.md` — hard rules, voice, drift test
 - `profile.md` — user facts, working preferences
 - `skills-protocol.md` — execution-aware skill learnings
-- `guardrails.md` — absolute rules across all personas
+- `guardrails.md` — absolute rules across every agent and context
 
 When these conflict with default Claude behavior, the identity files win.
 <!-- workbench-identity:end -->
@@ -355,7 +354,7 @@ fi
 # Skip guard: Claude Code sets this env var on every sub-agent dispatch
 # (Watson, Holmes-reviewer, Lestrade, Harvester — and any future agent
 # from any plugin). Those runs carry self-contained system prompts and
-# must not inherit the interactive "Holmes" identity this warmup injects:
+# must not inherit the interactive identity this warmup injects:
 # its guardrail #1 ("present options before making changes") directly
 # conflicts with autonomous, unattended pipeline work — Watson dispatched
 # via cron has no human present to answer it. Orchestrator/Dispatch and
@@ -515,11 +514,19 @@ printf -- '- Before saving, `search` for an existing memory to UPDATE rather tha
 printf -- '- The per-project memory directory and its MEMORY.md are a router only — never create memory files there.\n'
 printf -- '- Recall = vault `search` (mode hybrid), not directory reads.\n\n'
 
+# A soul file is OPTIONAL. An agent with no persona carries its standard in the
+# output style instead, which is system-prompt tier and survives compaction on
+# its own — nothing for this block to re-inject. Three cases, in order:
+#   readable                  → inject it
+#   configured but unreadable → warn, because that is a misconfiguration
+#   not configured at all     → silent, because absence is the deliberate state
+# The default path still resolves above, so a config predating identity_files
+# keeps injecting its soul file exactly as before.
 if [ -r "$SOUL_HOT" ]; then
   printf '## Identity — soul-hot\n\n'
   cat "$SOUL_HOT"
   printf '\n\n'
-else
+elif [ -n "$SOUL_HOT_REL" ]; then
   printf '_(soul-hot.md not found at %s)_\n\n' "$SOUL_HOT"
 fi
 

@@ -87,7 +87,7 @@ echo "preserves unrelated keys and never touches allow:"
 S="$SANDBOX/existing.json"
 cat > "$S" <<'EOF'
 {
-  "outputStyle": "Holmes",
+  "outputStyle": "Clear",
   "theme": "dark",
   "permissions": {
     "allow": ["mcp__plugin_workbench-bujo_scribe__*"],
@@ -96,7 +96,7 @@ cat > "$S" <<'EOF'
 }
 EOF
 run "$S" >/dev/null
-assert_jq "outputStyle survives"    "$S" '.outputStyle' "Holmes"
+assert_jq "outputStyle survives"    "$S" '.outputStyle' "Clear"
 assert_jq "theme survives"          "$S" '.theme' "dark"
 assert_jq "allow untouched"         "$S" '.permissions.allow | join(",")' "mcp__plugin_workbench-bujo_scribe__*"
 assert_jq "allow length unchanged"  "$S" '.permissions.allow | length' "1"

@@ -609,6 +609,49 @@ OUT=$(run_drain startup "WORKBENCH_DRAIN_BATCH=1")
 assert_contains "stale lock is broken"             "$OUT" "DISPATCH sid=lock-probe"
 reset_drain
 
+echo "soul file is optional — absent-and-unconfigured is silent, misconfigured warns:"
+# An agent with no persona carries its standard in the output style, which is
+# system-prompt tier and needs no re-injection. The block must then print
+# nothing at all — not a "not found" notice on every single session start.
+# A CONFIGURED path that does not resolve is a different thing: that is a
+# mistake in config.json, and staying quiet about it would hide it.
+SOUL_MEM="$SANDBOX/soulless-memory"
+SOUL_HOME="$SANDBOX/soulless-home"
+SOUL_CFG_DIR="$SOUL_HOME/.claude/plugins/data/workbench-core-claude-workbench"
+mkdir -p "$SOUL_MEM/identity" "$SOUL_CFG_DIR"
+printf 'PROFILE-CANARY user facts\n' > "$SOUL_MEM/identity/profile.md"
+
+run_soul_warmup() {
+  printf '{"source":"startup"}' | \
+    HOME="$SOUL_HOME" WORKBENCH_MEMORY_PATH="$SOUL_MEM" \
+    WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
+    WORKBENCH_MEMORY_PORT="$PROBE_PORT" \
+    CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" 2>/dev/null
+}
+
+# Case 1 — no soul_hot key, no soul file on disk: total silence.
+printf '{"memory_path":"%s"}\n' "$SOUL_MEM" > "$SOUL_CFG_DIR/config.json"
+OUT=$(run_soul_warmup)
+assert_missing "unconfigured + absent prints no heading" "$OUT" "## Identity — soul-hot"
+assert_missing "unconfigured + absent prints no warning" "$OUT" "not found at"
+assert_contains "the rest of the warmup still runs"      "$OUT" "PROFILE-CANARY"
+
+# Case 2 — soul_hot points somewhere that does not exist: warn loudly.
+printf '{"memory_path":"%s","identity_files":{"soul_hot":"identity/typo-soul.md"}}\n' \
+  "$SOUL_MEM" > "$SOUL_CFG_DIR/config.json"
+OUT=$(run_soul_warmup)
+assert_contains "configured + absent warns"              "$OUT" "not found at"
+assert_contains "the warning names the resolved path"    "$OUT" "identity/typo-soul.md"
+
+# Case 3 — no soul_hot key but the DEFAULT file exists: still injected. This is
+# the backward-compatibility guarantee for a config written before the key
+# existed; skipping on "unset" alone would silently drop their soul file.
+printf 'SOULLESS-CANARY legacy default\n' > "$SOUL_MEM/identity/soul-hot.md"
+printf '{"memory_path":"%s"}\n' "$SOUL_MEM" > "$SOUL_CFG_DIR/config.json"
+OUT=$(run_soul_warmup)
+assert_contains "unconfigured + default present injects" "$OUT" "SOULLESS-CANARY"
+rm -f "$SOUL_MEM/identity/soul-hot.md"
+
 echo "exit code is always 0:"
 if printf '{"source":"compact"}' | HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" >/dev/null 2>&1; then
   PASS=$((PASS + 1)); echo "  ✅ compact exits 0"

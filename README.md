@@ -119,7 +119,7 @@ The memory MCP server ships unconfigured. Run `/workbench:setup` on first instal
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| `agent_name` | Your agent's name (e.g. `Holmes`) | `Claude` |
+| `agent_name` | Your agent's name, if it has one (e.g. `Ada`) | `Claude` |
 | `memory_path` | Where your operational memory lives on disk | `~/Documents/Claude/Memory` |
 | `memory_cache` | Where indexes, server artifacts, and checkpoints are stored | `~/.claude-memory-cache` |
 | `memory_mcp_server_name` | MCP server name for the vault (`serverInfo.name`) | `workbench-memory` |
@@ -141,7 +141,9 @@ There are three ways to get identity files in place — pick one:
 /workbench-core:install
 ```
 
-It propagates the soul files to your vault, the output style to `~/.claude/output-styles/`, and the `outputStyle` setting — and it's non-destructive: existing hand-edited soul files are diffed and confirmed before any overwrite. This is the quickest path to a durable voice, because the output style sits in the system prompt (which outranks context).
+It propagates whatever that persona directory contains — an output style to `~/.claude/output-styles/` plus the `outputStyle` setting, and soul files to your vault if it ships any. It is non-destructive: existing hand-edited files are diffed and confirmed before any overwrite. This is the quickest path to a durable voice, because the output style sits in the system prompt (which outranks context).
+
+The persona shipped today is `clear`: an output style only, with no soul files. It defines a writing standard rather than a character, so nothing lands in `identity/`. A persona directory may ship `soul-hot.md` and `soul-core.md` as well — both are optional, and each installs only when present.
 
 **Guided — build from scratch via interview.** Use `/workbench-core:define-soul` (below).
 
@@ -212,7 +214,7 @@ core/
 ├── agents/
 │   └── summary-writer.md       — background narrative agent definition
 ├── assets/
-│   ├── personas/              — the shipped persona (soul + output style)
+│   ├── personas/              — the shipped persona (output style, plus soul files if any)
 │   ├── prompt-templates/      — scheduled-task prompt bodies (decision-quality nightly)
 │   └── templates/              — identity + protocol templates
 ├── hooks/

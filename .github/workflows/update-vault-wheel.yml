@@ -1,0 +1,254 @@
+name: Update vault wheel
+
+# Keeps the bundled markdown-vault-mcp server wheel current with upstream's
+# latest PyPI release.
+#
+# The memory MCP launcher (hooks/lib/memory-install.sh) installs the server from
+# whatever wheel sits under hooks/wheels/. That wheel is committed, so it does
+# not float — a plugin update ships a new server only when someone commits a new
+# wheel. Historically that was a manual run of scripts/build-memory-wheel.sh
+# against a local fork checkout. This workflow does the same thing nightly and
+# proposes the result as a PR.
+#
+# Why this is not Dependabot: no Dependabot ecosystem produces a binary. Every
+# one of them rewrites a version constraint in a text manifest and lets a package
+# manager fetch the artifact at build time. This repo has no Python manifest and
+# no build step — the .whl IS the dependency. So the bump is a scheduled
+# workflow, not an ecosystem entry.
+#
+# Why download rather than build: the wheel currently bundled is byte-identical
+# to PyPI's published artifact (sha256 1cd43a25...75de0 for 4.1.0). Upstream
+# publishes a pure-Python `py3-none-any` wheel, so there is nothing to compile
+# and no toolchain to install. Downloading is what `uv build` was reproducing.
+#
+# Delivery is a PR, never a direct push to main. update-marketplace-sha.yml
+# pushes to main, but that workflow moves a version string. This one replaces
+# 816 KB of binary that becomes the running memory server at the next session
+# start, and a bad upstream release landing unreviewed is exactly the 2026-08-29
+# failure mode. validate.yml runs on the PR; a human merges it.
+#
+# Prerequisites:
+# - Repo setting "Allow GitHub Actions to create and approve pull requests"
+#   must be enabled (Settings → Actions → General → Workflow permissions).
+#   Without it the `gh pr create` step fails with a 403.
+
+on:
+  schedule:
+    # 09:00 UTC = 02:00 America/Phoenix (MST, no DST). Overnight, so a bump is
+    # waiting in the morning rather than landing mid-session.
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: update-vault-wheel
+  cancel-in-progress: false
+
+jobs:
+  bump-wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Resolve bundled vs latest published version
+        id: versions
+        run: |
+          set -euo pipefail
+
+          # The bundled version is carried by the filename; memory-install.sh
+          # globs this same pattern (hooks/lib/memory-install.sh:74).
+          WHEEL=$(ls -t hooks/wheels/markdown_vault_mcp-*.whl 2>/dev/null | head -n 1)
+          if [ -z "$WHEEL" ]; then
+            echo "::error::no bundled wheel under hooks/wheels/ — nothing to compare against."
+            exit 1
+          fi
+          CURRENT=$(basename "$WHEEL" | sed -E 's/^markdown_vault_mcp-(.+)-py3-none-any\.whl$/\1/')
+          echo "Bundled: $CURRENT ($WHEEL)"
+
+          # Ask PyPI for the newest STABLE, non-yanked release. `info.version`
+          # already excludes prereleases, but the project publishes rc builds
+          # (4.0.0rc7, 4.1.0rc0) so the filter is asserted rather than assumed.
+          curl -fsSL https://pypi.org/pypi/markdown-vault-mcp/json > /tmp/pypi.json
+          LATEST=$(python3 - <<'PY'
+          import json, re
+
+          with open("/tmp/pypi.json") as fh:
+              data = json.load(fh)
+
+          # a/b/rc/dev suffixes mark a prerelease; PEP 440 allows all four.
+          PRERELEASE = re.compile(r"(a|b|rc|dev)\d*$")
+
+          def key(v):
+              return tuple(int(p) for p in v.split("."))
+
+          stable = [
+              v for v, files in data["releases"].items()
+              if not PRERELEASE.search(v)
+              and re.fullmatch(r"\d+(\.\d+)*", v)
+              and any(not f.get("yanked") for f in files)
+          ]
+          print(max(stable, key=key) if stable else "")
+          PY
+          )
+          if [ -z "$LATEST" ]; then
+            echo "::error::could not resolve a stable release from the PyPI response."
+            exit 1
+          fi
+          echo "Latest stable on PyPI: $LATEST"
+
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "old_wheel=$WHEEL" >> "$GITHUB_OUTPUT"
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Already current — nothing to do."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip if a PR for this version already exists
+        id: dedupe
+        if: steps.versions.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LATEST: ${{ steps.versions.outputs.latest }}
+        run: |
+          set -euo pipefail
+
+          # The cron runs nightly. Without this the workflow would open a fresh
+          # PR every night until the first one is merged.
+          BRANCH="chore/bump-vault-wheel-${LATEST}"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "Branch $BRANCH already exists on origin — a PR is open or was closed. Skipping."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download and verify the wheel
+        id: download
+        if: steps.dedupe.outputs.proceed == 'true'
+        env:
+          LATEST: ${{ steps.versions.outputs.latest }}
+        run: |
+          set -euo pipefail
+
+          # Pull the pure-Python wheel's URL and PyPI's own sha256 for it.
+          read -r URL EXPECTED FILENAME < <(python3 - "$LATEST" <<'PY'
+          import json, sys
+
+          version = sys.argv[1]
+          with open("/tmp/pypi.json") as fh:
+              data = json.load(fh)
+
+          for f in data["releases"][version]:
+              if f["packagetype"] == "bdist_wheel" and f["filename"].endswith("-py3-none-any.whl"):
+                  print(f["url"], f["digests"]["sha256"], f["filename"])
+                  break
+          else:
+              raise SystemExit(f"no py3-none-any wheel published for {version}")
+          PY
+          )
+
+          echo "Downloading $FILENAME"
+          curl -fsSL "$URL" -o "/tmp/$FILENAME"
+
+          # Verify before the bytes go anywhere near the repo. This artifact
+          # becomes the memory server on the next session start.
+          ACTUAL=$(sha256sum "/tmp/$FILENAME" | cut -d' ' -f1)
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::sha256 mismatch for $FILENAME"
+            echo "::error::expected $EXPECTED"
+            echo "::error::actual   $ACTUAL"
+            exit 1
+          fi
+          echo "sha256 verified: $ACTUAL"
+
+          echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
+          echo "sha256=$ACTUAL" >> "$GITHUB_OUTPUT"
+
+      - name: Open the bump PR
+        if: steps.dedupe.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CURRENT: ${{ steps.versions.outputs.current }}
+          LATEST: ${{ steps.versions.outputs.latest }}
+          OLD_WHEEL: ${{ steps.versions.outputs.old_wheel }}
+          BRANCH: ${{ steps.dedupe.outputs.branch }}
+          FILENAME: ${{ steps.download.outputs.filename }}
+          SHA256: ${{ steps.download.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+
+          # Exactly one wheel stays bundled, matching build-memory-wheel.sh:45.
+          git rm -q "$OLD_WHEEL"
+          cp "/tmp/$FILENAME" "hooks/wheels/$FILENAME"
+          git add "hooks/wheels/$FILENAME"
+
+          git commit -m "chore: ⬆️ Bump the bundled markdown-vault-mcp wheel to ${LATEST}."
+          git push origin "$BRANCH"
+
+          # Body goes through a file, not "$(cat <<EOF ...)". A heredoc nested in
+          # a command substitution mis-parses on bash 3.2 as soon as the text
+          # contains an apostrophe. Runners ship bash 5, where it is fine, but
+          # nothing here should depend on the runner's parser version.
+          cat > /tmp/pr-body.md <<EOF
+          Bumps the bundled memory-server wheel from **${CURRENT}** to **${LATEST}**.
+
+          | | |
+          |---|---|
+          | File | \`hooks/wheels/${FILENAME}\` |
+          | sha256 | \`${SHA256}\` (verified against the digest PyPI publishes) |
+          | Release notes | https://github.com/pvliesdonk/markdown-vault-mcp/releases/tag/v${LATEST} |
+
+          Downloaded from PyPI, not rebuilt. Upstream publishes a pure-Python
+          \`py3-none-any\` wheel, and the artifact this replaces was byte-identical
+          to the one on PyPI, so this is the same result
+          \`scripts/build-memory-wheel.sh\` produces by hand.
+
+          **Before merging:** this binary becomes the running memory server at the
+          next session start. Skim the upstream release notes for index-format,
+          embedding, or transport changes.
+
+          Opened by \`.github/workflows/update-vault-wheel.yml\`.
+          EOF
+
+          gh pr create \
+            --title "chore: ⬆️ Bump the bundled markdown-vault-mcp wheel to ${LATEST}." \
+            --base main \
+            --head "$BRANCH" \
+            --body-file /tmp/pr-body.md
+
+      - name: Summary
+        if: always()
+        env:
+          CURRENT: ${{ steps.versions.outputs.current }}
+          LATEST: ${{ steps.versions.outputs.latest }}
+          CHANGED: ${{ steps.versions.outputs.changed }}
+          PROCEED: ${{ steps.dedupe.outputs.proceed }}
+        run: |
+          {
+            echo "### Bundled markdown-vault-mcp wheel"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Bundled | ${CURRENT:-unknown} |"
+            echo "| Latest stable on PyPI | ${LATEST:-unknown} |"
+            if [ "${CHANGED:-}" != "true" ]; then
+              echo "| Result | already current, no PR |"
+            elif [ "${PROCEED:-}" != "true" ]; then
+              echo "| Result | PR branch already exists, skipped |"
+            else
+              echo "| Result | PR opened |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

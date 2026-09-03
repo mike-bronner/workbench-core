@@ -52,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout plugin repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           # Writable main checkout: the bump step commits + pushes here, and the
           # resolve step reads the plugin name off main. fetch-depth: 0 so the

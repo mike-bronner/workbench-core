@@ -228,7 +228,8 @@ core/
 │   ├── memory-capture-nudge.sh — UserPromptSubmit: nudge proactive memory WRITES
 │   ├── memory-recall.sh        — UserPromptSubmit: inject relevant memory READS (recall)
 │   ├── mcp-output-cap.sh       — PostToolUse: cap oversized MCP tool responses
-│   ├── lib/                    — sourceable libs: memory-env / -probe / -vacuum / -install, summary-dispatch
+│   ├── outbound-prose-guard.sh — PreToolUse: check gh + board-MCP prose against the output style
+│   ├── lib/                    — sourceable libs: memory-env / -probe / -vacuum / -install, summary-dispatch, prose-check
 │   └── fixtures/               — test fixtures (fake-server stub, no real server)
 ├── docs/
 │   ├── session-warmup-contributions.md — how plugins contribute warmup text
@@ -275,6 +276,33 @@ These hooks fire across the session lifecycle and on each turn:
 | `SessionEnd` | `hooks/session-log.sh` | Dump final log segment and write the pending-summary marker — **no writer is spawned here** (see [Why SessionEnd does not spawn](#why-sessionend-does-not-spawn)) |
 | `UserPromptSubmit` | `hooks/memory-capture-nudge.sh` | Sparse nudge to capture durable knowledge to the vault (memory **writes**) |
 | `UserPromptSubmit` | `hooks/memory-recall.sh` | Proactive recall — search the vault with the prompt and inject relevant memories, **once per session** per memory (memory **reads**) |
+| `PreToolUse` | `hooks/outbound-prose-guard.sh` | Check prose leaving the machine against the output style's mechanical rules — see [Outbound prose guard](#outbound-prose-guard) |
+
+### Outbound prose guard
+
+An output style governs *replies*. Claude Code reinforces it after every turn, and that reminder rides on the response, so it never reaches a document composed inside a tool call. A pull request body written to a file and piped through `gh pr edit --body-file` escapes the standard completely.
+
+That is not hypothetical. `insight-llc/decisioncloud#21665` shipped a 1,855-word body with no emoji, twelve em dashes, and nineteen sentences past the twenty-word limit, in a session where the style was loaded and being followed in the terminal the whole time.
+
+`hooks/outbound-prose-guard.sh` closes the gap for artifacts other people read: `gh pr create|edit|comment|review`, `gh issue create|edit|comment`, `gh release create|edit`, and the same prose posted through a project board MCP (`add_comment`, `submit_review`, `create_issue`, `set_acceptance_criteria`). It exits 2 on a violation, and stderr on a blocking `PreToolUse` hook reaches the model, so the findings become the revision brief.
+
+`hooks/lib/prose-check.py` holds the five checks, each traceable to one line of the shipped output style:
+
+| Finding | Rule |
+|---------|------|
+| `em-dash` | Join ideas with a colon, a parenthesis, or a full stop |
+| `semicolon` | A semicolon means you have two sentences |
+| `no-emoji` | Emoji are structure, at the same density everywhere |
+| `long-para` | One idea per bullet, one topic per paragraph (limit 6 sentences) |
+| `long-sent` | 20 words maximum, a single idea |
+
+**What it does not check.** Whether a body leads with the answer, and whether it is a debugging journal rather than a review aid, are judgement calls no regex settles. Those stay in the output style where a reader applies them.
+
+**What it exempts,** because the author does not control it: fenced and inline code (a semicolon there belongs to the language), HTML comments, bot-authored regions such as CodeRabbit's release notes, `- [ ]` checklist lines from a repository pull request template, and URLs inside markdown links. A bare `PULL_REQUEST_TEMPLATE.md` passes clean, which is the calibration that matters. A gate that blocks the template blocks every pull request.
+
+**It fails open.** A heredoc, a command substitution such as `--body "$(cat notes.md)"`, or an unreadable path exits 0 rather than blocking. This is a style gate, not a security boundary, so a false block costs more than a missed check. `hooks/credential-guard.sh` makes the same trade for the same reason.
+
+**Terminal replies are out of scope,** and cannot usefully be brought in. A `Stop` hook fires after the reply has already been displayed, so blocking there appends a correction instead of preventing the text. Replies are governed by the behavioral overrides, which sit at system-prompt tier.
 
 ### Logging pipeline
 

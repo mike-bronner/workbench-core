@@ -246,6 +246,15 @@ assert_contains "source keeps the corporate-speak ban list"      "$OV_SRC_TEXT" 
 assert_contains "source keeps the no-preambles rule"             "$OV_SRC_TEXT" 'No preambles.'
 assert_contains "source parameterizes the agent name"            "$OV_SRC_TEXT" 'AGENT_NAME_PLACEHOLDER'
 
+# The lexical rules earn their place here because they are the ones that actually
+# break. Measured on two real sessions: em dash in 62 of 116 replies, sentences
+# past 30 words 18 times, semicolons 4 times. Every rule that held was stated in
+# this block. Every rule that broke was stated only in the output style. Drop
+# either rule from the source and both layers lose it silently.
+assert_contains "source keeps the em-dash replacement rule"      "$OV_SRC_TEXT" 'Never an em dash'
+assert_contains "source keeps the semicolon ban"                 "$OV_SRC_TEXT" 'never a semicolon'
+assert_contains "source keeps the sentence-length cap"           "$OV_SRC_TEXT" '20 words maximum'
+
 # Both destinations must contain the rendered block VERBATIM and CONTIGUOUS —
 # this is the convergence guarantee. Drift either heredoc away from the source
 # (or leave one layer on its old, thinner wording) and this goes red.

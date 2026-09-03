@@ -27,6 +27,15 @@
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-search-mode.sh\""
           }
         ]
+      },
+      {
+        "matcher": "Bash|mcp__.*__(add_comment|submit_review|create_issue|set_acceptance_criteria)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/outbound-prose-guard.sh\""
+          }
+        ]
       }
     ],
     "SessionStart": [

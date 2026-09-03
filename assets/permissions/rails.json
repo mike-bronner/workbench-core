@@ -27,7 +27,35 @@
     "",
     "The disk-tool denies are defense in depth on the same footing as `dd` and",
     "`mkfs` — they need root too, but the deny costs nothing and does not depend",
-    "on the sudo rule staying in place."
+    "on the sudo rule staying in place.",
+    "",
+    "WHY THERE IS NO Read() DENY RULE — do not add one back:",
+    "This file used to ship four: Read(~/.ssh/**), Read(~/.aws/**),",
+    "Read(~/.gnupg/**), and Read(**/.env). They cost far more than they gave.",
+    "",
+    "1. They were never enforcement. Anthropic's permissions documentation is",
+    "explicit that Read and Edit deny rules apply to the built-in file tools and",
+    "to the file commands Claude Code recognises in Bash — cat, head, tail, sed —",
+    "and NOT to arbitrary subprocesses that read files indirectly, like a Python",
+    "or Node script that opens a file itself. OS-level enforcement across every",
+    "process is the sandbox, not a deny rule.",
+    "",
+    "2. Any one of them armed a large permission-prompt class. In the Claude Code",
+    "binary (v2.1.259, function `duo`, circuit breaker `deniedPathInsideDirectory`)",
+    "`xce()` is a plain boolean over alwaysDenyRules: if ANY Read() deny rule",
+    "exists, then for grep/egrep/fgrep/rg/diff/git/cp/mv a non-absolute path",
+    "argument in a command containing `cd` returns behavior \"ask\" without ever",
+    "consulting a rule — the prompt reading \"after a cd would search a directory",
+    "that cannot be determined here, and a Read() deny rule is configured\". The",
+    "breaker is registered bypassImmune with no classifier route, so auto mode",
+    "never sees it and no allow rule overrides it. Narrowing the rules does",
+    "nothing; only removing every Read() rule disarms it.",
+    "",
+    "The replacement is hooks/credential-guard.sh, a PreToolUse hook that exits 2",
+    "before permission rules are evaluated. It covers strictly more than the deny",
+    "rules did: it catches `python3 -c \"print(open('~/.ssh/id_rsa').read())\"`,",
+    "which a Read deny never touched. hooks/test-permissions.sh asserts that no",
+    "Read() rule creeps back in."
   ],
 
   "deny": [
@@ -64,15 +92,7 @@
     { "rule": "Bash(git reflog expire:*)",
       "why": "Destroys the reflog, which is the undo rope for every other git mistake." },
     { "rule": "Bash(security dump-keychain:*)",
-      "why": "Bulk credential dump. Scoped find/add/delete are handled by ask rules instead, since plugin setup skills use them." },
-    { "rule": "Read(~/.ssh/**)",
-      "why": "Private keys. A Read deny also blocks Edit on the same paths." },
-    { "rule": "Read(~/.aws/**)",
-      "why": "Cloud credentials." },
-    { "rule": "Read(~/.gnupg/**)",
-      "why": "GPG private keyring." },
-    { "rule": "Read(**/.env)",
-      "why": "Application secrets at any depth. Note the cost: a Read deny also blocks Edit, so a broken .env can be neither read nor repaired. Variants like .env.local and .env.production are NOT covered — a `**/.env.*` rule would also catch .env.example, which holds no secrets and is read routinely." }
+      "why": "Bulk credential dump. Scoped find/add/delete are handled by ask rules instead, since plugin setup skills use them." }
   ],
 
   "ask": [

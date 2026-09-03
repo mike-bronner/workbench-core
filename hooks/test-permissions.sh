@@ -25,7 +25,7 @@ cat > "$RAILS" <<'EOF'
 {
   "deny": [
     { "rule": "Bash(sudo:*)", "why": "no root" },
-    { "rule": "Read(~/.ssh/**)", "why": "private keys" }
+    { "rule": "Bash(dd:*)", "why": "destroys disks" }
   ],
   "ask": [
     { "rule": "Bash(rm -rf:*)", "why": "prompt first" },
@@ -116,7 +116,7 @@ EOF
 run "$S" >/dev/null
 assert_jq "custom deny stays first"   "$S" '.permissions.deny[0]' "Bash(my-custom-thing:*)"
 assert_jq "already-present not dupes" "$S" '.permissions.deny[1]' "Bash(sudo:*)"
-assert_jq "missing shipped appended"  "$S" '.permissions.deny[2]' "Read(~/.ssh/**)"
+assert_jq "missing shipped appended"  "$S" '.permissions.deny[2]' "Bash(dd:*)"
 assert_jq "no duplicate deny entries" "$S" '.permissions.deny | length' "3"
 assert_jq "custom ask stays first"    "$S" '.permissions.ask[0]' "Bash(terraform apply:*)"
 assert_jq "ask total after merge"     "$S" '.permissions.ask | length' "3"
@@ -247,11 +247,20 @@ assert_jq "no rm rule in deny" "$SHIPPED_RAILS" \
 assert_jq "rm -rf is in ask"   "$SHIPPED_RAILS" \
   '[.ask[]  | select(.rule == "Bash(rm -rf:*)")] | length' "1"
 
-echo "the .env deny covers bare .env only:"
-assert_jq "bare .env denied" "$SHIPPED_RAILS" \
-  '[.deny[] | select(.rule == "Read(**/.env)")] | length' "1"
-assert_jq "no .env.* rule (would catch .env.example)" "$SHIPPED_RAILS" \
-  '[.deny[] | select(.rule == "Read(**/.env.*)")] | length' "0"
+# Credential paths are guarded by hooks/credential-guard.sh, not by a deny rule.
+# A Read deny never applied to a subprocess that opens the file itself, and ANY
+# Read() rule arms the `deniedPathInsideDirectory` circuit breaker, which forces
+# a prompt on every relative-path grep/rg/diff/git/cp/mv in a command containing
+# `cd`. That breaker is bypassImmune and reads the deny list as a boolean, so
+# narrowing a rule does not help — one deny rule of any shape re-arms the class.
+# The ask list is asserted too, so the rules cannot come back as a "compromise":
+# an ask rule dodges the breaker but prompts on every legitimate read instead,
+# and it would block the headless pipeline the way any ask rule does.
+echo "no Read() rule ships in either list — one deny re-arms the prompt storm:"
+assert_jq "no Read rules in deny" "$SHIPPED_RAILS" \
+  '[.deny[] | select(.rule | startswith("Read("))] | length' "0"
+assert_jq "no Read rules in ask"  "$SHIPPED_RAILS" \
+  '[.ask[]  | select(.rule | startswith("Read("))] | length' "0"
 
 # The headless-pipeline constraint is the whole reason this list is curated.
 # workbench-dev-team dispatches Watson via `nohup claude -p`, where an ask rule

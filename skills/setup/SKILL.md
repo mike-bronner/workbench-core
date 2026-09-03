@@ -255,7 +255,7 @@ There is a third kind in the list, on a different layer:
 Three behaviours worth calling out by name:
 
 - `Bash(git push --force:*)` also blocks `--force-with-lease`, since that string starts with `--force`.
-- `Read(**/.env)` covers bare `.env` only. A `**/.env.*` rule would also catch `.env.example`, which holds no secrets and is read routinely. Note the cost of the rule that *is* there: a `Read` deny blocks `Edit` on the same path, so a broken `.env` can be neither read nor repaired.
+- **There is deliberately no `Read()` deny rule.** Credential paths — `~/.ssh`, `~/.aws`, `~/.gnupg`, `.env` — are guarded by `hooks/credential-guard.sh` instead, a `PreToolUse` hook that exits 2 before permission rules are evaluated. A `Read` deny never applied to a subprocess that opens the file itself, and any one of them arms a circuit breaker that prompts on every relative-path `grep`/`rg`/`diff`/`git`/`cp`/`mv` in a command containing `cd`. See the `_comment` block in `assets/permissions/rails.json` for the full finding.
 - **There is deliberately no `rm` deny rule.** `Bash(rm -rf:*)` sits in `ask` instead. A deny on `rm -rf /` would match every absolute-path delete — `*` is always a wildcard, and deny beats allow regardless of specificity, so no `/tmp` exception is expressible. Claude Code already gates the catastrophic case semantically: the classifier decides root and home removals in `auto` (including inside `$(...)` and `<(...)` substitution), and they still prompt under `bypassPermissions` as a circuit breaker.
 
 Then offer a dry run — it prints exactly what would change and writes nothing:

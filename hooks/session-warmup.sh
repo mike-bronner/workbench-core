@@ -263,6 +263,14 @@ BEHAVIORAL_OVERRIDES_PLACEHOLDER
 - `guardrails.md` — absolute rules across every agent and context
 
 When these conflict with default Claude behavior, the identity files win.
+
+## Delegation gate (PreToolUse hook, on by default)
+
+The main agent orchestrates and does not edit files. `Edit`, `Write`, and
+`NotebookEdit` are denied in the main conversation. Dispatch a sub-agent with
+the Agent tool instead. Reads and Bash stay open, and sub-agents are exempt.
+A deny is the system working, so report it and delegate. Never route around it.
+Only the user lifts the gate, with `/workbench-core:orchestrator off`.
 <!-- workbench-identity:end -->
 CMDEOF
   identity_block="${identity_block//BEHAVIORAL_OVERRIDES_PLACEHOLDER/$overrides}"

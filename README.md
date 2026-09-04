@@ -229,6 +229,7 @@ core/
 │   ├── memory-recall.sh        — UserPromptSubmit: inject relevant memory READS (recall)
 │   ├── mcp-output-cap.sh       — PostToolUse: cap oversized MCP tool responses
 │   ├── outbound-prose-guard.sh — PreToolUse: check gh + board-MCP prose against the output style
+│   ├── delegation-gate.sh      — PreToolUse: deny main-agent Edit/Write/NotebookEdit, redirect to sub-agents
 │   ├── lib/                    — sourceable libs: memory-env / -probe / -vacuum / -install, summary-dispatch, prose-check
 │   └── fixtures/               — test fixtures (fake-server stub, no real server)
 ├── docs/
@@ -251,6 +252,7 @@ core/
 │   ├── install/                — propagate the shipped persona to live locations
 │   ├── log-now/                — dump + narrate the current session inline
 │   ├── memory-lint/            — monthly vault health-and-repair pass
+│   ├── orchestrator/           — per-session on/off toggle for the delegation gate
 │   ├── process-pending-summaries/ — dispatch background agents for pending markers
 │   └── summarize-session/      — manually summarize a specific session
 ├── scripts/
@@ -277,6 +279,37 @@ These hooks fire across the session lifecycle and on each turn:
 | `UserPromptSubmit` | `hooks/memory-capture-nudge.sh` | Sparse nudge to capture durable knowledge to the vault (memory **writes**) |
 | `UserPromptSubmit` | `hooks/memory-recall.sh` | Proactive recall — search the vault with the prompt and inject relevant memories, **once per session** per memory (memory **reads**) |
 | `PreToolUse` | `hooks/outbound-prose-guard.sh` | Check prose leaving the machine against the output style's mechanical rules — see [Outbound prose guard](#outbound-prose-guard) |
+| `PreToolUse` | `hooks/delegation-gate.sh` | Deny `Edit`/`Write`/`NotebookEdit` from the main agent so file work goes to sub-agents — see [Delegation gate](#delegation-gate) |
+
+### Delegation gate
+
+**The main agent orchestrates. It does not edit files.** Guardrail 10, "delegate work to sub-agents by default", has said so in prose since it shipped, and prose drifts: the main conversation edits one file to "just fix it quickly", and the context it was supposed to stay lean for is gone. `hooks/delegation-gate.sh` makes it structural. `Edit`, `Write`, and `NotebookEdit` from the main agent return `permissionDecision: "deny"`, and the denial names the destination and the escape hatch. The deny is not overridable by permission mode: `bypassPermissions` does not get through it.
+
+It is deliberately plugin-agnostic. Every install ships built-in sub-agents (general-purpose, Explore, Plan) reachable through the `Agent` tool, so the gate always has somewhere to send the work. When a dev-team plugin *is* installed, the denial names it too, via a runtime directory probe of `~/.claude/plugins/cache/*/workbench-dev-team`. That is a runtime read, never a build-time dependency: core stays ignorant of any plugin, and a plugin opts into core's contract rather than the other way round.
+
+**How it tells a main agent from a sub-agent.** The `PreToolUse` payload carries the signal, verified empirically on Claude Code 2.1.260 against a logging-only hook:
+
+| Caller | `agent_id` | `agent_type` |
+|---|---|---|
+| Main agent (interactive or `claude -p`) | absent | absent |
+| Sub-agent (Task tool) | present | present |
+| Top-level `claude -p --agent <name>` | **absent** | present |
+
+That third row is why `agent_type` alone has to allow: a scheduled `claude -p --agent <name>` run is top-level in its own session and carries no `agent_id`, so gating on `agent_id` alone would kill every scheduled run at its first file write. `CLAUDE_CODE_CHILD_SESSION` is **not** a usable signal, because it was `1` in all three cases, including a plain main session.
+
+**Allow branches, in order.** Any one of these lets the call through: (a) `agent_id` is set, so the call is a sub-agent, which is the destination this gate redirects to; (b) `agent_type` is set, a top-level `--agent` dispatch; (c) `WORKBENCH_ORCHESTRATOR=0` in the environment, which is how an automated harness opts its own run out; (d) the session toggle is off; (e) the tool is not one of the three, which the matcher should already have handled; (f) anything went wrong.
+
+**Turning it off for a session.** `/workbench-core:orchestrator off` writes an empty file named for the current session under `$WORKBENCH_ORCHESTRATOR_STATE_DIR` (default `~/.claude-workbench/orchestrator-mode/`). The gate stands down while that file exists. `on` removes it, and no argument reports the state. The gate is **ON by default**, so an absent file means enforcement: every new session starts gated and nothing leaks between sessions. The file is keyed by `$CLAUDE_CODE_SESSION_ID`, which equals the `.session_id` the hook reads from its payload (verified live), so the skill and the hook agree on the key without passing anything between them. Each invocation prunes state files older than 7 days, so the directory does not accumulate one file per session forever.
+
+**The gate announces itself** in the identity block `hooks/session-warmup.sh` writes into `~/.claude/CLAUDE.md`. Core is excluded from `collect_session_warmup_contributions` by design (see [docs/session-warmup-contributions.md](docs/session-warmup-contributions.md)), so there is no root `session-warmup.md` to carry the notice, and an unannounced deny reads as a malfunction rather than as a rule.
+
+**Fail-open, and what that costs you.** Every error path exits 0 and allows the call: a malformed payload, a missing `jq`, an unreadable state directory, or a session id the toggle cannot address. This matches `hooks/credential-guard.sh`, because a guard that errors must never brick a session. Be clear about the trade. **If this script breaks, enforcement stops silently and there is no layer behind it.** Nothing announces that the gate is down; the main agent simply starts editing files again. It is a discipline aid, not a security boundary, and should never be relied on as one.
+
+**`Bash` is not gated, so the gate is trivially sidesteppable.** The matcher covers three tools, and `printf 'x' > file` writes a file without touching any of them. This is deliberate: gating `Bash` would break `git`, the test runners, and every read-only command the orchestrator still needs. It also means a main agent that treats the deny as an obstacle can route around it in one call. The rule the gate backs is prose, in guardrail 10 and in the identity block, and both say a deny is the system working rather than something to defeat. Enforcement that a determined agent cannot evade is not on offer here.
+
+A session id holding anything outside `[A-Za-z0-9._-]` is refused rather than resolved, which keeps a `../` from walking out of the state directory. Refusal means fail-open here: a session that cannot address its own toggle has no honest escape hatch, so the gate stands down rather than trapping the user.
+
+Tests: `hooks/test-delegation-gate.sh` (48 cases: every allow branch independently, the deny path, byte-exact deny JSON, the conditional dev-team enrichment, `hooks.json` wiring, and agreement with both the toggle skill and guardrail 10).
 
 ### Outbound prose guard
 
@@ -669,6 +702,7 @@ Runs on every `startup` warmup:
 | `/workbench-core:memory-lint` | Monthly health-and-repair pass over the memory vault — frontmatter rescue, broken-link repair, conservative orphan linking, vault-index drift repair, duplicate flagging, audit report |
 | `/workbench-core:memory-status` | Report the shared memory server's facts — vault/cache, server-binary presence, index & last-VACUUM |
 | `/workbench-core:install-chat-skills` | Discover skills in `@claude-workbench` plugins and install them into the Claude Mac app's Chat surface via `.skill` packaging |
+| `/workbench-core:orchestrator` | Turn the [delegation gate](#delegation-gate) off or on for this session, or report its state. `off` allows inline edits, `on` restores the gate, no argument reports |
 
 All skills are **execution-aware** — they check for a `skills/{name}.learnings.md` file in the vault before running and apply any accumulated learnings from prior executions.
 
@@ -721,6 +755,8 @@ All config values can be overridden via environment variables for testing:
 | `WORKBENCH_MEMORY_IDLE_SETTLE` | Seconds between the reaper's two pre-kill ref checks (default 3) |
 | `WORKBENCH_MEMORY_REFS_DIR` | Session ref registry location (default `{memory_cache}/refs`; used by tests) |
 | `WORKBENCH_RAILS_FILE` | `assets/permissions/rails.json` path (used by `permissions.sh` for testing) |
+| `WORKBENCH_ORCHESTRATOR` | Set to `0` to stand the [delegation gate](#delegation-gate) down for the whole process (for a headless harness that cannot answer a deny) |
+| `WORKBENCH_ORCHESTRATOR_STATE_DIR` | Delegation-gate session-toggle directory (default `~/.claude-workbench/orchestrator-mode`; used by tests) |
 
 ## Known limitations
 

@@ -278,6 +278,16 @@ assert_contains "layer 2 keeps its start marker"            "$OV_CLAUDE" "<!-- w
 assert_contains "layer 2 keeps its end marker"              "$OV_CLAUDE" "<!-- workbench-identity:end -->"
 assert_contains "layer 2 keeps the identity-files section"  "$OV_CLAUDE" "## Identity files (loaded by SessionStart hook)"
 assert_contains "layer 2 keeps the authority sentence"      "$OV_CLAUDE" "the identity files win."
+# The delegation gate is announced here and nowhere else. Core is excluded from
+# collect_session_warmup_contributions by design, so there is no root
+# session-warmup.md to carry it, and the gate must not go unannounced: a hook
+# that denies an edit with no prior notice reads as a malfunction.
+assert_contains "layer 2 announces the delegation gate"     "$OV_CLAUDE" "## Delegation gate (PreToolUse hook, on by default)"
+assert_contains "layer 2 names what the gate denies"        "$OV_CLAUDE" "\`NotebookEdit\` are denied in the main conversation"
+assert_contains "layer 2 names the gate's escape hatch"     "$OV_CLAUDE" "/workbench-core:orchestrator off"
+# Tier discipline: layer 1 is the CLI system prompt and carries the behavioural
+# standard only. Harness mechanics belong in CLAUDE.md, not there.
+assert_missing "layer 1 carries no harness mechanics"       "$OV_SYSTEM" "## Delegation gate"
 
 echo "behavioral overrides — an unreadable source fails CLOSED, never blanks a layer:"
 # A missing shipped source must leave both destinations exactly as they were.

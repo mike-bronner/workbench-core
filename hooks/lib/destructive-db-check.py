@@ -71,6 +71,15 @@ same command moves that base. File reading stops at the ssh boundary: the remote
 machine has its own filesystem, so a local file of the same name is the wrong
 file, and reading it could only ever produce a false block.
 
+THE TOKENISER IS SHARED; THE RULES ARE NOT:
+Tokenising, statement/pipeline splitting, heredoc lifting, and no-op-prefix
+stripping live in hooks/lib/shell_parse.py, imported below and also used by
+hooks/lib/vault-git-check.py. Only that mechanical half is shared. Every verb
+table, regex, and blocking decision in this file stays in this file, and so does
+unwrap(): the vault guard must STOP at `ssh`, where this one follows through,
+because a database on another host is still a database while another machine's
+vault is not this vault.
+
 Deliberately out of scope:
   php artisan tinker        an interactive REPL takes its input later
   a DROP past 1 MB          the cap. In pg_dump output the DROPs are at the top
@@ -78,9 +87,34 @@ Deliberately out of scope:
 
 import os
 import re
-import shlex
 import stat
 import sys
+
+# The shared parser sits beside this file. Resolve it from __file__ and never
+# from the working directory: a PreToolUse hook is invoked with whatever cwd the
+# tool call had, which is arbitrary and usually not this directory.
+#
+# Honest about what this line buys, so nobody deletes it for the wrong reason
+# and nobody trusts it for the wrong one: CPython already puts a script's own
+# directory at sys.path[0] when the script is run by path, so on an ordinary
+# interpreter the import would resolve without this. It is the explicit belt for
+# the case where that does not happen — `python3 -P`, or PYTHONSAFEPATH=1, both
+# 3.11+ — since the hook runs whatever `python3` the environment provides and
+# inherits its environment. A missed import here fails OPEN and in silence: this
+# checker is the enforcement behind the guard that exists because a development
+# database was destroyed on 2026-09-04.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from shell_parse import (  # noqa: E402
+    ASSIGNMENT,
+    PREFIX_NOOP,
+    base,
+    extract_heredocs,
+    skip_flags,
+    split_statements,
+    strip_noop,
+    token_lines,
+)
 
 MAX_INPUT = 200_000
 MAX_DEPTH = 4
@@ -128,8 +162,9 @@ PROJECT_TOOL_EXEMPT = {("ddev", "delete"): {"images"}}
 # Wrappers stripped before the verb slot is read. Each one puts the real command
 # further along the token list, which is exactly what a prefix permission rule
 # cannot see — `cd foo && php artisan db:wipe` is the shape the incident took.
-PREFIX_NOOP = {"sudo", "doas", "env", "nice", "ionice", "time", "nohup",
-               "command", "exec", "stdbuf"}
+# PREFIX_NOOP is imported from shell_parse: strip_noop() there and unwrap() here
+# have to agree on the set, or a `sudo` prefix would be dropped by one and read
+# as a command name by the other.
 CONTAINER_SHIMS = {"sail", "lando", "ddev", "wp-env"}
 DOCKER_VALUE_FLAGS = {"-u", "--user", "-w", "--workdir", "-e", "--env", "--label"}
 SSH_VALUE_FLAGS = {"-p", "-i", "-o", "-l", "-F", "-b", "-c", "-D", "-L", "-R"}
@@ -154,12 +189,6 @@ DOCKER_GLOBAL_VALUE_FLAGS = {
 # `--volume`, `--volumes`, and any short cluster containing v, such as -fv.
 VOLUME_FLAG = re.compile(r"^(--volumes?|-[A-Za-z]*v[A-Za-z]*)$")
 
-STATEMENT_SEPARATORS = {";", "&&", "||", "&", "(", ")", "{", "}"}
-PIPE = "|"
-
-ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-HEREDOC_START = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
-
 # A single-quoted SQL literal is data, not a verb. Stripping literals before
 # matching is what keeps `SELECT * FROM logs WHERE msg = 'drop table'` running.
 # Double-quoted and backticked text is left alone: those are identifiers, and
@@ -169,100 +198,6 @@ SQL_DROP = re.compile(r"\bDROP\s+(DATABASE|SCHEMA|TABLE)\b", re.I)
 SQL_TRUNCATE = re.compile(r"\bTRUNCATE\s+(TABLE\s+)?[\"'`\[\w]", re.I)
 SQL_DELETE = re.compile(r"\bDELETE\s+FROM\b", re.I)
 SQL_WHERE = re.compile(r"\bWHERE\b", re.I)
-
-
-def base(token):
-    """The bare program name, so /usr/local/bin/psql matches psql."""
-    return os.path.basename(token)
-
-
-def tokenize(text):
-    """Split shell text into tokens, with operators as tokens of their own."""
-    lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    return list(lexer)
-
-
-def tokenize_loose(text):
-    """The posix=False retry. Quotes stay attached, which the SQL regexes
-    tolerate and the verb rules mostly do not need."""
-    lexer = shlex.shlex(text, posix=False, punctuation_chars=True)
-    lexer.whitespace_split = True
-    return list(lexer)
-
-
-def token_lines(text):
-    """Tokenise line by line so a newline separates statements, since shlex
-    treats it as plain whitespace and would otherwise merge them. A line that
-    will not parse on its own is usually one arm of a multi-line quoted string,
-    so the whole text is retried as a single unit before giving up."""
-    lines = [line for line in text.split("\n") if line.strip()]
-    for parser in (tokenize, tokenize_loose):
-        try:
-            return [parser(line) for line in lines]
-        except ValueError:
-            pass
-        try:
-            return [parser(text)]
-        except ValueError:
-            pass
-    return []
-
-
-def extract_heredocs(command):
-    """Lift heredoc bodies out of the command text, keyed by delimiter.
-
-    The body is prose to the tokeniser and would wreck it. Pulling it out first
-    leaves `psql -d app <<SQL` on the line, which tokenises cleanly, and the
-    delimiter token is what points back at the body."""
-    bodies = {}
-    kept = []
-    lines = command.split("\n")
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        kept.append(line)
-        delimiters = [m.group(2) for m in HEREDOC_START.finditer(line)]
-        i += 1
-        for delimiter in delimiters:
-            body = []
-            while i < len(lines) and lines[i].strip() != delimiter:
-                body.append(lines[i])
-                i += 1
-            i += 1  # the delimiter line itself
-            bodies.setdefault(delimiter, []).append("\n".join(body))
-    return "\n".join(kept), bodies
-
-
-def skip_flags(tokens, value_flags):
-    """Drop leading option tokens, taking a separate value with the flags that
-    need one, so the next token returned is a real argument."""
-    rest = list(tokens)
-    while rest and rest[0].startswith("-") and rest[0] != "--":
-        flag = rest[0]
-        rest = rest[1:]
-        if flag in value_flags and "=" not in flag and rest:
-            rest = rest[1:]
-    return rest
-
-
-def strip_noop(tokens):
-    """Drop env assignments and no-op prefixes such as `sudo` and `nice`, and
-    nothing else. The Docker rules have to read the docker binary and its
-    subcommand, which unwrap() strips on its way to the inner command."""
-    rest = list(tokens)
-    while rest:
-        if ASSIGNMENT.match(rest[0]):
-            rest = rest[1:]
-            continue
-        head = base(rest[0])
-        if head not in PREFIX_NOOP:
-            break
-        rest = rest[1:]
-        if head == "env":
-            while rest and ASSIGNMENT.match(rest[0]):
-                rest = rest[1:]
-    return rest
 
 
 def unwrap(tokens):
@@ -593,22 +528,6 @@ def check_statement(stages, bodies, depth, cwd=None):
         # reading stops at the ssh boundary.
         findings.extend(scan(inner, bodies, depth + 1, None if remote else cwd))
     return findings
-
-
-def split_statements(tokens):
-    """Statements split on the sequencing operators, stages on the pipe."""
-    statements = []
-    stages = [[]]
-    for token in tokens:
-        if token in STATEMENT_SEPARATORS:
-            statements.append(stages)
-            stages = [[]]
-        elif token == PIPE:
-            stages.append([])
-        else:
-            stages[-1].append(token)
-    statements.append(stages)
-    return [s for s in statements if any(stage for stage in s)]
 
 
 def scan(command, bodies, depth=0, cwd=None):

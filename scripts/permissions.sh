@@ -10,8 +10,20 @@
 #
 # The shipped rules live in assets/permissions/rails.json so the list is data,
 # not prose an agent retypes. The merge is ADDITIVE: an entry is added when
-# absent and left alone when present, existing entries are never removed or
-# reordered, and `permissions.allow` is never touched.
+# absent and left alone when present, and existing entries are never removed or
+# reordered.
+#
+# This script used to say `permissions.allow` was never touched. It now merges a
+# shipped `allow` list too, so the accurate promise is the narrower one: entries
+# the USER put in `permissions.allow` are never removed, never reordered, and
+# never rewritten. The shipped entries are appended after them when missing, by
+# the same additive `$new - $cur` the deny and ask lists use.
+#
+# What ships in that list is deliberately tiny — one plugin's MCP server, so the
+# memory vault stays writable. A shell pattern must never be added to it: an
+# allow rule matching `Bash(...)` grants arbitrary code execution, which is the
+# thing `autoMode.allow` exists to handle instead. rails.json carries the full
+# argument, and hooks/test-permissions.sh asserts the constraint.
 #
 # The rails file also carries `autoMode.allow` — prose exceptions to the
 # classifier's built-in soft-deny rules, a separate layer from the tool-pattern
@@ -75,9 +87,12 @@ fi
 
 # ──────────── --list mode (used by the setup skill to show the rules) ────────────
 if [ "$LIST" -eq 1 ]; then
+  # Listed in evaluation order: deny → ask → allow, then the separate autoMode
+  # layer, so the printed order matches the order Claude Code applies them in.
   jq -r '
-    (.deny // [] | map("deny\t" + .rule + "\t" + .why)),
-    (.ask  // [] | map("ask\t"  + .rule + "\t" + .why)),
+    (.deny  // [] | map("deny\t"  + .rule + "\t" + .why)),
+    (.ask   // [] | map("ask\t"   + .rule + "\t" + .why)),
+    (.allow // [] | map("allow\t" + .rule + "\t" + .why)),
     (.autoMode.allow // [] | map("autoMode.allow\t" + .rule + "\t" + .why))
     | .[]
   ' "$RAILS_FILE"
@@ -114,20 +129,26 @@ fi
 # Which rules are genuinely new? Reported before the write so a dry run is useful.
 ADDED="$(mktemp)"
 jq -r --slurpfile rails "$RAILS_FILE" '
-  ($rails[0].deny // [] | map(.rule)) as $deny
-  | ($rails[0].ask  // [] | map(.rule)) as $ask
+  ($rails[0].deny  // [] | map(.rule)) as $deny
+  | ($rails[0].ask   // [] | map(.rule)) as $ask
+  | ($rails[0].allow // [] | map(.rule)) as $allow
   | ($rails[0].autoMode.allow // [] | map(.rule)) as $auto
-  | (($deny - (.permissions.deny // [])) | map("deny\t" + .)),
-    (($ask  - (.permissions.ask  // [])) | map("ask\t"  + .)),
-    (($auto - (.autoMode.allow   // [])) | map("autoMode.allow\t" + .))
+  | (($deny  - (.permissions.deny  // [])) | map("deny\t"  + .)),
+    (($ask   - (.permissions.ask   // [])) | map("ask\t"   + .)),
+    (($allow - (.permissions.allow // [])) | map("allow\t" + .)),
+    (($auto  - (.autoMode.allow    // [])) | map("autoMode.allow\t" + .))
   | .[]
 ' "$CURRENT" > "$ADDED"
 
 DENY_NEW=$(grep -c '^deny	' "$ADDED" || true)
 ASK_NEW=$(grep -c '^ask	' "$ADDED" || true)
+# Anchored, so this counts the allow list alone and never the autoMode.allow
+# lines that also contain the word.
+ALLOW_NEW=$(grep -c '^allow	' "$ADDED" || true)
 AUTO_NEW=$(grep -c '^autoMode.allow	' "$ADDED" || true)
 
-if [ "$DENY_NEW" -eq 0 ] && [ "$ASK_NEW" -eq 0 ] && [ "$AUTO_NEW" -eq 0 ]; then
+if [ "$DENY_NEW" -eq 0 ] && [ "$ASK_NEW" -eq 0 ] && [ "$ALLOW_NEW" -eq 0 ] \
+   && [ "$AUTO_NEW" -eq 0 ]; then
   echo "  ✓ all shipped rails already present"
 else
   while IFS=$'\t' read -r kind rule; do
@@ -164,7 +185,13 @@ fi
 
 # Additive merge. `$new - $cur` keeps only entries not already present, so
 # existing rules keep their position and nothing is ever dropped.
-# `permissions.allow` is never referenced.
+#
+# `permissions.allow` is merged the same way, and that is the ONLY thing this
+# script does to it. A user's own allow entries keep their index, their order,
+# and their text — the shipped entries land after them, and only when absent.
+# The `if length == 0` guard matters: without it a rails file carrying no allow
+# list would still write an empty `permissions.allow` array into settings.json,
+# inventing a key the user never had.
 #
 # autoMode.allow is a different layer: prose exceptions to the classifier's
 # built-in soft-deny rules. The literal "$defaults" MUST be in that array —
@@ -173,12 +200,17 @@ fi
 # whenever absent, including on a list a user had emptied of it.
 MERGED="$(mktemp)"
 jq --slurpfile rails "$RAILS_FILE" --arg mode "$MODE" '
-  ($rails[0].deny // [] | map(.rule)) as $deny
-  | ($rails[0].ask  // [] | map(.rule)) as $ask
+  ($rails[0].deny  // [] | map(.rule)) as $deny
+  | ($rails[0].ask   // [] | map(.rule)) as $ask
+  | ($rails[0].allow // [] | map(.rule)) as $allow
   | ($rails[0].autoMode.allow // [] | map(.rule)) as $auto
   | .permissions = (.permissions // {})
   | .permissions.deny = ((.permissions.deny // []) as $cur | $cur + ($deny - $cur))
   | .permissions.ask  = ((.permissions.ask  // []) as $cur | $cur + ($ask  - $cur))
+  | if ($allow | length) == 0 then . else
+      .permissions.allow =
+        ((.permissions.allow // []) as $cur | $cur + ($allow - $cur))
+    end
   | if $mode == "" then . else .permissions.defaultMode = $mode end
   | if ($auto | length) == 0 then . else
       .autoMode = (.autoMode // {})

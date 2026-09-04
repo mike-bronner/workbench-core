@@ -209,7 +209,9 @@ Notes:
 
 Claude Code evaluates permission rules **deny → ask → allow, before the auto-mode classifier**, in every permission mode including `bypassPermissions`. That matters because a boundary stated only in conversation — "don't push until I review" — is re-read from the transcript on every check and is **lost when context is compacted**. A deny rule is not. This step installs the durable half of that pair.
 
-The rules ship as data at `${CLAUDE_PLUGIN_ROOT}/assets/permissions/rails.json`, and `scripts/permissions.sh` merges them into `~/.claude/settings.json`. The merge is **additive**: an entry is added when absent, left alone when present, existing entries keep their position, and `permissions.allow` is never touched.
+The rules ship as data at `${CLAUDE_PLUGIN_ROOT}/assets/permissions/rails.json`, and `scripts/permissions.sh` merges them into `~/.claude/settings.json`. The merge is **additive**: an entry is added when absent, left alone when present, and existing entries keep their position.
+
+The rails now also ship a single `allow` entry, `mcp__plugin_workbench-core_memory__*`, so a classifier hold never swallows a memory write — nothing retries that call, so a held write loses the note rather than delaying it. It is scoped to one plugin's MCP server and grants no code execution. Entries the user put in `permissions.allow` themselves are never removed, reordered, or rewritten.
 
 ### 2c.1 — Pick the posture (`defaultMode`)
 

@@ -127,7 +127,7 @@ The memory MCP server ships unconfigured. Run `/workbench:setup` on first instal
 | `auto_summarize` | Spawn background summary-writer (PreCompact, `/log-now`, and the session-start drain) | `true` |
 | `summary_model` | Model for the background summary-writer | `sonnet` |
 
-Setup also installs **permission safety rails** into `~/.claude/settings.json` — a `permissions.defaultMode` you pick, plus `deny` and `ask` rules shipped at `assets/permissions/rails.json`. Claude Code evaluates those rules deny → ask → allow *before* the auto-mode classifier, in every mode including `bypassPermissions`, which makes them the durable counterpart to a boundary stated in conversation (that one is lost when context is compacted). The merge is additive and never touches `permissions.allow`. See [Permission safety rails](#permission-safety-rails).
+Setup also installs **permission safety rails** into `~/.claude/settings.json` — a `permissions.defaultMode` you pick, plus `deny` and `ask` rules shipped at `assets/permissions/rails.json`. Claude Code evaluates those rules deny → ask → allow *before* the auto-mode classifier, in every mode including `bypassPermissions`, which makes them the durable counterpart to a boundary stated in conversation (that one is lost when context is compacted). The merge is additive: it adds a shipped entry when absent, and never removes or reorders one you wrote yourself. See [Permission safety rails](#permission-safety-rails).
 
 Configuration is stored in `~/.claude/plugins/data/workbench-core-claude-workbench/config.json` and survives plugin updates. The hooks resolve env from this file at launch (via `hooks/lib/memory-env.sh`), so a plugin version bump never clobbers your settings. Per-session stdio needs no port or bearer token in `settings.json` — those are provisioned by `/workbench-core:setup` only if you re-enable the optional shared HTTP server (see [Memory server transport](#memory-server-transport)).
 
@@ -231,8 +231,10 @@ core/
 │   ├── outbound-prose-guard.sh — PreToolUse: check gh + board-MCP prose against the output style
 │   ├── credential-guard.sh     — PreToolUse: block reads of ~/.ssh, ~/.aws, ~/.gnupg, and .env files
 │   ├── destructive-database-guard.sh — PreToolUse: block Artisan resets, dropdb, and destructive SQL
+│   ├── vault-git-guard.sh      — PreToolUse: block git WRITE commands aimed at the memory vault
 │   ├── delegation-gate.sh      — PreToolUse: deny main-agent Edit/Write/NotebookEdit, redirect to sub-agents
-│   ├── lib/                    — sourceable libs: memory-env / -probe / -vacuum / -install, summary-dispatch, prose-check, destructive-db-check
+│   ├── lib/                    — sourceable libs: memory-env / -probe / -vacuum / -install, summary-dispatch, prose-check,
+│   │                             shell_parse (shared tokeniser), destructive-db-check, vault-git-check
 │   └── fixtures/               — test fixtures (fake-server stub, no real server)
 ├── docs/
 │   ├── session-warmup-contributions.md — how plugins contribute warmup text
@@ -243,7 +245,7 @@ core/
 │   ├── decision-promotion.md   — when and how to promote decisions
 │   ├── linking-synthesis.md    — link syntax, topic pages, vault index contract
 │   ├── summary-format.md       — summary frontmatter + body template
-│   └── vault-conventions.md    — paths, frontmatter rules, write conventions
+│   └── vault-conventions.md    — paths, frontmatter rules, write conventions, the vault-git rule
 ├── skills/
 │   ├── compact-learnings/      — review, compact, and integrate skill learnings
 │   ├── setup/                  — configure agent name, paths, MCP settings
@@ -353,7 +355,7 @@ On 2026-09-04, in an unrelated Laravel repo, Claude ran `php artisan db:wipe --d
 | Project | `ddev delete`, `ddev stop --remove-data`, `lando destroy`, `wp-env destroy` |
 | Raw SQL | `DROP DATABASE\|SCHEMA\|TABLE`, `TRUNCATE`, `DELETE FROM` with no `WHERE` |
 
-**Verb position, not substring.** This is the whole difficulty. A substring match for `drop table` also blocks `grep -rn "drop table" app/` and reading `2026_09_04_drop_users_table.php`, which would make ordinary code search impossible. So `hooks/lib/destructive-db-check.py` tokenises the command with `shlex`, splits it into statements and pipeline stages, strips wrappers, and only then matches. An Artisan verb has to sit in the argument slot after `artisan`. SQL is read only from a SQL client's payload, so `grep` is structurally unreachable.
+**Verb position, not substring.** This is the whole difficulty. A substring match for `drop table` also blocks `grep -rn "drop table" app/` and reading `2026_09_04_drop_users_table.php`, which would make ordinary code search impossible. So `hooks/lib/destructive-db-check.py` tokenises the command with `shlex`, splits it into statements and pipeline stages, strips wrappers, and only then matches. That mechanical half now lives in `hooks/lib/shell_parse.py`, shared with the vault git guard; the verb tables and every blocking decision stay in the checker that owns them. An Artisan verb has to sit in the argument slot after `artisan`. SQL is read only from a SQL client's payload, so `grep` is structurally unreachable.
 
 **A prefix rule cannot see any of these**, which is the argument for a hook rather than a deny rule alone. Each shape below hides the verb behind something, and the incident itself was the first one:
 
@@ -387,7 +389,48 @@ A relative path resolves against the tool call's `cwd`, and a leading `cd` in th
 
 **Out of scope:** `php artisan tinker`, because an interactive REPL takes its input later. As with every guard here, this covers Claude's own tool calls and is not an OS boundary — `/sandbox` is.
 
-Tests: `hooks/test-destructive-database-guard.sh` (159 cases). The suite is weighted towards the *allow* side on purpose. A guard that blocks every destructive command and also blocks `grep -rn "drop table"` has made ordinary work impossible, which is a worse failure than the one it prevents.
+Tests: `hooks/test-destructive-database-guard.sh` (165 cases). The suite is weighted towards the *allow* side on purpose. A guard that blocks every destructive command and also blocks `grep -rn "drop table"` has made ordinary work impossible, which is a worse failure than the one it prevents.
+
+### Vault git guard
+
+On 2026-09-04 an agent deleted a memory note by running `git -C ~/Documents/Claude/Memory rm identity/profile.md`. That is a Bash call, so it staged a deletion in the vault's git index and stopped there. The vault's git does not belong to the agent: the memory MCP server owns it and runs a **deferred-commit queue** over it. On the server's next write it swept the staged deletion into commit `014f51b1`, whose message reads `write: insights/credential-guard-blocks-prose-about-dotenv.md`. A 71-line profile deletion is now filed in vault history under a message describing an unrelated note being written.
+
+The correct tool was available the whole time. The MCP `delete` tool produces its own accurately-named commit. It went unused because nothing said the vault's git was off limits — `references/vault-conventions.md` ran to 76 lines and did not contain the word "git" once. `hooks/vault-git-guard.sh` is the enforcing half of that gap; the [git section now in `vault-conventions.md`](references/vault-conventions.md) is the explaining half, and it cites the incident commit by hash because a rule with no incident attached gets relaxed later.
+
+**The verdict turns on which repository, not on which verb.** `Bash(git rm:*)` would block `git rm` in every repository on the machine, which is ordinary work, and would *still* miss the incident — `git -C <path> rm` puts the verb in the fourth slot. So the command is tokenised and the target directory resolved. Four shapes, all covered:
+
+```
+git -C <vault-or-subdir> <verb>        the incident's own shape
+cd <vault-or-subdir> && git <verb>     the verb is not at the front
+git <verb>                             with the payload cwd inside the vault
+git --git-dir=<vault>/.git <verb>      also --work-tree
+```
+
+Every path is expanded for `~`, joined against the payload's `cwd` when relative, and passed through `realpath` before comparison. Comparison respects the separator, so a sibling named `Memory-old` beside `Memory` is a different repository and stays untouched. An absolute `cd` settles the target even when the payload carries no `cwd` at all.
+
+**It is a block list, and that choice has a stated cost.** Only the enumerated write verbs block:
+
+| Class | Blocked |
+|---|---|
+| Index and tree | `add`, `rm`, `mv`, `reset`, `checkout`, `switch`, `restore`, `clean`, `apply`, `am` |
+| History | `commit`, `merge`, `rebase`, `cherry-pick`, `revert`, `init` |
+| Remote | `push`, `pull`, `fetch` |
+| Object store and refs | `update-ref`, `gc`, `repack`, `prune`, `worktree`, `notes`, `symbolic-ref` |
+| Conditional | `stash` (except `list`/`show`), `tag` (except the listing forms), `branch` (only `-d`/`-D`/`--delete`) |
+
+Everything unlisted passes. git ships over 150 subcommands and the read-only ones vastly outnumber the writes, so an allow list would have to be near-complete on day one or it would break `git grep`, `git shortlog`, `git for-each-ref`, `git ls-tree`, and `git count-objects` — several of which were used to investigate this very incident. **The stated limit, as a known limit and not an oversight:** a mutating subcommand git adds after this ships walks through until somebody adds it to `WRITE_VERBS`.
+
+**Read-only git in the vault is the priority requirement.** `status`, `log`, `show`, `diff`, `ls-files`, `rev-parse`, `rev-list`, `cat-file`, `blame`, `describe`, `remote -v`, and `config --get` each have a named test asserting they still run. Three listed verbs have a read form that the arguments decide rather than the verb: bare `git tag` lists, `git stash list`/`show` report, and bare `git branch` lists.
+
+**It stops at every remote and container boundary, by not unwrapping at all.** `ssh box "git -C /vault commit"` is allowed and must be — that machine has its own filesystem, so a local path of the same name is the wrong path. The mechanism is absence rather than a rule: a stage whose first word is not `git` is never judged, so `ssh`, `docker exec`, and `kubectl exec` are already out of reach. An earlier draft carried an explicit boundary list; it was deleted once a mutation test proved no input could reach it, because an unreachable branch in a guard is untested code pretending to be a safeguard. The one wrapper deliberately descended into is a shell `-c` payload, since `bash -c "cd <vault> && git rm x"` arrives as a single quoted token.
+
+**This is the one place it disagrees with the database guard,** which unwraps `ssh`, `docker`, and `kubectl` to follow a command *through* them. A database on another host is still a database being destroyed; another machine's vault is not this vault. That disagreement is why `unwrap()` is not in the shared parser and each guard keeps its own.
+
+**The server's own commits are structurally out of scope.** markdown-vault-mcp commits from a separate process as `markdown-vault-mcp <noreply@markdown-vault-mcp>`, where no `PreToolUse` hook and no permission rule can ever see it. Nothing is needed there, and nothing was built.
+
+**It fails open,** for the reason the database guard gives rather than the one `credential-guard.sh` gives: there is no adversary, only a confidently wrong agent. A command that writes to the vault has to be valid shell to run, so it tokenises. A command whose target cannot be resolved — no `cwd` in the payload and no explicit path — also passes, because guessing at the target is how this guard would block somebody else's repository.
+
+Tests: `hooks/test-vault-git-guard.sh` (188 cases), weighted towards the allow side on two axes. A guard that stops `git status` in the vault has broken the commands the incident was investigated with, and a guard that stops `git commit` in an unrelated repository has broken every repository on the machine. Both are worse than the failure it prevents, so every write verb it blocks is tested a second time in an unrelated repository, allowed.
 
 ### Logging pipeline
 
@@ -572,11 +615,16 @@ Guardrails are prose in the model's context. Permission rails are enforcement in
 
 - **deny** — hard wall. No prompt, no override, no classifier opinion. Reserved for the irreversible: `sudo`, disk formatting and partitioning, `shred`, `btrfs`, `git push --force`, history rewriting, bulk keychain dumps.
 - **ask** — always prompts, even in `auto`, even when a narrower allow rule matches. Used for destructive-but-legitimate work: `rm -rf`, `git reset --hard`, `gh pr merge`, `npm publish`, keychain and libsecret writes, `launchctl`/`systemctl`/`crontab` persistence, AUR helpers.
+- **allow** — one entry, and deliberately only one: `mcp__plugin_workbench-core_memory__*`. Scoped to a single plugin's MCP server, never a shell pattern.
 - **autoMode.allow** — a different layer: prose exceptions to the classifier's built-in *soft-deny* rules, read as natural language rather than tool patterns.
 
-The merge is **additive**: entries are added when absent, existing rules keep their position, and `permissions.allow` is never touched. `--dry-run` previews; `--list` prints every rule with its rationale.
+The merge is **additive**: entries are added when absent, and existing rules keep their position. `--dry-run` previews; `--list` prints every rule with its rationale.
 
-**Why an `autoMode.allow` entry ships.** The classifier's built-in soft-deny list includes *auto-mode bypass*, and the dev-team Dispatch task launches agents with `nohup claude -p --agent ... --dangerously-skip-permissions` — which reads exactly like Claude removing its own oversight, so the classifier blocks it. A soft deny clears on explicit user intent, but a scheduled task has no user message to clear it. `autoMode.allow` is the documented mechanism for that exception; `permissions.allow` is not, because auto mode deliberately suspends broad shell allow rules that grant arbitrary code execution. The literal `"$defaults"` must stay in the array — omitting it discards every built-in soft-deny rule — so `permissions.sh` prepends it whenever missing.
+**`permissions.allow` used to be untouched, and now is not.** For most of this file's life the rails shipped only `deny`, `ask`, and `autoMode.allow`, and both `permissions.sh` and this section said `permissions.allow` was never referenced. That promise has been replaced by a narrower and still-true one: **the entries you put in `permissions.allow` are never removed, never reordered, and never rewritten.** The shipped entry is appended after them, and only when it is missing, by the same additive `$new - $cur` the other lists use. `hooks/test-permissions.sh` pins both halves — that the shipped entry lands, and that a user's four-entry allow list comes back with all four in their original positions.
+
+**Why an `autoMode.allow` entry ships.** The classifier's built-in soft-deny list includes *auto-mode bypass*, and the dev-team Dispatch task launches agents with `nohup claude -p --agent ... --dangerously-skip-permissions` — which reads exactly like Claude removing its own oversight, so the classifier blocks it. A soft deny clears on explicit user intent, but a scheduled task has no user message to clear it. `autoMode.allow` is the documented mechanism for that exception; `permissions.allow` is not *for that entry*, because auto mode deliberately suspends broad shell allow rules that grant arbitrary code execution, and dispatch is a shell command. That is a statement about shell patterns, not about the allow list as a whole — see below for the one MCP entry that does ship there. The literal `"$defaults"` must stay in the array — omitting it discards every built-in soft-deny rule — so `permissions.sh` prepends it whenever missing.
+
+**Why one MCP server sits in `permissions.allow`.** `mcp__plugin_workbench-core_memory__*` is the only entry, and the scoping is the whole argument. The vault is the canonical memory store, and a classifier hold on a memory write does not defer the memory — it *loses* it: the write was going to happen inside a turn that has already moved on, and nothing retries it, so the note is simply never recorded. `autoMode.allow` is the wrong lever here because the call is not a shell command tripping a soft-deny rule. And the reason `permissions.allow` is safe for this and unsafe for pipeline dispatch is the same one in both directions: an allow rule matching `Bash(...)` grants arbitrary code execution, which is exactly what auto mode suspends, while an MCP server entry grants markdown reads and writes inside a configured vault. `hooks/test-permissions.sh` asserts the shape rather than trusting that sentence — no `Bash(` or `Read(` pattern may appear in the allow list, every entry must start with `mcp__`, and no rule may be denied and allowed at once, since deny wins and the allow would be dead text that reads like a grant.
 
 **The constraint that shapes the ask list.** An `ask` rule always forces a prompt, and a `claude -p` run has nobody to prompt — so the call is *blocked*. `workbench-dev-team` dispatches Watson unattended via `nohup claude -p --agent`, and Watson pushes branches, commits, and opens PRs. `Bash(git push:*)`, `Bash(git commit:*)`, and `Bash(gh pr create:*)` are therefore deliberately absent from the ask list; adding them kills the pipeline silently. `hooks/test-permissions.sh` asserts their absence. The git-commit approval gate stays a `PreToolUse` hook because a hook can force a prompt *and* carry a pipeline exemption — an ask rule cannot.
 

@@ -20,6 +20,46 @@ Bad:   $HOME/Documents/Claude/Memory/sessions/2026-04-09/abc123.summary.md
 Bad:   memory/sessions/2026-04-09/abc123.summary.md   (a `memory/` prefix escapes the vault root)
 ```
 
+## The vault is a git repo, and it is not yours
+
+The vault is a git repository, and the **memory server owns it**. The server
+commits and pushes on its own **deferred queue**: writes are batched, committed
+under a message naming the note that was written, and pushed after a period of
+write-idle. That queue is why cross-machine memory works at all.
+
+**Never run a git write command in the vault.** Not `commit`, `add`, `rm`, `mv`,
+`reset`, `checkout`, `restore`, `stash`, `merge`, `rebase`, `revert`, `clean`,
+`apply`, `push`, `pull`, `fetch`, or `init`. A staged change does not sit and
+wait for you — the server sweeps whatever it finds in the index into its next
+commit, under that commit's unrelated message.
+
+**Use the MCP tools instead.** To delete a note, use `delete`. To change one,
+use `edit`, `write`, or `append`. To move one, use `rename`. To force a sync
+right now, use `git_sync`. Each produces its own accurately-named commit.
+
+**Reading with git is fine and encouraged** — `status`, `log`, `show`, `diff`,
+`ls-files`, `rev-parse`, `blame`, `git grep`. Those are how you inspect vault
+history, and nothing about them touches the server's queue.
+
+### Why this rule exists — the 2026-09-04 incident
+
+An agent deleted a profile note with a shell command:
+
+```
+git -C ~/Documents/Claude/Memory rm identity/profile.md
+```
+
+That staged the deletion and stopped. The server's next write swept it into
+commit **`014f51b1`**, whose message reads
+`write: insights/credential-guard-blocks-prose-about-dotenv.md`. So vault
+history now records a 71-line profile deletion under a message about an
+unrelated note being written. Nothing in that commit says a profile was lost.
+The `delete` tool was available the whole time and would have produced a commit
+that said so.
+
+`hooks/vault-git-guard.sh` enforces this rule. The rule is written down here
+because a rule with no incident attached gets relaxed later.
+
 ## Required frontmatter
 
 The vault enforces two required fields: `name` and `type`. Every document

@@ -295,6 +295,41 @@ else
   PASS=$((PASS + 1)); echo "  ✅ quotes no line of the file"
 fi
 
+# This checker's shell parsing moved to hooks/lib/shell_parse.py, shared with
+# hooks/lib/vault-git-check.py. That import is the regression the extraction
+# could introduce, and it would be invisible: an ImportError leaves the checker
+# exiting non-zero with its traceback swallowed, the hook reads that as "not a
+# finding", and the guard silently allows everything from then on. A database
+# was destroyed on 2026-09-04 because nothing was watching; a guard that stops
+# watching is the same failure with a file in the repository to disprove it.
+#
+# So the incident command is re-run from working directories that have nothing
+# to do with the plugin, and once by a relative path. Each asserts exit 2.
+echo "the shared-parser import survives an arbitrary working directory:"
+INCIDENT="$(bash_json 'php artisan db:wipe --database=pgsql --force')"
+for DIR in / /tmp "$HOME" "$SQLDIR"; do
+  printf '%s' "$INCIDENT" | (cd "$DIR" && bash "$GUARD") >/dev/null 2>&1
+  if [ "$?" = "2" ]; then
+    PASS=$((PASS + 1)); echo "  ✅ still blocks when invoked from $DIR"
+  else
+    FAIL=$((FAIL + 1)); echo "  ❌ failed open when invoked from $DIR"
+  fi
+done
+printf '%s' "$INCIDENT" | (cd "$HOOKS_DIR" && bash ./destructive-database-guard.sh) >/dev/null 2>&1
+if [ "$?" = "2" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ still blocks when invoked by a relative path"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ failed open when invoked by a relative path"
+fi
+# The file-reading path resolves a relative .sql against the payload's cwd, so it
+# is the case most likely to be broken by a cwd-sensitive import or lookup.
+printf '%s' "$(cwd_json 'psql -f db/reset.sql' "$SQLDIR")" | (cd / && bash "$GUARD") >/dev/null 2>&1
+if [ "$?" = "2" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ still reads a payload-relative .sql from another cwd"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ lost the payload-relative file read from another cwd"
+fi
+
 # Registration is part of the behaviour: a guard nothing calls guards nothing.
 echo "the hook is registered in hooks.json:"
 assert_jq "matcher is Bash" "$HOOKS_JSON" \

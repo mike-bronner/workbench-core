@@ -31,6 +31,9 @@ cat > "$RAILS" <<'EOF'
     { "rule": "Bash(rm -rf:*)", "why": "prompt first" },
     { "rule": "Bash(gh pr merge:*)", "why": "human gate" }
   ],
+  "allow": [
+    { "rule": "mcp__plugin_test_memory__*", "why": "memory writes must not stall" }
+  ],
   "autoMode": {
     "allow": [
       { "rule": "Dispatching the pipeline is allowed.", "why": "soft-deny exception" }
@@ -38,6 +41,12 @@ cat > "$RAILS" <<'EOF'
   }
 }
 EOF
+
+# A second fixture with NO allow list, to pin that the key is not invented for a
+# rails file that does not ship one. Without the length guard in the merge, this
+# would write an empty `permissions.allow` array into a user's settings.json.
+RAILS_NOALLOW="$SANDBOX/rails-noallow.json"
+jq 'del(.allow)' "$RAILS" > "$RAILS_NOALLOW"
 
 # run <settings-file> [args...] — invoke the script against a sandbox settings file.
 run() {
@@ -83,7 +92,7 @@ assert_jq "first deny rule"       "$S" '.permissions.deny[0]' "Bash(sudo:*)"
 assert_jq "first ask rule"        "$S" '.permissions.ask[0]'  "Bash(rm -rf:*)"
 assert_jq "defaultMode untouched" "$S" '.permissions.defaultMode // "unset"' "unset"
 
-echo "preserves unrelated keys and never touches allow:"
+echo "preserves unrelated keys:"
 S="$SANDBOX/existing.json"
 cat > "$S" <<'EOF'
 {
@@ -98,10 +107,68 @@ EOF
 run "$S" >/dev/null
 assert_jq "outputStyle survives"    "$S" '.outputStyle' "Clear"
 assert_jq "theme survives"          "$S" '.theme' "dark"
-assert_jq "allow untouched"         "$S" '.permissions.allow | join(",")' "mcp__plugin_workbench-bujo_scribe__*"
-assert_jq "allow length unchanged"  "$S" '.permissions.allow | length' "1"
 assert_jq "existing mode preserved" "$S" '.permissions.defaultMode' "auto"
 assert_jq "deny added"              "$S" '.permissions.deny | length' "2"
+
+# This file shipped no allow list for most of its life, and permissions.sh said
+# plainly that `permissions.allow` was never touched. It now merges one, so the
+# promise is narrower and both halves of it need pinning: the shipped entry IS
+# added, and the user's own entries are neither moved nor dropped to make room.
+echo "merges the shipped allow list without disturbing the user's own entries:"
+assert_jq "user's allow entry kept"   "$S" '.permissions.allow[0]' "mcp__plugin_workbench-bujo_scribe__*"
+assert_jq "shipped allow appended"    "$S" '.permissions.allow[1]' "mcp__plugin_test_memory__*"
+assert_jq "allow length after merge"  "$S" '.permissions.allow | length' "2"
+
+S="$SANDBOX/allow-order.json"
+cat > "$S" <<'EOF'
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm test:*)",
+      "mcp__plugin_test_memory__*",
+      "Read(//Users/me/notes/**)",
+      "Bash(ls:*)"
+    ]
+  }
+}
+EOF
+run "$S" >/dev/null
+assert_jq "first user entry holds index 0"  "$S" '.permissions.allow[0]' "Bash(npm test:*)"
+assert_jq "second holds index 1"            "$S" '.permissions.allow[1]' "mcp__plugin_test_memory__*"
+assert_jq "third holds index 2"             "$S" '.permissions.allow[2]' "Read(//Users/me/notes/**)"
+assert_jq "fourth holds index 3"            "$S" '.permissions.allow[3]' "Bash(ls:*)"
+assert_jq "an already-present entry is not duplicated" "$S" \
+  '[.permissions.allow[] | select(. == "mcp__plugin_test_memory__*")] | length' "1"
+assert_jq "no user entry was dropped"       "$S" '.permissions.allow | length' "4"
+OUT=$(run "$S")
+assert_contains "reports nothing new to add" "$OUT" "all shipped rails already present"
+
+# The upgrade path, and the one case where allow is the ONLY new entry: a user
+# who already merged the previous rails (no allow list) then updates the plugin.
+# The report has to say so. If the new-entry count omits allow, this run prints
+# "all shipped rails already present" while quietly adding one — a merge that
+# lies about what it did is worse than one that adds nothing.
+echo "reports an allow entry that is the only new rail:"
+S="$SANDBOX/upgrade.json"
+WORKBENCH_SETTINGS_FILE="$S" WORKBENCH_RAILS_FILE="$RAILS_NOALLOW" \
+  bash "$SCRIPT" >/dev/null 2>&1
+OUT=$(run "$S" --dry-run)
+assert_contains "previews the allow add" "$OUT" "would add allow: mcp__plugin_test_memory__*"
+if printf '%s\n' "$OUT" | grep -qF -- "all shipped rails already present"; then
+  FAIL=$((FAIL + 1)); echo "  ❌ claimed nothing was new while adding an allow entry"
+else
+  PASS=$((PASS + 1)); echo "  ✅ does not claim the rails are already present"
+fi
+run "$S" >/dev/null
+assert_jq "allow entry actually added" "$S" '.permissions.allow[0]' "mcp__plugin_test_memory__*"
+assert_jq "deny not duplicated by the second run" "$S" '.permissions.deny | length' "2"
+
+echo "a rails file with no allow list does not invent the key:"
+S="$SANDBOX/noallow.json"
+WORKBENCH_SETTINGS_FILE="$S" WORKBENCH_RAILS_FILE="$RAILS_NOALLOW" \
+  bash "$SCRIPT" >/dev/null 2>&1
+assert_jq "permissions.allow absent" "$S" '.permissions | has("allow")' "false"
+assert_jq "deny still merged"        "$S" '.permissions.deny | length' "2"
 
 echo "merge is additive — user's own rules keep their position:"
 S="$SANDBOX/custom.json"
@@ -185,6 +252,7 @@ BEFORE="$(cat "$S")"
 OUT=$(run "$S" --dry-run --mode plan)
 assert_contains "announces dry run"    "$OUT" "dry run — nothing written"
 assert_contains "previews a deny add"  "$OUT" "would add deny: Bash(sudo:*)"
+assert_contains "previews an allow add" "$OUT" "would add allow: mcp__plugin_test_memory__*"
 assert_contains "previews the mode"    "$OUT" 'would set defaultMode = "plan"'
 if [ "$BEFORE" = "$(cat "$S")" ]; then
   PASS=$((PASS + 1)); echo "  ✅ file unchanged after dry run"
@@ -209,6 +277,7 @@ echo "--list prints every shipped rule with its rationale:"
 OUT=$(run "$SANDBOX/unused.json" --list)
 assert_contains "lists a deny rule" "$OUT" "deny	Bash(sudo:*)	no root"
 assert_contains "lists an ask rule" "$OUT" "ask	Bash(gh pr merge:*)	human gate"
+assert_contains "lists an allow rule" "$OUT" "allow	mcp__plugin_test_memory__*	memory writes must not stall"
 if [ ! -f "$SANDBOX/unused.json" ]; then
   PASS=$((PASS + 1)); echo "  ✅ --list wrote no settings file"
 else
@@ -231,6 +300,14 @@ assert_jq "every ask entry has a why"   "$SHIPPED_RAILS" \
   '[.ask[]  | select(.why  == null)] | length' "0"
 assert_jq "no rule appears in both lists" "$SHIPPED_RAILS" \
   '[(.deny | map(.rule))[] as $d | (.ask | map(.rule)) | select(index($d))] | length' "0"
+assert_jq "every allow entry has a rule" "$SHIPPED_RAILS" \
+  '[(.allow // [])[] | select(.rule == null)] | length' "0"
+assert_jq "every allow entry has a why"  "$SHIPPED_RAILS" \
+  '[(.allow // [])[] | select(.why  == null)] | length' "0"
+# deny beats allow regardless of specificity, so a rule in both is dead text
+# that reads like a grant. Catch it here rather than in a confused bug report.
+assert_jq "no rule is both denied and allowed" "$SHIPPED_RAILS" \
+  '[(.allow // [] | map(.rule))[] as $a | (.deny | map(.rule)) | select(index($a))] | length' "0"
 assert_jq "every autoMode entry has a rule" "$SHIPPED_RAILS" \
   '[.autoMode.allow[] | select(.rule == null)] | length' "0"
 assert_jq "every autoMode entry has a why"  "$SHIPPED_RAILS" \
@@ -295,6 +372,24 @@ for MGR in pacman apt apt-get dnf yum zypper; do
     FAIL=$((FAIL + 1)); echo "  ❌ $MGR rule present — prompts on read-only queries for no gain"
   fi
 done
+
+# The allow list is the newest and most dangerous surface in this file, because
+# an allow rule is a grant rather than a brake. The rule that keeps it safe is
+# structural: an entry may name ONE plugin's MCP server and nothing else. A
+# `Bash(...)` allow pattern grants arbitrary code execution, which is precisely
+# what autoMode.allow exists to handle instead — and it is what auto mode
+# deliberately suspends. Assert the shape rather than trusting the comment.
+echo "the allow list may name an MCP server and nothing else:"
+assert_jq "no Bash pattern in allow" "$SHIPPED_RAILS" \
+  '[(.allow // [])[] | select(.rule | startswith("Bash("))] | length' "0"
+assert_jq "no Read pattern in allow" "$SHIPPED_RAILS" \
+  '[(.allow // [])[] | select(.rule | startswith("Read("))] | length' "0"
+assert_jq "every allow rule is an mcp__ pattern" "$SHIPPED_RAILS" \
+  '[(.allow // [])[] | select(.rule | startswith("mcp__") | not)] | length' "0"
+# The vault is the canonical memory store, and a classifier hold on a write
+# loses the memory rather than deferring it — nothing retries the call.
+assert_jq "the memory MCP is allowed" "$SHIPPED_RAILS" \
+  '[(.allow // [])[] | select(.rule == "mcp__plugin_workbench-core_memory__*")] | length' "1"
 
 echo "ask list never blocks the unattended dev-team pipeline:"
 for RULE in "Bash(git push:*)" "Bash(git commit:*)" "Bash(gh pr create:*)"; do

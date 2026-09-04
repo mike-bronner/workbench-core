@@ -105,7 +105,23 @@
     "before permission rules are evaluated. It covers strictly more than the deny",
     "rules did: it catches `python3 -c \"print(open('~/.ssh/id_rsa').read())\"`,",
     "which a Read deny never touched. hooks/test-permissions.sh asserts that no",
-    "Read() rule creeps back in."
+    "Read() rule creeps back in.",
+    "",
+    "THIS FILE NOW SHIPS AN `allow` LIST — read before adding to it:",
+    "For most of this file's life it shipped only deny, ask, and autoMode.allow,",
+    "and scripts/permissions.sh stated plainly that `permissions.allow` was never",
+    "touched. That is no longer true, and the narrower promise that replaced it is",
+    "the one to keep: permissions.sh adds the entries below when they are absent,",
+    "and it never removes, reorders, or rewrites an allow entry the USER put there.",
+    "The merge is the same additive `$new - $cur` used for deny and ask.",
+    "",
+    "Exactly one entry ships, and the scoping is the whole argument for it. See",
+    "the `why` on the entry itself for the reasoning; the constraint to preserve is",
+    "that an allow rule here must name ONE plugin's MCP server. A shell pattern",
+    "must never be added: `Bash(...)` in allow grants arbitrary code execution,",
+    "which is exactly what the autoMode note below says allow is the wrong lever",
+    "for. An MCP server exposing markdown reads and writes is a different animal,",
+    "and the two must not be conflated because they share a JSON key."
   ],
 
   "deny": [
@@ -202,6 +218,11 @@
       "why": "libsecret deletion." }
   ],
 
+  "allow": [
+    { "rule": "mcp__plugin_workbench-core_memory__*",
+      "why": "The vault is the canonical memory store, and a classifier hold on a memory write does not defer the memory — it loses it. The write was going to happen inside a turn that has already moved on, and nothing retries it, so the note is simply never recorded. Scoped to ONE plugin's MCP server rather than a shell wildcard, which is the distinction that makes permissions.allow the right lever here and the wrong one for pipeline dispatch: this grants markdown reads and writes inside a configured vault, not arbitrary code execution. Auto mode suspends broad shell allow rules for exactly that reason, and an MCP server entry is not one." }
+  ],
+
   "_autoMode_comment": [
     "`autoMode.allow` entries are prose exceptions to the classifier's built-in",
     "soft-deny rules — a different layer from permissions.deny/ask, which are tool",
@@ -220,7 +241,7 @@
   "autoMode": {
     "allow": [
       { "rule": "Dispatching workbench-dev-team agents is allowed: the scheduled Dispatch task launches `nohup claude -p --agent workbench-dev-team:<lestrade|watson|holmes> --dangerously-skip-permissions` as a detached subprocess. This is the sanctioned pipeline entry point, not Claude removing its own oversight — each dispatched agent runs under its own guardrails, work is scoped to one board item, and every result lands in a human-reviewed pull request.",
-        "why": "The classifier's built-in soft-deny list includes auto-mode bypass, and this command is Claude spawning itself with --dangerously-skip-permissions — which reads exactly like an oversight bypass. A soft deny clears on explicit user intent, but a scheduled task has no user message to clear it, so dispatch is blocked non-deterministically. Confirmed live 2026-07-22 (x2), 2026-07-25 (Holmes and Watson both denied), still open 2026-07-29. This entry is the documented fix: an exception to a soft deny is precisely what autoMode.allow is for. A permissions.allow rule is the wrong lever — auto mode deliberately suspends broad shell allow rules that grant arbitrary code execution." }
+        "why": "The classifier's built-in soft-deny list includes auto-mode bypass, and this command is Claude spawning itself with --dangerously-skip-permissions — which reads exactly like an oversight bypass. A soft deny clears on explicit user intent, but a scheduled task has no user message to clear it, so dispatch is blocked non-deterministically. Confirmed live 2026-07-22 (x2), 2026-07-25 (Holmes and Watson both denied), still open 2026-07-29. This entry is the documented fix: an exception to a soft deny is precisely what autoMode.allow is for. A permissions.allow rule is the wrong lever for THIS entry — auto mode deliberately suspends broad shell allow rules that grant arbitrary code execution, and dispatch is a shell command that spawns an agent. That is a statement about shell patterns, not about the allow list as such: the `allow` list above ships one narrowly-scoped MCP server entry, which grants no code execution and is therefore not the thing auto mode suspends." }
     ]
   }
 }

@@ -120,7 +120,10 @@ the reverse.
     with a single tool call, do it inline. Otherwise spawn a sub-agent for
     each task — in parallel when the tasks are independent. This keeps the
     main context window focused on orchestration, not on the raw output of
-    exploration, research, or multi-step edits.
+    exploration, research, or multi-step edits. For file edits this is
+    enforced, not advisory: `hooks/delegation-gate.sh` denies `Edit`, `Write`,
+    and `NotebookEdit` from the main agent, so the single-tool-call exception
+    covers `Read` and `Bash` only.
     - ❌ Reading five files inline to understand a module (delegate: one agent
       with "summarize what this module does")
     - ❌ Running a sequence of grep → read → edit → verify inline when the
@@ -128,7 +131,8 @@ the reverse.
     - ❌ Dispatching sub-agents sequentially when they have no dependency on
       each other (parallelize)
     - ✅ A single known-path `Read` — do it inline
-    - ✅ A single `Edit` to a known string — do it inline
+    - ❌ A single `Edit` to a known string — the gate denies it, so dispatch a
+      sub-agent (or ask the user for `/workbench-core:orchestrator off`)
     - ✅ A single scripted `Bash` whose output shape you can predict — do it inline
     - ✅ Multi-file refactor across the codebase → one agent per file, in parallel
     - ✅ Open-ended research ("how does X work?") → delegate to a research agent

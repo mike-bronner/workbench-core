@@ -42,7 +42,8 @@ assert_jq() {
 
 assert_contains() {
   local desc="$1" haystack="$2" needle="$3"
-  if printf '%s\n' "$haystack" | grep -qF "$needle"; then
+  # `--` matters: a needle such as "--volumes" is otherwise read as a grep flag.
+  if printf '%s\n' "$haystack" | grep -qF -- "$needle"; then
     PASS=$((PASS + 1)); echo "  ✅ $desc"
   else
     FAIL=$((FAIL + 1)); echo "  ❌ $desc — output missing: $needle"
@@ -75,6 +76,47 @@ check 2 "dropdb"            "$(bash_json 'dropdb myapp')"
 check 2 "dropdb by path"    "$(bash_json '/usr/local/bin/dropdb myapp')"
 check 2 "dropuser"          "$(bash_json 'dropuser app_user')"
 check 2 "mysqladmin drop"   "$(bash_json 'mysqladmin -u root drop myapp')"
+
+# A containerised database keeps its data in a named volume, so the destructive
+# Docker commands are the volume-touching ones. The flag that makes them
+# destructive sits AFTER the subcommand, which is why only the hook can see it.
+echo "blocks the Docker commands that delete a volume:"
+check 2 "compose down -v"        "$(bash_json 'docker compose down -v')"
+check 2 "compose down --volumes" "$(bash_json 'docker compose down --volumes')"
+check 2 "compose down behind -f" "$(bash_json 'docker compose -f docker-compose.yml down -v')"
+check 2 "legacy docker-compose"  "$(bash_json 'docker-compose down -v')"
+check 2 "sail down -v"           "$(bash_json 'sail down -v')"
+check 2 "vendor/bin/sail down"   "$(bash_json './vendor/bin/sail down --volumes')"
+check 2 "compose rm -v"          "$(bash_json 'docker compose rm -v')"
+check 2 "docker rm -v"           "$(bash_json 'docker rm -v api')"
+check 2 "a short flag cluster"   "$(bash_json 'docker rm -fv api')"
+check 2 "docker volume rm"       "$(bash_json 'docker volume rm app_pgdata')"
+check 2 "docker volume prune"    "$(bash_json 'docker volume prune -f')"
+check 2 "system prune --volumes" "$(bash_json 'docker system prune -a --volumes -f')"
+check 2 "podman volume rm"       "$(bash_json 'podman volume rm app')"
+check 2 "sudo compose down -v"   "$(bash_json 'sudo docker compose down -v')"
+check 2 "cd then compose down"   "$(bash_json 'cd /some/repo && docker compose down -v')"
+check 2 "ssh compose down -v"    "$(bash_json 'ssh box "docker compose down -v"')"
+
+# `docker compose down` keeps named volumes and is how a stack is routinely
+# stopped. Blocking the plain form would strand an agent that stopped a stack.
+echo "allows the Docker work that keeps the volumes:"
+check 0 "plain compose down"     "$(bash_json 'docker compose down')"
+check 0 "down --remove-orphans"  "$(bash_json 'docker compose down --remove-orphans')"
+check 0 "compose up -d"          "$(bash_json 'docker compose up -d')"
+# -V is --renew-anon-volumes on `up`, and the verb is not one this guard reads.
+check 0 "compose up -d -V"       "$(bash_json 'docker compose up -d -V')"
+check 0 "docker rm without -v"   "$(bash_json 'docker rm api')"
+check 0 "compose rm -f"          "$(bash_json 'docker compose rm -f')"
+check 0 "system prune, no flag"  "$(bash_json 'docker system prune -a')"
+check 0 "image prune"            "$(bash_json 'docker image prune -f')"
+check 0 "builder prune"          "$(bash_json 'docker builder prune')"
+check 0 "network prune"          "$(bash_json 'docker network prune')"
+check 0 "docker volume ls"       "$(bash_json 'docker volume ls')"
+# -v means bind mount on `run`, not volume deletion.
+check 0 "docker run -v"          "$(bash_json 'docker run -v /host:/app node')"
+check 0 "compose logs"           "$(bash_json 'docker compose logs -f app')"
+check 0 "grep for the command"   "$(bash_json 'grep -rn "docker compose down -v" Makefile')"
 
 echo "blocks raw SQL handed to a database client:"
 check 2 "psql -c DROP DATABASE"   "$(bash_json 'psql -c "DROP DATABASE app"')"
@@ -177,6 +219,9 @@ assert_contains "names the SQL verb"     "$OUT" "DROP DATABASE"
 assert_contains "names the client"       "$OUT" "psql"
 OUT=$(bash_json 'dropdb myapp' | bash "$GUARD" 2>&1)
 assert_contains "names dropdb"           "$OUT" "dropdb"
+OUT=$(bash_json 'docker compose down -v' | bash "$GUARD" 2>&1)
+assert_contains "names the volumes flag" "$OUT" "--volumes"
+assert_contains "says where data lives"  "$OUT" "named volumes"
 
 # Registration is part of the behaviour: a guard nothing calls guards nothing.
 echo "the hook is registered in hooks.json:"
@@ -192,12 +237,22 @@ assert_jq "no if condition narrows it" "$HOOKS_JSON" \
 # `cd foo && php artisan db:wipe` — but it is what shows up in /config, so the
 # boundary is visible to a human reading their own settings.
 echo "rails.json denies the shell commands that have no legitimate use:"
-for RULE in "Bash(dropdb:*)" "Bash(dropuser:*)" "Bash(mysqladmin drop:*)"; do
+for RULE in "Bash(dropdb:*)" "Bash(dropuser:*)" "Bash(mysqladmin drop:*)" \
+            "Bash(docker volume rm:*)" "Bash(docker volume prune:*)"; do
   assert_jq "$RULE denied" "$RAILS" \
     "[.deny[] | select(.rule == \"$RULE\")] | length" "1"
 done
 assert_jq "every database deny explains itself" "$RAILS" \
-  '[.deny[] | select(.rule | test("dropdb|dropuser|mysqladmin")) | select(.why == null)] | length' "0"
+  '[.deny[] | select(.rule | test("dropdb|dropuser|mysqladmin|docker volume")) | select(.why == null)] | length' "0"
+
+# `docker compose down` keeps named volumes, so only the --volumes form is
+# destructive — and that flag sits after the subcommand, where a prefix cannot
+# read it. A `Bash(docker compose down:*)` rule would block routine teardown.
+echo "no docker compose rule ships — a prefix cannot read the --volumes flag:"
+assert_jq "no compose rule in deny" "$RAILS" \
+  '[.deny[] | select(.rule | test("docker compose|docker-compose"))] | length' "0"
+assert_jq "no compose rule in ask"  "$RAILS" \
+  '[.ask[]  | select(.rule | test("docker compose|docker-compose"))] | length' "0"
 
 # A deny rule cannot read a flag that comes later, so it cannot carry the hook's
 # --env=testing exemption. Add one and the exemption dies silently: the hook

@@ -16,7 +16,16 @@ Three rule classes, in the order they are checked per stage:
 
   artisan   db:wipe, migrate:fresh, migrate:reset, migrate:refresh
   shell     dropdb, dropuser, mysqladmin ... drop
+  docker    the volume-deleting commands, and only those
   sql       DROP DATABASE/SCHEMA/TABLE, TRUNCATE, DELETE FROM with no WHERE
+
+The Docker rules follow the same shape as the Artisan exemption. A containerised
+database keeps its data in a named volume, so `docker compose down` on its own is
+harmless and is how a stack gets stopped. The destructive half is --volumes,
+which sits AFTER the subcommand, exactly where a prefix deny rule cannot read it.
+So `down -v`, `rm -v`, `volume rm`, `volume prune`, and `system prune --volumes`
+block, and plain `down`, `up`, `docker rm`, and image or builder pruning do not.
+`sail down -v` blocks too, because sail proxies docker compose.
 
 WHY ARTISAN CARRIES A TESTING EXEMPTION:
 The 2026-09-04 incident was `php artisan db:wipe --database=pgsql --force`, run
@@ -80,6 +89,24 @@ DOCKER_VALUE_FLAGS = {"-u", "--user", "-w", "--workdir", "-e", "--env", "--label
 SSH_VALUE_FLAGS = {"-p", "-i", "-o", "-l", "-F", "-b", "-c", "-D", "-L", "-R"}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
 ECHOES = {"echo", "printf"}
+
+# A containerised database keeps its data in a named volume, so the destructive
+# Docker commands are the volume-touching ones. `docker compose down` on its own
+# leaves named volumes alone and is how a stack is routinely stopped, so only the
+# --volumes form blocks. Same reasoning for `docker system prune`: it removes
+# volumes only when asked to.
+DOCKER_BINARIES = {"docker", "podman"}
+COMPOSE_BINARIES = {"docker-compose", "podman-compose"}
+# sail proxies docker compose, so `sail down -v` IS `docker compose down -v`.
+COMPOSE_SHIMS = {"sail"}
+# Flags that carry a separate value, skipped so the subcommand is found. The
+# compose file in `docker compose -f x.yml down -v` is a value, not a verb.
+DOCKER_GLOBAL_VALUE_FLAGS = {
+    "-f", "--file", "-p", "--project-name", "-H", "--host", "-c", "--context",
+    "--project-directory", "--env-file", "--profile", "--log-level",
+}
+# `--volume`, `--volumes`, and any short cluster containing v, such as -fv.
+VOLUME_FLAG = re.compile(r"^(--volumes?|-[A-Za-z]*v[A-Za-z]*)$")
 
 STATEMENT_SEPARATORS = {";", "&&", "||", "&", "(", ")", "{", "}"}
 PIPE = "|"
@@ -170,6 +197,25 @@ def skip_flags(tokens, value_flags):
         rest = rest[1:]
         if flag in value_flags and "=" not in flag and rest:
             rest = rest[1:]
+    return rest
+
+
+def strip_noop(tokens):
+    """Drop env assignments and no-op prefixes such as `sudo` and `nice`, and
+    nothing else. The Docker rules have to read the docker binary and its
+    subcommand, which unwrap() strips on its way to the inner command."""
+    rest = list(tokens)
+    while rest:
+        if ASSIGNMENT.match(rest[0]):
+            rest = rest[1:]
+            continue
+        head = base(rest[0])
+        if head not in PREFIX_NOOP:
+            break
+        rest = rest[1:]
+        if head == "env":
+            while rest and ASSIGNMENT.match(rest[0]):
+                rest = rest[1:]
     return rest
 
 
@@ -266,6 +312,48 @@ def check_artisan(tokens):
     )
 
 
+def check_docker(tokens):
+    """Block the Docker commands that delete a volume, and only those.
+
+    `docker compose down` leaves named volumes alone and is how a stack is
+    routinely stopped, so the plain form has to keep working. The destructive
+    half is the --volumes flag, which sits AFTER the subcommand, and that is
+    precisely what a prefix deny rule cannot read."""
+    if not tokens:
+        return None
+    head = base(tokens[0])
+    compose = False
+    if head in DOCKER_BINARIES:
+        rest = skip_flags(tokens[1:], DOCKER_GLOBAL_VALUE_FLAGS)
+        if rest and rest[0] == "compose":
+            compose = True
+            rest = skip_flags(rest[1:], DOCKER_GLOBAL_VALUE_FLAGS)
+    elif head in COMPOSE_BINARIES or head in COMPOSE_SHIMS:
+        compose = True
+        rest = skip_flags(tokens[1:], DOCKER_GLOBAL_VALUE_FLAGS)
+    else:
+        return None
+    if not rest:
+        return None
+
+    verb, args = rest[0], rest[1:]
+    volumes = any(VOLUME_FLAG.match(arg) for arg in args)
+    label = f"{head} compose" if compose and head in DOCKER_BINARIES else head
+    if verb == "down" and volumes:
+        return (f"`{label} down` with --volumes deletes the named volumes, "
+                "which is where a containerised database keeps its data.")
+    if verb == "rm" and volumes:
+        return (f"`{label} rm` with --volumes deletes the containers' volumes "
+                "along with them.")
+    if verb == "volume" and args and args[0] in {"rm", "prune"}:
+        return (f"`{head} volume {args[0]}` deletes volumes outright, and a "
+                "database container keeps its data in one.")
+    if verb == "system" and args and args[0] == "prune" and volumes:
+        return (f"`{head} system prune --volumes` deletes every unused volume, "
+                "including a stopped database's.")
+    return None
+
+
 def check_shell_drop(tokens):
     head = base(tokens[0])
     if head in DROP_COMMANDS:
@@ -326,6 +414,11 @@ def check_statement(stages, bodies, depth):
     nested = []
     unwrapped = []
     for stage in stages:
+        # The Docker rules read the docker invocation itself, so they see the
+        # stage before unwrap() strips it down to the inner command.
+        docker = check_docker(strip_noop(stage))
+        if docker:
+            findings.append(docker)
         tokens, inner = unwrap(stage)
         nested.extend(inner)
         if tokens:

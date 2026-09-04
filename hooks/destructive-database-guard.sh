@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # destructive-database-guard: PreToolUse guard that blocks the shell commands
-# which destroy a database — Artisan resets, dropdb, and raw destructive SQL —
-# before the call runs.
+# which destroy a database — Artisan resets, dropdb, volume-deleting Docker
+# commands, and raw destructive SQL — before the call runs.
 #
 # It exists because of a real loss. On 2026-09-04, in an unrelated Laravel repo,
 # Claude ran `php artisan db:wipe --database=pgsql --force`, believing `pgsql`
@@ -28,11 +28,13 @@
 # no routine reason to destroy a database. When a reset is genuinely needed, the
 # human runs it with the ! prefix.
 #
-# The one exemption is scope, not trust: an Artisan reset carrying --env=testing
-# or --database=testing is allowed, because rebuilding the testing database is
-# ordinary work and the incident was a wrong TARGET rather than a wrong verb. A
-# bare `migrate:fresh` still blocks, since bare inherits .env. The reasoning and
-# the hole in that exemption are written out in hooks/lib/destructive-db-check.py.
+# The exemptions are about scope, not trust. An Artisan reset carrying
+# --env=testing or --database=testing is allowed, because rebuilding the testing
+# database is ordinary work and the incident was a wrong TARGET rather than a
+# wrong verb. A bare `migrate:fresh` still blocks, since bare inherits .env.
+# `docker compose down` is allowed for the same kind of reason: it leaves named
+# volumes alone, and only the --volumes form destroys the data. The reasoning,
+# and the hole in the Artisan exemption, are in hooks/lib/destructive-db-check.py.
 #
 # FAIL OPEN, for a different reason than credential-guard.sh gives:
 # There is no adversary here. The threat is a confidently wrong agent, not a

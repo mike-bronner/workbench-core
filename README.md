@@ -229,8 +229,10 @@ core/
 │   ├── memory-recall.sh        — UserPromptSubmit: inject relevant memory READS (recall)
 │   ├── mcp-output-cap.sh       — PostToolUse: cap oversized MCP tool responses
 │   ├── outbound-prose-guard.sh — PreToolUse: check gh + board-MCP prose against the output style
+│   ├── credential-guard.sh     — PreToolUse: block reads of ~/.ssh, ~/.aws, ~/.gnupg, and .env files
+│   ├── destructive-database-guard.sh — PreToolUse: block Artisan resets, dropdb, and destructive SQL
 │   ├── delegation-gate.sh      — PreToolUse: deny main-agent Edit/Write/NotebookEdit, redirect to sub-agents
-│   ├── lib/                    — sourceable libs: memory-env / -probe / -vacuum / -install, summary-dispatch, prose-check
+│   ├── lib/                    — sourceable libs: memory-env / -probe / -vacuum / -install, summary-dispatch, prose-check, destructive-db-check
 │   └── fixtures/               — test fixtures (fake-server stub, no real server)
 ├── docs/
 │   ├── session-warmup-contributions.md — how plugins contribute warmup text
@@ -336,6 +338,41 @@ That is not hypothetical. `insight-llc/decisioncloud#21665` shipped a 1,855-word
 **It fails open.** A heredoc, a command substitution such as `--body "$(cat notes.md)"`, or an unreadable path exits 0 rather than blocking. This is a style gate, not a security boundary, so a false block costs more than a missed check. `hooks/credential-guard.sh` makes the same trade for the same reason.
 
 **Terminal replies are out of scope,** and cannot usefully be brought in. A `Stop` hook fires after the reply has already been displayed, so blocking there appends a correction instead of preventing the text. Replies are governed by the behavioral overrides, which sit at system-prompt tier.
+
+### Destructive database guard
+
+On 2026-09-04, in an unrelated Laravel repo, Claude ran `php artisan db:wipe --database=pgsql --force`, believing `pgsql` named the testing database. It does not. `phpunit.xml` only overrides `DB_DATABASE=testing` inside a test run, so an Artisan command typed at the shell resolves `pgsql` against `.env` — the development database. Every table was dropped and several hours of imported data went with them. No permission rule matched, so nothing prompted: the rails guarded disks, git history, and `rm`, and said nothing at all about databases.
+
+`hooks/destructive-database-guard.sh` is the enforcing layer. It is a `PreToolUse` hook on `Bash` that exits 2, so no prompt appears and no allow rule reaches it. Three rule classes:
+
+| Class | Blocked |
+|---|---|
+| Artisan | `db:wipe`, `migrate:fresh`, `migrate:reset`, `migrate:refresh` |
+| Shell | `dropdb`, `dropuser`, `mysqladmin ... drop` |
+| Raw SQL | `DROP DATABASE\|SCHEMA\|TABLE`, `TRUNCATE`, `DELETE FROM` with no `WHERE` |
+
+**Verb position, not substring.** This is the whole difficulty. A substring match for `drop table` also blocks `grep -rn "drop table" app/` and reading `2026_09_04_drop_users_table.php`, which would make ordinary code search impossible. So `hooks/lib/destructive-db-check.py` tokenises the command with `shlex`, splits it into statements and pipeline stages, strips wrappers, and only then matches. An Artisan verb has to sit in the argument slot after `artisan`. SQL is read only from a SQL client's payload, so `grep` is structurally unreachable.
+
+**A prefix rule cannot see any of these**, which is the argument for a hook rather than a deny rule alone. Each shape below hides the verb behind something, and the incident itself was the first one:
+
+```
+cd /repo && php artisan migrate:fresh          compound
+sail artisan db:wipe                           shim
+docker compose exec -u www-data app php artisan db:wipe
+ssh box "php artisan migrate:reset"            one quoted token
+bash -c "php artisan db:wipe --force"          one quoted token
+kubectl exec pod/api -- php artisan db:wipe    after the -- separator
+echo "DROP DATABASE app" | psql                SQL is upstream of the client
+psql -d app <<'SQL' ... SQL                    heredoc body
+```
+
+**Artisan carries a testing exemption.** `--env=testing` or `--database=testing` allows the reset, because rebuilding the testing database is ordinary work and the incident was a wrong *target*, not a wrong verb. A bare `migrate:fresh` still blocks, since bare inherits `.env`. **The hole, stated plainly:** `--env=testing` proves intent, not target. A project whose `.env.testing` points at the development database still walks through. This narrows the mistake, it does not close it.
+
+**It fails open, for a different reason than `credential-guard.sh` gives.** There is no adversary here. The threat is a confidently wrong agent, not someone crafting input to slip past a parser. A command that actually destroys data must be valid shell to run at all, so it tokenises — anything unparseable is something bash would likely reject too, and blocking it would break every `awk` one-liner with an odd quote while stopping nothing that could execute. One hardening step before giving up: a POSIX tokenise failure is retried with `posix=False`.
+
+**Out of scope,** because the payload is not visible in the command: `psql -f drop.sql` and `mysql app < dump.sql` (the SQL lives in a file), and `php artisan tinker` (a REPL takes its input later). As with every guard here, this covers Claude's own tool calls and is not an OS boundary — `/sandbox` is.
+
+Tests: `hooks/test-destructive-database-guard.sh` (89 cases). The suite is weighted towards the *allow* side on purpose. A guard that blocks every destructive command and also blocks `grep -rn "drop table"` has made ordinary work impossible, which is a worse failure than the one it prevents.
 
 ### Logging pipeline
 
@@ -537,6 +574,8 @@ Two matching behaviours worth knowing: `Bash(git push --force:*)` also blocks `-
 **Why credential paths get a hook instead of a deny rule.** The rails used to ship `Read(~/.ssh/**)`, `Read(~/.aws/**)`, `Read(~/.gnupg/**)`, and `Read(**/.env)`. Both halves of what those rules promised turned out to be false. They were never *enforcement*: Anthropic's own documentation states that Read and Edit deny rules apply to the built-in file tools and to the file commands Claude Code recognises in Bash — `cat`, `head`, `tail`, `sed` — and "don't apply to arbitrary subprocesses that read or write files indirectly, like a Python or Node script that opens files itself." And they were expensive: `xce()` in the Claude Code binary is a plain boolean over the deny list, so the presence of *any* `Read()` rule makes the `deniedPathInsideDirectory` circuit breaker return `ask` for every `grep`/`rg`/`diff`/`git`/`cp`/`mv` carrying a relative path in a command that also contains `cd` — without ever consulting a rule. That breaker is registered `bypassImmune` and is not classifier-routed, so no allow rule and no permission mode overrides it, and narrowing the rules does nothing. Only removing all four disarms it.
 
 `hooks/credential-guard.sh` replaces them: a `PreToolUse` hook on `Bash|Read|Edit|Write|NotebookEdit` that exits 2 *before* permission rules are evaluated, so no prompt appears and no allow rule can override it. It covers strictly more than the rules did — `python3 -c "print(open('~/.ssh/id_rsa').read())"` is blocked here and never was there. For Bash it requires a file-reading program alongside the protected path, so `ls ~/.ssh`, `stat ~/.ssh/id_rsa`, and `find . -name ".env*"` stay allowed: they list names without exposing contents, and blocking them would make the guard its own source of prompt noise. It guards Claude's own tool calls, not the OS — for that, enable the sandbox. `hooks/test-permissions.sh` asserts no `Read()` rule creeps back in.
+
+**Why databases get a hook and only three deny rules.** `Bash(dropdb:*)`, `Bash(dropuser:*)`, and `Bash(mysqladmin drop:*)` ship as denies, because no agent has a legitimate use for them. The four Artisan reset verbs deliberately **do not**, and adding one would be a silent regression. A deny rule matches a prefix, so it cannot read `--env=testing`, which means it cannot carry the exemption the guard relies on. The hook exiting 0 is *neutral*, not an allow, so a deny rule would block a correctly scoped testing reset anyway and the exemption would never fire. That mistake would also stick: `permissions.sh` merges additively and never removes, so deleting the rule from `rails.json` later does not take it out of a user's `settings.json`. `hooks/test-destructive-database-guard.sh` asserts no `artisan` rule appears in either list. The enforcement lives in [Destructive database guard](#destructive-database-guard).
 
 **Why `systemctl` is blanket rather than scoped.** A rule like `Bash(systemctl enable:*)` reads tighter, but it would never match `systemctl --user enable foo` — the flag precedes the verb, and matching is by prefix. That rootless invocation is exactly the one most in need of the rail, since it needs no sudo to install persistence. `secret-tool` *is* scoped (`store`, `clear`) because it always takes its verb as the first argument, which leaves `lookup` unprompted, mirroring `security find-generic-password` on macOS. `hooks/test-permissions.sh` asserts both shapes.
 

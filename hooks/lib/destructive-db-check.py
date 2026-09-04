@@ -17,6 +17,7 @@ Three rule classes, in the order they are checked per stage:
   artisan   db:wipe, migrate:fresh, migrate:reset, migrate:refresh
   shell     dropdb, dropuser, mysqladmin ... drop
   docker    the volume-deleting commands, and only those
+  project   ddev delete, ddev stop --remove-data, lando destroy, wp-env destroy
   sql       DROP DATABASE/SCHEMA/TABLE, TRUNCATE, DELETE FROM with no WHERE
 
 The Docker rules follow the same shape as the Artisan exemption. A containerised
@@ -49,19 +50,47 @@ cannot parse is something bash would likely reject too, and blocking it would
 break every awk one-liner with an odd quote while buying nothing. One hardening
 step before giving up: a POSIX tokenise failure is retried with posix=False.
 
-Deliberately out of scope, because the payload is not visible in the command:
-  psql -f drop.sql          the SQL lives in a file this checker cannot read
-  mysql app < dump.sql      same, through a redirect
+SQL FROM A FILE IS READ, NOT GUESSED AT:
+`psql -f reset.sql` and `mysql app < dump.sql` hide the payload in a file, so the
+file is opened and scanned with the same rules. The NAME settles nothing —
+reset.sql is often a seed and setup.sql often drops the schema first — so only
+the contents decide. Four properties keep that affordable and safe:
+
+  1. Conditional. No file is opened unless the statement already holds a SQL
+     client AND names a file, so grep, git, and npm pay nothing at all.
+  2. Bounded. SQL_FILE_CAP stops the read at one megabyte. Worst case measured
+     at about 75 ms over the hook's own startup, on a 22 MB dump.
+  3. Regular files only. A fifo would hang the hook forever, so the mode is
+     checked with os.stat before anything is opened.
+  4. Never quoted. The finding names the path and the verb class. Not one line
+     of the file reaches the message, because that would put its contents in the
+     transcript.
+
+A relative path resolves against the tool call's cwd, and a leading `cd` in the
+same command moves that base. File reading stops at the ssh boundary: the remote
+machine has its own filesystem, so a local file of the same name is the wrong
+file, and reading it could only ever produce a false block.
+
+Deliberately out of scope:
   php artisan tinker        an interactive REPL takes its input later
+  a DROP past 1 MB          the cap. In pg_dump output the DROPs are at the top
 """
 
 import os
 import re
 import shlex
+import stat
 import sys
 
 MAX_INPUT = 200_000
 MAX_DEPTH = 4
+# A referenced .sql file is read this far and no further. Measured on an M-series
+# Mac: the scan costs about 25 ms per megabyte, against the 50 ms this hook
+# already spends starting jq and Python. The cost lands only on a command that
+# feeds a file to a SQL client, so ordinary work pays nothing. The cap is the
+# stated limit: a DROP past one megabyte is missed. In pg_dump output the DROP
+# lines sit at the top, which is the case worth catching.
+SQL_FILE_CAP = 1_000_000
 
 # Artisan verbs that empty or rebuild whatever database they resolve to.
 ARTISAN_VERBS = {"db:wipe", "migrate:fresh", "migrate:reset", "migrate:refresh"}
@@ -78,6 +107,23 @@ SQL_CLIENTS = {"psql", "mysql", "mariadb", "mysqlsh", "sqlite3", "sqlite", "usql
 # Clients that take their SQL as a positional argument after the database file.
 SQL_POSITIONAL_CLIENTS = {"sqlite3", "sqlite"}
 SQL_INLINE_FLAGS = {"-c", "--command", "-e", "--execute", "--sql"}
+# Clients that read -f as --file. mysql reads -f as --force, so treating it as a
+# filename there would scan whatever positional happened to follow.
+SQL_FILE_CLIENTS = {"psql", "usql"}
+SQL_FILE_FLAGS = {"-f", "--file"}
+# Programs whose arguments are files being piped into a client, as in
+# `cat teardown.sql | psql`.
+READERS = {"cat", "head", "tail"}
+
+# ddev, lando, and wp-env each manage a project database and drop it with their
+# own verb rather than a compose one, so the Docker rules never see them.
+PROJECT_TOOL_VERBS = {
+    "ddev": {"delete"},
+    "lando": {"destroy"},
+    "wp-env": {"destroy"},
+}
+# `ddev delete images` removes Docker images, not project data.
+PROJECT_TOOL_EXEMPT = {("ddev", "delete"): {"images"}}
 
 # Wrappers stripped before the verb slot is read. Each one puts the real command
 # further along the token list, which is exactly what a prefix permission rule
@@ -222,10 +268,11 @@ def strip_noop(tokens):
 def unwrap(tokens):
     """Strip wrappers until the real command sits at index 0.
 
-    Returns (tokens, nested) where nested holds command STRINGS that have to be
-    parsed on their own — `ssh box "php artisan db:wipe"` and `bash -c "..."`
-    both arrive as one quoted token, which no regex over the outer command can
-    see into."""
+    Returns (tokens, nested) where nested holds (command STRING, remote) pairs
+    that have to be parsed on their own. `ssh box "php artisan db:wipe"` and
+    `bash -c "..."` both arrive as one quoted token, which no regex over the
+    outer command can see into. `remote` marks the ssh case, where the command's
+    files live on another machine and must not be read here."""
     nested = []
     rest = list(tokens)
     for _ in range(8):
@@ -262,7 +309,7 @@ def unwrap(tokens):
             inner = skip_flags(rest[1:], SSH_VALUE_FLAGS)
             inner = inner[1:] if inner else []  # the host
             if len(inner) == 1:
-                nested.append(inner[0])
+                nested.append((inner[0], True))
                 rest = []
             else:
                 rest = inner
@@ -270,7 +317,7 @@ def unwrap(tokens):
         if head in SHELLS and "-c" in rest:
             index = rest.index("-c")
             if index + 1 < len(rest):
-                nested.append(rest[index + 1])
+                nested.append((rest[index + 1], False))
             rest = []
             break
         break
@@ -354,6 +401,27 @@ def check_docker(tokens):
     return None
 
 
+def check_project_tool(tokens):
+    """ddev, lando, and wp-env drop a project database with their own verbs."""
+    if not tokens:
+        return None
+    head = base(tokens[0])
+    verbs = PROJECT_TOOL_VERBS.get(head)
+    if verbs is None:
+        return None
+    words = [t for t in tokens[1:] if not t.startswith("-")]
+    verb = words[0] if words else None
+    if verb in verbs:
+        exempt = PROJECT_TOOL_EXEMPT.get((head, verb), set())
+        if len(words) > 1 and words[1] in exempt:
+            return None
+        return (f"`{head} {verb}` destroys the project, and the database it "
+                "owns goes with it.")
+    if head == "ddev" and verb == "stop" and "--remove-data" in tokens:
+        return "`ddev stop --remove-data` deletes the project database."
+    return None
+
+
 def check_shell_drop(tokens):
     head = base(tokens[0])
     if head in DROP_COMMANDS:
@@ -408,7 +476,52 @@ def sql_payloads(tokens, bodies):
     return payloads
 
 
-def check_statement(stages, bodies, depth):
+def sql_file_paths(tokens):
+    """Paths this stage feeds to a SQL client as a file of SQL.
+
+    The filename settles nothing, which is why the contents get read: `drop.sql`
+    is often a seed, and `setup.sql` often drops the schema first."""
+    paths = []
+    head = base(tokens[0])
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "<" and index + 1 < len(tokens):
+            paths.append(tokens[index + 1])
+            index += 2
+            continue
+        if head in SQL_FILE_CLIENTS:
+            if token in SQL_FILE_FLAGS and index + 1 < len(tokens):
+                paths.append(tokens[index + 1])
+                index += 2
+                continue
+            if token.startswith("--file="):
+                paths.append(token[len("--file="):])
+        elif head in READERS and not token.startswith("-"):
+            paths.append(token)
+        index += 1
+    return paths
+
+
+def read_sql_file(path, base_dir):
+    """Read a referenced file of SQL, bounded. None on anything unreadable.
+
+    Regular files only. A fifo would hang the hook forever, and a directory or a
+    device is not SQL. base_dir of None means the command runs somewhere else, as
+    it does over ssh, where a local file of the same name is the wrong file."""
+    if base_dir is None:
+        return None
+    try:
+        resolved = os.path.join(base_dir, os.path.expanduser(path))
+        if not stat.S_ISREG(os.stat(resolved).st_mode):
+            return None
+        with open(resolved, "r", errors="replace") as handle:
+            return handle.read(SQL_FILE_CAP)
+    except OSError:
+        return None
+
+
+def check_statement(stages, bodies, depth, cwd=None):
     """One statement, already split into pipeline stages and unwrapped."""
     findings = []
     nested = []
@@ -416,9 +529,10 @@ def check_statement(stages, bodies, depth):
     for stage in stages:
         # The Docker rules read the docker invocation itself, so they see the
         # stage before unwrap() strips it down to the inner command.
-        docker = check_docker(strip_noop(stage))
-        if docker:
-            findings.append(docker)
+        lead = strip_noop(stage)
+        for finding in (check_docker(lead), check_project_tool(lead)):
+            if finding:
+                findings.append(finding)
         tokens, inner = unwrap(stage)
         nested.extend(inner)
         if tokens:
@@ -461,8 +575,23 @@ def check_statement(stages, bodies, depth):
                 )
                 break
 
-    for inner in nested:
-        findings.extend(scan(inner, bodies, depth + 1))
+        # SQL handed over as a FILE. Only the verdict is reported, never a line
+        # of the file: the guard reads it to decide, not to quote it.
+        for tokens in unwrapped:
+            for path in sql_file_paths(tokens):
+                content = read_sql_file(path, cwd)
+                finding = check_sql(content) if content else None
+                if finding:
+                    findings.append(
+                        f"{finding} It comes from `{path}`, which is fed to "
+                        f"`{base(clients[0][0])}`."
+                    )
+                    break
+
+    for inner, remote in nested:
+        # A command that runs elsewhere resolves its files elsewhere, so file
+        # reading stops at the ssh boundary.
+        findings.extend(scan(inner, bodies, depth + 1, None if remote else cwd))
     return findings
 
 
@@ -482,13 +611,21 @@ def split_statements(tokens):
     return [s for s in statements if any(stage for stage in s)]
 
 
-def scan(command, bodies, depth=0):
+def scan(command, bodies, depth=0, cwd=None):
     if depth > MAX_DEPTH:
         return []
     findings = []
     for tokens in token_lines(command):
+        # `cd /repo && psql -f reset.sql` resolves that file against /repo, not
+        # against the session's directory. Track the cd across the line.
+        here = cwd
         for stages in split_statements(tokens):
-            findings.extend(check_statement(stages, bodies, depth))
+            lead = strip_noop(stages[0]) if stages and stages[0] else []
+            if lead and base(lead[0]) == "cd" and len(lead) > 1:
+                if here is not None:
+                    here = os.path.join(here, os.path.expanduser(lead[1]))
+                continue
+            findings.extend(check_statement(stages, bodies, depth, here))
     return findings
 
 
@@ -496,8 +633,11 @@ def main():
     command = sys.stdin.read(MAX_INPUT)
     if not command.strip():
         return 0
+    # argv[1] is the tool call's working directory, which is what a relative
+    # path in the command resolves against. Absent, no file is read.
+    cwd = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None
     stripped, bodies = extract_heredocs(command)
-    findings = scan(stripped, bodies)
+    findings = scan(stripped, bodies, cwd=cwd)
     if findings:
         print(findings[0])
         return 1

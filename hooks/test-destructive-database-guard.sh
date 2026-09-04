@@ -51,6 +51,23 @@ assert_contains() {
 }
 
 bash_json() { jq -nc --arg c "$1" '{tool_name: "Bash", tool_input: {command: $c}}'; }
+# The cwd key is what a relative path in the command resolves against, so the
+# file-payload cases need it. Note `${2-}` rather than `${2:-}`: an EMPTY cwd is
+# a case under test, and it must reach the payload rather than being defaulted.
+cwd_json() {
+  jq -nc --arg c "$1" --arg d "${2-}" \
+    '{tool_name: "Bash", tool_input: {command: $c}, cwd: $d}'
+}
+
+# A sandbox of real .sql files. The guard reads contents, not names, so the
+# fixtures are named to prove exactly that: reset.sql is destructive, and
+# seed.sql merely contains the words "drop table" inside a string literal.
+SQLDIR=$(mktemp -d)
+trap 'rm -rf "$SQLDIR"' EXIT
+mkdir -p "$SQLDIR/db"
+printf 'DROP TABLE users;\n'                              > "$SQLDIR/db/reset.sql"
+printf "INSERT INTO verses (t) VALUES ('drop table');\n"  > "$SQLDIR/db/seed.sql"
+printf 'DELETE FROM sessions WHERE expires < NOW();\n'    > "$SQLDIR/db/prune.sql"
 
 # The command that destroyed several hours of imported data on 2026-09-04.
 # `pgsql` was believed to name the testing database. It resolves against .env.
@@ -128,6 +145,52 @@ check 2 "unqualified DELETE FROM" "$(bash_json 'psql -c "DELETE FROM verses"')"
 check 2 "sqlite3 positional SQL"  "$(bash_json 'sqlite3 database/app.sqlite "DROP TABLE users"')"
 check 2 "echo piped into psql"    "$(bash_json 'echo "DROP DATABASE app" | psql')"
 check 2 "a here-string"           "$(bash_json 'psql <<< "DROP DATABASE app"')"
+
+# ddev, lando, and wp-env manage a project database and drop it with their own
+# verbs, so neither the Docker rules nor the Artisan rules ever see them.
+echo "blocks the project tools that destroy their own database:"
+check 2 "ddev delete"            "$(bash_json 'ddev delete')"
+check 2 "ddev delete a project"  "$(bash_json 'ddev delete -O myproject')"
+check 2 "ddev stop --remove-data" "$(bash_json 'ddev stop --remove-data')"
+check 2 "lando destroy"          "$(bash_json 'lando destroy')"
+check 2 "lando destroy -y"       "$(bash_json 'lando destroy -y')"
+check 2 "wp-env destroy"         "$(bash_json 'wp-env destroy')"
+
+echo "allows the project tools' ordinary verbs:"
+# `ddev delete images` removes Docker images, not project data.
+check 0 "ddev delete images"     "$(bash_json 'ddev delete images')"
+check 0 "ddev start"             "$(bash_json 'ddev start')"
+check 0 "ddev stop"              "$(bash_json 'ddev stop')"
+check 0 "lando start"            "$(bash_json 'lando start')"
+check 0 "lando rebuild"          "$(bash_json 'lando rebuild')"
+check 0 "wp-env start"           "$(bash_json 'wp-env start')"
+
+# The guard reads the FILE CONTENTS. A name settles nothing: reset.sql is
+# destructive here, and seed.sql merely mentions "drop table" in a literal.
+echo "blocks SQL that arrives from a file:"
+check 2 "psql -f"          "$(cwd_json 'psql -f db/reset.sql' "$SQLDIR")"
+check 2 "psql --file="     "$(cwd_json 'psql --file=db/reset.sql' "$SQLDIR")"
+check 2 "a redirect"       "$(cwd_json 'psql -d app < db/reset.sql' "$SQLDIR")"
+check 2 "mysql redirect"   "$(cwd_json 'mysql app < db/reset.sql' "$SQLDIR")"
+check 2 "cat piped in"     "$(cwd_json 'cat db/reset.sql | psql' "$SQLDIR")"
+check 2 "an absolute path" "$(cwd_json "psql -f $SQLDIR/db/reset.sql" /nowhere)"
+# The cd moves where a relative path resolves, which is the incident's shape.
+check 2 "a cd first"       "$(cwd_json 'cd db && psql -f reset.sql' "$SQLDIR")"
+
+echo "allows files whose contents are not destructive:"
+check 0 "a seed file"      "$(cwd_json 'psql -f db/seed.sql' "$SQLDIR")"
+check 0 "a qualified DELETE file" "$(cwd_json 'psql -f db/prune.sql' "$SQLDIR")"
+check 0 "a missing file"   "$(cwd_json 'psql -f db/gone.sql' "$SQLDIR")"
+# mysql reads -f as --force. Treating it as a filename would scan the wrong arg.
+check 0 "mysql -f is force" "$(cwd_json 'mysql -f app -e "SELECT 1"' "$SQLDIR")"
+check 0 "cat without a client" "$(cwd_json 'cat db/reset.sql' "$SQLDIR")"
+check 0 "cat piped to grep" "$(cwd_json 'cat db/reset.sql | grep DROP' "$SQLDIR")"
+# The remote machine has its own filesystem, so a local file of the same name is
+# the wrong file. Reading it could only ever produce a false block.
+check 0 "ssh stops the read" "$(cwd_json 'ssh box "psql -f db/reset.sql"' "$SQLDIR")"
+# No cwd means no basis for resolving a relative path, so no file is read.
+check 0 "no cwd in payload" "$(bash_json 'psql -f db/reset.sql')"
+check 0 "an empty cwd"     "$(cwd_json 'psql -f db/reset.sql' '')"
 
 echo "blocks raw SQL delivered by heredoc:"
 check 2 "quoted heredoc" "$(bash_json "$(printf 'psql -d app <<%s\nDROP DATABASE app;\nSQL\n' "'SQL'")")"
@@ -222,6 +285,15 @@ assert_contains "names dropdb"           "$OUT" "dropdb"
 OUT=$(bash_json 'docker compose down -v' | bash "$GUARD" 2>&1)
 assert_contains "names the volumes flag" "$OUT" "--volumes"
 assert_contains "says where data lives"  "$OUT" "named volumes"
+OUT=$(cwd_json 'psql -f db/reset.sql' "$SQLDIR" | bash "$GUARD" 2>&1)
+assert_contains "names the file"         "$OUT" "db/reset.sql"
+# The guard reads the file to decide, not to quote it. A line of SQL in the
+# message would put file contents into the transcript.
+if printf '%s\n' "$OUT" | grep -qF -- "DROP TABLE users;"; then
+  FAIL=$((FAIL + 1)); echo "  ❌ leaks a line of the file into the message"
+else
+  PASS=$((PASS + 1)); echo "  ✅ quotes no line of the file"
+fi
 
 # Registration is part of the behaviour: a guard nothing calls guards nothing.
 echo "the hook is registered in hooks.json:"
@@ -238,7 +310,8 @@ assert_jq "no if condition narrows it" "$HOOKS_JSON" \
 # boundary is visible to a human reading their own settings.
 echo "rails.json denies the shell commands that have no legitimate use:"
 for RULE in "Bash(dropdb:*)" "Bash(dropuser:*)" "Bash(mysqladmin drop:*)" \
-            "Bash(docker volume rm:*)" "Bash(docker volume prune:*)"; do
+            "Bash(docker volume rm:*)" "Bash(docker volume prune:*)" \
+            "Bash(lando destroy:*)" "Bash(wp-env destroy:*)"; do
   assert_jq "$RULE denied" "$RAILS" \
     "[.deny[] | select(.rule == \"$RULE\")] | length" "1"
 done
@@ -253,6 +326,15 @@ assert_jq "no compose rule in deny" "$RAILS" \
   '[.deny[] | select(.rule | test("docker compose|docker-compose"))] | length' "0"
 assert_jq "no compose rule in ask"  "$RAILS" \
   '[.ask[]  | select(.rule | test("docker compose|docker-compose"))] | length' "0"
+
+# `ddev delete images` removes Docker images rather than project data, so a
+# prefix rule would block it too. Third instance of the same rule: a deny
+# belongs in rails.json only when the FIRST WORDS decide the outcome.
+echo "no ddev rule ships — a prefix would also block 'ddev delete images':"
+assert_jq "no ddev rule in deny" "$RAILS" \
+  '[.deny[] | select(.rule | test("ddev"))] | length' "0"
+assert_jq "no ddev rule in ask"  "$RAILS" \
+  '[.ask[]  | select(.rule | test("ddev"))] | length' "0"
 
 # A deny rule cannot read a flag that comes later, so it cannot carry the hook's
 # --env=testing exemption. Add one and the exemption dies silently: the hook

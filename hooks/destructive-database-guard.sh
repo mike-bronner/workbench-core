@@ -2,7 +2,8 @@
 #
 # destructive-database-guard: PreToolUse guard that blocks the shell commands
 # which destroy a database — Artisan resets, dropdb, volume-deleting Docker
-# commands, and raw destructive SQL — before the call runs.
+# commands, ddev/lando/wp-env project teardown, and destructive SQL, whether it
+# arrives inline or in a file — before the call runs.
 #
 # It exists because of a real loss. On 2026-09-04, in an unrelated Laravel repo,
 # Claude ran `php artisan db:wipe --database=pgsql --force`, believing `pgsql`
@@ -67,7 +68,13 @@ COMMAND=$(printf '%s' "$PAYLOAD" | jq -r '
   ' 2>/dev/null)
 [ -n "$COMMAND" ] || exit 0
 
-REASON=$(printf '%s' "$COMMAND" | python3 "$CHECKER" 2>/dev/null)
+# The call's working directory, which is what a relative path in the command
+# resolves against. `psql -f db/reset.sql` names a file the checker reads, and
+# reading the wrong one is how a guard produces a false block. Absent, the
+# checker reads no files at all.
+CWD=$(printf '%s' "$PAYLOAD" | jq -r '.cwd // ""' 2>/dev/null)
+
+REASON=$(printf '%s' "$COMMAND" | python3 "$CHECKER" "$CWD" 2>/dev/null)
 STATUS=$?
 
 if [ "$STATUS" = "1" ] && [ -n "$REASON" ]; then

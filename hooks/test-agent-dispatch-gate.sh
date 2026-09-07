@@ -346,14 +346,39 @@ marker_path: /Users/mike/.claude-memory-cache/pending-summaries/d640e864.json" d
 assert_missing "the sentinel is gone from the gate" "$(cat "$GATE")" \
   "grep -qE '^[[:space:]]*Process pending"
 # The exemption is anchored at BOTH ends for the two pipeline shapes, so it
-# cannot be used as a prefix to smuggle a free-form brief past the gate. Drop
-# the trailing anchor and this pair goes deny-to-silent.
+# cannot be used as a prefix to smuggle a free-form brief past the gate.
+#
+# TWO guards enforce that, and they are not interchangeable:
+#
+#   NONBLANK -eq 1        rejects a second line
+#   trailing [[:space:]]*$ rejects trailing content on the SAME line
+#
+# The multi-line cases below are stopped by the first guard whatever the anchor
+# does, so on their own they leave the anchor freely deletable — mutation-tested
+# and confirmed: removing it left all 157 cases green while opening a real
+# single-line bypass. The single-line cases are the anchor's own coverage.
+#
+# This is the third instance of one shape in this hook: two guards with
+# overlapping coverage, a test reaching only the stronger one, and the weaker
+# one silently deletable. The others were the ${ARR+set} fail-open guard and the
+# per-slot omission loop against a dual-name check. A test that looks redundant
+# beside its neighbour is worth checking before it is trimmed.
 run_prompt "Item ID prefix + free prose is NOT exempt" "Item ID: 369
 Now go and refactor the whole parser however you see fit." deny
 run_prompt "Repo sweep prefix + free prose is NOT exempt" "Repo sweep: a/b
 Also rewrite the test suite." deny
+# Single line, trailing content. Only the trailing anchor can refuse these, so
+# these two are what make it load-bearing.
+run_prompt "Item ID + trailing prose on ONE line is NOT exempt" \
+  "Item ID: 369 and refactor the whole parser however you see fit" deny
+run_prompt "Repo sweep + trailing prose on ONE line is NOT exempt" \
+  "Repo sweep: a/b and also rewrite the test suite" deny
 run_prompt "Item ID with a non-numeric target is NOT exempt" "Item ID: whatever" deny
 run_prompt "Repo sweep with no slug is NOT exempt"          "Repo sweep: notaslug" deny
+# ...and the exempt shapes themselves still pass, so the cases above are not
+# green merely because the exemption stopped working altogether.
+run_prompt "a bare Item ID is still exempt"    "Item ID: 369"                        silent
+run_prompt "a bare Repo sweep is still exempt" "Repo sweep: mike-bronner/phpcs-rules" silent
 
 echo "the hint path: advisory, and never a permission grant:"
 # Each marker is pinned on its own, so no one marker can mask another.

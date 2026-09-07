@@ -50,20 +50,37 @@ Oldest-**live**-first is earliest-deadline-first scheduling, and it is what maxi
 
 **The word `live` is the entire fix — the ordering was never the bug.** The deadlock of 2026-07-18 → 2026-08-19 came from sorting oldest-first across *all* markers without filtering: every run selected the 10 markers most likely to have lost their source, did zero work, and left the backlog untouched — 775 of 1,107 unprocessable, all 10 next-dispatch candidates dead, queue never advanced. Filter first (step 2), then oldest-first is correct. See `insights/2026-08-19-pending-summary-drain-is-deadlocked` in the vault.
 
-Take at most **10** markers from the front of the sorted live list. For each, read it to get the `session_id`, `marker_path`, `log_path`, and `transcript_path`. Then spawn a background `summary-writer` agent:
+Take at most **10** markers from the front of the sorted live list. For each, read it to get the `session_id`, `marker_path`, `log_path`, and `transcript_path`.
+
+First resolve the vault root once — it is the `Workdir:` slot for every brief in the batch, and `hooks/lib/memory-env.sh` is the repo's single source of truth for it:
+
+```bash
+. "${CLAUDE_PLUGIN_ROOT}/hooks/lib/memory-env.sh" && memory_load_env && echo "$MEMORY_PATH"
+```
+
+Then spawn a background `summary-writer` agent per marker. **The prompt is a five-slot brief**, the same shape `hooks/agent-dispatch-gate.sh` requires of every dispatch from the main session. It carries no exemption and no sentinel — it passes the gate on its own merits, exactly like any other handoff:
 
 ```
 Agent tool:
   subagent_type: workbench-core:summary-writer
   run_in_background: true
   prompt: |
-    Process pending session summary.
+    Workdir: {MEMORY_PATH}
+    Goal: Write the narrative summary for session {session_id} into the memory vault, promote any decisions it earns, and clear its pending marker.
+    Context: A Claude Code session ended and its raw log was dumped to disk, but no summary exists yet. You cannot derive these values, so they are given:
     session_id: {session_id}
     marker_path: {marker_path}
     log_path: {log_path}
     transcript_path: {transcript_path}
-    Follow your agent definition. If log_path no longer exists, summarize from transcript_path — a pruned log is a cache miss, not a lost session. Write the summary, promote any decisions, delete the marker, and exit.
+    The log is a 7-day cache inside the vault. The transcript is the original Claude Code JSONL and lives about 30 days. A missing log therefore means the cache expired, never that the session is lost.
+    Constraints:
+    - Summarize from transcript_path whenever log_path no longer exists. Never report a pruned log as an unrecoverable session.
+    - Follow your agent definition for the summary format and for the bar a decision must clear before promotion.
+    - You receive no follow-up messages. Work from this brief alone and stop when the marker is gone.
+    Done when: The summary note exists in the vault, any promoted decisions are written, and {marker_path} no longer exists.
 ```
+
+Substitute every `{placeholder}` with the real value before dispatching. A brief still carrying literal braces is a bug, not a template.
 
 Dispatch the batch in a single turn — don't wait for one to finish before starting the next. Never dispatch more than 10 at once: each agent reads a full session log, so an uncapped dispatch over a large backlog is a token burst with no upside.
 

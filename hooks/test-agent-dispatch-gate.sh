@@ -48,7 +48,7 @@ DEVTEAM_LINE='The dev-team specialists and the brief they expect are in /workben
 
 # A well-formed brief with no prescriptive markers at all.
 read -r -d '' GOOD_BRIEF <<'EOF'
-Repo: /Users/mike/Developer/workbench-core
+Workdir: /Users/mike/Developer/workbench-core
 Goal: Make the credential guard stop matching .env by substring.
 Context: The guard matches .env anywhere in the raw command text, so any command
 mentioning a path containing .envrc trips it. Three false positives in one day.
@@ -59,7 +59,7 @@ EOF
 # A realistic READ-ONLY investigation brief. This is the majority of legitimate
 # traffic and must pass clean — a gate that refuses it is worse than no gate.
 read -r -d '' READONLY_BRIEF <<'EOF'
-Repo: /Users/mike/Developer/zed-laravel
+Workdir: /Users/mike/Developer/zed-laravel
 Goal: Report correctness defects in the PHP translation-catalogue AST walker.
 Context: The branch replaced a regex parser with a tree-sitter walk. Read-only,
 no write tools, no patching. Do not edit any file. Report findings only.
@@ -169,12 +169,39 @@ echo "each of the five slots is required, pinned independently:"
 # Every fixture below is the GOOD brief with exactly one slot line removed, so a
 # pass proves that slot alone is load-bearing. Drop any single grep from the
 # gate and exactly one of these five goes deny-to-hint.
-for slot in "Repo:" "Goal:" "Context:" "Constraints:" "Done when:"; do
+for slot in "Workdir:" "Goal:" "Context:" "Constraints:" "Done when:"; do
   stripped="$(printf '%s\n' "$GOOD_BRIEF" | grep -v "^${slot}")"
   out="$(main_payload "$stripped" | gate)"
   check "missing '$slot' is denied" "$out" deny
   assert_contains "the deny names the missing '$slot'" "$out" "Missing: $slot"
 done
+
+echo "the first slot is Workdir:, and the old Repo: name is gone:"
+# The slot was renamed from Repo: to Workdir: because core dispatches work that
+# has no repo — summary-writer works in the memory vault. Stripping Workdir:
+# above cannot catch a gate that accepts BOTH names, because the good brief
+# carries no Repo: line to fall back on. This pair can.
+run_prompt "a brief using the old Repo: name is refused" \
+  "${GOOD_BRIEF/Workdir:/Repo:}" deny
+assert_contains "and the refusal asks for Workdir:" \
+  "$(main_payload "${GOOD_BRIEF/Workdir:/Repo:}" | gate)" "Missing: Workdir:"
+# No stale Repo: slot HEADER may survive where a brief is written or documented.
+# Anchored at line start on purpose: that is what a slot header is, and it lets
+# prose still name the old slot when explaining the rename, which the README
+# does. An unanchored match would forbid documenting the migration at all.
+# `Repo sweep:` is a pipeline dispatch shape, not a slot, so it is excluded.
+for f in "$README" "$SUMMARY_SKILL"; do
+  if grep -nE '^[[:space:]]*Repo:' "$f" 2>/dev/null | grep -qv 'Repo sweep:'; then
+    FAIL=$((FAIL + 1)); echo "  ❌ stale Repo: slot header still in $(basename "$f")"
+  else
+    PASS=$((PASS + 1)); echo "  ✅ no stale Repo: slot header in $(basename "$f")"
+  fi
+done
+# The gate is covered more strictly further down: a test asserts it restates NO
+# slot header inline at all, derived from the shared definition, so it cannot
+# carry a stale one by construction.
+# ...and the rename did not eat the unrelated pipeline shape.
+assert_grep "Repo sweep: survived the rename" 'Repo sweep:' "$GATE"
 
 echo "a complete brief passes:"
 run_prompt "all five slots, no prescriptive markers" "$GOOD_BRIEF" silent
@@ -210,7 +237,7 @@ for _ in 1 2 3 4 5 6 7 8; do BIG="$BIG
 Context continues with more prose that a real brief would carry, at length."; done
 run_prompt "a very long complete brief still passes" "$BIG" silent
 run_prompt "a very short complete brief still passes" \
-  "Repo: /x
+  "Workdir: /x
 Goal: g
 Context: none
 Constraints: none
@@ -309,9 +336,15 @@ run_prompt "Item ID: 369"                       "Item ID: 369"                  
 run_prompt "Item ID with surrounding whitespace" "  Item ID: 369
 "                                                                                    silent
 run_prompt "Repo sweep: owner/repo"             "Repo sweep: mike-bronner/phpcs-rules" silent
-run_prompt "summary-writer preamble"            "Process pending session summary.
+# The sentinel that used to exempt core's own summary-writer dispatch is GONE.
+# It was a bypass string in an enforcement path, and any prompt could wear it.
+# The caller now sends a real brief (pinned further down), so the old preamble
+# earns no special treatment and is refused like any other slotless prompt.
+run_prompt "the retired summary-writer sentinel is NOT exempt" "Process pending session summary.
 session_id: d640e864-4bed-4e3c-8b35-85d9e4c79588
-marker_path: /Users/mike/.claude-memory-cache/pending-summaries/d640e864.json" silent
+marker_path: /Users/mike/.claude-memory-cache/pending-summaries/d640e864.json" deny
+assert_missing "the sentinel is gone from the gate" "$(cat "$GATE")" \
+  "grep -qE '^[[:space:]]*Process pending"
 # The exemption is anchored at BOTH ends for the two pipeline shapes, so it
 # cannot be used as a prefix to smuggle a free-form brief past the gate. Drop
 # the trailing anchor and this pair goes deny-to-silent.
@@ -482,8 +515,12 @@ CMD_TEMPLATE="$(jq -r '
   [.hooks.PreToolUse[] | select(.hooks[].command | test("agent-dispatch-gate.sh")) | .hooks[].command][0] // ""
 ' "$HOOKS_JSON")"
 SPACED_ROOT="$SANDBOX/plugin root"  # deliberate space
-mkdir -p "$SPACED_ROOT/hooks"
+mkdir -p "$SPACED_ROOT/hooks/lib"
 cp "$GATE" "$SPACED_ROOT/hooks/agent-dispatch-gate.sh"
+# The shared definition travels with the gate. Without it the gate fails open,
+# which would make this case pass for the wrong reason: silent, but because the
+# template was unreadable rather than because the path resolved.
+cp "$HOOKS_DIR/lib/brief-template.sh" "$SPACED_ROOT/hooks/lib/brief-template.sh"
 out=$(main_payload "$FREEFORM" | env -u WORKBENCH_ORCHESTRATOR HOME="$FAKE_HOME" \
   WORKBENCH_ORCHESTRATOR_STATE_DIR="$STATE_DIR" \
   CLAUDE_PLUGIN_ROOT="$SPACED_ROOT" sh -c "${CMD_TEMPLATE:-false}")
@@ -499,12 +536,134 @@ for token in "WORKBENCH_ORCHESTRATOR_STATE_DIR" ".claude-workbench/orchestrator-
 done
 assert_grep "dispatch gate honours WORKBENCH_ORCHESTRATOR=0" 'WORKBENCH_ORCHESTRATOR:-' "$GATE"
 
-echo "the summary-writer exemption still matches the skill that needs it:"
-# The exemption is keyed to a literal preamble core ships itself. If the skill
-# reworded it, the gate would start denying core's own memory pipeline and
-# nothing else would notice.
-assert_grep "the skill emits the exempted preamble" 'Process pending session summary.' "$SUMMARY_SKILL"
-assert_grep "the gate exempts that same preamble"   'Process pending session summary.' "$GATE"
+echo "core's own summary-writer dispatch is a real brief, not an exemption:"
+# The brief is EXTRACTED from the skill that sends it, never retyped here. If
+# the skill drops a slot, this goes red, which is the only thing standing
+# between core's memory pipeline and a silent denial now that the sentinel is
+# gone.
+SUMMARY_BRIEF="$(awk '/^  prompt: \|$/{f=1;next} f&&/^```$/{exit} f{sub(/^    /,"");print}' \
+  "$SUMMARY_SKILL")"
+if [ -n "$SUMMARY_BRIEF" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ the skill's dispatch prompt is extractable"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ could not extract the skill's dispatch prompt"
+fi
+# Placeholders substituted the way the skill instructs, so what is judged is what
+# actually gets dispatched.
+SUMMARY_REAL="${SUMMARY_BRIEF//\{MEMORY_PATH\}//Users/mike/Documents/Claude/Memory}"
+SUMMARY_REAL="${SUMMARY_REAL//\{session_id\}/d640e864-4bed-4e3c-8b35-85d9e4c79588}"
+SUMMARY_REAL="${SUMMARY_REAL//\{marker_path\}//Users/mike/.claude-memory-cache/pending-summaries/d640e864.json}"
+SUMMARY_REAL="${SUMMARY_REAL//\{log_path\}//Users/mike/Documents/Claude/Memory/sessions/2026-08-19/d640e864.log.md}"
+SUMMARY_REAL="${SUMMARY_REAL//\{transcript_path\}//Users/mike/.claude/projects/x/d640e864.jsonl}"
+run_prompt "the skill's brief passes the gate unaided" "$SUMMARY_REAL" silent
+# The receiving agent parses its inputs from labeled lines and aborts on a
+# mismatch, so each label has to survive into the brief. Burying session_id in
+# the Goal prose would pass the gate and break the agent.
+for label in "session_id:" "marker_path:" "log_path:" "transcript_path:"; do
+  assert_contains "the brief carries a labeled $label" "$SUMMARY_REAL" "$label"
+done
+# ...and it passes because it carries the slots, not because of where it starts.
+run_prompt "the skill's brief minus a slot is refused" \
+  "$(printf '%s\n' "$SUMMARY_REAL" | grep -v '^Goal:')" deny
+assert_missing "no unsubstituted placeholder remains" "$SUMMARY_REAL" "{"
+assert_missing "the skill no longer emits the sentinel" "$(cat "$SUMMARY_SKILL")" \
+  'Process pending session summary.'
+# Workdir: carries the vault root, and the skill resolves it through the repo's
+# existing single source of truth rather than hardcoding a path.
+assert_grep "the skill resolves the vault via memory-env" 'lib/memory-env.sh' "$SUMMARY_SKILL"
+
+echo "the shared definition is the only place the slots are written:"
+# The drift guard. The gate greps patterns from hooks/lib/brief-template.sh and
+# the deny message prints descriptions from it. If a consumer ever restates a
+# slot inline again, these go red.
+# shellcheck source=hooks/lib/brief-template.sh
+. "$HOOKS_DIR/lib/brief-template.sh"
+if [ "${#WORKBENCH_BRIEF_SLOTS[@]}" -eq 5 ]; then
+  PASS=$((PASS + 1)); echo "  ✅ the definition holds exactly five slots"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ the definition holds ${#WORKBENCH_BRIEF_SLOTS[@]} slots, expected 5"
+fi
+# Every slot in the definition is actually enforced: drop it from an otherwise
+# complete brief and the gate must refuse, naming that slot. This is what makes
+# the definition load-bearing rather than decorative — add a sixth record and
+# this loop demands the gate enforce it too.
+for record in "${WORKBENCH_BRIEF_SLOTS[@]}"; do
+  header="$(brief_slot_field "$record" 1)"
+  pattern="$(brief_slot_field "$record" 2)"
+  stripped="$(printf '%s\n' "$GOOD_BRIEF" | grep -viE "$pattern")"
+  out="$(main_payload "$stripped" | gate)"
+  check "definition slot '$header' is enforced by the gate" "$out" deny
+  assert_contains "the deny names '$header'" "$out" "Missing: $header"
+done
+# The gate must not restate any slot header itself — the loop is the only reader.
+for record in "${WORKBENCH_BRIEF_SLOTS[@]}"; do
+  header="$(brief_slot_field "$record" 1)"
+  if grep -qF "add_missing \"$header\"" "$GATE"; then
+    FAIL=$((FAIL + 1)); echo "  ❌ the gate restates '$header' inline"
+  else
+    PASS=$((PASS + 1)); echo "  ✅ the gate does not restate '$header' inline"
+  fi
+done
+# The deny message's slot list is generated, so every description must appear.
+DENY_SLOTS="$(main_payload "$FREEFORM" | gate)"
+for record in "${WORKBENCH_BRIEF_SLOTS[@]}"; do
+  assert_contains "the deny message carries '$(brief_slot_field "$record" 1)' and its description" \
+    "$DENY_SLOTS" "$(brief_slot_field "$record" 1) ($(brief_slot_field "$record" 3))"
+done
+# The README documents the same five headers. It is static prose and cannot
+# derive at runtime, so a test is what keeps it honest.
+for record in "${WORKBENCH_BRIEF_SLOTS[@]}"; do
+  assert_grep "README documents the '$(brief_slot_field "$record" 1)' slot" \
+    "$(brief_slot_field "$record" 1)" "$README"
+done
+assert_grep "README points at the shared definition" 'hooks/lib/brief-template.sh' "$README"
+
+echo "an unreadable definition fails open, never closed:"
+# One missing file must not turn into a session where every handoff is refused.
+NOLIB="$SANDBOX/nolib"
+mkdir -p "$NOLIB/hooks/lib"
+cp "$GATE" "$NOLIB/hooks/agent-dispatch-gate.sh"
+out=$(main_payload "$FREEFORM" | env -u WORKBENCH_ORCHESTRATOR HOME="$FAKE_HOME" \
+  WORKBENCH_ORCHESTRATOR_STATE_DIR="$STATE_DIR" bash "$NOLIB/hooks/agent-dispatch-gate.sh")
+check "a missing definition allows rather than denies" "$out" silent
+# A file that sources cleanly but defines no array. Under `set -u` a bare
+# ${#ARRAY[@]} aborts here with an unbound-variable error, so this case also
+# pins that the guard uses the +set form. Stderr is asserted empty: failing open
+# loudly is still a bug.
+printf '%s\n' '#!/usr/bin/env bash' '# truncated: defines nothing' \
+  > "$NOLIB/hooks/lib/brief-template.sh"
+NOLIB_ERR="$SANDBOX/nolib.err"
+out=$(main_payload "$FREEFORM" | env -u WORKBENCH_ORCHESTRATOR HOME="$FAKE_HOME" \
+  WORKBENCH_ORCHESTRATOR_STATE_DIR="$STATE_DIR" bash "$NOLIB/hooks/agent-dispatch-gate.sh" \
+  2>"$NOLIB_ERR")
+check "a definition that defines no array allows" "$out" silent
+if [ -s "$NOLIB_ERR" ]; then
+  FAIL=$((FAIL + 1)); echo "  ❌ it failed open noisily: $(head -1 "$NOLIB_ERR")"
+else
+  PASS=$((PASS + 1)); echo "  ✅ ...and it does so silently, with no bash error"
+fi
+# A DEFINED BUT EMPTY array. On bash 3.2 — macOS's system bash, and what these
+# hooks run under — "${ARR[@]}" under `set -u` is an unbound-variable error, so
+# without the -gt 0 guard the slot loop aborts the script rather than looping
+# zero times. Bash 5 on the CI runner loops fine, which is precisely why the
+# stderr assertion matters: without it this platform difference passes CI and
+# fails on the developer's machine.
+printf '%s\n' '#!/usr/bin/env bash' 'WORKBENCH_BRIEF_SLOTS=()' > "$NOLIB/hooks/lib/brief-template.sh"
+out=$(main_payload "$FREEFORM" | env -u WORKBENCH_ORCHESTRATOR HOME="$FAKE_HOME" \
+  WORKBENCH_ORCHESTRATOR_STATE_DIR="$STATE_DIR" bash "$NOLIB/hooks/agent-dispatch-gate.sh" \
+  2>"$NOLIB_ERR")
+check "an empty definition allows rather than denies" "$out" silent
+if [ -s "$NOLIB_ERR" ]; then
+  FAIL=$((FAIL + 1)); echo "  ❌ empty definition failed open noisily: $(head -1 "$NOLIB_ERR")"
+else
+  PASS=$((PASS + 1)); echo "  ✅ ...and it does so silently, with no bash error"
+fi
+# ...and a definition that IS readable still gates, so the two cases above are
+# not passing because the copied gate is broken.
+cp "$HOOKS_DIR/lib/brief-template.sh" "$NOLIB/hooks/lib/brief-template.sh"
+out=$(main_payload "$FREEFORM" | env -u WORKBENCH_ORCHESTRATOR HOME="$FAKE_HOME" \
+  WORKBENCH_ORCHESTRATOR_STATE_DIR="$STATE_DIR" bash "$NOLIB/hooks/agent-dispatch-gate.sh")
+check "the same gate with a readable definition still denies" "$out" deny
 
 echo "the README documents the gate:"
 assert_grep "README names the script"      'hooks/agent-dispatch-gate.sh' "$README"

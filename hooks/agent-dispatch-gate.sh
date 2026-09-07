@@ -146,42 +146,90 @@ printf '%s' "$PROMPT" | grep -q '[^[:space:]]' || exit 0
 #
 #       Item ID: <n>              workbench-dev-team bin/dispatch-agent.sh:98
 #       Repo sweep: <owner/repo>  workbench-dev-team bin/dispatch-agent.sh:94
-#       Process pending session summary.
-#                                 workbench-core skills/process-pending-summaries
 #
-#     The first two are named in the interface contract, and each is the WHOLE
-#     prompt at its source — so each is matched whole, anchored at both ends.
-#     Matching a leading line instead would let any brief bypass the gate by
-#     opening with "Item ID: 12" and continuing in free prose.
+#     Each is the WHOLE prompt at its source, so each is matched whole, anchored
+#     at both ends. Matching a leading line instead would let any brief bypass
+#     the gate by opening with "Item ID: 12" and continuing in free prose.
 #
-#     The third is core's own memory pipeline: a fixed preamble followed by
-#     key/value lines, so it is the one shape matched on its opening line.
-#     Omitting it would make this gate break the plugin that ships it.
-#     "Whole prompt" is expressed to grep as: the file has exactly one
+#     "Whole prompt" is expressed to grep as: the prompt has exactly one
 #     non-blank line, and that line is the shape. `grep -c` counts the non-blank
 #     lines, so a second line of free prose defeats the exemption without any
 #     trimming of the prompt in bash.
+#
+#     THERE IS NO THIRD SHAPE. core's own summary-writer dispatch used to be
+#     exempted by a "Process pending session summary." sentinel. That was a
+#     bypass string in an enforcement path: it patched the caller's problem
+#     inside the enforcer, and any prompt could wear it. The caller now sends a
+#     real five-slot brief (skills/process-pending-summaries/SKILL.md) and
+#     passes on its own merits, so the sentinel is gone rather than merely
+#     unused.
 NONBLANK=$(printf '%s' "$PROMPT" | grep -c '[^[:space:]]')
 if [ "${NONBLANK:-0}" -eq 1 ]; then
   printf '%s' "$PROMPT" | grep -qE '^[[:space:]]*Item ID:[[:space:]]*[0-9]+[[:space:]]*$' && exit 0
   printf '%s' "$PROMPT" | grep -qE '^[[:space:]]*Repo sweep:[[:space:]]*[^[:space:]/]+/[^[:space:]/]+[[:space:]]*$' && exit 0
 fi
-#     The summary-writer shape keeps its opening-line semantics: it is a fixed
-#     preamble followed by key/value lines, so only line 1 is consulted. Reading
-#     the whole prompt would exempt any brief that quoted the sentinel anywhere.
-printf '%s' "$PROMPT" | head -n 1 | grep -qE '^[[:space:]]*Process pending session summary\.' && exit 0
+
+# The one definition of the brief, sourced only now: every branch above exits
+# without needing it, and the common case by volume is a sub-agent dispatch that
+# leaves at (a). Sourcing is a file read with no fork, so it costs nothing
+# measurable here.
+#
+# Fail-open if the definition is missing, unsourceable, truncated, or empty. A
+# gate that cannot read the template must not deny every dispatch on the way
+# down — that would turn one missing file into a session with no working
+# handoffs.
+#
+# ONE guard covers all three ways the definition can be unusable, because each
+# leaves ${WORKBENCH_BRIEF_SLOTS+set} empty:
+#
+#   file absent or unreadable   sourcing fails, the array is never defined
+#   file truncated or edited    sources cleanly, the array is never defined
+#   array defined but empty     ${ARR+set} tests element 0, which is unset
+#
+# The +set form is required rather than stylistic. Under `set -u`, measured on
+# bash 3.2.57 (macOS, what these hooks run under) and bash 5.3.15 (the CI
+# runner):
+#
+#   - a bare ${#ARR[@]} on an UNDEFINED array aborts with an unbound-variable
+#     error on BOTH versions, rather than failing open quietly;
+#   - "${ARR[@]}" on a DEFINED BUT EMPTY array aborts on 3.2 but loops zero
+#     times on 5.3. So the slot loop below is safe on the CI runner and fatal on
+#     macOS, which is the asymmetry that makes this easy to get wrong: the
+#     mistake passes CI and breaks the developer's machine.
+#
+# ${ARR+set} is empty for an empty array on both versions, because it tests
+# element 0. That is what lets one guard cover all three cases.
+#
+# Either abort still "allows", since the harness only blocks on a deny, but it
+# allows by crashing with bash noise on stderr. Failing open loudly is still a
+# bug, which is why the tests assert stderr is empty on these paths.
+#
+# There is deliberately no separate emptiness check. It would be unreachable:
+# +set already exits first, on both bash versions. A line no test can
+# distinguish is a liability, not defence in depth.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HOOKS_DIR="${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/hooks}"
+HOOKS_DIR="${HOOKS_DIR:-$SCRIPT_DIR}"
+# shellcheck source=hooks/lib/brief-template.sh
+. "$HOOKS_DIR/lib/brief-template.sh" 2>/dev/null || true
+[ -n "${WORKBENCH_BRIEF_SLOTS+set}" ] || exit 0
 
 # The five slots. Presence only: a header at the start of a line, case
 # insensitive, with flexible spacing inside "Done when". Slot ORDER is not
 # checked — a brief carrying all five in a different order still uses the
 # template, and refusing it would cost a real dispatch for no gain.
+#
+# The slots themselves are NOT written here. They come from the one definition
+# in hooks/lib/brief-template.sh, which the deny message below also reads. A
+# slot renamed there changes the check and the message together, so the two can
+# never disagree. Restating them inline is what let the first slot's old name
+# drift across four files before the definition existed.
 MISSING=""
 add_missing() { MISSING="${MISSING:+$MISSING, }$1"; }
-printf '%s' "$PROMPT" | grep -qiE '^[[:space:]]*Repo:'             || add_missing "Repo:"
-printf '%s' "$PROMPT" | grep -qiE '^[[:space:]]*Goal:'             || add_missing "Goal:"
-printf '%s' "$PROMPT" | grep -qiE '^[[:space:]]*Context:'          || add_missing "Context:"
-printf '%s' "$PROMPT" | grep -qiE '^[[:space:]]*Constraints:'      || add_missing "Constraints:"
-printf '%s' "$PROMPT" | grep -qiE '^[[:space:]]*Done[[:space:]]+when:' || add_missing "Done when:"
+for slot_record in "${WORKBENCH_BRIEF_SLOTS[@]}"; do
+  printf '%s' "$PROMPT" | grep -qiE "$(brief_slot_field "$slot_record" 2)" \
+    || add_missing "$(brief_slot_field "$slot_record" 1)"
+done
 
 # A plugin that owns the brief gets named, but only when one is installed. A
 # runtime directory probe, never a build-time dependency, so core stays agnostic
@@ -195,7 +243,9 @@ for candidate in "${HOME:-}"/.claude/plugins/cache/*/workbench-dev-team; do
 done
 
 if [ -n "$MISSING" ]; then
-  REASON="🚦 Dispatch gate: every Agent dispatch from the main session uses the five-slot brief, research included. Missing: ${MISSING}. Slots: Repo: (absolute path), Goal: (one or two sentences), Context: (why the task exists, and what the agent cannot derive), Constraints: (hard limits, or none), Done when: (observable finish line). Add the missing slots and dispatch again.${PLUGIN_LINE} To dispatch without the brief in this session, run /workbench-core:orchestrator off."
+  # The slot list is generated from the same records the check above greps for,
+  # so a renamed slot cannot ask for one name while refusing another.
+  REASON="🚦 Dispatch gate: every Agent dispatch from the main session uses the five-slot brief, research included. Missing: ${MISSING}. Slots: $(brief_slot_summary). Add the missing slots and dispatch again.${PLUGIN_LINE} To dispatch without the brief in this session, run /workbench-core:orchestrator off."
   jq -nc --arg reason "$REASON" '{
     hookSpecificOutput: {
       hookEventName: "PreToolUse",

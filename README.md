@@ -233,6 +233,8 @@ core/
 │   ├── destructive-database-guard.sh — PreToolUse: block Artisan resets, dropdb, and destructive SQL
 │   ├── vault-git-guard.sh      — PreToolUse: block git WRITE commands aimed at the memory vault
 │   ├── delegation-gate.sh      — PreToolUse: deny main-agent Edit/Write/NotebookEdit, redirect to sub-agents
+│   ├── agent-dispatch-gate.sh  — PreToolUse: deny a main-agent Agent dispatch that skips the five-slot brief
+│   ├── lib/brief-template.sh   — the ONE definition of the five-slot brief (gate + deny message read it)
 │   ├── lib/                    — sourceable libs: memory-env / -probe / -vacuum / -install, summary-dispatch, prose-check,
 │   │                             shell_parse (shared tokeniser), destructive-db-check, vault-git-check
 │   └── fixtures/               — test fixtures (fake-server stub, no real server)
@@ -284,6 +286,7 @@ These hooks fire across the session lifecycle and on each turn:
 | `UserPromptSubmit` | `hooks/memory-recall.sh` | Proactive recall — search the vault with the prompt and inject relevant memories, **once per session** per memory (memory **reads**) |
 | `PreToolUse` | `hooks/outbound-prose-guard.sh` | Check prose leaving the machine against the output style's mechanical rules — see [Outbound prose guard](#outbound-prose-guard) |
 | `PreToolUse` | `hooks/delegation-gate.sh` | Deny `Edit`/`Write`/`NotebookEdit` from the main agent so file work goes to sub-agents — see [Delegation gate](#delegation-gate) |
+| `PreToolUse` | `hooks/agent-dispatch-gate.sh` | Deny an `Agent` dispatch from the main agent unless its prompt uses the five-slot brief — see [Agent dispatch gate](#agent-dispatch-gate) |
 
 ### Delegation gate
 
@@ -314,6 +317,67 @@ That third row is why `agent_type` alone has to allow: a scheduled `claude -p --
 A session id holding anything outside `[A-Za-z0-9._-]` is refused rather than resolved, which keeps a `../` from walking out of the state directory. Refusal means fail-open here: a session that cannot address its own toggle has no honest escape hatch, so the gate stands down rather than trapping the user.
 
 Tests: `hooks/test-delegation-gate.sh` (48 cases: every allow branch independently, the deny path, byte-exact deny JSON, the conditional dev-team enrichment, `hooks.json` wiring, and agreement with both the toggle skill and guardrail 10).
+
+### Agent dispatch gate
+
+**A handoff to a sub-agent states the outcome, and it uses the brief.** The delegation gate sends file work to a sub-agent. This gate governs what that handoff has to look like. `hooks/agent-dispatch-gate.sh` denies an `Agent` dispatch from the main session whose prompt is missing any of the five slots:
+
+```
+Workdir:     absolute path of the tree the agent works in
+Goal:        concise, measurable, achievable. One or two sentences.
+Context:     prose. Why the task exists, and what the agent cannot derive.
+Constraints: bullet points. Hard limits, or "none".
+Done when:   observable finish line.
+```
+
+**Those five slots are defined once, in `hooks/lib/brief-template.sh`.** The gate's checks and the deny message's slot list are both generated from that file, so renaming a slot changes what is enforced and what is asked for in a single edit. Before it existed the template was restated in four places with no shared source, and renaming the first slot from `Repo:` to `Workdir:` is the drift that argued for it — core dispatches work that has no repo, since `summary-writer` operates on the memory vault. A test fails if any consumer restates a slot inline again, and another fails if a slot in the definition is not actually enforced.
+
+**It checks slot presence and nothing else.** It does not decide whether the work is code work, it does not decide which sub-agent should receive it, and it does not judge whether `Goal:` states an outcome rather than a numbered script. Those are questions about substance, and they belong to the agent reading the brief.
+
+That division is the whole design, and it was reached by measurement rather than taste. Three prompt-classifying heuristics were built and scored against 14 days of real dispatches — 97 main-agent dispatches to generic sub-agents, of which 19 genuinely wrote source:
+
+| Heuristic | Fired | Right | Wrong | Missed | Precision | Recall |
+|---|---|---|---|---|---|---|
+| Narrow | 6 | 5 | 1 | 14 | 83% | 26% |
+| Medium | 39 | 13 | 26 | 6 | 33% | 68% |
+| Broad | 47 | 16 | 31 | 3 | 34% | 84% |
+
+The wrong ones were not tunable away. They were prose tasks naming source files they never write ("read `gt7_optimize.py`, then fix only the Markdown") and read-only audits naming every file they inspect. Telling those apart needs the write-target-versus-read-target distinction, which is semantic, and a shell hook cannot make it. A structural check has no false-positive problem at all, which is why it replaced all three.
+
+**Because the check is structural, it applies to every dispatch from the main session, research included.** That universality is load-bearing rather than incidental: requiring the brief everywhere is exactly what removes the need to guess which dispatches are code work.
+
+**`Context:` presence is required and its value is never read.** Whether that slot may say `none` is owned by the plugin that ships the brief, not by this gate, and header presence is true under either answer.
+
+**No length is enforced anywhere.** A prose `Context:` slot runs long by design — the measured median across 70 real briefs is 4,788 characters, and only one came in under 1,000. Any ceiling would deny essentially every well-formed brief.
+
+**Allow branches, in order.** Any one of these lets the call through: (a) `agent_id` is set, so a sub-agent is dispatching its own helper, which is what keeps a review-lens fan-out working (422 such dispatches in the same 14 days); (b) `agent_type` is set, a top-level `--agent` dispatch, which covers every scheduled pipeline run; (c) `WORKBENCH_ORCHESTRATOR=0`; (d) the session toggle is off; (e) the tool is not `Agent`; (f) the prompt is absent, empty, or not a string; (g) the prompt is one of two fixed machine-built shapes.
+
+**The two exempt shapes** are assembled by a script from an id or a slug, so there is no brief to write:
+
+| Shape | Built by |
+|---|---|
+| `Item ID: <n>` | workbench-dev-team `bin/dispatch-agent.sh` |
+| `Repo sweep: <owner/repo>` | workbench-dev-team `bin/dispatch-agent.sh` |
+
+Both are anchored at each end and must be the entire prompt. Matching them as a prefix would let any brief walk past the gate by opening with `Item ID: 12` and continuing in free prose.
+
+**There is no third shape, and that is deliberate.** Core's own `summary-writer` dispatch was briefly exempted by a `Process pending session summary.` sentinel, because `skills/process-pending-summaries` sent a fixed key/value prompt rather than a brief. A sentinel is a bypass string sitting in an enforcement path: it patches the caller's problem inside the enforcer, and any prompt that wears the string inherits the exemption. The caller now sends a real five-slot brief and passes on its own merits, so the sentinel is gone rather than merely unused. A test asserts both halves — that the skill emits no sentinel, and that the retired string earns no special treatment.
+
+**The prescriptive-prompt hint never blocks.** Once the five slots are present, a brief carrying a fenced code block, a shell command on its own line, or three or more numbered steps gets a note attached as `additionalContext`. Over-specified method wastes the sub-agent's judgement, but it does not break anything the way a missing slot does, and the markers are far too common to sit behind a refusal: fenced blocks appear in 40% of real briefs and numbered steps in 51%. The shell-command marker is line-anchored on purpose, because matching a command anywhere in the text fires on 91% of briefs, including prose that merely mentions `git log`.
+
+The hint emits `additionalContext` and **no `permissionDecision`**. That is deliberate and load-bearing: the harness only touches permission behaviour when that key is present (verified against the 2.1.263 binary), so the hint cannot silently grant a permission the call would otherwise have had to ask for.
+
+**Escape hatches are the delegation gate's, unchanged**, so one mental model covers both and `/workbench-core:orchestrator off` stands both down together. See [Delegation gate](#delegation-gate) for the toggle's mechanics.
+
+**Expect it to bite on day one.** Replaying all 196 real main-agent dispatches from the 14-day sample through the finished hook denies 194 and allows 2, and the 2 are the pipeline shapes. Ten of those denials are historical `summary-writer` prompts in the retired sentinel form. Replaying the same corpus with the brief the skill now sends gives 184 denied and 12 allowed, which is the number that describes current behaviour. That is not a tuning problem: no prompt written before the template carries the slots, so the gate refuses whatever the main agent writes out of habit until the prose retrains it. The session toggle is the pressure valve if that lands at a bad moment.
+
+**It inspects a prompt body, not a command line, so it has to stay cheap.** It judges a 12,000-character brief in well under a second. Getting there mattered: the first implementation used `${PROMPT//[[:space:]]/}` and a two-step bash trim, both quadratic over a multi-kilobyte string. Measured on real briefs, 5.7 KB took 10 seconds, 6.9 KB took 18, and 8.0 KB took 29. Against a 4,788-character median that would have stalled every dispatch for tens of seconds. Both are `grep` now, and a timing case in the suite holds a 3-second budget on a 12 KB brief. The same trap waits in any hook that reads a prompt rather than a command: bash string expansion does not scale to prompt-sized input.
+
+**Fail-open, and what that costs you.** Every error path exits 0 and allows the call: a malformed payload, a missing `jq`, an unreadable state directory, a session id the toggle cannot address, or a prompt that is not a string. Be clear about the trade. **If this script breaks, enforcement stops silently and there is no layer behind it.** Nothing announces that the gate is down; the main agent simply starts dispatching free-form prompts again. It is a discipline aid, not a security boundary.
+
+Like the delegation gate, it is sidesteppable and deliberately so. Slot headers are cheap to bolt onto a 17,000-character prompt, and the gate will pass it. What survives that is the receiving agent's own check on substance, which is where the judgement belongs.
+
+Tests: `hooks/test-agent-dispatch-gate.sh` (157 cases: every allow branch independently, each of the five slots pinned by its own omission fixture, the deny and hint paths, the hint's absence of a permission grant, each exempt shape plus its prefix-smuggling counter-case, a realistic read-only dispatch passing clean, `hooks.json` wiring, the shared-definition drift guards, and agreement with the toggle skill and the summary-writer skill).
 
 ### Outbound prose guard
 

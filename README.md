@@ -323,12 +323,14 @@ Tests: `hooks/test-delegation-gate.sh` (48 cases: every allow branch independent
 **A handoff to a sub-agent states the outcome, and it uses the brief.** The delegation gate sends file work to a sub-agent. This gate governs what that handoff has to look like. `hooks/agent-dispatch-gate.sh` denies an `Agent` dispatch from the main session whose prompt is missing any of the five slots:
 
 ```
-Workdir:     absolute path of the tree the agent works in
+Workdir:     absolute path of the tree the agent works in, and the branch or worktree if one was settled
 Goal:        concise, measurable, achievable. One or two sentences.
 Context:     prose. Why the task exists, and what the agent cannot derive.
 Constraints: bullet points. Hard limits, or "none".
 Done when:   observable finish line.
 ```
+
+**`Workdir:` names the tree, so it carries the branch too.** A branch or a worktree is part of naming which tree the agent works in. `workbench-dev-team` asks the human before it creates either one, and the settled answer rides in this slot rather than in a sixth slot or a `Constraints:` bullet. A bare absolute path stays fully valid: most dispatches settle nothing, and `process-pending-summaries` dispatches into the memory vault, where no branch applies. Nothing about enforcement changes here. The gate greps the headers and never reads slot content, so both shapes already pass.
 
 **Those five slots are defined once, in `hooks/lib/brief-template.sh`.** The gate's checks and the deny message's slot list are both generated from that file, so renaming a slot changes what is enforced and what is asked for in a single edit. Before it existed the template was restated in four places with no shared source, and renaming the first slot from `Repo:` to `Workdir:` is the drift that argued for it — core dispatches work that has no repo, since `summary-writer` operates on the memory vault. A test fails if any consumer restates a slot inline again, and another fails if a slot in the definition is not actually enforced.
 
@@ -377,7 +379,7 @@ The hint emits `additionalContext` and **no `permissionDecision`**. That is deli
 
 Like the delegation gate, it is sidesteppable and deliberately so. Slot headers are cheap to bolt onto a 17,000-character prompt, and the gate will pass it. What survives that is the receiving agent's own check on substance, which is where the judgement belongs.
 
-Tests: `hooks/test-agent-dispatch-gate.sh` (157 cases: every allow branch independently, each of the five slots pinned by its own omission fixture, the deny and hint paths, the hint's absence of a permission grant, each exempt shape plus its prefix-smuggling counter-case, a realistic read-only dispatch passing clean, `hooks.json` wiring, the shared-definition drift guards, and agreement with the toggle skill and the summary-writer skill).
+Tests: `hooks/test-agent-dispatch-gate.sh` (165 cases: every allow branch independently, each of the five slots pinned by its own omission fixture, a `Workdir:` carrying a branch and one carrying a worktree, the deny and hint paths, the hint's absence of a permission grant, each exempt shape plus its prefix-smuggling counter-case, a realistic read-only dispatch passing clean, `hooks.json` wiring, the shared-definition drift guards, and agreement with the toggle skill and the summary-writer skill).
 
 ### Outbound prose guard
 

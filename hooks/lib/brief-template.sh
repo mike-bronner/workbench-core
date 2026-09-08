@@ -38,10 +38,26 @@
 # prompt — a brief carrying all five in any order still uses the template — but
 # this array is the order a human reads them in, so the deny message and the
 # README both present them this way.
+#
+# WORKDIR CARRIES THE BRANCH, WHEN A BRANCH WAS SETTLED
+#
+# The slot names the tree to work in, and a branch or worktree is part of naming
+# that tree. workbench-dev-team asks the human before it creates either one, and
+# the answer has to travel with the dispatch. Widening this slot is what carries
+# it: a sixth slot would have to change the gate, this file, and every agent
+# that refuses an incomplete brief, and a Constraints: bullet would separate the
+# branch from the path it belongs to.
+#
+# A bare absolute path stays fully valid. Most dispatches settle nothing, and
+# skills/process-pending-summaries dispatches into the memory vault, where no
+# branch applies.
+#
+# This is documented meaning only. The gate greps the headers below and never
+# reads slot content, so both shapes already pass and no pattern changed here.
 
 # shellcheck disable=SC2034  # consumed by callers that source this file
 WORKBENCH_BRIEF_SLOTS=(
-  'Workdir:|^[[:space:]]*Workdir:|absolute path of the tree to work in'
+  'Workdir:|^[[:space:]]*Workdir:|absolute path of the tree to work in, and the branch or worktree if one was settled'
   'Goal:|^[[:space:]]*Goal:|one or two sentences, measurable'
   'Context:|^[[:space:]]*Context:|why the task exists, and what the agent cannot derive'
   'Constraints:|^[[:space:]]*Constraints:|hard limits, or none'

@@ -214,6 +214,22 @@ run_prompt "'Done  when:' with extra spacing passes" \
   "${GOOD_BRIEF/Done when:/Done   when:}" silent
 run_prompt "indented headers pass" "$(printf '%s\n' "$GOOD_BRIEF" | sed 's/^/   /')" silent
 
+echo "Workdir: may carry the branch or worktree the human settled on:"
+# workbench-dev-team asks the human before it creates a branch or a worktree,
+# and the answer travels in Workdir: because that slot names the tree. The gate
+# greps the header and never the slot's content, so both shapes pass without a
+# pattern change. These two cases are what would catch a Workdir: pattern later
+# tightened to a bare path: nothing else here would, and the plugin now sends
+# the longer shape on every dispatch that settled one. The bare-path shape is
+# pinned by the complete-brief case above, which is why it is not repeated.
+BRIEF_TAIL="$(printf '%s\n' "$GOOD_BRIEF" | grep -v '^Workdir:')"
+run_prompt "a Workdir: naming a branch passes" \
+  "Workdir: /Users/mike/Developer/workbench-core (branch: fix/env-prefix, to be created off main)
+$BRIEF_TAIL" silent
+run_prompt "a Workdir: naming a worktree passes" \
+  "Workdir: /Users/mike/Developer/workbench-core-wt/env-prefix (worktree off main)
+$BRIEF_TAIL" silent
+
 echo "a realistic READ-ONLY dispatch passes clean:"
 # This is the traffic the brief called the majority of legitimate dispatches.
 # It names no code file to write, it says "read-only" outright, and it must not
@@ -642,6 +658,19 @@ for record in "${WORKBENCH_BRIEF_SLOTS[@]}"; do
     "$(brief_slot_field "$record" 1)" "$README"
 done
 assert_grep "README points at the shared definition" 'hooks/lib/brief-template.sh' "$README"
+# Workdir: carrying a branch is documented in exactly two places — the
+# description the deny message prints, and the README gloss, which is static
+# prose. Pin both, so reverting one half fails instead of passing on the other
+# half's text. The README assertion is scoped to the Workdir row rather than run
+# over the whole file, where any prose mentioning a branch would satisfy it.
+WORKDIR_RECORD=""
+for record in "${WORKBENCH_BRIEF_SLOTS[@]}"; do
+  [ "$(brief_slot_field "$record" 1)" = "Workdir:" ] && WORKDIR_RECORD="$record"
+done
+assert_contains "the definition's Workdir: description names the branch" \
+  "$(brief_slot_field "$WORKDIR_RECORD" 3)" "branch"
+assert_contains "the README's Workdir: row names the branch" \
+  "$(grep -E '^[[:space:]]*Workdir:' "$README")" "branch"
 
 echo "an unreadable definition fails open, never closed:"
 # One missing file must not turn into a session where every handoff is refused.

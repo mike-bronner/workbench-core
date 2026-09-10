@@ -164,5 +164,62 @@ assert_names   "it reports the em dash"        "em-dash"
 assert_names   "it reports the long sentence"  "long-sent"
 
 echo
+echo "a realistically large body is judged quickly:"
+# A regression test with teeth. The whitespace pre-check first used
+# "${PROSE//[[:space:]]/}", which is quadratic in payload length. Measured end
+# to end through this guard, 8 KB took 32.8s and 12 KB took 101.8s. A PreToolUse
+# hook holds its tool call open while it runs, so a live session froze behind one
+# instance for over three minutes. Size is not a corner case here: the body this
+# guard exists to catch, decisioncloud#21665, ran 1,855 words. Restore the
+# expansion and this case blows its budget roughly thirtyfold.
+BIG="$SANDBOX/big-body.md"
+: > "$BIG"
+while [ "$(wc -c < "$BIG")" -lt 12000 ]; do
+  printf '%s\n\n' 'Editing a list in the List Manager showed an empty textarea whether the list was created new or upgraded from a rule.' >> "$BIG"
+done
+BIG_SIZE=$(wc -c < "$BIG" | tr -d ' ')
+START=$(date +%s)
+run_bash "gh pr create --title t --body-file $BIG"
+BIG_RC=$?
+ELAPSED=$(( $(date +%s) - START ))
+if [ "$ELAPSED" -le 3 ]; then
+  PASS=$((PASS + 1)); echo "  ✅ a ${BIG_SIZE}-byte body is judged in ${ELAPSED}s (budget 3s)"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ a ${BIG_SIZE}-byte body took ${ELAPSED}s, over the 3s budget"
+fi
+# ...and it is still judged correctly, so the budget is not met by bailing out.
+if [ "$BIG_RC" -eq 2 ]; then
+  PASS=$((PASS + 1)); echo "  ✅ the large body is still blocked, so speed is not early exit"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ the large body returned $BIG_RC, so the timing proves nothing"
+fi
+
+# The pre-check's other path. Prose short-circuits on its first character, so
+# only an all-whitespace payload walks the whole string, and that is the glob's
+# worst case. It stays linear there (0.009s at 64 KB) where the expansion did
+# not: 4 KB of pure whitespace took 4.6s through this guard before the fix.
+WS="$SANDBOX/whitespace-body.md"
+: > "$WS"
+while [ "$(wc -c < "$WS")" -lt 8000 ]; do
+  printf '   \n\t\n' >> "$WS"
+done
+WS_SIZE=$(wc -c < "$WS" | tr -d ' ')
+START=$(date +%s)
+run_bash "gh pr create --title t --body-file $WS"
+WS_RC=$?
+ELAPSED=$(( $(date +%s) - START ))
+if [ "$ELAPSED" -le 3 ]; then
+  PASS=$((PASS + 1)); echo "  ✅ ${WS_SIZE} bytes of pure whitespace is judged in ${ELAPSED}s (budget 3s)"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ ${WS_SIZE} bytes of pure whitespace took ${ELAPSED}s, over the 3s budget"
+fi
+# Whitespace is not prose, so it never reaches the checker at all.
+if [ "$WS_RC" -eq 0 ]; then
+  PASS=$((PASS + 1)); echo "  ✅ a whitespace-only body is allowed, never sent to the checker"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ a whitespace-only body returned $WS_RC, expected allow"
+fi
+
+echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

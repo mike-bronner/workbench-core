@@ -106,7 +106,15 @@ elif tool.startswith("mcp__"):
     sys.stdout.write(from_mcp(tool_input))
 ' 2>/dev/null) || exit 0
 
-[ -n "${PROSE//[[:space:]]/}" ] || exit 0
+# Glob, not "${PROSE//[[:space:]]/}". Pattern-substitution with a character class
+# re-measures the string at every position, which makes it quadratic in payload
+# length. Measured end to end through this guard on whitespace-heavy prose:
+# 8 KB took 32.8s and 12 KB took 101.8s. A slow PreToolUse hook does not
+# degrade: it freezes the tool call it guards. One instance was caught pinned at
+# a full core for over three minutes. The glob answers the same question, forks
+# nothing, and short-circuits on the first non-whitespace character. It stays
+# linear even on pure whitespace, its worst case: 0.009s at 64 KB.
+[[ $PROSE == *[![:space:]]* ]] || exit 0
 
 FINDINGS=$(printf '%s' "$PROSE" | python3 "$CHECKER" 2>/dev/null)
 [ -n "$FINDINGS" ] || exit 0

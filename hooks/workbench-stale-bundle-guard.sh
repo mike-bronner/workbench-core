@@ -111,12 +111,29 @@ EOF
 fi
 
 # ──────────── Invocation paths: resolve "<plugin>:<cmd>" ────────────
+# Everything below pattern-matches `spec`, and bash 3.2 re-converts the whole
+# subject to wide characters on every match attempt while the locale is
+# multibyte — which the user's interactive locale is. An unbounded spec is
+# therefore quadratic: ${spec%%:*} plus ${spec#*:} over a 256 KB colon-free
+# prompt measured 54.8s on this host. Both entry points fire before the turn is
+# answered, so that time is held out of the user's own turn. Bound the spec
+# first, in BOTH paths, ahead of anything that pattern-matches it.
+#
+# 256 is far past anything real: the longest installed plugin directory is
+# workbench-dev-team at 18 characters, and the longest full spec is
+# workbench-bujo:bujo-monthly-ritual at 34. The bound cannot change what this
+# hook decides. Where the colon falls inside it the plugin half is identical,
+# and where it falls outside, the name before it already exceeds every registry
+# key — so the lookup misses either way, only sooner.
+SPEC_MAX=256
+
 case "$event" in
   PreToolUse)
     # The Skill tool carries `skill: "<plugin>:<name>"`, or a bare name for a
     # non-plugin skill. This path is what catches a prose invocation.
     [ "$(printf '%s' "$payload" | jq -r '.tool_name // empty' 2>/dev/null)" = "Skill" ] || exit 0
     spec=$(printf '%s' "$payload" | jq -r '.tool_input.skill // empty' 2>/dev/null)
+    spec=${spec:0:$SPEC_MAX}
     ;;
   *)
     prompt=$(printf '%s' "$payload" | jq -r '.prompt // empty' 2>/dev/null)
@@ -124,8 +141,18 @@ case "$event" in
       /workbench-*) ;;
       *) exit 0 ;;
     esac
-    spec=${prompt#/}
-    spec=${spec%%[[:space:]]*}
+    # The first whitespace-delimited token, in three cheap steps rather than one
+    # ${prompt%%[[:space:]]*} that costs 11.3s on a 256 KB prompt. read cuts at
+    # space, tab and newline in one linear pass. The bound then caps what read
+    # returned, and only then does the expansion catch everything read does not
+    # cut on — bash matches CR, VT and FF under [[:space:]], and NBSP, U+2028
+    # and U+3000 with it, so dropping that last step WOULD change the token.
+    # Order is the point: bound before the expansion, or a token whose only
+    # space is a trailing NBSP pays the full 11.3s here, because the slow stage
+    # walks the whole token to reach it. Same token out, and 0.00s at 256 KB.
+    read -r spec _ <<< "${prompt#/}"
+    spec=${spec:0:$SPEC_MAX}
+    case "$spec" in *[[:space:]]*) spec=${spec%%[[:space:]]*} ;; esac
     ;;
 esac
 
@@ -136,9 +163,16 @@ case "$spec" in
 esac
 
 # "workbench-dev-team:setup" -> plugin=workbench-dev-team cmd=setup
-plugin=${spec%%:*}
-cmd=${spec#*:}
-[ "$cmd" = "$spec" ] && cmd=""
+# The case states the no-colon branch outright, instead of inferring it from
+# ${spec#*:} having handed back the whole string. It also holds the quadratic
+# line on its own, without help from SPEC_MAX: unguarded, these two removals
+# cost 54.8s on a 256 KB colon-free spec, against 0.01s behind the test. Keep
+# both. The bound is what a third entry point would forget; this is what keeps
+# forgetting it cheap.
+case "$spec" in
+  *:*) plugin=${spec%%:*}; cmd=${spec#*:} ;;
+  *)   plugin=$spec; cmd="" ;;
+esac
 
 install_path=$(jq -r --arg k "$plugin@$MARKETPLACE" '.plugins[$k][0].installPath // empty' "$REGISTRY" 2>/dev/null)
 version=$(jq -r --arg k "$plugin@$MARKETPLACE" '.plugins[$k][0].version // empty' "$REGISTRY" 2>/dev/null)

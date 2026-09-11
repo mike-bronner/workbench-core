@@ -207,6 +207,140 @@ check "UserPromptSubmit uses additionalContext" \
 out=$(guard '{"hook_event_name":"UserPromptSubmit","prompt":"run the memory lint"}')
 check "prose still silent on UserPromptSubmit — that is why PreToolUse exists" "${out:-EMPTY}" "EMPTY"
 
+# --- which token the prompt path extracts as the spec --------------------
+# The extraction cuts the prompt at its first whitespace character. It was
+# ${spec%%[[:space:]]*}, which is quadratic over a long prompt, so it now reads
+# the token with `read`, caps it, and re-applies the expansion to that short
+# result. These pin the token itself, because a different token silently aims
+# the guard at the wrong plugin or names the wrong body to read.
+#
+# jq builds the payload so a prompt can carry a raw CR, tab, or NBSP.
+promptp() { jq -cn --arg p "$1" '{hook_event_name:"UserPromptSubmit",prompt:$p}'; }
+cmd_of() {  # the command name the guard resolved out of <prompt>
+  local ctx after
+  ctx=$(guard "$(promptp "$1")" | jq -r '.hookSpecificOutput.additionalContext // empty')
+  case $ctx in
+    *"/commands/"*) after=${ctx#*/commands/}; printf '%s' "${after%%.md (command)*}" ;;
+    "")             printf 'SILENT' ;;
+    *)              printf 'NO-COMMAND' ;;
+  esac
+}
+
+check "a plain slash command resolves its command" \
+  "$(cmd_of '/workbench-core:setup')" "setup"
+check "an argument after the command is not part of the spec" \
+  "$(cmd_of '/workbench-core:setup foo bar')" "setup"
+check "a tab ends the spec" \
+  "$(cmd_of "$(printf '/workbench-core:setup\targ')")" "setup"
+check "a newline ends the spec" \
+  "$(cmd_of "$(printf '/workbench-core:setup\nmore prose')")" "setup"
+# A pasted CRLF prompt. read stops at the newline, and the expansion then takes
+# the CR, so either stage alone still yields this token. It is here for the
+# contract, not as the pin on either stage.
+check "a carriage return ends the spec" \
+  "$(cmd_of "$(printf '/workbench-core:setup\r\nmore')")" "setup"
+# read cuts only at space, tab and newline. bash also matches NBSP, U+2028 and
+# U+3000 under [[:space:]], so this reddens if the expansion stops backing it up.
+check "a Unicode NBSP ends the spec" \
+  "$(cmd_of "$(printf '/workbench-core:setup\xc2\xa0arg')")" "setup"
+check "a bare plugin name resolves no command" \
+  "$(cmd_of '/workbench-core')" "NO-COMMAND"
+check "an unknown plugin stays silent" \
+  "$(cmd_of '/workbench-nope:setup')" "SILENT"
+
+# --- how the spec splits into <plugin>:<cmd> -----------------------------
+# Both entry points share this split, so these pin the branches, not the path.
+# It used to infer "no command" from ${spec#*:} having returned the whole
+# string; it now tests for the colon outright. Only specs starting "workbench-"
+# reach the split, so a leading-colon spec is unreachable and not tested here.
+check "a trailing colon resolves no command" \
+  "$(cmd_of '/workbench-core:')" "NO-COMMAND"
+check "a second colon stays inside the command" \
+  "$(cmd_of '/workbench-core::setup')" ":setup"
+check "the split takes the FIRST colon, not the last" \
+  "$(cmd_of '/workbench-core:a:b')" "a:b"
+
+# --- the spec is bounded before anything pattern-matches it --------------
+# Under a multibyte locale bash re-converts the whole subject to wide
+# characters on every match attempt, so an unbounded spec makes ${spec%%:*},
+# ${spec#*:} and ${spec%%[[:space:]]*} quadratic. Both entry points therefore
+# cap the spec first. The cap is observable as the length of the command the
+# message names, which is what lets these be exact instead of a timing band.
+SPEC_MAX=$(awk -F= '$1=="SPEC_MAX"{print $2; exit}' "$GUARD")
+check "the hook declares a spec bound" "${SPEC_MAX:-MISSING}" "256"
+
+skill_cmd_of() {  # the command name the guard resolved out of a Skill spec
+  local msg after
+  msg=$(guard "$(skillp "$1")" | jq -r '.systemMessage // empty')
+  case $msg in
+    *"/commands/"*) after=${msg#*/commands/}; printf '%s' "${after%%.md (command)*}" ;;
+    "")             printf 'SILENT' ;;
+    *)              printf 'NO-COMMAND' ;;
+  esac
+}
+
+long=$(head -c 1000 /dev/zero | tr '\0' 'a')
+# "workbench-core:" is 15 characters, so the command keeps the rest of the cap.
+expect_len=$((SPEC_MAX - 15))
+check "the prompt path caps the spec" \
+  "$(cmd_of "/workbench-core:$long" | wc -c | tr -d ' ')" "$expect_len"
+check "the PreToolUse path caps it too — covering one path leaves the other open" \
+  "$(skill_cmd_of "workbench-core:$long" | wc -c | tr -d ' ')" "$expect_len"
+
+# Capping is a speed change, never an outcome change. An over-long spec has to
+# reach the same verdict it reached unbounded, only sooner. It does, in both
+# directions: the plugin half is untouched whenever the colon falls inside the
+# cap, and where no colon falls inside it, the truncation is SPEC_MAX
+# characters long — longer than any registry key, so the lookup misses exactly
+# as the full string did.
+check "an over-long spec still names the same plugin" \
+  "$(guard "$(promptp "/workbench-core:$long")" \
+     | jq -r '.hookSpecificOutput.additionalContext | capture("GUARD - (?<p>[^.]+)\\.").p')" \
+  "workbench-core"
+check "an over-long spec with no colon stays silent, as it did unbounded" \
+  "$(cmd_of "/workbench-$long")" "SILENT"
+check "a spec at the cap is untouched" \
+  "$(cmd_of "/workbench-core:$(head -c $((SPEC_MAX - 15)) /dev/zero | tr '\0' 'b')" | wc -c | tr -d ' ')" \
+  "$expect_len"
+
+# --- the defect the cap and the colon guard exist for --------------------
+# Both entry points run before the turn is answered, so this time is spent on
+# the user's own turn. Unbounded at 256 KB, measured end to end through the
+# guard: a prompt ending in a Unicode space took 80.8s, one ending in a colon
+# 66.2s, and one with no whitespace at all 11.3s. LC_ALL is forced because the
+# C locale
+# selects the single-byte matcher and hides the defect entirely; where
+# en_US.UTF-8 is absent bash falls back to C, and this stops discriminating
+# rather than failing. The exact checks above are the real pins — this band is
+# deliberately wide, because the gap it watches is three orders of magnitude.
+_saved_lc=${LC_ALL-}
+export LC_ALL=en_US.UTF-8
+huge=$(head -c 262144 /dev/zero | tr '\0' 'a')
+START=$(date +%s)
+# Position is what costs, not presence. A Unicode space near the front stops
+# the slow stage almost at once; at the END of the token it walks all 256 KB
+# to reach it — 11.3s. A colon at the end costs the same way, 55.3s, and the
+# case guard cannot help there because the colon really is present. Each shape
+# below is therefore load-bearing for a different guard. Silence is the correct
+# answer to all of them, and it is reached only THROUGH the split, so a fast
+# pass cannot mean the work was skipped.
+trailing_nbsp=$(cmd_of "/workbench-${huge}$(printf '\xc2\xa0')arg")
+trailing_colon=$(cmd_of "/workbench-${huge}:x")
+trailing_colon_skill=$(skill_cmd_of "workbench-${huge}:x")
+# The same size behind a spec that resolves, so speed alone cannot pass this.
+live=$(cmd_of "/workbench-core:setup ${huge}")
+ELAPSED=$(( $(date +%s) - START ))
+check "a 256 KB prompt ending in a Unicode space stays silent" "$trailing_nbsp" "SILENT"
+check "a 256 KB prompt ending in a colon stays silent" "$trailing_colon" "SILENT"
+check "a 256 KB Skill spec stays silent on the other entry point" "$trailing_colon_skill" "SILENT"
+check "a 256 KB prompt behind a real spec still resolves its command" "$live" "setup"
+if [ "$ELAPSED" -le 10 ]; then
+  ok "four 256 KB payloads handled in ${ELAPSED}s (each cost 11-55s unbounded)"
+else
+  bad "four 256 KB payloads handled in ${ELAPSED}s" "quadratic matching is back"
+fi
+if [ -n "$_saved_lc" ]; then export LC_ALL="$_saved_lc"; else unset LC_ALL; fi
+
 echo
 echo "workbench-stale-bundle-guard.sh — SessionStart, the nothing-invoked path"
 

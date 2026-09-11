@@ -443,6 +443,13 @@ echo "issue 2 — only the supervisor writes claimer.pid (no late-kicker clobber
 # the dead pid, declares the lock stale, and double-spawns. Only the supervisor,
 # the lock's true owner, stamps it with its own $$. Guard structurally (code
 # lines only, not the explanatory comments).
+#
+# [[:space:]] is safe here and stays. The class is a property of the C library —
+# glibc excludes U+00A0, U+202F and U+2007 in every locale, Darwin includes them
+# — so hooks that judge untrusted input spell the set out in ASCII instead. This
+# one reads a shell script from this repo, which bash -n and shellcheck both
+# parse in CI. Its indentation cannot be an exotic space and still be the file
+# that ships, so the divergence has no input to act on.
 if grep -vE '^[[:space:]]*#' "$UP" | grep -qF '> "$CLAIMER_PID_FILE"'; then
   no "kicker still writes claimer.pid (late-write clobber risk)"
 else

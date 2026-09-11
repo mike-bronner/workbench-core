@@ -99,11 +99,22 @@ gate() {
     WORKBENCH_ORCHESTRATOR_STATE_DIR="$STATE_DIR" bash "$GATE"
 }
 
+# Every [[:space:]] left in THIS file is safe, and each is left alone on the same
+# ground: none of them reads a prompt. The class is a property of the C library —
+# glibc excludes U+00A0, U+202F and U+2007 in every locale, Darwin includes them
+# — which is why the gate and lib/brief-template.sh now spell their whitespace
+# out in ASCII, and why the block further down tests exactly that. Here the
+# subjects are the gate's own jq output (below) and files from this repo, README
+# and SKILL.md included. Neither can carry an exotic space at the position tested
+# without the repo itself changing, so there is no untrusted input to diverge on.
 verdict_of() {
   if printf '%s' "$1" | grep -q '"permissionDecision":"deny"'; then
     printf 'deny'
   elif printf '%s' "$1" | grep -q '"additionalContext"'; then
     printf 'hint'
+  # The bash-glob form that 0.27.0 replaced in the shipping hooks, kept here on
+  # purpose: this one is quadratic over its subject and does not care, because
+  # the subject is a short jq object or the empty string, never a 12 KB prompt.
   elif [ -z "${1//[[:space:]]/}" ]; then
     printf 'silent'
   else
@@ -213,6 +224,64 @@ run_prompt "lower-case headers still pass" "$(printf '%s' "$GOOD_BRIEF" | tr 'A-
 run_prompt "'Done  when:' with extra spacing passes" \
   "${GOOD_BRIEF/Done when:/Done   when:}" silent
 run_prompt "indented headers pass" "$(printf '%s\n' "$GOOD_BRIEF" | sed 's/^/   /')" silent
+run_prompt "tab-separated 'Done<TAB>when:' passes" \
+  "${GOOD_BRIEF/Done when:/Done$(printf '\t')when:}" silent
+
+echo "an exotic space is content, never whitespace — the same verdict on every libc:"
+# Whether a character is [[:space:]] depends on the C library, not only on the
+# locale: glibc excludes U+00A0, U+202F and U+2007 in every locale because they
+# are non-breaking, and Darwin includes all three. The gate and
+# lib/brief-template.sh therefore spell their whitespace out as ASCII literals.
+# Before that, each case below took ONE verdict on macOS and the OPPOSITE on
+# Linux — the same brief refused on one machine and dispatched on the other.
+#
+# Two characters, chosen so that neither platform can pass this block vacuously:
+#
+#   U+00A0 NBSP   space on Darwin only. These cases were `silent` on macOS
+#                 before the fix, and already `deny` on glibc.
+#   U+3000 IDSP   space to BOTH in a UTF-8 locale. These cases were `silent`
+#                 on both before the fix, so they are what reddens on the CI
+#                 runner if the ASCII set is ever reverted.
+#
+# Each of the three constructs that read whitespace is covered, because fixing
+# one and leaving the others is exactly how this defect survived the first pass.
+NBSP=$(printf '\302\240')
+IDSP=$(printf '\343\200\200')
+
+# 1. the slot patterns in lib/brief-template.sh. "Done<exotic>when:" must NOT
+#    satisfy the last slot, or a brief missing it dispatches anyway.
+run_prompt "'Done<NBSP>when:' does not satisfy the slot" \
+  "${GOOD_BRIEF/Done when:/Done${NBSP}when:}" deny
+run_prompt "'Done<IDSP>when:' does not satisfy the slot" \
+  "${GOOD_BRIEF/Done when:/Done${IDSP}when:}" deny
+run_prompt "a slot header indented with NBSP is still a slot" \
+  "$(printf '%s\n' "$GOOD_BRIEF" | sed "s/^/${NBSP}/")" deny
+
+# 2. the blankness check. A prompt built only from exotic spaces is content
+#    with no slots in it, so it is judged and refused — never waved through as
+#    empty. Fail-closed is the direction a gate has to miss in.
+run_prompt "a prompt of nothing but NBSPs is judged, not skipped" "${NBSP}${NBSP}${NBSP}" deny
+run_prompt "a prompt of nothing but ideographic spaces is judged" "${IDSP}${IDSP}" deny
+# The ASCII half of the same check must keep its old behaviour: genuinely blank
+# stays silent. This is what a careless widening of the set would break.
+run_prompt "an all-ASCII-whitespace prompt is still skipped" "$(printf '  \t\n  ')" silent
+
+# 3. the machine-shape exemptions. An exotic space must not let a prompt wear
+#    the pipeline shape and dispatch with no brief at all.
+run_prompt "'Item ID:<NBSP>12' is not the exempt shape" "Item ID:${NBSP}12" deny
+run_prompt "'Item ID:<IDSP>12' is not the exempt shape" "Item ID:${IDSP}12" deny
+# Repo sweep: needs its exotic space in TRAILING position, after an ASCII one.
+# "Repo sweep:<NBSP>owner/repo" looks like the obvious fixture and proves
+# nothing: NBSP there is admitted by the owner's own [^<ws>/]+ class as an
+# ordinary character, so it matched on BOTH libcs before the fix and still
+# matches now. Measured, not assumed. Only a trailing exotic space has to be
+# consumed AS whitespace for the anchor to reach the end of the line, and the
+# preceding ASCII space is what stops the repo token absorbing it instead.
+run_prompt "trailing NBSP breaks the exempt shape" "Repo sweep: owner/repo ${NBSP}" deny
+run_prompt "trailing IDSP breaks the exempt shape" "Repo sweep: owner/repo ${IDSP}" deny
+# That the REAL shapes still pass — so the tightening did not cost the pipeline
+# its dispatch — is pinned by the "(g) the fixed machine-built dispatch shapes
+# pass" block below, not repeated here.
 
 echo "Workdir: may carry the branch or worktree the human settled on:"
 # workbench-dev-team asks the human before it creates a branch or a worktree,
@@ -359,8 +428,17 @@ run_prompt "Repo sweep: owner/repo"             "Repo sweep: mike-bronner/phpcs-
 run_prompt "the retired summary-writer sentinel is NOT exempt" "Process pending session summary.
 session_id: d640e864-4bed-4e3c-8b35-85d9e4c79588
 marker_path: /Users/mike/.claude-memory-cache/pending-summaries/d640e864.json" deny
-assert_missing "the sentinel is gone from the gate" "$(cat "$GATE")" \
-  "grep -qE '^[[:space:]]*Process pending"
+# Searched over the gate's CODE lines, for the sentinel phrase itself. The
+# needle used to be the whole check, spelled `grep -qE '^[[:space:]]*Process
+# pending`, and that made this assertion a hostage to how the gate writes
+# whitespace: the move to an ASCII set turned the same needle into a string the
+# gate could never contain, so it passed for the wrong reason and would have
+# missed a re-introduced sentinel entirely. The phrase cannot go stale that way.
+# Comments are stripped because the gate's own (g) block names the retired
+# sentinel to explain why it is gone — an unstripped search would match that
+# prose and fail on a correct file.
+assert_missing "the sentinel is gone from the gate" \
+  "$(grep -vE '^[[:space:]]*#' "$GATE")" "Process pending"
 # The exemption is anchored at BOTH ends for the two pipeline shapes, so it
 # cannot be used as a prefix to smuggle a free-form brief past the gate.
 #

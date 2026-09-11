@@ -219,6 +219,13 @@ echo "bearer token stays OFF curl argv (ps / /proc/<pid>/cmdline leak guard):"
 # so the leak cannot silently return.
 # Check code only, not the explanatory comments (which name the -H form to warn
 # against it).
+#
+# [[:space:]] is safe here and stays. The class is a property of the C library —
+# glibc excludes U+00A0, U+202F and U+2007 in every locale, Darwin includes them
+# — so hooks that judge untrusted input spell the set out in ASCII instead. Both
+# patterns below read a shell script from this repo, which bash -n and shellcheck
+# parse in CI. Neither its indentation nor the space after a curl -H flag can be
+# an exotic space in a file that ships, so there is no input to diverge on.
 if grep -vE '^[[:space:]]*#' "$PROBE_LIB" | grep -qE '[-]H[[:space:]].*Authorization: Bearer'; then
   FAIL=$((FAIL + 1)); echo "  ❌ token on -H argv — readable via ps"
 else

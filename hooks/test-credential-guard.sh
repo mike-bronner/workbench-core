@@ -54,7 +54,46 @@ assert_contains() {
 bash_json() { jq -nc --arg c "$1" '{tool_name: "Bash", tool_input: {command: $c}}'; }
 file_json() { jq -nc --arg t "$1" --arg p "$2" '{tool_name: $t, tool_input: {file_path: $p}}'; }
 
+# The guard's BEFORE/AFTER boundary classes are the only [[:space:]] left in a
+# hook that judges untrusted input. Every sibling spells the set out in ASCII,
+# because grep and bash both read that class from the C library: glibc excludes
+# U+00A0, U+202F and U+2007 in every locale, Darwin includes them, and one input
+# then gets two verdicts on two platforms.
+#
+# These two survive because they never reach a C library — jq evaluates them
+# with the Oniguruma engine vendored in its own binary. The two cases below pin
+# that, at both levels, because a test of the engine is not a test of the call
+# site that rests on it:
+#
+#   1. the engine answers the same regardless of locale, and
+#   2. the guard itself still blocks when the boundary is an exotic space.
+#
+# CI runs this on glibc, which is what turns "should not diverge" into a
+# measured fact. If a future jq changes its tables, case 1 goes red here rather
+# than the guard quietly growing a platform-dependent hole.
+echo "jq's [[:space:]] is locale- and libc-independent (the boundary classes rest on it):"
+check_jq_space() {
+  local desc="$1" cp="$2" want="$3" got
+  got=$(LC_ALL=C jq -rn --argjson cp "$cp" \
+    '("X" + ([$cp] | implode) + "Y") | test("X[[:space:]]Y")' 2>/dev/null)
+  if [ "$got" = "$want" ]; then
+    PASS=$((PASS + 1)); echo "  ✅ $desc"
+  else
+    FAIL=$((FAIL + 1)); echo "  ❌ $desc — expected $want, got ${got:-<none>}"
+  fi
+}
+check_jq_space "U+00A0 NBSP is space to jq under LC_ALL=C"   160  true
+check_jq_space "U+202F NNBSP is space to jq under LC_ALL=C"  8239 true
+check_jq_space "U+2007 FIGURE SPACE is space under LC_ALL=C" 8199 true
+check_jq_space "U+3000 IDEOGRAPHIC SPACE is space too"       12288 true
+check_jq_space "a letter is still not space"                 65   false
+
 echo "blocks Bash commands that read a credential directory:"
+# Case 2 of the pair above: the boundary class doing its job at the call site.
+# An NBSP before the path is what BEFORE has to accept for this to block, so
+# this reddens if the class ever stops matching one.
+check 2 "NBSP boundary before a key path" \
+  "$(bash_json "$(printf 'cat foo\302\240~/.ssh/id_rsa')")"
 check 2 "cat a key via ~"          "$(bash_json 'cat ~/.ssh/id_rsa')"
 check 2 "cat a key via abs path"   "$(bash_json "cat $HOME/.ssh/id_rsa")"
 check 2 "\$HOME expansion"         "$(bash_json 'cat "$HOME/.ssh/id_rsa"')"

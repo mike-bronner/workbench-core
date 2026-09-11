@@ -74,6 +74,25 @@ HOME_RE=$(printf '%s' "$HOME" | sed 's/[][\.^$*+?(){}|\\]/\\&/g')
 # A protected directory reached via ~, $HOME, ${HOME}, or the literal home
 # path. The leading and trailing groups keep `Developer/x/.ssh` — an unrelated
 # tree that merely shares the name — from matching.
+#
+# [[:space:]] IS SAFE HERE, and is kept deliberately. Sibling hooks spell the
+# class out as ASCII literals instead, because in grep and in bash the class is
+# a property of the C library: glibc excludes U+00A0, U+202F and U+2007 in every
+# locale and Darwin includes them, so the same input gets two verdicts on two
+# platforms. These two patterns never reach a C library. They are handed to jq
+# (see the RESULT filter below), and jq evaluates them with the Oniguruma engine
+# vendored into its own binary, against Unicode tables it ships. The answer is
+# therefore fixed by the jq build rather than by the host's libc or locale.
+#
+# Measured on jq 1.7.1: U+00A0, U+202F, U+2007 and U+3000 all match [[:space:]]
+# here, and they still match under LC_ALL=C — the locale-independence that no
+# grep or bash use of the class has. Treating an exotic space as a token
+# boundary is also the answer this guard wants: it only widens what counts as
+# the edge of a path, so `foo<NBSP>~/.ssh` is caught rather than missed.
+#
+# The cross-platform half of that claim is pinned by a case in
+# hooks/test-credential-guard.sh, which CI answers on glibc. If a future jq ever
+# disagrees, that test goes red rather than this comment going quietly stale.
 BEFORE='(^|[[:space:]"'\''=:(])'
 AFTER='(/|$|[[:space:]"'\'';)])'
 DIR_RE="${BEFORE}(~|\\\$HOME|\\\$\\{HOME\\}|${HOME_RE})/\\.(ssh|aws|gnupg)${AFTER}"

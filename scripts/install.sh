@@ -58,6 +58,26 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 # Read the `name:` value from an output-style markdown's YAML frontmatter.
+#
+# [[:space:]] IS SAFE HERE, and is left alone deliberately. Sibling hooks spell
+# the class out in ASCII, because in grep and bash it is a property of the C
+# library rather than only the locale — glibc excludes U+00A0, U+202F and U+2007
+# in every locale, Darwin includes them — and awk is a third engine with the same
+# exposure (BSD awk here, mawk or gawk on Linux). Two things keep that
+# unreachable, and either alone would be enough:
+#
+#   The input is not untrusted. This only ever reads an output-style.md shipped
+#   inside this repo, from assets/personas/*/ — never a path a user supplies.
+#
+#   The character under test is the YAML `key: value` separator, which must be
+#   an ASCII space for the file to be frontmatter at all. Claude Code's own
+#   parser and the frontmatter job in .github/workflows/validate.yml both read
+#   these files; an exotic space there breaks the style before this line is
+#   reached, and the divergence never gets a turn.
+#
+# The second reason is the durable one: it holds for any file this ever reads,
+# not just today's. No test pins it, because a test could only restate the YAML
+# spec that every other consumer already enforces.
 style_name() {
   awk '/^name:[[:space:]]/ { sub(/^name:[[:space:]]*/, ""); gsub(/"/, ""); print; exit }' "$1"
 }

@@ -128,16 +128,50 @@ esac
 PROMPT=$(printf '%s' "$PAYLOAD" | jq -r '
   .tool_input.prompt // "" | if type == "string" then . else "" end' 2>/dev/null) || exit 0
 
+# Every whitespace class in this file is built from WS, and none is [[:space:]].
+#
+# The five ASCII whitespace characters that can occur inside a line. Newline is
+# absent because grep matches within a line, so it can never appear in the
+# subject.
+#
+# [[:space:]] is not usable here, for the reason measured on the bash side in
+# hooks/workbench-stale-bundle-guard.sh: whether a character is "space" depends
+# on the C library and not only on the locale. glibc excludes U+00A0, U+202F and
+# U+2007 in every locale including en_US.UTF-8, because they are non-breaking.
+# Darwin includes all three. grep turned out to be a second instance of that,
+# not an exception — measured end to end through this gate on Darwin, with the
+# identical input denied on glibc:
+#
+#   a prompt of nothing but NBSPs      counted BLANK, so the gate waved it
+#                                      through; on glibc it is content with no
+#                                      slots in it, and is DENIED
+#   "Item ID:<NBSP>12"                 satisfied the exemption below and
+#                                      dispatched with no brief; on glibc the
+#                                      shape does not match, and it is DENIED
+#   "Done<NBSP>when:" in a brief       satisfied the last slot; on glibc the
+#                                      slot reads missing, and it is DENIED
+#
+# Listing the set makes all three the same on every libc, and errs toward
+# JUDGING the prompt: an exotic space is now ordinary content, so a prompt built
+# from it is denied for the slots it lacks rather than exempted or waved past as
+# blank. That is the direction a gate has to fail in.
+#
+# \t is a literal tab via $'...', never the two characters \t inside a bracket.
+# POSIX gives a backslash no meaning in a bracket expression, so "[\t]" is the
+# set {backslash, t} to a conforming grep — the same portability trap one layer
+# down. bash resolves this before grep sees the pattern.
+WS=$' \t\r\v\f'
+
 # (f) No prompt to judge. Fail open rather than deny on a payload shape this
 #     gate does not understand.
 #
-#     grep, not "${PROMPT//[[:space:]]/}". Bash pattern-substitution over a
+#     grep, not "${PROMPT//[$WS]/}". Bash pattern-substitution over a
 #     multi-kilobyte string is quadratic: measured on real briefs, 5.7 KB took
 #     10s, 6.9 KB took 18s, and 8.0 KB took 29s. A brief's measured median is
 #     4,788 characters, so the expansion form stalled essentially every dispatch
 #     for tens of seconds. grep streams and stays flat. The same rule is why the
 #     fixed-shape check below anchors with grep instead of trimming in bash.
-printf '%s' "$PROMPT" | grep -q '[^[:space:]]' || exit 0
+printf '%s' "$PROMPT" | grep -q "[^$WS]" || exit 0
 
 # (g) Fixed machine-built dispatch shapes. These are assembled by a script from
 #     a board id or a repo slug, not composed by an orchestrator, so there is no
@@ -163,10 +197,10 @@ printf '%s' "$PROMPT" | grep -q '[^[:space:]]' || exit 0
 #     real five-slot brief (skills/process-pending-summaries/SKILL.md) and
 #     passes on its own merits, so the sentinel is gone rather than merely
 #     unused.
-NONBLANK=$(printf '%s' "$PROMPT" | grep -c '[^[:space:]]')
+NONBLANK=$(printf '%s' "$PROMPT" | grep -c "[^$WS]")
 if [ "${NONBLANK:-0}" -eq 1 ]; then
-  printf '%s' "$PROMPT" | grep -qE '^[[:space:]]*Item ID:[[:space:]]*[0-9]+[[:space:]]*$' && exit 0
-  printf '%s' "$PROMPT" | grep -qE '^[[:space:]]*Repo sweep:[[:space:]]*[^[:space:]/]+/[^[:space:]/]+[[:space:]]*$' && exit 0
+  printf '%s' "$PROMPT" | grep -qE "^[$WS]*Item ID:[$WS]*[0-9]+[$WS]*$" && exit 0
+  printf '%s' "$PROMPT" | grep -qE "^[$WS]*Repo sweep:[$WS]*[^$WS/]+/[^$WS/]+[$WS]*$" && exit 0
 fi
 
 # The one definition of the brief, sourced only now: every branch above exits
@@ -267,14 +301,14 @@ fi
 # note nobody would read twice.
 MARKERS=""
 add_marker() { MARKERS="${MARKERS:+$MARKERS, }$1"; }
-printf '%s' "$PROMPT" | grep -qE '^[[:space:]]*```' && add_marker "a fenced code block"
+printf '%s' "$PROMPT" | grep -qE "^[$WS]*"'```' && add_marker "a fenced code block"
 # The command list deliberately omits `go`, `make`, `sh`, and `touch`. Each is
 # an ordinary English word that opens a sentence, and "make sure the suite is
 # green" or "touch only these files" are both real brief lines. A hint that
 # fires on those gets ignored, and an ignored hint is worse than none.
-printf '%s' "$PROMPT" | grep -qE '^[[:space:]]*(\$[[:space:]]+)?(git|gh|npm|npx|yarn|pnpm|composer|php|python3?|pytest|cargo|rustc|bash|zsh|sed|awk|grep|rg|jq|cp|mv|rm|mkdir|chmod|ln|curl|docker)[[:space:]]+[^[:space:]]' \
+printf '%s' "$PROMPT" | grep -qE "^[$WS]*(\\\$[$WS]+)?(git|gh|npm|npx|yarn|pnpm|composer|php|python3?|pytest|cargo|rustc|bash|zsh|sed|awk|grep|rg|jq|cp|mv|rm|mkdir|chmod|ln|curl|docker)[$WS]+[^$WS]" \
   && add_marker "a shell command on its own line"
-STEPS=$(printf '%s' "$PROMPT" | grep -cE '^[[:space:]]{0,3}[0-9]+[.)][[:space:]]+[^[:space:]]')
+STEPS=$(printf '%s' "$PROMPT" | grep -cE "^[$WS]{0,3}[0-9]+[.)][$WS]+[^$WS]")
 [ "${STEPS:-0}" -ge 3 ] && add_marker "$STEPS numbered steps"
 
 [ -n "$MARKERS" ] || exit 0

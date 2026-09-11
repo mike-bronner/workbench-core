@@ -48,7 +48,35 @@ assert_blocked "tee a .md"                       'echo x | tee out.md'          
 assert_blocked "cp to a .md destination"         'cp a.txt b.summary.md'                                  "1"
 assert_blocked "sed -i on a .md"                 'sed -i "s/a/b/" notes.md'                               "1"
 
+echo "an exotic space in a filename does not hide the write:"
+# The guard spells its whitespace out as ASCII literals rather than using
+# [[:space:]], because that class is a property of the C library and not only of
+# the locale: glibc excludes U+00A0, U+202F and U+2007 in every locale, and
+# Darwin includes them. That reached the FILENAME class here, and it was a hole
+# rather than a cosmetic difference. Measured before the fix:
+#
+#   `> foo<NBSP>.md`   allowed on Darwin, blocked on glibc
+#
+# Bash redirects that to a file literally named foo<NBSP>.md, so it is a real
+# markdown write that macOS waved through — NBSP counted as space there, so
+# [^[:space:]|&;<>"]* stopped at "foo" and never reached the .md.
+#
+# U+3000 covers the other direction: both libcs call it space in a UTF-8 locale,
+# so that case was missed on BOTH before the fix, and it is what reddens on the
+# Linux runner if the ASCII set is reverted.
+NBSP=$(printf '\302\240')
+IDSP=$(printf '\343\200\200')
+assert_blocked "redirect to a .md named with an NBSP" "> foo${NBSP}.md"        "1"
+assert_blocked "redirect to a .md named with an IDSP" "> foo${IDSP}.md"        "1"
+assert_blocked "append to a .md named with an NBSP"   "echo hi >> a${NBSP}b.md" "1"
+
 echo "in summary-writer context — non-.md-write commands are allowed:"
+# The mirror of the cases above, and the reason the fix is an ASCII set rather
+# than a wider class. Bash does not split words on an exotic space, so
+# `tee<NBSP>out.md` is one unknown command name and writes nothing. Darwin
+# blocked it before the fix purely because NBSP satisfied the preceder class.
+assert_allowed "NBSP-joined 'tee' is not a tee invocation" "tee${NBSP}out.md"  "1"
+assert_allowed "NBSP-joined 'sed -i' is not a sed call"    "sed${NBSP}-i x.md" "1"
 assert_allowed "delete the .json marker"         'rm /cache/pending-summaries/abc.json'                   "1"
 assert_allowed "read a .md (redirect to null)"   'cat sessions/x.md > /dev/null'                          "1"
 assert_allowed "grep a .md"                      'grep foo sessions/x.md'                                 "1"

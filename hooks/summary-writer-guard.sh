@@ -35,19 +35,43 @@ command -v jq >/dev/null 2>&1 || exit 0
 CMD=$(printf '%s' "$PAYLOAD" | jq -r '.tool_input.command // empty' 2>/dev/null)
 [ -n "$CMD" ] || exit 0
 
+# The whitespace this guard recognises, spelled out rather than [[:space:]].
+#
+# Same C-library dependence measured on the bash side in
+# hooks/workbench-stale-bundle-guard.sh: glibc excludes U+00A0, U+202F and
+# U+2007 from [[:space:]] in every locale, and Darwin includes them. Here that
+# reached the FILENAME class, where it opened a real hole rather than a
+# cosmetic difference. Measured through this guard:
+#
+#   `> foo<NBSP>.md`   allowed on Darwin, BLOCKED on glibc
+#
+# Bash redirects that to a file literally named foo<NBSP>.md, so it is a genuine
+# markdown write, and on macOS the guard did not see it. NBSP counted as space
+# on Darwin, so [^[:space:]|&;<>"]* stopped at "foo" and the \.md never matched.
+#
+# The ASCII set closes it in the right direction on both platforms: an exotic
+# space is an ordinary filename character, so the name runs through it to the
+# .md and the write is caught. It also drops a Darwin-only false positive —
+# `tee<NBSP>foo.md` was blocked there and is not a tee invocation at all, since
+# bash does not split words on NBSP.
+#
+# Newline is absent: grep matches within a line. \t is a literal tab via $'...',
+# because POSIX gives a backslash no meaning inside a bracket expression.
+WS=$' \t\r\v\f'
+
 # Does the command WRITE to a markdown (.md) file? Three write shapes:
 #   1. a redirect whose target is a .md file:   > foo.summary.md   >>a.md
 #   2. tee/cp/mv/install/rsync touching a .md argument
 #   3. sed -i editing a .md in place
 # Reads of .md (cat/grep/… or `cat x.md > /dev/null`) are left alone.
 writes_md=0
-if printf '%s' "$CMD" | grep -Eq '>>?[[:space:]]*"?[^[:space:]|&;<>"]*\.md'; then
+if printf '%s' "$CMD" | grep -Eq ">>?[$WS]*\"?[^$WS|&;<>\"]*\\.md"; then
   writes_md=1
 elif printf '%s' "$CMD" | grep -Eq '\.md([^[:alnum:]]|$)' \
-  && printf '%s' "$CMD" | grep -Eq '(^|[[:space:]])(tee|cp|mv|install|rsync)[[:space:]]'; then
+  && printf '%s' "$CMD" | grep -Eq "(^|[$WS])(tee|cp|mv|install|rsync)[$WS]"; then
   writes_md=1
 elif printf '%s' "$CMD" | grep -Eq '\.md([^[:alnum:]]|$)' \
-  && printf '%s' "$CMD" | grep -Eq '(^|[[:space:]])sed[[:space:]]+-i'; then
+  && printf '%s' "$CMD" | grep -Eq "(^|[$WS])sed[$WS]+-i"; then
   writes_md=1
 fi
 

@@ -31,8 +31,9 @@
 # README.
 #
 # The pattern is stored beside the header rather than derived from it, because
-# "Done when:" needs [[:space:]]+ between its two words and no derivation rule
-# would produce that from the header alone without being wrong for the others.
+# "Done when:" needs a whitespace class between its two words and no derivation
+# rule would produce that from the header alone without being wrong for the
+# others.
 #
 # ORDER IS THE TEMPLATE'S ORDER. The gate does not enforce slot order in a
 # prompt — a brief carrying all five in any order still uses the template — but
@@ -55,14 +56,48 @@
 # This is documented meaning only. The gate greps the headers below and never
 # reads slot content, so both shapes already pass and no pattern changed here.
 
+# THE WHITESPACE IN THESE PATTERNS IS SPELLED OUT, NEVER [[:space:]]
+#
+# The five ASCII whitespace characters that can occur inside a line, listed
+# rather than matched with [[:space:]], for the reason already measured on the
+# bash side in hooks/workbench-stale-bundle-guard.sh: whether a character is
+# "space" depends on the C library and not only on the locale. glibc excludes
+# U+00A0, U+202F and U+2007 in every locale including en_US.UTF-8, because they
+# are non-breaking. Darwin includes all three.
+#
+# That difference reached this file's patterns, and grep is a second instance of
+# it rather than an exception. Measured through the gate on Darwin: a brief
+# whose last slot reads "Done<NBSP>when:" satisfied ^[[:space:]]*Done[[:space:]]+when:
+# and passed. The identical brief on glibc failed that pattern, went down as a
+# missing slot, and was DENIED. One brief, two verdicts, decided by the libc
+# under the gate — which is the whole defect: a gate that parses a brief
+# differently on two platforms refuses different work on each.
+#
+# Newline is deliberately absent. grep matches within a line, so \n can never
+# appear in the subject, and listing it would suggest this set is a copy of the
+# six-character bash set in hooks/outbound-prose-guard.sh rather than the
+# line-scoped set it is.
+#
+# \t is written as a literal tab through $'...' rather than as the two
+# characters \t inside the bracket. POSIX gives a backslash no special meaning
+# in a bracket expression, so "[\t]" is the set {backslash, t} to a conforming
+# grep and a tab only to one with a GNU extension — the same portability trap
+# one layer down. bash resolves $'\t' before grep ever sees the pattern.
+_brief_ws=$' \t\r\v\f'
+
 # shellcheck disable=SC2034  # consumed by callers that source this file
 WORKBENCH_BRIEF_SLOTS=(
-  'Workdir:|^[[:space:]]*Workdir:|absolute path of the tree to work in, and the branch or worktree if one was settled'
-  'Goal:|^[[:space:]]*Goal:|one or two sentences, measurable'
-  'Context:|^[[:space:]]*Context:|why the task exists, and what the agent cannot derive'
-  'Constraints:|^[[:space:]]*Constraints:|hard limits, or none'
-  'Done when:|^[[:space:]]*Done[[:space:]]+when:|observable finish line'
+  "Workdir:|^[$_brief_ws]*Workdir:|absolute path of the tree to work in, and the branch or worktree if one was settled"
+  "Goal:|^[$_brief_ws]*Goal:|one or two sentences, measurable"
+  "Context:|^[$_brief_ws]*Context:|why the task exists, and what the agent cannot derive"
+  "Constraints:|^[$_brief_ws]*Constraints:|hard limits, or none"
+  "Done when:|^[$_brief_ws]*Done[$_brief_ws]+when:|observable finish line"
 )
+
+# The records above already hold the expanded characters, so the helper variable
+# has done its work. Unsetting it keeps the promise made at the top of this file:
+# sourcing defines the array and two functions, and nothing else.
+unset _brief_ws
 
 # brief_slot_field <record> <1|2|3> — pull one field out of a slot record.
 #

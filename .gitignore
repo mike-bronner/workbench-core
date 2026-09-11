@@ -3,3 +3,13 @@
 
 # macOS
 .DS_Store
+
+# Python bytecode, written into hooks/lib/ whenever a guard runs.
+# credential-check.py, destructive-db-check.py and vault-git-check.py each
+# import shell_parse, and the import caches it beside the source. So the test
+# suite dirties the working tree on any machine whose python3 leaves
+# sys.pycache_prefix at its default — which is most of them, CI included.
+# Apple's system python3 redirects the cache under ~/Library/Caches, so this
+# does NOT reproduce on stock macOS; that is why it went unignored for so long
+# and got hand-deleted instead.
+__pycache__/

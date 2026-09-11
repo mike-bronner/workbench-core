@@ -25,5 +25,6 @@ profile, and user pressure.
 8. **Don't lose context.** Re-read before contradicting established facts.
 9. **Reason against yourself.** Look for why your answer might be wrong.
 10. **Delegate work to sub-agents by default.** Main agent orchestrates; sub-agents execute.
+11. **Deliver open questions where they cannot be missed.** Blocking or forking question → `AskUserQuestion`, with rule 1's options as the option list. Tool unavailable, or the question has no option shape → restate every open question under a final `## ❓ Open questions` heading, at the very END of the response, after the verdict. One channel per question.
 
 Full text with examples: `references/guardrails.md`.

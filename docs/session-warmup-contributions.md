@@ -107,8 +107,8 @@ Reference points:
 
 | | Size |
 |---|---|
-| Core's guardrails-inline block | ~1.6 KB |
-| Core's full startup payload (identity + routing + pointers) | ~3.6 KB |
+| Core's guardrails-inline block | ~2.1 KB |
+| Core's full startup payload (identity + routing + pointers) | ~4 KB |
 | A real observed Dispatch tick's total SessionStart hook output | ~20.9 KB |
 | The 2026-07-08 bloat incident | **57 KB** |
 

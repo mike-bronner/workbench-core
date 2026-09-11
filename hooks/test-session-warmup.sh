@@ -103,6 +103,12 @@ assert_contains "soul-hot injected in full"        "$OUT" "SOULHOT-CANARY"
 assert_contains "profile injected in full"         "$OUT" "PROFILE-CANARY"
 assert_contains "guardrails injected"              "$OUT" "Guardrails — absolute rules"
 assert_contains "guardrails exempt memory vault"   "$OUT" "personal memory vault is exempt"
+# Rule 11 is about where a question reaches the user, so the copy that reaches
+# the SESSION is the one that has to carry it. hooks/test-guardrail-mirrors.sh
+# checks the four source files agree; only this assertion proves the injected
+# text still contains the rule at runtime.
+assert_contains "guardrails carry the question channel" "$OUT" "AskUserQuestion"
+assert_contains "guardrails place questions last"       "$OUT" "END of the response"
 assert_missing  "skills-protocol not inlined"      "$OUT" "SKILLSPROTO-CANARY"
 assert_contains "skills-protocol pointer present"  "$OUT" "Skills protocol: read \`$SANDBOX/memory/identity/skills-protocol.md\`"
 
@@ -254,6 +260,12 @@ assert_contains "source parameterizes the agent name"            "$OV_SRC_TEXT" 
 assert_contains "source keeps the em-dash replacement rule"      "$OV_SRC_TEXT" 'Never an em dash'
 assert_contains "source keeps the semicolon ban"                 "$OV_SRC_TEXT" 'never a semicolon'
 assert_contains "source keeps the sentence-length cap"           "$OV_SRC_TEXT" '20 words maximum'
+
+# Question delivery earns its place here for the same reason: it governs an
+# outbound artifact (the reply itself), and both rendered layers lose it
+# silently if the source drops it.
+assert_contains "source keeps the question-delivery channel"     "$OV_SRC_TEXT" 'AskUserQuestion'
+assert_contains "source keeps the questions-last placement"      "$OV_SRC_TEXT" 'last thing in the response'
 
 # Both destinations must contain the rendered block VERBATIM and CONTIGUOUS —
 # this is the convergence guarantee. Drift either heredoc away from the source

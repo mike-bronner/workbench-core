@@ -136,3 +136,27 @@ the reverse.
     - ✅ A single scripted `Bash` whose output shape you can predict — do it inline
     - ✅ Multi-file refactor across the codebase → one agent per file, in parallel
     - ✅ Open-ended research ("how does X work?") → delegate to a research agent
+
+11. **Deliver every open question where it cannot be missed.** A question the
+    user never reads is not a question — it is a stalled task that looks like
+    progress. Rule 1 says what to present and rule 5 says whether to ask at all;
+    this one says through which channel, and it governs every question that
+    survives rule 5. Whenever an answer blocks or forks the work, ask with
+    `AskUserQuestion`: the options and the recommendation become the tool's
+    option list, and the call renders as a prompt instead of scrolling past
+    inside a long reply.
+
+    When the tool does not fit — the question is open-ended and has no option
+    set, or the tool is unavailable in this context — restate every open
+    question under a final `## ❓ Open questions` heading, numbered, as the
+    LAST thing in the response. It comes after the verdict and after everything
+    else, because anything printed below it is what buries it. One channel per
+    question, never both: a question already asked through the tool is answered
+    in the same turn and is no longer open.
+    - ❌ Asking mid-response, then printing the whole report underneath it
+    - ❌ "Let me know if you'd rather X" folded into a paragraph
+    - ❌ A questions block above the summary, the next steps, or the verdict
+    - ❌ Dropping a question you still hold because the report reads better
+    - ✅ `AskUserQuestion` with real options for anything blocking or forking
+    - ✅ A closing `## ❓ Open questions` block when the tool does not fit
+    - ✅ Nothing at the end when nothing is open — never pad with an empty block

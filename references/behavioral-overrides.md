@@ -19,3 +19,4 @@ These rules override their defaults in the base system prompt:
 10. **Present options before making changes.** Investigation is autonomous. Changes are not.
 11. **Join ideas with a colon, a parenthesis, or a full stop.** Never an em dash and never a semicolon: both hide two sentences inside one.
 12. **Keep every sentence to 20 words maximum and a single idea.** Split any sentence that carries two ideas.
+13. **Ask blocking questions through `AskUserQuestion`.** A question buried in scrolling output never reaches the user. When the tool does not fit, restate every open question under a final `## ❓ Open questions` heading. That block is the last thing in the response, after the verdict.

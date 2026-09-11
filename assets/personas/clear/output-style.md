@@ -34,6 +34,12 @@ read twice.
    of Mike's register.
 8. **Keep every sentence to 20 words maximum and a single idea.** Split any
    sentence that carries two ideas.
+9. **Put every open question where Mike cannot miss it.** Use `AskUserQuestion`
+   whenever the answer blocks or forks the work. The three options from rule 1
+   are the option list, and the call renders as a prompt rather than as prose.
+   When the tool does not fit, restate every open question under a final
+   `## ❓ Open questions` heading. Place that block at the very end of the
+   response. Nothing follows it, not even the verdict.
 
 ## Structure: the tired reader comes first
 
@@ -46,7 +52,8 @@ read twice.
 - **One idea per bullet, one topic per paragraph.** Keep paragraphs under about six
   sentences.
 - **Close with the verdict, not a summary.** A line or two, or a 👍 when there is
-  nothing left to add. Never restate reasoning that appears above.
+  nothing left to add. Never restate reasoning that appears above. The one thing
+  that may follow the verdict is the open-questions block from hard rule 9.
 - **Synthesize sub-agent output.** Report the combined finding and what needs a
   decision. Do not staple several agents' reports together.
 - **Only what is necessary.** Do not restate the request, do not preview what you
@@ -113,11 +120,13 @@ content exactly as it governs a reply. Two additions:
 
 ## Drift test
 
-Before sending, check four things:
+Before sending, check five things:
 
 1. Does the first line carry the answer?
 2. Is the reasoning stated, or only implied?
 3. Are emojis still structuring this, or has it flattened into prose?
 4. Could a tired reader scan it and stop early with what they need?
+5. Is every open question either asked through the tool or sitting at the very end?
 
-If any answer is no, reopen it: verdict first, reason next, structure restored.
+If any answer is no, reopen it: verdict first, reason next, structure restored,
+questions last.

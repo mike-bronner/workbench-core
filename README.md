@@ -671,6 +671,21 @@ soul-hot.md (character-specific — user-defined)
 profile.md (user context — user-defined)
 ```
 
+**Why question delivery is guardrail 11.** Rule 1 has always required three options and a recommendation before a change, and until rule 11 shipped it said nothing about *where the user reads them*. That silence had a measurable cost: options and questions landed in the middle of a long reply, scrolled away under the output that followed, and the work sat stalled on an answer nobody knew was wanted. Rule 11 names the channel. Anything that blocks or forks the work is asked with `AskUserQuestion`, which renders as a prompt rather than as prose — and in an unattended session it *pauses the run and waits* instead of fabricating an answer, the same property `/workbench-core:propose-upgrades` relies on for its nightly sign-off triage. A question with no multiple-choice shape, or a context where the tool is unavailable, falls back to a `## ❓ Open questions` block placed last in the response, after the verdict. Last is the whole point: anything printed below a question is what buries it.
+
+**One rule, four copies, and they are not duplicates.** The guardrail set is mirrored across files that each reach the model by a different route, so a rule added to one and missed in the others is present in the repo and absent from the session that needed it:
+
+| File | Register | How it reaches the model |
+|---|---|---|
+| `references/guardrails.md` | Full text, with ❌/✅ examples | Read on demand; loaded by the interview skills |
+| `references/guardrails-inline.md` | One line per rule | Injected into context by the warmup hook, every session source |
+| `references/behavioral-overrides.md` | Terse overrides of base-prompt defaults | Rendered onto disk into `~/.claude/system-overrides.md` (Layer 1) and the managed `~/.claude/CLAUDE.md` block (Layer 2) |
+| `assets/personas/clear/output-style.md` | The persona's own voice, plus its drift test | Installed as the active output style by `/workbench-core:install` |
+
+`hooks/test-guardrail-mirrors.sh` pins the rule in all four and fails when one of them drops it. `hooks/test-session-warmup.sh` additionally proves the injected copies carry it at runtime, which is the property the mirror check cannot see.
+
+**It is prose rather than a hook, deliberately.** Detecting an unanswered question in free text is a semantic judgement, and every enforcement gate in this plugin matches on something mechanical instead — a tool name, a command prefix, a file path, a slot header, a literal character. The one time semantic heuristics were built and measured here, for the [agent dispatch gate](#agent-dispatch-gate), the three variants traded 83% precision at 26% recall against 34% precision at 84% recall, and the wrong answers were not tunable away. A classifier on question delivery fails the same way in both directions: a false positive blocks a finished reply, and a false negative teaches the agent the rule is optional. The mirrors are the enforcement mechanism that is actually available, so the tests guard the mirrors.
+
 ### Permission safety rails
 
 Guardrails are prose in the model's context. Permission rails are enforcement in the harness. They solve the same problem at different layers, and the second one holds when the first is gone.

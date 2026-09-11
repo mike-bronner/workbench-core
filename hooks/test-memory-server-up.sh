@@ -7,6 +7,9 @@
 # spawn under parallel kicks, stale-vs-live claimer handling, self-healing after
 # a killed kick, the perl-setsid detach, refuse-to-bind failure recording,
 # foreign-squatter conflict, and the always-exit-0 / always-empty-stdout rule.
+# Plus the readiness wait: a cold kick returns only once the server answers, a
+# back-off kick waits on its sibling's spawn, a warm kick never enters the wait,
+# and a server that never binds bounds the wait instead of hanging the session.
 #
 # No real server, no embeddings, no outbound network: the fixture is a python3
 # loopback stub that binds in milliseconds and answers MCP initialize.
@@ -94,9 +97,10 @@ next_port() {
   return 1
 }
 
-# kick <case-dir> <port> <name> [extra env...] — run the kicker in a sandboxed
-# env pointing at the fake server. Echoes the kicker's stdout (must be empty).
-kick() {
+# _run_kick <case-dir> <port> <name> [extra env...] — run the kicker in a
+# sandboxed env pointing at the fake server, inheriting the CALLER's
+# redirections. Never called directly; kick / kick_err below pick the stream.
+_run_kick() {
   local dir="$1" port="$2" name="$3"; shift 3
   mkdir -p "$dir/cache" "$dir/vault"
   env -i HOME="$dir/home" PATH="$PATH" \
@@ -107,7 +111,25 @@ kick() {
     WORKBENCH_MEMORY_PORT="$port" \
     WORKBENCH_MEMORY_SERVER_BIN="$FAKE" \
     "$@" \
-    bash "$UP" 2>/dev/null
+    bash "$UP"
+}
+
+# kick — echoes the kicker's stdout (which must always be empty).
+kick() { _run_kick "$@" 2>/dev/null; }
+
+# kick_err — echoes the kicker's STDERR instead: its diagnostic log. Which path
+# a kick took (fast path, back-off, spawn, wait) is only visible there, so a
+# test that must pin the path down reads this rather than guessing from timing.
+# The braces are load-bearing: stdout is dropped INSIDE them, then stderr takes
+# its place outside. The flat `2>&1 >/dev/null` form does the same thing but
+# reads as the stdout+stderr merge it is not (shellcheck SC2069).
+kick_err() { { _run_kick "$@" >/dev/null; } 2>&1; }
+
+# probe_now <cache> <port> <name> — one identity-checked probe of a sandbox's
+# port, echoing the status word. The same probe the kicker and warmup use.
+probe_now() {
+  CACHE_PATH="$1" MEMORY_PORT="$2" MCP_NAME="$3" \
+    bash -c '. "'"$HOOKS"'/lib/memory-probe.sh"; memory_probe'
 }
 
 # wait_up <cache> <port> <name> — block (bounded) until the probe reports the
@@ -115,10 +137,7 @@ kick() {
 wait_up() {
   local cache="$1" port="$2" name="$3" i=0
   while [ "$i" -lt 80 ]; do
-    local s
-    s=$(CACHE_PATH="$cache" MEMORY_PORT="$port" MCP_NAME="$name" \
-      bash -c '. "'"$HOOKS"'/lib/memory-probe.sh"; memory_probe')
-    case "$s" in UP|BUILDING) return 0 ;; esac
+    case "$(probe_now "$cache" "$port" "$name")" in UP|BUILDING) return 0 ;; esac
     i=$((i + 1)); sleep 0.1
   done
   return 1
@@ -220,6 +239,87 @@ OUT=$(kick "$D" "$P" cold-vault)
 SECOND_PID=$(cat "$D/cache/server.pid")
 [ "$FIRST_PID" = "$SECOND_PID" ] && ok "server.pid unchanged (no respawn)" || no "pid changed $FIRST_PID → $SECOND_PID"
 
+# ──────────── 2b. cold kick returns only once the server answers ────────────
+# The bug this guards: the kicker used to spawn and return immediately, so a
+# session starting inside the bind window handed its MCP client a refused
+# connect. The client retries that 3 times at startup and no more, and a slow
+# bind outlasts all 3 — so that session lost its memory tools for its whole life
+# and reported a healthy vault as down.
+# The fixture holds the port unbound for 1.5s, well past the ~50ms the kicker
+# takes without a wait.
+echo "cold kick returns only once the server is answering (the connect race):"
+D="$SANDBOX/wait"; P=$(next_port)
+OUT=$(kick "$D" "$P" wait-vault FAKE_SERVER_BIND_DELAY_MS=1500)
+RC=$?
+[ "$RC" -eq 0 ] && ok "kicker exits 0" || no "kicker exit $RC"
+[ -z "$OUT" ] && ok "kicker stdout is empty" || no "kicker emitted stdout: $OUT"
+ST=$(probe_now "$D/cache" "$P" wait-vault)
+case "$ST" in
+  UP|BUILDING) ok "server was already answering when the kicker returned (probe: $ST)" ;;
+  *) no "kicker returned before the server answered (probe: $ST) — the connect race is live" ;;
+esac
+
+# ──────────── 2c. a warm kick never enters the wait ────────────
+# The fast path is every session after the first, so a wait leaking into it
+# would cost far more than the race costs. Read the kicker's own log rather than
+# timing it: "already serving" proves the fast path ran, and the absence of the
+# wait's success line proves the wait was never entered at all.
+echo "warm kick takes the fast path and never enters the wait:"
+T0=$(date +%s)
+ERR=$(kick_err "$D" "$P" wait-vault WORKBENCH_MEMORY_UP_WAIT_SECS=30)
+ELAPSED=$(( $(date +%s) - T0 ))
+printf '%s' "$ERR" | grep -q "already serving" \
+  && ok "fast path taken (probe said the server was already serving)" \
+  || no "warm kick did not take the fast path; log said: $ERR"
+printf '%s' "$ERR" | grep -q "after wait" \
+  && no "warm kick entered the wait loop: $ERR" \
+  || ok "wait loop never entered on a serving server"
+[ "$ELAPSED" -lt 5 ] && ok "warm kick costs no measurable time (${ELAPSED}s)" \
+  || no "warm kick took ${ELAPSED}s — the fast path is paying for the wait"
+
+# ──────────── 2d. the kicker that backs off ALSO waits ────────────
+# Spawning is only one of the paths that leaves a session facing a cold server.
+# A kicker that loses the claim to a live sibling returns just as early, and
+# faces exactly the same unbound port — so it owes the same wait. The sibling
+# holds the lock for 2.5s here, long enough for the second kick to lose cleanly.
+echo "a kicker that backs off to a live sibling waits for that sibling's spawn:"
+D="$SANDBOX/backoff"; P=$(next_port); mkdir -p "$D/cache" "$D/vault"
+kick "$D" "$P" backoff-vault FAKE_SERVER_BIND_DELAY_MS=2500 >/dev/null 2>&1 &
+STARTED_PIDS+=("$!")
+# Wait for the supervisor to stamp claimer.pid — until it does, the second kick
+# could steal the lock and spawn instead of backing off.
+i=0; while [ "$i" -lt 200 ]; do
+  [ -s "$D/cache/server.lock/claimer.pid" ] && break
+  i=$((i + 1)); sleep 0.02
+done
+ERR=$(kick_err "$D" "$P" backoff-vault)
+ST=$(probe_now "$D/cache" "$P" backoff-vault)
+printf '%s' "$ERR" | grep -q "backing off" \
+  && ok "second kick backed off to the live sibling" \
+  || no "second kick did not take the back-off path; log said: $ERR"
+case "$ST" in
+  UP|BUILDING) ok "backed-off kick returned with the server answering (probe: $ST)" ;;
+  *) no "backed-off kick returned before the sibling's server answered (probe: $ST)" ;;
+esac
+
+# ──────────── 2e. a server that never comes up bounds the wait ────────────
+# The ceiling is the whole safety of this design: a broken install, a dead
+# binary or a held port must cost a session a known, small amount of time and
+# never hang it. The bound is asserted from BOTH sides — it really waited its
+# budget, and it really stopped at it.
+echo "a server that never binds: the wait is bounded and the session proceeds:"
+D="$SANDBOX/waitcap"; P=$(next_port); mkdir -p "$D/cache" "$D/vault"
+T0=$(date +%s)
+OUT=$(kick "$D" "$P" waitcap-vault FAKE_SERVER_REFUSE=1 WORKBENCH_MEMORY_UP_WAIT_SECS=3)
+RC=$?
+ELAPSED=$(( $(date +%s) - T0 ))
+[ "$RC" -eq 0 ] && ok "kicker still exits 0 when the server never comes up" || no "kicker exit $RC"
+[ -z "$OUT" ] && ok "kicker stdout still empty after a timeout" || no "kicker emitted stdout: $OUT"
+[ "$ELAPSED" -ge 3 ] && ok "waited its full budget (${ELAPSED}s ≥ 3s)" \
+  || no "returned after ${ELAPSED}s — it did not wait at all"
+[ "$ELAPSED" -le 8 ] && ok "stopped at the ceiling (${ELAPSED}s ≤ 8s)" \
+  || no "waited ${ELAPSED}s past a 3s ceiling — the bound does not hold"
+
 # ──────────── 3. five parallel kicks → exactly one server ────────────
 echo "five parallel kicks race → exactly one server, one spawn:"
 D="$SANDBOX/race"; P=$(next_port)
@@ -258,7 +358,10 @@ D="$SANDBOX/liveclaim"; P=$(next_port); mkdir -p "$D/cache" "$D/vault"
 mkdir -p "$D/cache/server.lock"
 sleep 30 & HOLDER=$!; STARTED_PIDS+=("$HOLDER")
 echo "$HOLDER" > "$D/cache/server.lock/claimer.pid"
-OUT=$(kick "$D" "$P" live-vault)
+# The holder never spawns anything, so the kicker's readiness wait can only time
+# out here. Pin it to 1s: this case is about the lock, and case 2e owns the
+# wait's bound.
+OUT=$(kick "$D" "$P" live-vault WORKBENCH_MEMORY_UP_WAIT_SECS=1)
 [ -z "$OUT" ] && ok "kick stdout empty" || no "kick emitted: $OUT"
 sleep 0.5
 [ ! -f "$D/cache/server.pid" ] && ok "no server spawned (lock respected)" || no "spawned despite live claimer"
@@ -290,13 +393,15 @@ wait_lock_released "$D/cache" && ok "wedged lock released after spawn" || no "lo
 # ──────────── 6. refuse-to-bind → .server-failed + lock released + exit 0 ──
 echo "server refuses to bind → readiness times out, .server-failed, lock freed:"
 D="$SANDBOX/refuse"; P=$(next_port); mkdir -p "$D/cache" "$D/vault"
-kick "$D" "$P" refuse-vault FAKE_SERVER_REFUSE=1
+# Wait pinned to 1s — this case is about the SUPERVISOR recording the failure,
+# not about the kicker's wait (case 2e), and the default budget would just idle.
+kick "$D" "$P" refuse-vault FAKE_SERVER_REFUSE=1 WORKBENCH_MEMORY_UP_WAIT_SECS=1
 RC=$?
 [ "$RC" -eq 0 ] && ok "kicker still exits 0 on a failing server" || no "kicker exit $RC"
 # Wait for the supervisor's readiness window (~10s) to elapse and record failure.
 i=0; while [ "$i" -lt 80 ]; do [ -f "$D/cache/.server-failed" ] && break; i=$((i+1)); sleep 0.2; done
 [ -f "$D/cache/.server-failed" ] && ok ".server-failed marker written" || no "no .server-failed after refuse"
-[ ! -d "$D/cache/server.lock" ] && ok "lock released after failure" || no "lock stuck after failure"
+wait_lock_released "$D/cache" && ok "lock released after failure" || no "lock stuck after failure"
 
 # ──────────── 7. foreign squatter → .port-conflict, no spawn ────────────
 echo "a foreign listener on the port → conflict recorded, no spawn:"

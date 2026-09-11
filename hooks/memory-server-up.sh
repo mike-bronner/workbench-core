@@ -2,16 +2,24 @@
 #
 # memory-server-up: lazy-start kicker for the shared HTTP memory server.
 #
-# Invoked by the `core` plugin's SessionStart hook, FIRST — before warmup — so a
-# cold server is already coming up by the time the host's MCP client retries its
-# connect (Claude Code retries an unreachable HTTP MCP up to ~3× over ~30s at
-# startup, which covers the ~2.1s bind).
+# Invoked by the `core` plugin's SessionStart hook, FIRST — before warmup — so
+# the server answers before the host's MCP client runs out of attempts. That
+# client DOES retry a refused connect at startup: up to 3 attempts, with
+# connection-refused named as one of the transient errors it retries, under a
+# 30s overall startup timeout. What is NOT documented is the delay between those
+# attempts, and the incident below is what constrains it — all 3 were spent
+# before a 13s bind completed, so the 30s cap plainly does not spread them. A
+# session whose attempts all land inside the bind window keeps no memory tools
+# for the rest of its life, and reports "the vault is down" while the vault is
+# healthy. Mid-session reconnect is a separate path with its own backoff, and it
+# never rescues a session that failed to connect at startup.
 #
 # This hook is on a LOCKED, latency-sensitive path, so it does the absolute
-# minimum: probe; if our vault is already serving, exit. Otherwise win a mutex
-# and REPARENT the heavy supervisor (memory-server-spawn.sh) out of this hook's
-# process group, then return immediately — it never waits for the install or the
-# bind. All the slow work happens in the detached supervisor.
+# minimum: probe; if our vault is already serving, exit — no wait, nothing paid.
+# Otherwise win a mutex and REPARENT the heavy supervisor
+# (memory-server-spawn.sh) out of this hook's process group, so the install and
+# the embedding build never run here, then wait — bounded — only for the server
+# to start answering. All the slow work happens in the detached supervisor.
 #
 # Hard rules: exit 0 ALWAYS (a startup hook must never fail the session) and
 # emit NOTHING on stdout (SessionStart stdout is injected into the model's
@@ -87,6 +95,53 @@ case "$STATUS" in
 esac
 # DOWN_NONE / DOWN_FAILED fall through to the spawn path.
 
+# ──────────── Bounded wait for the server to start answering ────────────
+# Every exit below this point leaves THIS session facing a server that is not
+# answering yet — whether we spawn the supervisor ourselves, or back off to a
+# sibling kicker that is already spawning one. Both owe the same wait: the
+# client's 3 startup attempts are fast enough to be spent inside a slow bind,
+# and a session that spends them keeps no memory tools for the rest of its life
+# (seen twice on 2026-09-10, where loading the index under a post-boot storm
+# pushed the bind out to ~13s and outlasted all 3).
+#
+# The already-serving fast path above returns before reaching this, so the
+# common case — every session after the first — still waits for nothing. That
+# is why the wait lives here and not at the top of the file.
+#
+# UP and BUILDING both end the wait, exactly as they end the fast path above:
+# BUILDING means bound and answering, with the index still building and search
+# already available keyword-only. Every DOWN status keeps polling instead of
+# giving up, because a server that is still starting legitimately reads as
+# DOWN_NONE (not bound yet), DOWN_FOREIGN (bound, not yet answering an
+# authenticated initialize) or DOWN_FAILED (the supervisor gave up at its own
+# shorter readiness window while the server was still coming up). Treating any
+# of them as final would re-open this bug for the slow start it exists to cover.
+# The deadline, not the status, is the thing that bounds the wait.
+#
+# That bound is WALL CLOCK, never an iteration count: a probe is not instant
+# (its curl allows itself 5s), so counting iterations would fail to bound the
+# wait under exactly the load that makes a wait necessary. 15s covers the one
+# real measurement (a 13s cold start) with margin, and caps what a genuinely
+# broken server — a dead install, a held port, a failing spawn — can cost a
+# session. Past the deadline we give up and let session start proceed; the
+# warmup runs next and reports the server's state to the user.
+WAIT_SECS="${WORKBENCH_MEMORY_UP_WAIT_SECS:-15}"   # test seam
+case "$WAIT_SECS" in ''|*[!0-9]*) WAIT_SECS=15 ;; esac
+
+wait_for_ready() {
+  local deadline status
+  deadline=$(( $(date +%s) + WAIT_SECS ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    status="$(memory_probe)"
+    case "$status" in
+      UP|BUILDING) _log "server answering after wait (probe: $status)"; return 0 ;;
+    esac
+    sleep 0.2
+  done
+  _log "server still not answering after ${WAIT_SECS}s; proceeding anyway (see warmup)"
+  return 1
+}
+
 # ──────────── Win the spawn mutex (atomic mkdir) ────────────
 # mkdir is atomic: exactly one concurrent kicker creates LOCK_DIR and becomes
 # the winner. Staleness is PID-liveness, NEVER wall-clock: if the dir already
@@ -119,8 +174,11 @@ if ! try_claim; then
   fi
 
   if [ -n "$CLAIMER_PID" ] && kill -0 "$CLAIMER_PID" 2>/dev/null; then
-    # A live supervisor holds the lock — let it finish. No second spawn.
+    # A live supervisor holds the lock — let it finish. No second spawn. Backing
+    # off is not the same as being served: this session faces the same cold
+    # server the winner does, so it waits on the winner's spawn.
     _log "spawn already in progress (supervisor pid $CLAIMER_PID); backing off"
+    wait_for_ready
     exit 0
   fi
   # Provably dead claimer, OR a wedged lock that never got a pid → steal it
@@ -128,8 +186,11 @@ if ! try_claim; then
   _log "stale spawn lock (claimer pid '${CLAIMER_PID:-none}' not alive); stealing"
   rm -rf "$LOCK_DIR" 2>/dev/null || true
   if ! try_claim; then
-    # Lost the re-claim race to another kicker — that's fine, they'll spawn.
+    # Lost the re-claim race to another kicker — that's fine, they'll spawn. We
+    # still wait on their spawn: losing the race changes who spawns, not whether
+    # this session is about to connect to a server that is not answering.
     _log "lost re-claim race; another kicker owns the lock"
+    wait_for_ready
     exit 0
   fi
 fi
@@ -144,12 +205,13 @@ fi
 # rm -rf cross-generation race.
 echo "$$-${RANDOM}-$(date +%s)" > "$LOCK_DIR/nonce" 2>/dev/null || true
 
-# ──────────── Reparent the supervisor and return immediately ────────────
+# ──────────── Reparent the supervisor, then wait only for the bind ────────────
 # We hold the lock. Hand it (and all the slow work) to a DETACHED supervisor:
 # perl-setsid puts it in its own session/process group, so it survives this
 # hook's process group being signalled when the session ends. macOS has no
 # setsid binary, and nohup+disown alone does NOT escape the process group — the
-# perl POSIX::setsid idiom is the verified detach. We do NOT wait for it.
+# perl POSIX::setsid idiom is the verified detach. We never wait ON the
+# supervisor (no `wait`, no pipe): it stays detached, and we poll the port.
 #
 # perl's `exec` keeps the SAME pid, so $! is the supervisor's pid (used only for
 # the log line below). The supervisor itself writes the lock's liveness token
@@ -178,5 +240,10 @@ fi
 # releases the lock fast) and clobber a live sibling's pid, causing the exact
 # double-spawn the lock prevents. Leaving the stamp to the lock's true owner
 # closes that race.
+
+# Our own spawn is in flight, so this session faces the cold server it just
+# asked for. Wait for the port to start answering — bounded — before the MCP
+# client spends its 3 startup attempts on a port that is not up yet.
+wait_for_ready
 
 exit 0

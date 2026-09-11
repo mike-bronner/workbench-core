@@ -463,10 +463,12 @@ if [ "$SOURCE" = "startup" ]; then
       printf 'The last attempt to start the shared memory server failed (see `%s/server.log`).\n' "$CACHE_PATH"
       printf 'Memory search and write will fail until it comes up. Run `/workbench-core:memory-status` to diagnose.\n\n'
       ;;
-    *)  # DOWN_NONE — not up yet; the up-hook just kicked a spawn that binds in ~2s.
+    *)  # DOWN_NONE — the up-hook already waited out its bind budget and it is
+        # STILL not answering, so this is a slow or stuck start, not a fresh one.
       printf '## ℹ Memory server starting\n\n'
-      printf 'The shared memory server is starting in the background (binds in ~2s; the client retries the connection).\n'
-      printf 'If memory tools are unavailable this turn, they should work shortly — or next session.\n\n'
+      printf 'The shared memory server did not answer within the startup wait, so it is still coming up.\n'
+      printf 'Memory tools are likely unavailable for this session: the MCP client startup retries are already spent.\n'
+      printf 'Open `/mcp` to check the server and reconnect it in place. If that does not take, run `/workbench-core:memory-status`, and restart Claude Code only as a fallback.\n\n'
       ;;
   esac
 fi

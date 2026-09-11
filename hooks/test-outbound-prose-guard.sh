@@ -221,5 +221,55 @@ else
 fi
 
 echo
+echo "the emptiness pre-check decides the same thing on every platform:"
+# What counts as "whitespace" here is a property of the C library, not only of
+# the locale. glibc excludes U+00A0, U+202F and U+2007 from [[:space:]] in every
+# locale, Darwin includes them, and the two disagree again with LC_ALL=POSIX on
+# U+2028, U+3000 and U+205F. Under [[:space:]] a body of nothing but NBSPs was
+# therefore skipped on macOS and checked on Linux. The pre-check now lists the
+# six ASCII whitespace characters, so the answer is the same everywhere.
+#
+# Return code alone cannot see this: the real checker finds nothing in a body of
+# Unicode spaces, so skipped and checked both come back 0. These cases run the
+# guard against a STUB checker that reports a finding for anything it is given,
+# which turns "the checker ran" into an observable block.
+STUB="$SANDBOX/stub"
+mkdir -p "$STUB/lib"
+cp "$GUARD" "$STUB/"
+printf '%s\n' 'import sys; sys.stdin.read(); print("stub-finding")' > "$STUB/lib/prose-check.py"
+
+run_stub() {  # run_stub <body-file> -> rc (0 allowed, 2 blocked)
+  jq -cn --arg c "gh pr create --title t --body-file $1" --arg d "$SANDBOX" \
+    '{tool_name:"Bash", cwd:$d, tool_input:{command:$c}}' \
+    | bash "$STUB/$(basename "$GUARD")" >/dev/null 2>&1
+}
+
+# Every one of these is content, so every one must reach the checker. Before the
+# fix each was skipped on Darwin, and NBSP and NNBSP were skipped on no Linux
+# locale at all, which is the divergence itself.
+for u in 'c2a0:NBSP U+00A0' 'e280af:narrow NBSP U+202F' 'e38080:ideographic space U+3000' 'e280a8:line separator U+2028'; do
+  bytes=${u%%:*}; label=${u#*:}
+  UB="$SANDBOX/uni-$bytes.md"
+  printf "$(echo "$bytes" | sed 's/../\\x&/g')" > "$UB"
+  run_stub "$UB"
+  if [ $? -eq 2 ]; then
+    PASS=$((PASS + 1)); echo "  ✅ a body of only ${label} reaches the checker"
+  else
+    FAIL=$((FAIL + 1)); echo "  ❌ a body of only ${label} was skipped, so the pre-check still follows the locale"
+  fi
+done
+
+# The other half, and the one that stops "always run the checker" from passing
+# the four above. ASCII whitespace must STILL short-circuit, or the pre-check has
+# been deleted rather than made deterministic, and every empty body now forks
+# python3 for nothing.
+run_stub "$WS"
+if [ $? -eq 0 ]; then
+  PASS=$((PASS + 1)); echo "  ✅ ASCII whitespace still short-circuits before the checker"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ ASCII whitespace reached the checker, so the fast path is gone"
+fi
+
+echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -114,7 +114,19 @@ elif tool.startswith("mcp__"):
 # a full core for over three minutes. The glob answers the same question, forks
 # nothing, and short-circuits on the first non-whitespace character. It stays
 # linear even on pure whitespace, its worst case: 0.009s at 64 KB.
-[[ $PROSE == *[![:space:]]* ]] || exit 0
+#
+# The six ASCII whitespace characters are listed rather than matched with
+# [[:space:]], because that class is a property of the C library and not only of
+# the locale. glibc excludes U+00A0, U+202F and U+2007 in every locale, Darwin
+# includes them, and neither agrees with itself between a UTF-8 locale and
+# LC_ALL=POSIX on U+2028, U+3000 and U+205F. A payload of nothing but NBSPs was
+# therefore skipped on macOS and checked on Linux. Listing the set makes that
+# decision the same everywhere, and errs toward RUNNING the check: a payload
+# with no ASCII text in it is now content, so the checker judges it rather than
+# the hook waving it through. Verified identical on Darwin (bash 3.2) and glibc
+# 2.39 (bash 5.2) under LC_ALL=POSIX, C.UTF-8 and en_US.UTF-8.
+PROSE_WS=$' \t\n\r\v\f'
+[[ $PROSE == *[!$PROSE_WS]* ]] || exit 0
 
 FINDINGS=$(printf '%s' "$PROSE" | python3 "$CHECKER" 2>/dev/null)
 [ -n "$FINDINGS" ] || exit 0

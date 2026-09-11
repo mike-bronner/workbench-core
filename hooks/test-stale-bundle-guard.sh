@@ -208,14 +208,24 @@ out=$(guard '{"hook_event_name":"UserPromptSubmit","prompt":"run the memory lint
 check "prose still silent on UserPromptSubmit — that is why PreToolUse exists" "${out:-EMPTY}" "EMPTY"
 
 # --- which token the prompt path extracts as the spec --------------------
-# The extraction cuts the prompt at its first whitespace character. It was
-# ${spec%%[[:space:]]*}, which is quadratic over a long prompt, so it now reads
-# the token with `read`, caps it, and re-applies the expansion to that short
-# result. These pin the token itself, because a different token silently aims
-# the guard at the wrong plugin or names the wrong body to read.
+# The extraction ends the spec at its first character that cannot be in one. It
+# was ${spec%%[[:space:]]*}, which is quadratic over a long prompt, so it now
+# reads the token with `read`, caps it, and cuts that short result. These pin
+# the token itself, because a different token silently aims the guard at the
+# wrong plugin or names the wrong body to read.
 #
 # jq builds the payload so a prompt can carry a raw CR, tab, or NBSP.
-promptp() { jq -cn --arg p "$1" '{hook_event_name:"UserPromptSubmit",prompt:$p}'; }
+#
+# NOTHING BIG GOES THROUGH ARGV. This is the rule test-mcp-output-cap.sh opens
+# with, and this file broke it. Linux caps one argv entry at MAX_ARG_STRLEN
+# (32 pages = 131,072 bytes), so `jq -cn --arg p "$1"` on a 256 KB prompt died
+# with "Argument list too long". A scaffold that dies hands the guard an empty
+# payload, and empty is SILENT, which is exactly what three of the four 256 KB
+# cases below assert. They passed on Linux without the guard ever running, and
+# the timing case next to them reported 0s while measuring nothing. The prompt
+# therefore reaches jq on stdin, through printf, which is a bash builtin and
+# never execs.
+promptp() { printf '%s' "$1" | jq -cRs '{hook_event_name:"UserPromptSubmit",prompt:.}'; }
 cmd_of() {  # the command name the guard resolved out of <prompt>
   local ctx after
   ctx=$(guard "$(promptp "$1")" | jq -r '.hookSpecificOutput.additionalContext // empty')
@@ -239,10 +249,37 @@ check "a newline ends the spec" \
 # contract, not as the pin on either stage.
 check "a carriage return ends the spec" \
   "$(cmd_of "$(printf '/workbench-core:setup\r\nmore')")" "setup"
-# read cuts only at space, tab and newline. bash also matches NBSP, U+2028 and
-# U+3000 under [[:space:]], so this reddens if the expansion stops backing it up.
+# read cuts only at space, tab and newline. Everything below is what the second
+# stage has to catch on its own, so each of these reddens if that cut is dropped.
+#
+# These four are the reason the cut lists its characters instead of asking
+# [[:space:]]. That class is a property of the C library, not just the locale:
+#
+#   char           Darwin/UTF-8   glibc/UTF-8   glibc/POSIX
+#   U+00A0 NBSP    space          NOT space     NOT space
+#   U+202F NNBSP   space          NOT space     NOT space
+#   U+3000         space          space         NOT space
+#   é (U+00E9)     inside [A-Za-z] under Darwin en_US.UTF-8, outside it on glibc
+#
+# NBSP is the one that reddened CI: the guard resolved "setup" on macOS and
+# "setup<NBSP>arg" on Linux. Pinning only NBSP would have hidden the other
+# three, and the é row is why the cut carries no A-Z range.
 check "a Unicode NBSP ends the spec" \
   "$(cmd_of "$(printf '/workbench-core:setup\xc2\xa0arg')")" "setup"
+check "a Unicode narrow NBSP ends the spec" \
+  "$(cmd_of "$(printf '/workbench-core:setup\xe2\x80\xafarg')")" "setup"
+check "a Unicode ideographic space ends the spec" \
+  "$(cmd_of "$(printf '/workbench-core:setup\xe3\x80\x80arg')")" "setup"
+check "a non-ASCII letter ends the spec, so no collation range decides it" \
+  "$(cmd_of "$(printf '/workbench-core:setup\xc3\xa9arg')")" "setup"
+# The rule is "a spec ends at the first character that cannot be in one", so it
+# has to hold for characters that are not whitespace at all.
+check "a character no spec can hold ends it" \
+  "$(cmd_of '/workbench-core:setup?arg')" "setup"
+# ...and the other half of the rule: the permitted set must not over-cut, or a
+# real command silently resolves to a shorter name that does not exist.
+check "digits, dot, underscore and hyphen stay inside the spec" \
+  "$(cmd_of '/workbench-core:a-b_c.d2')" "a-b_c.d2"
 check "a bare plugin name resolves no command" \
   "$(cmd_of '/workbench-core')" "NO-COMMAND"
 check "an unknown plugin stays silent" \
@@ -263,11 +300,19 @@ check "the split takes the FIRST colon, not the last" \
 # --- the spec is bounded before anything pattern-matches it --------------
 # Under a multibyte locale bash re-converts the whole subject to wide
 # characters on every match attempt, so an unbounded spec makes ${spec%%:*},
-# ${spec#*:} and ${spec%%[[:space:]]*} quadratic. Both entry points therefore
+# ${spec#*:} and ${spec%%[!$SPEC_CHARS]*} quadratic. Both entry points therefore
 # cap the spec first. The cap is observable as the length of the command the
 # message names, which is what lets these be exact instead of a timing band.
 SPEC_MAX=$(awk -F= '$1=="SPEC_MAX"{print $2; exit}' "$GUARD")
 check "the hook declares a spec bound" "${SPEC_MAX:-MISSING}" "256"
+
+# The permitted set is what ends a spec, so a silent edit to it changes which
+# prompts resolve. Pin it at its definition: every character the cases above
+# rely on staying inside a spec must be present, and a space must not be.
+SPEC_CHARS=$(awk -F= '$1=="SPEC_CHARS"{gsub(/'"'"'/,"",$2); print $2; exit}' "$GUARD")
+check "the hook declares a spec alphabet" \
+  "${SPEC_CHARS:-MISSING}" \
+  'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:._-'
 
 skill_cmd_of() {  # the command name the guard resolved out of a Skill spec
   local msg after
@@ -308,11 +353,17 @@ check "a spec at the cap is untouched" \
 # the user's own turn. Unbounded at 256 KB, measured end to end through the
 # guard: a prompt ending in a Unicode space took 80.8s, one ending in a colon
 # 66.2s, and one with no whitespace at all 11.3s. LC_ALL is forced because the
-# C locale
-# selects the single-byte matcher and hides the defect entirely; where
+# C locale selects the single-byte matcher and hides the defect entirely; where
 # en_US.UTF-8 is absent bash falls back to C, and this stops discriminating
-# rather than failing. The exact checks above are the real pins — this band is
-# deliberately wide, because the gap it watches is three orders of magnitude.
+# rather than failing. The exact checks above are the real pins, and this band
+# is deliberately wide, because the gap it watches is three orders of magnitude.
+#
+# The "still resolves its command" case at the end is the canary on the harness
+# itself, not on the guard. Three of the four cases here assert SILENT, and a
+# payload that never arrives is also silent, so they cannot tell a working guard
+# from a dead scaffold. That one case demands a real answer out of a real 256 KB
+# prompt. It is what caught promptp feeding jq through argv, and it is what will
+# catch the next scaffold that quietly stops delivering.
 _saved_lc=${LC_ALL-}
 export LC_ALL=en_US.UTF-8
 huge=$(head -c 262144 /dev/zero | tr '\0' 'a')

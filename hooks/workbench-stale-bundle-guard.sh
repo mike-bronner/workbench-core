@@ -127,6 +127,30 @@ fi
 # key — so the lookup misses either way, only sooner.
 SPEC_MAX=256
 
+# Every character a spec may contain. A spec ends at the first character that is
+# NOT in this set, which is a membership rule rather than a list of terminators,
+# so no new Unicode space can ever go unlisted.
+#
+# Spelled out, without ranges, for two measured reasons.
+#
+# [[:space:]] cannot end a spec, because whether a character is "space" depends
+# on the C library and not only on the locale. glibc excludes U+00A0, U+202F and
+# U+2007 in EVERY locale, including en_US.UTF-8, because they are non-breaking.
+# Darwin includes all three. That is why "/workbench-core:setup<NBSP>arg"
+# resolved setup on macOS and "setup<NBSP>arg" on Linux. Forcing a locale in CI
+# would not have changed it.
+#
+# Ranges cannot end one either. Under Darwin en_US.UTF-8, "é" and "Ä" fall
+# INSIDE [A-Za-z] by collation order, so [!A-Za-z0-9:._-] does not fire on them
+# while glibc's does. Listing the characters removes both dependencies: this set
+# is pure ASCII literals, so the match is the same on every libc and locale.
+#
+# Verified identical on Darwin (bash 3.2) and glibc 2.39 (bash 5.2) under
+# LC_ALL=POSIX, C.UTF-8 and en_US.UTF-8. Real names are a comfortable subset:
+# every installed command file is [a-z-], and the longest spec is
+# workbench-bujo:bujo-monthly-ritual.
+SPEC_CHARS='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:._-'
+
 case "$event" in
   PreToolUse)
     # The Skill tool carries `skill: "<plugin>:<name>"`, or a bare name for a
@@ -141,18 +165,22 @@ case "$event" in
       /workbench-*) ;;
       *) exit 0 ;;
     esac
-    # The first whitespace-delimited token, in three cheap steps rather than one
+    # The first token, in three cheap steps rather than one
     # ${prompt%%[[:space:]]*} that costs 11.3s on a 256 KB prompt. read cuts at
     # space, tab and newline in one linear pass. The bound then caps what read
-    # returned, and only then does the expansion catch everything read does not
-    # cut on — bash matches CR, VT and FF under [[:space:]], and NBSP, U+2028
-    # and U+3000 with it, so dropping that last step WOULD change the token.
-    # Order is the point: bound before the expansion, or a token whose only
-    # space is a trailing NBSP pays the full 11.3s here, because the slow stage
-    # walks the whole token to reach it. Same token out, and 0.00s at 256 KB.
+    # returned. Only then does the cut catch everything read does not stop on,
+    # which is CR, VT, FF, every Unicode space, and any other character a spec
+    # cannot hold. Dropping that last step WOULD change the token.
+    #
+    # Order is the point: bound before the cut, or a token whose only space is a
+    # trailing NBSP pays the full 11.3s here, because the slow stage walks the
+    # whole token to reach it. Same token out, and 0.00s at 256 KB.
     read -r spec _ <<< "${prompt#/}"
     spec=${spec:0:$SPEC_MAX}
-    case "$spec" in *[[:space:]]*) spec=${spec%%[[:space:]]*} ;; esac
+    # Quoted inside the bracket, which is what SC2295 asks for. Measured
+    # identical to the unquoted form on both libcs, and it keeps the trailing
+    # hyphen unambiguously a literal rather than half of a range.
+    spec=${spec%%[!"$SPEC_CHARS"]*}
     ;;
 esac
 

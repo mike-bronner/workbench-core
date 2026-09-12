@@ -354,7 +354,12 @@ OUT=$(run_warmup compact)
 assert_missing  "no profile pointer when file absent"  "$OUT" "User profile: re-read"
 assert_missing  "no skills pointer when file absent"   "$OUT" "Skills protocol: read"
 OUT=$(run_warmup startup)
-assert_contains "startup notes missing profile"        "$OUT" "profile.md not found"
+# This sandbox writes no config.json, so identity_files is unset and an absent
+# profile is the deliberate state rather than a mistake. Startup says nothing
+# about it. The configured-but-unreadable case still warns, and the block below
+# pins both directions.
+assert_missing  "startup is silent on an unconfigured profile" "$OUT" "profile.md not found"
+assert_contains "the rest of startup still runs"       "$OUT" "Guardrails — absolute rules"
 printf 'PROFILE-CANARY user facts\n' > "$SANDBOX/memory/identity/profile.md"
 printf 'SKILLSPROTO-CANARY skill learnings\n' > "$SANDBOX/memory/identity/skills-protocol.md"
 
@@ -682,6 +687,54 @@ printf '{"memory_path":"%s"}\n' "$SOUL_MEM" > "$SOUL_CFG_DIR/config.json"
 OUT=$(run_soul_warmup)
 assert_contains "unconfigured + default present injects" "$OUT" "SOULLESS-CANARY"
 rm -f "$SOUL_MEM/identity/soul-hot.md"
+
+echo "profile is optional too, with the same three cases as the soul file:"
+# The profile branch never got this treatment: it warned on startup and clear
+# with no check on whether a path was configured at all. A user who removed
+# profile.md deliberately read "profile.md not found" at the top of every
+# session, and that line is worse than noise, because an agent reading it
+# concludes the install is broken. These three cases are the soul block's, run
+# against the profile path.
+rm -f "$SOUL_MEM/identity/profile.md"
+
+# Case 1: no profile key and no file on disk, so total silence.
+printf '{"memory_path":"%s"}\n' "$SOUL_MEM" > "$SOUL_CFG_DIR/config.json"
+OUT=$(run_soul_warmup)
+assert_missing "unconfigured + absent prints no heading" "$OUT" "## User profile"
+assert_missing "unconfigured + absent prints no warning" "$OUT" "profile.md not found"
+assert_contains "the rest of the warmup still runs"      "$OUT" "Guardrails — absolute rules"
+
+# Case 2: profile points somewhere that does not exist, so warn. A typo in a
+# configured path is a real misconfiguration, and silencing it would trade a
+# noise problem for a silent one.
+printf '{"memory_path":"%s","identity_files":{"profile":"identity/typo-profile.md"}}\n' \
+  "$SOUL_MEM" > "$SOUL_CFG_DIR/config.json"
+OUT=$(run_soul_warmup)
+assert_contains "configured + absent warns"              "$OUT" "profile.md not found"
+assert_contains "the warning names the resolved path"    "$OUT" "identity/typo-profile.md"
+
+# Case 3: no profile key but the DEFAULT file exists, so still injected. The same
+# backward-compatibility guarantee the soul file gets.
+printf 'PROFILELESS-CANARY legacy default\n' > "$SOUL_MEM/identity/profile.md"
+printf '{"memory_path":"%s"}\n' "$SOUL_MEM" > "$SOUL_CFG_DIR/config.json"
+OUT=$(run_soul_warmup)
+assert_contains "unconfigured + default present injects" "$OUT" "PROFILELESS-CANARY"
+
+# The identity block must be byte-identical across runs for identical config and
+# identical files: prompt caching matches an exact request prefix, so one
+# drifting byte here invalidates the cache for everything after it.
+#
+# The notice-state check above proves the stronger version of this property, and
+# it proves it only for a sandbox carrying both a soul file and a profile. This
+# one is narrower and covers what that one cannot reach: the same invariant in
+# the configuration the three cases above introduced, which is also the shipped
+# clear persona's own shape of no soul file and no profile.
+A=$(run_soul_warmup); B=$(run_soul_warmup)
+if [ "$A" = "$B" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ identical config and files produce identical bytes"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ warmup output drifted between two identical runs"
+fi
 
 echo "exit code is always 0:"
 if printf '{"source":"compact"}' | HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" >/dev/null 2>&1; then

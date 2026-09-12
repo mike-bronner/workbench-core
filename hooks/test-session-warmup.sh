@@ -109,6 +109,10 @@ assert_contains "guardrails exempt memory vault"   "$OUT" "personal memory vault
 # text still contains the rule at runtime.
 assert_contains "guardrails carry the question channel" "$OUT" "AskUserQuestion"
 assert_contains "guardrails place questions last"       "$OUT" "END of the response"
+# Rule 13 says what is inside the question rule 11 delivers, and it fails in the
+# session rather than in the repo, so the injected text is where it has to land.
+assert_contains "guardrails carry the question contents" "$OUT" "state it as a question"
+assert_contains "guardrails separate a fork from a defect" "$OUT" "a choice is not a problem"
 assert_missing  "skills-protocol not inlined"      "$OUT" "SKILLSPROTO-CANARY"
 assert_contains "skills-protocol pointer present"  "$OUT" "Skills protocol: read \`$SANDBOX/memory/identity/skills-protocol.md\`"
 
@@ -266,6 +270,14 @@ assert_contains "source keeps the sentence-length cap"           "$OV_SRC_TEXT" 
 # silently if the source drops it.
 assert_contains "source keeps the question-delivery channel"     "$OV_SRC_TEXT" 'AskUserQuestion'
 assert_contains "source keeps the questions-last placement"      "$OV_SRC_TEXT" 'last thing in the response'
+
+# Question contents ride along for the same reason. A question delivered to the
+# right place with no situation, no options and no recommendation is the failure
+# rule 13 exists for, and both rendered layers lose the rule if the source drops it.
+assert_contains "source keeps the recognize half"                "$OV_SRC_TEXT" 'state it as a question'
+assert_contains "source keeps the situation-first half"          "$OV_SRC_TEXT" 'Open with the situation'
+assert_contains "source keeps the fork-is-not-a-problem half"    "$OV_SRC_TEXT" 'A choice is not a problem'
+assert_contains "source keeps the options-and-reason half"       "$OV_SRC_TEXT" 'a recommendation with its reason'
 
 # Both destinations must contain the rendered block VERBATIM and CONTIGUOUS —
 # this is the convergence guarantee. Drift either heredoc away from the source

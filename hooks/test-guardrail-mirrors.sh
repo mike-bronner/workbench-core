@@ -118,6 +118,46 @@ for f in "$FULL" "$INLINE" "$OVERRIDES" "$STYLE"; do
     'no action needed'
 done
 
+# ── Guardrail 13: a question carries its situation, options, recommendation ──
+#
+# Rule 11 named the channel a question travels down and said nothing about what
+# travels down it, so a bare numbered list of questions satisfied every rule
+# then written. Three failures shipped that way, and they are separable: a fact
+# was stated where the next step depended on an answer and no question was ever
+# asked; a fork with no defect behind it was framed as a problem; and questions
+# arrived with no situation attached, leaving the reader to reconstruct what
+# each one was about. Rule 1 carried the shape already, and scopes itself to
+# "before making changes", so a question about anything else inherited none of
+# it. Rule 13 binds all three, in whichever channel rule 11 selects.
+#
+# Four checks per mirror, not three. Recognize and Shape are one assertion each.
+# Frame is two: "lead with the situation" and "a fork is not a defect" fail
+# independently, and a mirror keeping one of them still reproduces one of the
+# three original complaints.
+echo
+echo "guardrail 13 — every question carries situation, options, recommendation:"
+for f in "$FULL" "$INLINE" "$OVERRIDES" "$STYLE"; do
+  m="$(basename "$f")"
+  # Recognize — a fact the reader must convert into a question was never asked.
+  has "$m turns a blocking fact into a stated question" "$f" \
+    'state it as a question'
+  # Frame, part 1 — the question leads with what produced it. Without this the
+  # rule permits the bare numbered list that prompted it.
+  has "$m opens the question with its situation" "$f" \
+    'opens? with the situation'
+  # Frame, part 2 — a fork is not a defect. Rule 12's report order is written
+  # for something that might be a problem, and a mirror dropping this clause
+  # leaves a neutral choice no honest shape to be reported in.
+  has "$m keeps a fork from being framed as a problem" "$f" \
+    'a choice is not a problem'
+  # Shape — options AND a recommendation AND its reason. Matching on "three
+  # options and a recommendation" alone would pass on output-style.md's hard
+  # rule 1, which already carries that phrase, so the reason is part of the
+  # anchor rather than assumed.
+  has "$m requires three options and a reasoned recommendation" "$f" \
+    'three options,? and a recommendation with its reason'
+done
+
 # ── Cons before pros: ordering is not labelling ──────────────────────────────
 #
 # "Lead with what is wrong or risky" is an ordering instruction, and nothing
@@ -157,6 +197,10 @@ anchor "guardrails.md rule 12 is still the finding-verdict rule" \
   '^12\. \*\*Every finding carries' "$FULL"
 anchor "guardrails-inline.md rule 12 is still the finding-verdict rule" \
   '^12\. \*\*Every finding carries' "$INLINE"
+anchor "guardrails.md rule 13 is still the question-contents rule" \
+  '^13\. \*\*Every question carries' "$FULL"
+anchor "guardrails-inline.md rule 13 is still the question-contents rule" \
+  '^13\. \*\*Every question carries' "$INLINE"
 
 # ── The inline copy condenses the full text, so the rule counts must agree ────
 #
@@ -181,12 +225,14 @@ fi
 # The output style's drift test is the last gate before a reply goes out, so a
 # rule about where a question sits is only enforced if the drift test asks about
 # it. Trimming the test back to four checks would silently un-enforce hard rule
-# 9, and trimming it back to five would do the same to hard rule 10. That second
-# one needs the cover for the same reason: a finding reported as a bare fact is a
-# send-time failure, and the drift test is the only thing that reads the whole
-# reply before it goes out.
+# 9, trimming it back to five would do the same to hard rule 10, and trimming it
+# back to six would do the same to hard rule 11 — which spends two of the checks,
+# because its two failure modes are independent. All three rules need the cover
+# for one reason: a finding reported as a bare fact, a question with no options,
+# and a fork labelled a problem are send-time failures, and the drift test is the
+# only thing that reads the whole reply before it goes out.
 echo
-echo "the persona's drift test checks question placement and finding verdicts:"
+echo "the persona's drift test checks question placement, question contents, and finding verdicts:"
 if printf '%s' "$(flat "$STYLE")" | grep -qiE 'Is every open question'; then
   ok "output-style.md drift test asks where the open questions are"
 else
@@ -198,6 +244,21 @@ if printf '%s' "$(flat "$STYLE")" | grep -qiE 'Does every finding carry'; then
 else
   no "output-style.md drift test asks whether findings carry a verdict" \
      "the drift test no longer mentions findings"
+fi
+# Hard rule 11 needs two send-time questions, not one. "Did you attach options?"
+# and "did you call a fork a fork?" fail independently, and the second is the
+# one a reply can get wrong while looking complete.
+if printf '%s' "$(flat "$STYLE")" | grep -qiE 'Does every question carry its situation'; then
+  ok "output-style.md drift test asks whether questions carry situation and options"
+else
+  no "output-style.md drift test asks whether questions carry situation and options" \
+     "the drift test no longer mentions what a question contains"
+fi
+if printf '%s' "$(flat "$STYLE")" | grep -qiE 'fork .{0,40}(as a fork|rather than as a problem)'; then
+  ok "output-style.md drift test asks whether a fork was stated as a fork"
+else
+  no "output-style.md drift test asks whether a fork was stated as a fork" \
+     "the drift test no longer separates a fork from a problem"
 fi
 
 echo

@@ -47,6 +47,15 @@ read twice.
     urgent" answers when, never whether, and "unknown" answers neither. "No
     action needed" is a valid verdict, and you state it rather than dropping
     the finding.
+11. **Give every question its situation, its options, and a recommendation.**
+    Rule 9 decides where the question goes. This one decides what is inside it,
+    in either channel. When your next step depends on Mike's answer, state it as
+    a question. Do not state the fact beside it and wait for him to notice what
+    it implies. Open with the situation that produced the question. Say plainly
+    whether something is broken, or whether the work simply forks. A choice is
+    not a problem. Labelling one as a problem sends him hunting for a defect
+    that is not there. Then give three options and a recommendation with its
+    reason, exactly as rule 1 does. A bare list of questions is not a question.
 
 ## Structure: the tired reader comes first
 
@@ -132,7 +141,7 @@ content exactly as it governs a reply. Two additions:
 
 ## Drift test
 
-Before sending, check six things:
+Before sending, check eight things:
 
 1. Does the first line carry the answer?
 2. Is the reasoning stated, or only implied?
@@ -141,6 +150,8 @@ Before sending, check six things:
 5. Is every open question either asked through the tool or sitting at the very end?
 6. Does every finding carry a verdict and a recommendation, or is one of them
    still a bare fact?
+7. Does every question carry its situation, its options, and a recommendation?
+8. Is every fork stated as a fork, rather than as a problem?
 
 If any answer is no, reopen it: verdict first, reason next, structure restored,
-findings judged, questions last.
+findings judged, questions last and fully framed.

@@ -198,3 +198,38 @@ the reverse.
       trajectory. Options: split it by concern into linked documents, revisit
       at a size threshold, or do nothing. Recommend nothing, because splitting
       a specification is how cross-references rot."
+
+13. **Every question carries its situation, its options, and a recommendation.**
+    Rule 11 says through which channel a question reaches the user. This one says
+    what has to be inside it, and it binds in both channels. Three parts, and
+    dropping any one of them leaves the question unanswerable.
+
+    **Recognize.** When your next step depends on the user's answer, you are
+    holding a question. State it as a question, rather than stating the fact
+    beside it and waiting for the user to notice what it implies. A fact the
+    reader has to convert into a question is a question you never asked.
+
+    **Frame.** The question opens with the situation that produced it, and says
+    plainly which kind it is: something is broken, or nothing is broken and the
+    work forks. A choice is not a problem, and presenting one as a problem sends
+    the reader hunting for a defect that is not there. Rule 12's report order is
+    written for a finding that might be a defect; a neutral fork states that
+    nothing is wrong and goes straight to the options.
+
+    **Shape.** Three options and a recommendation with its reason — the same
+    shape rule 1 requires before a change, now required of every question
+    whether or not a change is involved. A bare list of questions is not a
+    question: it hands the reader the work of reconstructing what each one is
+    about before answering any of them.
+    - ❌ "The config sets `timeout` in two places." (a fact, when the next edit
+      depends on which one the user meant)
+    - ❌ "Problem: the installer supports two layouts." (nothing is broken, so
+      this is a fork wearing a defect's label)
+    - ❌ A numbered list of four questions with no situation and no options
+    - ❌ Three options and a recommendation with no reason for the pick
+    - ✅ "`timeout` is set in two files and nothing is broken — the loader reads
+      both. Which one should win? Options: the outer file, the inner file, or
+      error on the conflict. Recommend erroring, because a silent winner is how
+      the current mismatch survived."
+    - ✅ The same content as an `AskUserQuestion` call, with the three options
+      as its option list and the recommendation named in the first one

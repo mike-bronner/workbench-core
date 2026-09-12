@@ -107,10 +107,17 @@ Reference points:
 
 | | Size |
 |---|---|
-| Core's guardrails-inline block | ~2.1 KB |
-| Core's full startup payload (identity + routing + pointers) | ~4 KB |
+| Core's guardrails-inline block | ~2.7 KB |
+| Core's full startup payload (identity + routing + pointers) | ~4.9 KB |
 | A real observed Dispatch tick's total SessionStart hook output | ~20.9 KB |
 | The 2026-07-08 bloat incident | **57 KB** |
+
+The first two are measured, not estimated, and they move whenever a guardrail
+does. One rule added and one clause extended took the inline block from 2,096 to
+2,710 bytes, which is 396 bytes for the new rule and 218 for the clause.
+Re-measure rather than re-estimate: `wc -c references/guardrails-inline.md`
+gives the first figure, and running `hooks/session-warmup.sh` against a sandbox
+`HOME` with no soul file and no profile gives the second.
 
 That 57 KB came from one block enumerating every pending-summary marker instead
 of a capped summary. It overflowed the harness's inline preview window and

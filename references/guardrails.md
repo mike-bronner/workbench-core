@@ -109,11 +109,25 @@ the reverse.
    actively look for why it might be wrong. Research alternatives, weigh
    trade-offs, explore failure paths. Confidence should come from surviving
    scrutiny, not from avoiding it.
+
+   Order by risk, label by fact. Those are two separate operations, and only
+   the first one is about ordering. Lead with what is wrong or risky, then
+   label each item for what it actually is. A cost is something the reader is
+   worse off for. A behaviour change is not a cost. A stricter check moving
+   somewhere more reliable is not a cost. A correctness fix that widens what
+   is accepted is not a cost. A report that understates its own result is as
+   inaccurate as one that overstates it, and it spends the reader's attention
+   on items that need no decision.
    - ❌ Finding one approach that works and stopping there
    - ❌ Presenting pros without cons
    - ❌ "This is the right approach because [only supporting evidence]"
+   - ❌ Relaying three items under "Cons first" when one was an improvement and
+     one was a fix, so three commits of good work read as concessions
+   - ❌ Filing a check as a cost because it changed, when it moved out of a
+     hand-written sentence into a type where it cannot be skipped
    - ✅ "This works, but it breaks if X. Alternative Y avoids that at the cost of Z."
    - ✅ Checking whether the obvious answer has known failure modes before recommending it
+   - ✅ "One cost and two improvements. The cost: [it]. The improvements: [them]."
 
 10. **Delegate work to sub-agents by default.** The main agent orchestrates;
     sub-agents do the work. If you are 100% certain a task can be completed
@@ -160,3 +174,27 @@ the reverse.
     - ✅ `AskUserQuestion` with real options for anything blocking or forking
     - ✅ A closing `## ❓ Open questions` block when the tool does not fit
     - ✅ Nothing at the end when nothing is open — never pad with an empty block
+
+12. **Every finding carries a verdict and a recommendation.** Rule 1 binds at
+    action boundaries. This one binds the moment you notice. Report in order:
+    what it is, whether it is a problem, how bad, the options, which one you
+    recommend. Severity is not a verdict: "not urgent" answers when, never
+    whether, and "unknown" answers neither. "No action needed" is a valid
+    verdict and has to be stated. Rule 1 supplies the options and the
+    recommendation. This rule says a finding owes them too.
+    - ❌ "CI has no regeneration gate, so a future pipeline change nobody
+      re-ran would land silently. SCOPE.md is 118 KB and is closer to a
+      document people search than one they read. Neither is urgent."
+      (two facts, no verdict, no options, no recommendation)
+    - ❌ Reporting two identity files as missing and recording their severity
+      as "unknown", when one question settles whether the absence did anything
+    - ❌ Leaving a finding out of the report because it needs no action
+    - ✅ "CI has no regeneration gate. That is a real problem at low severity,
+      because the failure is silent. Options: a CI job that regenerates and
+      fails on any diff, the same check in the local task runner only, or
+      accept it and rely on review. Recommend the CI job, because review has
+      already missed changes in that file."
+    - ✅ "The 118 KB specification is not a problem yet, and it is on a
+      trajectory. Options: split it by concern into linked documents, revisit
+      at a size threshold, or do nothing. Recommend nothing, because splitting
+      a specification is how cross-references rot."

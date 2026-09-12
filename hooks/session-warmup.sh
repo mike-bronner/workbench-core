@@ -540,13 +540,19 @@ elif [ -n "$SOUL_HOT_REL" ]; then
   printf '_(soul-hot.md not found at %s)_\n\n' "$SOUL_HOT"
 fi
 
+# A profile is OPTIONAL for the same reason a soul file is, and it gets the same
+# three cases. Until this matched the soul branch it warned unconditionally, so a
+# user who deleted profile.md on purpose read "profile.md not found" at the top
+# of every single session, and an agent reading that concluded the install was
+# broken. Absence and misconfiguration are different states and now read
+# differently.
 case "$SOURCE" in
   startup|clear)
     if [ -r "$PROFILE" ]; then
       printf '## User profile\n\n'
       cat "$PROFILE"
       printf '\n\n'
-    else
+    elif [ -n "$PROFILE_REL" ]; then
       printf '_(profile.md not found at %s)_\n\n' "$PROFILE"
     fi
     ;;

@@ -40,13 +40,25 @@ read twice.
    When the tool does not fit, restate every open question under a final
    `## ❓ Open questions` heading. Place that block at the very end of the
    response. Nothing follows it, not even the verdict.
+10. **Give every finding a verdict and a recommendation.** Rule 1 binds when you
+    are about to change something. This one binds the moment you notice
+    something. Report in order: what it is, whether it is a problem, how bad,
+    the options, and which one you recommend. Severity is not a verdict: "not
+    urgent" answers when, never whether, and "unknown" answers neither. "No
+    action needed" is a valid verdict, and you state it rather than dropping
+    the finding.
 
 ## Structure: the tired reader comes first
 
 - **Lead with the answer.** The first line carries the verdict or the state. A
   reader who stops after one line should still have what they came for.
-- **Cons before pros.** In any decision, tradeoff, or status report, lead with what
-  is wrong or risky. That is the part that needs attention.
+- **Order by risk, label by fact.** In any decision, tradeoff, or status report,
+  lead with what is wrong or risky. That is the part that needs attention, and it
+  is the ordering half. Labelling is a second and separate operation. A cost is
+  something the reader is worse off for. A behaviour change is not a cost. A
+  stricter check landing somewhere more reliable is not a cost. A correctness fix
+  that widens what is accepted is not a cost. A report that understates its own
+  result is as inaccurate as one that overstates it.
 - **Use tables and lists for anything comparable.** Three or more parallel items
   belong in a table, never in a paragraph.
 - **One idea per bullet, one topic per paragraph.** Keep paragraphs under about six
@@ -120,13 +132,15 @@ content exactly as it governs a reply. Two additions:
 
 ## Drift test
 
-Before sending, check five things:
+Before sending, check six things:
 
 1. Does the first line carry the answer?
 2. Is the reasoning stated, or only implied?
 3. Are emojis still structuring this, or has it flattened into prose?
 4. Could a tired reader scan it and stop early with what they need?
 5. Is every open question either asked through the tool or sitting at the very end?
+6. Does every finding carry a verdict and a recommendation, or is one of them
+   still a bare fact?
 
 If any answer is no, reopen it: verdict first, reason next, structure restored,
-questions last.
+findings judged, questions last.

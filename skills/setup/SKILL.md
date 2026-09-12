@@ -64,11 +64,13 @@ Present each field to the user one at a time. Show the current value (from exist
   killed during teardown; the marker it writes is drained by the next session's warmup instead.
 
 ### 7. `identity_files`
-- **Prompt:** "Identity file paths (relative to memory store)"
-- **Sub-fields:**
-  - `soul_hot` — default `identity/soul-hot.md`
-  - `soul_core` — default `identity/soul-core.md`
-  - `profile` — default `identity/profile.md`
+- **Prompt:** "Identity file paths (relative to memory store), blank for none"
+- **Sub-fields, all optional, all unset by default:**
+  - `soul_hot`: leave blank to use `identity/soul-hot.md`
+  - `soul_core`: leave blank to use `identity/soul-core.md`
+  - `profile`: leave blank to use `identity/profile.md`
+- **Note:** Blank means unset, not missing. The warmup resolves the default path either way, so a file sitting at the default path is loaded whether or not the key exists. Set a key only to point at a **non-default** path.
+- **Note:** Never stamp these keys with their own defaults. `hooks/session-warmup.sh` treats a configured path that does not resolve as a misconfiguration and warns about it at every session start, and it stays silent when no key is set and no file exists, because that absence is deliberate. Stamping the defaults made the silent branch unreachable for everyone who ran setup, so users who had deleted a soul file or a profile on purpose read a "not found" line at the top of every session and concluded the install was broken.
 - **Note:** These are loaded by the session-warmup hook at startup. Load order: soul-hot → profile → skills-protocol → guardrails. Guardrails ship with the plugin (not user-configurable) and load last as absolute rules that override all other identity files.
 
 ## Step 0 — Migrate legacy config (if present)
@@ -117,6 +119,11 @@ mkdir -p "$CONFIG_DIR"
 # Merge the collected values onto the existing object (existing keys not listed
 # here — e.g. persona/output_style — are preserved untouched). Only include
 # memory_port when it differs from the 8765 default, to keep config minimal.
+#
+# identity_files follows the same "omit the default" rule as memory_port, and for
+# a sharper reason: an unset key is the signal the warmup reads to stay silent
+# about a file the user deleted on purpose. A blank answer drops the key, and an
+# identity_files that ends up empty is deleted outright.
 tmp="$(mktemp)"
 jq \
   --arg agent_name        "$AGENT_NAME" \
@@ -124,6 +131,9 @@ jq \
   --arg memory_cache      "$MEMORY_CACHE" \
   --arg mcp_name          "$MCP_NAME" \
   --arg summary_model     "$SUMMARY_MODEL" \
+  --arg soul_hot          "$IDENTITY_SOUL_HOT" \
+  --arg soul_core         "$IDENTITY_SOUL_CORE" \
+  --arg profile           "$IDENTITY_PROFILE" \
   --argjson auto_summarize "$AUTO_SUMMARIZE" \
   --argjson memory_port   "$MEMORY_PORT" \
   '
@@ -133,10 +143,12 @@ jq \
   | .memory_mcp_server_name = $mcp_name
   | .summary_model = $summary_model
   | .auto_summarize = $auto_summarize
-  | .identity_files = (.identity_files // {})
-  | .identity_files.soul_hot  = (.identity_files.soul_hot  // "identity/soul-hot.md")
-  | .identity_files.soul_core = (.identity_files.soul_core // "identity/soul-core.md")
-  | .identity_files.profile   = (.identity_files.profile   // "identity/profile.md")
+  | .identity_files = (
+      (.identity_files // {})
+      | .soul_hot = $soul_hot | .soul_core = $soul_core | .profile = $profile
+      | with_entries(select(.value != ""))
+    )
+  | if (.identity_files | length) == 0 then del(.identity_files) else . end
   | if $memory_port == 8765 then del(.memory_port) else .memory_port = $memory_port end
   ' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
 ```
@@ -513,6 +525,12 @@ launch, which means the **relaunch in Step 7**, not merely a new session.
 
 If `agent_name` changed from its previous value (or this is a first-time setup):
 
+A *target path* here is a path the user configured in step 7. An `identity_files`
+key that is unset has no target path, and it gets no file: seeding one would
+re-run a decision the user already made, and the user who blanked the key is
+exactly the user who deleted that file on purpose. `skills-protocol.md` is the
+exception below, because it is not an identity file and has no key.
+
 1. Read the template files from `${CLAUDE_PLUGIN_ROOT}/assets/templates/`:
    - `soul-hot.template.md`
    - `soul-core.template.md`
@@ -527,8 +545,8 @@ If `agent_name` changed from its previous value (or this is a first-time setup):
    - Ask: "Overwrite with re-templatized version, or keep your current files?"
    - If they choose to keep, skip the overwrite but update any `{{agent_name}}` references in the existing content (find-and-replace the OLD agent name with the NEW one, preserving all other customizations).
 
-4. **If identity files don't exist:**
-   - Write the templatized versions to `{memory_path}/{identity_files.soul_hot}`, etc.
+4. **If a configured identity file doesn't exist:**
+   - Write the templatized version to `{memory_path}/{the configured path}`, for each of the `identity_files` keys the user set, and for none of the keys they left blank.
    - Write `skills-protocol.template.md` to `{memory_path}/identity/skills-protocol.md` (no `{{agent_name}}` substitution needed — it's agent-agnostic). Replace `{{date}}` with today's date.
    - Create parent directories as needed.
 

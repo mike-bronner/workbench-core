@@ -14,6 +14,15 @@
 # memory-capture-nudge.sh. Reads the hook payload from stdin; when the prompt is
 # substantive AND the vault returns fresh hits, prints one short recall block.
 #
+# THE PROMPT IS ALL THIS HOOK EVER SEES. A UserPromptSubmit hook receives the
+# prompt and nothing else, so a topic the agent uncovers mid-task — while
+# scanning the repo, reading a file, following a trail the opening prompt never
+# named — is never searched here. memory-scan-recall.sh (PostToolUse) closes
+# that: it piggybacks on a scan the agent is already running and searches with
+# that scan's own query. The two share every lever below through
+# lib/memory-recall-core.sh, including the seen-file, so a memory this hook
+# already injected is never repeated by a later scan.
+#
 # COST DISCIPLINE (this is load-bearing, not optional — see the vault insights
 # 2026-06-26-claude-code-hook-context-cost and -memory-capture-authorization-drift):
 # UserPromptSubmit additionalContext ACCUMULATES in the transcript (N turns = N
@@ -27,20 +36,9 @@
 #   3. Scheduled-task guard — an unattended cron fire gets nothing at all. It
 #      has no human to serve, and its fresh-per-tick session_id defeats lever 1.
 #   4. Small top-K — default 2 hits, each trimmed to a one-line summary.
-#
-# TRANSPORT: this hook shells out to the `markdown-vault-mcp search` CLI — a
-# one-shot subprocess that loads the index, runs the query, prints JSON, and
-# exits. NOT the `serve` command: no port, no daemon, nothing left running
-# afterward. That makes it consistent with the per-session stdio MCP transport
-# (mcp-memory.sh) — no shared server for either to depend on — at the cost of
-# ~1s per call (process start + loading the embedding index fresh every time,
-# vs. a warm daemon's ~25ms). Deliberate trade: see the vault insight
-# 2026-07-26-memory-recall-cli-migration for the measurement and the
-# alternative (a properly-supervised daemon) that was rejected in favor of
-# this. Before this, the hook curled a shared HTTP server on port 8765 that
-# the per-session-stdio revert (PR #14) left undersupervised — an orphaned
-# instance from the old shared-server model kept it silently "working" for
-# 18 days after the revert, until it was found and killed.
+# Levers 1 and 4, the vault resolution, the search transport and the curated-type
+# filter all live in lib/memory-recall-core.sh now; the reasoning for each moved
+# with it. Levers 2 and 3 are this hook's own, because they read a prompt.
 #
 # Env knobs:
 #   WORKBENCH_MEMORY_RECALL=0           → disable entirely.
@@ -51,11 +49,11 @@
 #                                         (default 8 — the call itself takes ~1s;
 #                                         this only bounds a pathological hang).
 #   WORKBENCH_MEMORY_RECALL_STATE=DIR   → per-session seen-paths state dir override.
+#                                         Shared with memory-scan-recall.sh: one
+#                                         dir, one seen-file, one bound.
 #   WORKBENCH_MEMORY_RECALL_TYPES=a,b   → frontmatter types eligible for injection
-#                                         (default decision,insight,topic,feedback,
-#                                         reference,project,skill-learnings,
-#                                         recurring-issue; set empty to disable the
-#                                         filter — see the membership rule below).
+#                                         (default in lib/memory-recall-core.sh;
+#                                         set empty to disable the filter).
 #   (vault location comes from lib/memory-env.sh, like every other hook.)
 #
 # Never fails the session. Always exits 0 — missing jq, a binary that can't be
@@ -142,73 +140,23 @@ case "$_trimmed" in
   '<scheduled-task '*) exit 0 ;;
 esac
 
-# ──────────── Resolve vault env (source dir / index / cache) ────────────
+# ──────────── Resolve vault env + search binary ────────────
 # Same resolution every other memory hook uses, so we always agree on where the
-# vault and its index live. memory_load_env exports the MARKDOWN_VAULT_MCP_*
-# env the CLI reads (precedence: WORKBENCH_* override → config.json → default).
+# vault and its index live, and the same one-shot CLI transport memory-scan-
+# recall.sh uses. A failure to resolve either is a silent no-op — the fail-open
+# contract, identical to every other failure mode in this hook.
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# SC2034: HOOKS_DIR is not read in this file — it is read by memory-install.sh
-# (`${HOOKS_DIR:?HOOKS_DIR must be set}/wheels`), which memory-env.sh pulls in
-# transitively. shellcheck cannot follow that far, so the use is invisible here.
-# shellcheck disable=SC2034
-HOOKS_DIR="$HOOK_DIR"
-# shellcheck source=hooks/lib/memory-env.sh
-. "$HOOK_DIR/lib/memory-env.sh" 2>/dev/null || exit 0
-memory_load_env 2>/dev/null || exit 0
+# shellcheck source=hooks/lib/memory-recall-core.sh
+. "$HOOK_DIR/lib/memory-recall-core.sh" 2>/dev/null || exit 0
+memory_recall_prepare _memory_recall_noop_log || exit 0
 
-LIMIT="${WORKBENCH_MEMORY_RECALL_LIMIT:-2}"
-case "$LIMIT" in ''|*[!0-9]*) LIMIT=2 ;; esac
-[ "$LIMIT" -lt 1 ] && LIMIT=2
+LIMIT=$(memory_recall_int "${WORKBENCH_MEMORY_RECALL_LIMIT:-2}" 2)
 MODE="${WORKBENCH_MEMORY_RECALL_MODE:-hybrid}"
-TIMEOUT="${WORKBENCH_MEMORY_RECALL_TIMEOUT:-8}"
-case "$TIMEOUT" in ''|*[!0-9]*) TIMEOUT=8 ;; esac
+TIMEOUT=$(memory_recall_int "${WORKBENCH_MEMORY_RECALL_TIMEOUT:-8}" 8)
 
-# ──────────── Resolve the server binary ────────────
-# Same shared resolution mcp-memory.sh and memory-server-spawn.sh use.
-# WORKBENCH_MEMORY_SERVER_BIN short-circuits it — the test suite points that at
-# the fake-binary fixture; a missing/unresolvable binary is a silent no-op, the
-# same fail-open contract as every other failure mode in this hook.
-# shellcheck source=hooks/lib/memory-install.sh
-. "$HOOK_DIR/lib/memory-install.sh" 2>/dev/null || exit 0
-if [ -n "${WORKBENCH_MEMORY_SERVER_BIN:-}" ]; then
-  SERVER_BIN="$WORKBENCH_MEMORY_SERVER_BIN"
-else
-  # Never block a prompt on another session's install: a 0s lock timeout makes
-  # the resolve fail closed instead of waiting, and this hook's contract is a
-  # silent no-op on any failure. The installing session gets memory; this
-  # prompt simply goes without recall.
-  WORKBENCH_MEMORY_INSTALL_LOCK_TIMEOUT=0 \
-    memory_install_server _memory_recall_noop_log 2>/dev/null || exit 0
-fi
-[ -n "${SERVER_BIN:-}" ] && [ -x "$SERVER_BIN" ] || exit 0
-
-# Curated-type filter: 77% of the index is session summaries, and unfiltered
-# recall spends its whole injection budget on them (2026-07-08 audit). Over-
-# fetch 4× the limit, then keep only curated types. The server's `filters`
-# param can't express type-IN-set (single value, ANDed), so filter client-side.
-#
-# MEMBERSHIP RULE — stated so this list cannot go stale by omission: a type
-# belongs here when a note of that type asserts something STILL TRUE NOW that is
-# meant to change what the agent does next. Judge a type by that, not by whether
-# it appears below.
-#
-# The first cut of this list named five types and so excluded, silently, the
-# ones that carry explicit lessons. All three are admitted by the rule and are
-# now in the default:
-#   project         — an ongoing effort's state and the constraints it fixed.
-#   skill-learnings — the durable per-skill execution notes under skills/.
-#   recurring-issue — a fault that keeps coming back, and what settles it.
-# Measured, not assumed: replaying the prompt "go ahead and push and create a
-# release" against the live vault ranked skills/develop.learnings.md 4th (twice,
-# 2026-09-14), where the old five-type list discarded it before injection.
-#
-# Two types stay OUT on that same rule, deliberately rather than by oversight:
-#   session   — narrates one past session. This is the 77% above.
-#   learnings — DATED decision-quality evaluation snapshots under learnings/,
-#               each superseded by the next. Injecting an old snapshot into a
-#               live turn misinforms; the conclusions worth keeping are promoted
-#               to decision/insight notes, which ARE eligible.
-TYPES="${WORKBENCH_MEMORY_RECALL_TYPES-decision,insight,topic,feedback,reference,project,skill-learnings,recurring-issue}"
+# Over-fetch 4× the limit so the client-side curated-type filter has room to
+# drop the session summaries that dominate the index.
+TYPES="${WORKBENCH_MEMORY_RECALL_TYPES-$MEMORY_RECALL_DEFAULT_TYPES}"
 FETCH=$((LIMIT * 4))
 
 # Truncate the search query: the raw prompt can carry pasted logs or diffs;
@@ -218,117 +166,34 @@ QUERY="${_trimmed:0:500}"
 # Liveness breadcrumb — stamped on every substantive-prompt attempt (before
 # the server call, so a down server still counts as "hook alive"). The warmup
 # alerts when this goes stale >48h; a silent hook death is otherwise invisible.
+# Deliberately NOT stamped by memory-scan-recall.sh: the question worth asking
+# is "did recall fire for a real human prompt", not "is some hook wired up".
 STATE_DIR="${WORKBENCH_MEMORY_RECALL_STATE:-$HOME/.claude-workbench/memory-recall}"
 if mkdir -p "$STATE_DIR" 2>/dev/null; then
   date +%s > "$STATE_DIR/last-attempt" 2>/dev/null || true
 fi
 
-# ──────────── Call the vault's search CLI (one-shot subprocess) ────────────
-# `search --json` prints a bare JSON array [{path,title,frontmatter,sections,…}]
-# straight to stdout and exits — no handshake, no session id, no framing (that
-# was all Streamable-HTTP transport ceremony; the CLI has none of it). Guarded
-# by a portable bash watchdog (no `timeout`/`gtimeout` on stock macOS): run in
-# the background, race a `sleep $TIMEOUT` killer against it, capture stdout via
-# a temp file since a backgrounded `VAR=$(cmd) &` would run the assignment in a
-# subshell and lose the result. Deliberately NOT `disown`ed (unlike the
-# detach-and-outlive use in memory-server-spawn.sh) — disowning stops bash from
-# tracking the job, and `wait "$CLI_PID"` on an untracked pid returns before the
-# process has actually finished writing, racing the read below. The watchdog
-# SIGTERMs only CLI_PID itself (no process-group kill — job control is off in a
-# non-interactive script, so `-$CLI_PID` would target this hook's OWN group);
-# fine for the real CLI, which is a single process with no children.
-OUT_FILE="$(mktemp 2>/dev/null)" || exit 0
-"$SERVER_BIN" search "$QUERY" --mode "$MODE" --limit "$FETCH" --json \
-  >"$OUT_FILE" 2>/dev/null &
-CLI_PID=$!
-( sleep "$TIMEOUT"; kill -TERM "$CLI_PID" 2>/dev/null ) &
-WATCHDOG_PID=$!
-wait "$CLI_PID" 2>/dev/null
-CLI_RC=$?
-kill "$WATCHDOG_PID" 2>/dev/null; wait "$WATCHDOG_PID" 2>/dev/null
-
-RESPONSE=""
-[ "$CLI_RC" -eq 0 ] && RESPONSE="$(cat "$OUT_FILE" 2>/dev/null)"
-rm -f "$OUT_FILE" 2>/dev/null
-[ -n "$RESPONSE" ] || exit 0
-
-# ──────────── Parse the search hits ────────────
-# Each hit becomes a TSV row of path / title / type / one-line summary.
-_extract() {
-  printf '%s\n' "$RESPONSE" | jq -r --argjson n "$LIMIT" --arg types "$TYPES" '
-    ($types | if . == "" then [] else split(",") end) as $allowed
-    | ( if ($allowed | length) > 0
-        then map(select((.frontmatter.type // "note") as $t | $allowed | index($t)))
-        else . end )
-    | .[:$n][]
-    | [ (.path // ""),
-        (.title // .frontmatter.name // .path // ""),
-        (.frontmatter.type // "note"),
-        ( ( .frontmatter.summary
-            // (.sections[0].content // "")
-            ) | gsub("[\r\n\t]+"; " ") | gsub("^ +| +$"; "") )
-      ]
-    | @tsv
-  ' 2>/dev/null
-}
-ROWS=$(_extract)
+# ──────────── Search, filter, dedup ────────────
+RESPONSE=$(memory_recall_search "$SERVER_BIN" "$QUERY" "$MODE" "$FETCH" "$TIMEOUT") || exit 0
+ROWS=$(memory_recall_rows "$RESPONSE" "$LIMIT" "$TYPES")
 [ -n "$ROWS" ] || exit 0
 
-# ──────────── Per-session dedup (the accumulation bound) ────────────
-# A memory path is injected at most once per session. Track seen paths in a
-# per-session file; filter this turn's hits against it; append the survivors.
-# If every hit was already injected this session → emit nothing.
-mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
-# Prune seen-files older than 3 days (mirrors capture-nudge / warmup retention).
-find "$STATE_DIR" -name '*.seen' -mtime +3 -delete 2>/dev/null
-SAFE_SID=$(printf '%s' "$SESSION_ID" | tr -c 'A-Za-z0-9._-' '_')
-SEEN_FILE="$STATE_DIR/${SAFE_SID}.seen"
-touch "$SEEN_FILE" 2>/dev/null || exit 0
-
-# Build the bullet list from rows whose path is not already in SEEN_FILE.
-BULLETS=""
-NEW_PATHS=""
-# Cap each summary to keep the injected block tight (~tweet per hit).
-_SUMMAX=160
-while IFS=$'\t' read -r _path _title _type _sum; do
-  [ -n "$_path" ] || continue
-  # Skip if already injected this session (persisted seen-file) OR already staged
-  # this turn. The second check is belt-and-suspenders against a same-path
-  # duplicate within THIS turn's rows — both use the same fixed-string,
-  # whole-line match so a path that is a substring of another can't false-hit.
-  if grep -Fxq "$_path" "$SEEN_FILE" 2>/dev/null; then
-    continue
-  fi
-  if printf '%s' "$NEW_PATHS" | grep -Fxq "$_path" 2>/dev/null; then
-    continue
-  fi
-  if [ "${#_sum}" -gt "$_SUMMAX" ]; then
-    _sum="${_sum:0:$_SUMMAX}…"
-  fi
-  BULLETS="${BULLETS}• ${_title} [${_type}] — ${_sum} (${_path})
-"
-  NEW_PATHS="${NEW_PATHS}${_path}
-"
-done <<EOF
-$ROWS
-EOF
+SEEN_FILE=$(memory_recall_seen_file "$STATE_DIR" "$SESSION_ID") || exit 0
+memory_recall_bullets "$ROWS" "$SEEN_FILE"
 
 # Nothing new for this session → stay silent (the dedup bound at work).
-[ -n "$BULLETS" ] || exit 0
+[ -n "$MEMORY_RECALL_BULLETS" ] || exit 0
 
-# Commit the newly-injected paths to the seen file FIRST, and emit ONLY if that
-# record succeeded — so dedup state and emitted output never diverge. Emitting
-# without recording would re-inject the same memories every subsequent turn (a
-# silent, unbounded context-cost regression); recording without emitting just
-# costs one missed recall. The former is the only failure worth avoiding here.
-if printf '%s' "$NEW_PATHS" >> "$SEEN_FILE" 2>/dev/null; then
+# Commit the newly-injected paths FIRST, and emit ONLY if that record succeeded,
+# so dedup state and emitted output never diverge.
+if memory_recall_commit "$SEEN_FILE" "$MEMORY_RECALL_NEW_PATHS"; then
   # ──────────── Emit the recall block ────────────
   # A short header + the bullets. The verify caveat is deliberate: recalled
   # memories reflect what was true WHEN WRITTEN — the agent must check them
   # against current code before acting, never treat them as ground truth.
   HEADER='🧠 Possibly-relevant past memories (vault auto-recall — verify against current code before acting; these reflect what was true when written):'
   CTX="${HEADER}
-${BULLETS}"
+${MEMORY_RECALL_BULLETS}"
 
   jq -cn --arg ctx "$CTX" \
     '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $ctx}}' \

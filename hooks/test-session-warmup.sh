@@ -115,9 +115,11 @@ assert_contains "guardrails carry the question contents" "$OUT" "state it as a q
 assert_contains "guardrails separate a fork from a defect" "$OUT" "a choice is not a problem"
 assert_missing  "skills-protocol not inlined"      "$OUT" "SKILLSPROTO-CANARY"
 assert_contains "skills-protocol pointer present"  "$OUT" "Skills protocol: read \`$SANDBOX/memory/identity/skills-protocol.md\`"
-# The recall-ORDERING rule has no hook behind it — memory-recall.sh only ever
-# sees the opening prompt — so the injected routing block is the only thing that
-# carries it, and these are the only assertions that prove it is still there.
+# The recall-ORDERING rule has no hook that can carry it in full — memory-recall.sh
+# only ever sees the opening prompt, and memory-scan-recall.sh only fires on a scan
+# that carries an extractable query — so the injected routing block is the only
+# thing that carries the whole rule, and these are the only assertions that prove
+# it is still there.
 # The where-rule is asserted alongside it because the two answer different
 # questions and a rewrite that collapses them into one bullet loses the answer
 # to "where", which is the older of the two.

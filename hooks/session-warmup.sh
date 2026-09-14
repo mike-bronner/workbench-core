@@ -521,7 +521,10 @@ fi
 # search for. hooks/memory-recall.sh searches the USER'S PROMPT at turn start and
 # nothing else, and that is not only a coverage gap. The throttles it needs for
 # context cost (prompt-only input, turn-start only, 2 hits, per-session dedup, a
-# substance gate) mean a topic a scan uncovers mid-task never reaches it — and
+# substance gate) mean a topic a scan uncovers mid-task never reaches it.
+# hooks/memory-scan-recall.sh (PostToolUse) now catches PART of that — the scans
+# that carry an extractable query — but only those, so the floor below still has
+# to carry the rule in full. And
 # even on the opening prompt, the prompt's own wording is a WEAKER query than the
 # one the agent can form from the task. Measured: "go ahead and push and create a
 # release" left skills/release.learnings.md — which carries the release-title

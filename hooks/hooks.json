@@ -98,6 +98,15 @@
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/mcp-output-cap.sh\""
           }
         ]
+      },
+      {
+        "matcher": "Grep|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-scan-recall.sh\""
+          }
+        ]
       }
     ],
     "PreCompact": [

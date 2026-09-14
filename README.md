@@ -228,6 +228,7 @@ core/
 │   ├── memory-capture-nudge.sh — UserPromptSubmit: nudge proactive memory WRITES
 │   ├── memory-recall-nudge.sh  — UserPromptSubmit: nudge agent-initiated memory READS (what to query)
 │   ├── memory-recall.sh        — UserPromptSubmit: inject relevant memory READS (recall)
+│   ├── memory-scan-recall.sh   — PostToolUse: recall mid-turn, using a repo scan's own query
 │   ├── mcp-output-cap.sh       — PostToolUse: cap oversized MCP tool responses
 │   ├── outbound-prose-guard.sh — PreToolUse: check gh + board-MCP prose against the output style
 │   ├── credential-guard.sh     — PreToolUse: block reads of ~/.ssh, ~/.aws, ~/.gnupg, and .env files
@@ -237,6 +238,7 @@ core/
 │   ├── agent-dispatch-gate.sh  — PreToolUse: deny a main-agent Agent dispatch that skips the five-slot brief
 │   ├── lib/brief-template.sh   — the ONE definition of the five-slot brief (gate + deny message read it)
 │   ├── lib/                    — sourceable libs: memory-env / -probe / -vacuum / -install, summary-dispatch, prose-check,
+│   │                             memory-recall-core (levers both recall hooks share), scan-query (a scan's own query),
 │   │                             shell_parse (shared tokeniser), destructive-db-check, vault-git-check
 │   └── fixtures/               — test fixtures (fake-server stub, no real server)
 ├── docs/
@@ -280,6 +282,7 @@ These hooks fire across the session lifecycle and on each turn:
 |------|--------|---------|
 | `SessionStart` | `hooks/session-warmup.sh` | Identity injection, retention cleanup, pending-summary drain, housekeeping notices (written to a file, not injected) |
 | `PostToolUse` | `hooks/mcp-output-cap.sh` | Cap oversized MCP tool responses (matcher `^mcp__`) — see [MCP output capping](#mcp-output-capping) |
+| `PostToolUse` | `hooks/memory-scan-recall.sh` | Mid-turn recall — search the vault with a repo scan's own query and inject hits beside the scan's results (matcher `Grep\|Bash`), **once per session** per memory, sharing that bound with `memory-recall.sh` |
 | `PreCompact` | `hooks/session-log.sh` | Dump raw log checkpoint, spawn summary-writer |
 | `PostCompact` | `hooks/session-warmup.sh` | Re-inject identity after context compression |
 | `SessionEnd` | `hooks/session-log.sh` | Dump final log segment and write the pending-summary marker — **no writer is spawned here** (see [Why SessionEnd does not spawn](#why-sessionend-does-not-spawn)) |
@@ -847,10 +850,20 @@ The vault is the **canonical durable memory store**. Claude Code's harness also 
 
 **Why the routing block states when recall happens and what to search for, not just where.** `memory-recall.sh` can only ever search the user's prompt, because that is the only text a `UserPromptSubmit` hook receives. Two rules follow, and the routing block (plus its router-stub twin) is the floor for both:
 
-- **When.** Search the vault *before* scanning the repo, and again whenever the task turns up something the prompt never named. A topic a code scan uncovers mid-task reaches no hook at all.
+- **When.** Search the vault *before* scanning the repo, and again whenever the task turns up something the prompt never named. `memory-scan-recall.sh` now covers part of that second case automatically (below), but only where a scan carries an extractable query — the rule remains the floor.
 - **What.** Build the query from the *task* — the convention, format, procedure, tool, or error you are about to produce or decide — not from the prompt's wording. This is the half with the measurement behind it: replaying "go ahead and push and create a release" against the live vault left `skills/release.learnings.md` — the note carrying the release-title rule — outside the top 8, while "release title naming convention", the query the task implies, put it in the top 5 (5th when first measured, 3rd on re-measure 2026-09-14 — ranks drift as the vault grows, the gap between the two queries does not). The agent's advantage over auto-recall is asking the better question, and a rule that says only *when* leaves that on the table.
 
 `memory-recall-nudge.sh` re-states both per turn, the way `memory-capture-nudge.sh` re-states the capture rule, because a `SessionStart`-only rule decays in a long session. **It is a reminder, never a classifier**: it decides whether to restate the rule, never whether a recall happens, and its fire policy is signal **OR** a heartbeat, so signal detection can only ever add a nudge and never remove one. The rejected alternative was a conditional that *skips* recall when the vault looks unlikely to help — that is a classifier over "is this turn worth a search", the shape the [agent dispatch gate](#agent-dispatch-gate) measured at 83% precision / 26% recall against 34% / 84%, where the wrong answers were not tunable away. A wrong skip also teaches the agent the rule is optional.
+
+#### Mid-turn recall, on a scan's own query
+
+The routing block and the nudge are both prose, and prose asks the agent to remember. `hooks/memory-scan-recall.sh` is the mechanism: a `PostToolUse` hook that reads the query out of a content search the agent is **already running**, searches the vault with it, and injects any fresh hits beside that scan's results, in the same turn. A topic the opening prompt never named surfaces its memory at the moment the agent goes looking for it.
+
+**It is not a classifier, and that is the whole safety argument.** It never judges whether a search is worthwhile — it piggybacks on a scan already happening and reuses that scan's own query, so there is no precision-and-recall figure to degrade. What the matcher and `lib/scan-query.py` decide is narrower and purely structural: does this tool call *carry* a query. No query means "there is none here", never "this one is not worth it". `memory-recall.sh` stays the unconditional floor on every prompt, so a scan this hook misses costs one missed extra and never removes the mechanism — the safe shape, not the gating one.
+
+**Why the matcher is `Grep|Bash` and not `Grep|Glob`.** `Grep`'s `pattern` is the scan's query verbatim, which is the strongest extraction available. `Bash` is not a fallback: `Grep` and `Glob` are not granted to every agent, and in the session that commissioned this hook the agent had neither, so every repo scan it ran went through `Bash` and a `Grep`-only matcher would have fired zero times. Under `Bash`, only content searchers are read (`rg`, `grep`, `git grep`, `ag`, `ack`), by argument **slot** rather than substring via the shared `lib/shell_parse.py` tokeniser — so `git log --grep=` and `npm test` carry no query and nothing fires. `Glob` is deliberately **out**: its pattern is a path expression, so it names a filename shape rather than a topic (`**/*.test.ts` carries nothing; `src/**/*.ts` carries two words of noise). `find -name` and `fd` are out under `Bash` for the same reason.
+
+**Cost is what shapes every lever.** Measured 2026-09-14: each `PostToolUse` fire persists **two** transcript records (`hook_success` + `hook_additional_context`), nothing evicts them, and a realistic vault-hit payload implies ~500–600 bytes persisted **per fire**. That is the same accumulation property `UserPromptSubmit` has, and a per-turn nudge was removed from this codebase once already for exactly it. A tool call is far more frequent than a turn, so four levers bound it: per-session dedup on the **memory path**, sharing one seen-file with `memory-recall.sh` so the bound is the number of distinct relevant memories *across both hooks*; per-session dedup on the **query**, so a repeated scan costs no subprocess; a top-K of **1**, against `memory-recall.sh`'s 2; and a scheduled-task guard, since an unattended tick has no human to serve and its fresh-per-tick `session_id` defeats both dedup levers. The shared levers live in `lib/memory-recall-core.sh` — one copy, two callers, because each was tuned against an incident and a second implementation would drift from that tuning invisibly.
 
 #### Wiki layer and vault index
 
@@ -940,8 +953,13 @@ All config values can be overridden via environment variables for testing:
 | `WORKBENCH_SKIP_LOG` | Set to `1` to skip logging (used by summary-writer) |
 | `WORKBENCH_SKIP_WARMUP` | Set to `1` to skip warmup (used by summary-writer) |
 | `WORKBENCH_MCP_SERVER_NAME` | `memory_mcp_server_name` |
-| `WORKBENCH_MEMORY_RECALL` | Set to `0` to disable proactive vault recall (`memory-recall.sh`) |
+| `WORKBENCH_MEMORY_RECALL` | Set to `0` to disable proactive vault recall. Reaches **both** injecting hooks — `memory-recall.sh` and `memory-scan-recall.sh` |
 | `WORKBENCH_MEMORY_RECALL_LIMIT` | Max memories the recall hook injects per turn (default `2`) |
+| `WORKBENCH_MEMORY_RECALL_STATE` | Per-session seen-paths state dir (default `~/.claude-workbench/memory-recall`). Shared by both recall hooks on purpose: one seen-file is what bounds a memory to one injection per session across the pair |
+| `WORKBENCH_MEMORY_SCAN_RECALL` | Set to `0` to disable mid-turn scan recall (`memory-scan-recall.sh`) while leaving prompt recall on |
+| `WORKBENCH_MEMORY_SCAN_RECALL_LIMIT` | Max memories that hook injects per fire (default `1` — it fires per tool call, not per turn) |
+| `WORKBENCH_MEMORY_SCAN_RECALL_MIN_CHARS` | Min length of an extracted query, spaces not counted, before the vault is searched (default `6`) |
+| `WORKBENCH_MEMORY_SCAN_RECALL_TYPES` | Eligible frontmatter types for that hook (same default and same rule as `WORKBENCH_MEMORY_RECALL_TYPES`) |
 | `WORKBENCH_MEMORY_RECALL_TYPES` | Comma-separated frontmatter types eligible for injection (default `decision,insight,topic,feedback,reference,project,skill-learnings,recurring-issue`; empty disables the filter). A type belongs when a note of that type asserts something still true that should change what the agent does next — which is why `session` summaries and the dated `learnings` evaluation snapshots are excluded |
 | `WORKBENCH_MEMORY_RECALL_NUDGE` | Set to `0` to disable the recall reminder (`memory-recall-nudge.sh`). Independent of `WORKBENCH_MEMORY_RECALL`: with automatic recall off, an agent-initiated search is the only recall left |
 | `WORKBENCH_MEMORY_RECALL_NUDGE_INTERVAL` | Heartbeat interval for that reminder — one nudge per N low-signal turns (default `8`) |

@@ -516,13 +516,24 @@ fi
 # always-on FLOOR for the capture rule; hooks/memory-capture-nudge.sh
 # (UserPromptSubmit) reinforces it per-turn when a turn looks capture-worthy,
 # so the rule keeps its salience deep into a long session.
+#
+# It is also the ONLY floor for the recall-ordering rule, which has no hook
+# behind it. hooks/memory-recall.sh searches the USER'S PROMPT at turn start and
+# nothing else — the throttles it needs for context cost (prompt-only input,
+# turn-start only, 2 hits, per-session dedup, a substance gate) mean a topic a
+# scan uncovers mid-task never reaches it. The last bullet closes that by prose,
+# for the reason the question-delivery rule is prose: the alternative is a
+# semantic classifier on "is this turn worth a search", and the one time that
+# was built and measured here (hooks/agent-dispatch-gate.sh) the variants traded
+# 83% precision at 26% recall against 34% precision at 84% recall.
 printf '## Memory routing\n\n'
 printf -- '- The workbench memory vault is the CANONICAL durable memory store, served by the `memory` MCP (`mcp__plugin_workbench-core_memory__search` / `write` / etc.).\n'
 printf -- '- When the harness'\''s memory instructions prompt a save, write to the VAULT instead: MCP `write` with frontmatter `name` + `type` (decision | insight | project | feedback | reference) plus tags/summary/date per vault conventions.\n'
 printf -- '- Proactively CAPTURE durable knowledge without asking: a decision (+ rationale), a troubleshooting root-cause, a design choice and the options weighed, a non-obvious insight or gotcha, a project/plan outcome, or feedback on how to work — `write` it to the vault immediately with the correct `type`, then note the save in one line. This is standing authorization; memory-capture writes are EXEMPT from the "present options / confirm before changes" rule. Do NOT ask first.\n'
 printf -- '- Before saving, `search` for an existing memory to UPDATE rather than duplicate. Skip the trivial: routine code edits, facts already in the repo or git, ephemeral chatter. Capture what would otherwise be a "by the way, should I remember this?".\n'
 printf -- '- The per-project memory directory and its MEMORY.md are a router only — never create memory files there.\n'
-printf -- '- Recall = vault `search` (mode hybrid), not directory reads.\n\n'
+printf -- '- Recall = vault `search` (mode hybrid), not directory reads.\n'
+printf -- '- Recall comes FIRST: the moment a task turns up a topic — an error, a tool, a design choice, a repo or file you have worked before — `search` the vault BEFORE you scan the repo for the answer. Auto-recall only ever sees the user'\''s opening prompt, so anything a scan surfaces mid-task has had NO memory searched against it unless you search it yourself.\n\n'
 
 # A soul file is OPTIONAL. An agent with no persona carries its standard in the
 # output style instead, which is system-prompt tier and survives compaction on

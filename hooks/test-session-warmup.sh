@@ -115,6 +115,16 @@ assert_contains "guardrails carry the question contents" "$OUT" "state it as a q
 assert_contains "guardrails separate a fork from a defect" "$OUT" "a choice is not a problem"
 assert_missing  "skills-protocol not inlined"      "$OUT" "SKILLSPROTO-CANARY"
 assert_contains "skills-protocol pointer present"  "$OUT" "Skills protocol: read \`$SANDBOX/memory/identity/skills-protocol.md\`"
+# The recall-ORDERING rule has no hook behind it — memory-recall.sh only ever
+# sees the opening prompt — so the injected routing block is the only thing that
+# carries it, and these are the only assertions that prove it is still there.
+# The where-rule is asserted alongside it because the two answer different
+# questions and a rewrite that collapses them into one bullet loses the answer
+# to "where", which is the older of the two.
+assert_contains "routing block orders recall first"     "$OUT" "Recall comes FIRST"
+assert_contains "recall precedes the repo scan"         "$OUT" "BEFORE you scan the repo"
+assert_contains "the ordering rule carries its reason"  "$OUT" "Auto-recall only ever sees the user's opening prompt"
+assert_contains "recall still routes to the vault"      "$OUT" "Recall = vault \`search\` (mode hybrid), not directory reads."
 
 echo "startup — the shared-server health probe reports a server that is not up:"
 # $OUT still holds the startup run above, where nothing is listening on the
@@ -141,6 +151,20 @@ memory_probe() { echo UP; }
 STUB
 OUT_UP=$(WORKBENCH_PROBE_OVERRIDE="$PROBE_STUB/memory-probe.sh" run_warmup startup)
 assert_missing "healthy server prints no notice" "$OUT_UP" "Memory server"
+
+echo "startup — the per-project router stub carries the routing rules:"
+# The stub is the SECOND home of the routing rules, and the only one a context
+# that skips this warmup still sees — a sub-agent dispatch exits at the
+# CLAUDE_CODE_AGENT guard, while the harness keeps injecting the project's
+# MEMORY.md. So the ordering rule has to reach the stub too, not just stdout.
+# The path is the one ensure_memory_routing_stub builds: fake HOME, cwd encoded
+# with "/" replaced by "-". The startup runs above wrote it.
+STUB_FILE="$SANDBOX/home/.claude/projects/${PWD//\//-}/memory/MEMORY.md"
+STUB_TEXT=$(cat "$STUB_FILE" 2>/dev/null)
+assert_contains "stub written on startup"              "$STUB_TEXT" "<!-- workbench-memory-router -->"
+assert_contains "stub orders recall first"             "$STUB_TEXT" "**Recall first**"
+assert_contains "stub ordering carries its reason"     "$STUB_TEXT" "Automatic recall only ever sees that opening prompt"
+assert_contains "stub still routes recall to the vault" "$STUB_TEXT" "search the vault (\`mcp__plugin_workbench-core_memory__search\`)"
 
 echo "clear — wiped context gets full identity:"
 OUT=$(run_warmup clear)

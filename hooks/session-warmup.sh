@@ -517,15 +517,27 @@ fi
 # (UserPromptSubmit) reinforces it per-turn when a turn looks capture-worthy,
 # so the rule keeps its salience deep into a long session.
 #
-# It is also the ONLY floor for the recall-ordering rule, which has no hook
-# behind it. hooks/memory-recall.sh searches the USER'S PROMPT at turn start and
-# nothing else — the throttles it needs for context cost (prompt-only input,
-# turn-start only, 2 hits, per-session dedup, a substance gate) mean a topic a
-# scan uncovers mid-task never reaches it. The last bullet closes that by prose,
-# for the reason the question-delivery rule is prose: the alternative is a
-# semantic classifier on "is this turn worth a search", and the one time that
-# was built and measured here (hooks/agent-dispatch-gate.sh) the variants traded
-# 83% precision at 26% recall against 34% precision at 84% recall.
+# It is also the floor for the two recall rules — WHEN to search and WHAT to
+# search for. hooks/memory-recall.sh searches the USER'S PROMPT at turn start and
+# nothing else, and that is not only a coverage gap. The throttles it needs for
+# context cost (prompt-only input, turn-start only, 2 hits, per-session dedup, a
+# substance gate) mean a topic a scan uncovers mid-task never reaches it — and
+# even on the opening prompt, the prompt's own wording is a WEAKER query than the
+# one the agent can form from the task. Measured: "go ahead and push and create a
+# release" left skills/release.learnings.md — which carries the release-title
+# rule — outside the top 8, while "release title naming convention", the query
+# the task implies, put it in the top 5 (5th when first measured, 3rd on
+# re-measure 2026-09-14; ranks drift as the vault grows, the gap does not).
+# The last two bullets close both halves by prose, for the reason the
+# question-delivery rule is prose: the alternative is a semantic classifier on
+# "is this turn worth a search", and the one time that was built and measured
+# here (hooks/agent-dispatch-gate.sh) the variants traded 83% precision at 26%
+# recall against 34% precision at 84% recall.
+#
+# hooks/memory-recall-nudge.sh reinforces these two bullets per turn, the way
+# memory-capture-nudge.sh reinforces the capture rule. It is a REMINDER, never a
+# classifier: it decides whether to restate the rule, never whether a recall
+# happens, so it cannot skip a search the way the rejected conditional would.
 printf '## Memory routing\n\n'
 printf -- '- The workbench memory vault is the CANONICAL durable memory store, served by the `memory` MCP (`mcp__plugin_workbench-core_memory__search` / `write` / etc.).\n'
 printf -- '- When the harness'\''s memory instructions prompt a save, write to the VAULT instead: MCP `write` with frontmatter `name` + `type` (decision | insight | project | feedback | reference) plus tags/summary/date per vault conventions.\n'
@@ -533,7 +545,8 @@ printf -- '- Proactively CAPTURE durable knowledge without asking: a decision (+
 printf -- '- Before saving, `search` for an existing memory to UPDATE rather than duplicate. Skip the trivial: routine code edits, facts already in the repo or git, ephemeral chatter. Capture what would otherwise be a "by the way, should I remember this?".\n'
 printf -- '- The per-project memory directory and its MEMORY.md are a router only — never create memory files there.\n'
 printf -- '- Recall = vault `search` (mode hybrid), not directory reads.\n'
-printf -- '- Recall comes FIRST: the moment a task turns up a topic — an error, a tool, a design choice, a repo or file you have worked before — `search` the vault BEFORE you scan the repo for the answer. Auto-recall only ever sees the user'\''s opening prompt, so anything a scan surfaces mid-task has had NO memory searched against it unless you search it yourself.\n\n'
+printf -- '- Recall comes FIRST: the moment a task turns up a topic — an error, a tool, a design choice, a repo or file you have worked before — `search` the vault BEFORE you scan the repo for the answer. Auto-recall only ever sees the user'\''s opening prompt, so anything a scan surfaces mid-task has had NO memory searched against it unless you search it yourself.\n'
+printf -- '- Build the recall QUERY from the TASK, not from the prompt: name the thing you are about to produce or decide — the convention, the format, the procedure, the tool, the error — in the words a note about it would use, and search THAT. Auto-recall can only ever run the user'\''s own wording, so your advantage over it is asking the better question; a recorded rule filed under another phrase is one query away and will not arrive on its own.\n\n'
 
 # A soul file is OPTIONAL. An agent with no persona carries its standard in the
 # output style instead, which is system-prompt tier and survives compaction on

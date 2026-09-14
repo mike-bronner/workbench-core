@@ -125,6 +125,13 @@ assert_contains "routing block orders recall first"     "$OUT" "Recall comes FIR
 assert_contains "recall precedes the repo scan"         "$OUT" "BEFORE you scan the repo"
 assert_contains "the ordering rule carries its reason"  "$OUT" "Auto-recall only ever sees the user's opening prompt"
 assert_contains "recall still routes to the vault"      "$OUT" "Recall = vault \`search\` (mode hybrid), not directory reads."
+# WHEN to search and WHAT to search for are different rules, and the block is
+# the only floor for both. The ordering bullet alone leaves the agent running
+# the prompt's own wording, which is the weaker query and the measured failure:
+# an agent-formed query found a release-naming rule the prompt's wording missed.
+assert_contains "routing block says what to query"      "$OUT" "Build the recall QUERY from the TASK"
+assert_contains "the query rule rejects the prompt's wording" "$OUT" "not from the prompt"
+assert_contains "the query rule carries its reason"     "$OUT" "your advantage over it is asking the better question"
 
 echo "startup — the shared-server health probe reports a server that is not up:"
 # $OUT still holds the startup run above, where nothing is listening on the
@@ -164,6 +171,10 @@ STUB_TEXT=$(cat "$STUB_FILE" 2>/dev/null)
 assert_contains "stub written on startup"              "$STUB_TEXT" "<!-- workbench-memory-router -->"
 assert_contains "stub orders recall first"             "$STUB_TEXT" "**Recall first**"
 assert_contains "stub ordering carries its reason"     "$STUB_TEXT" "Automatic recall only ever sees that opening prompt"
+# The stub carries BOTH recall rules or the two homes have drifted apart, and a
+# sub-agent — which never runs this warmup — only ever reads the stub.
+assert_contains "stub says what to query"              "$STUB_TEXT" "**Query the task, not the prompt**"
+assert_contains "stub query rule carries its reason"   "$STUB_TEXT" "asking the better question"
 assert_contains "stub still routes recall to the vault" "$STUB_TEXT" "search the vault (\`mcp__plugin_workbench-core_memory__search\`)"
 
 echo "clear — wiped context gets full identity:"

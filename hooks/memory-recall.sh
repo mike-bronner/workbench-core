@@ -52,8 +52,10 @@
 #                                         this only bounds a pathological hang).
 #   WORKBENCH_MEMORY_RECALL_STATE=DIR   → per-session seen-paths state dir override.
 #   WORKBENCH_MEMORY_RECALL_TYPES=a,b   → frontmatter types eligible for injection
-#                                         (default decision,insight,topic,feedback,reference;
-#                                         set empty to disable the filter).
+#                                         (default decision,insight,topic,feedback,
+#                                         reference,project,skill-learnings,
+#                                         recurring-issue; set empty to disable the
+#                                         filter — see the membership rule below).
 #   (vault location comes from lib/memory-env.sh, like every other hook.)
 #
 # Never fails the session. Always exits 0 — missing jq, a binary that can't be
@@ -184,7 +186,29 @@ fi
 # recall spends its whole injection budget on them (2026-07-08 audit). Over-
 # fetch 4× the limit, then keep only curated types. The server's `filters`
 # param can't express type-IN-set (single value, ANDed), so filter client-side.
-TYPES="${WORKBENCH_MEMORY_RECALL_TYPES-decision,insight,topic,feedback,reference}"
+#
+# MEMBERSHIP RULE — stated so this list cannot go stale by omission: a type
+# belongs here when a note of that type asserts something STILL TRUE NOW that is
+# meant to change what the agent does next. Judge a type by that, not by whether
+# it appears below.
+#
+# The first cut of this list named five types and so excluded, silently, the
+# ones that carry explicit lessons. All three are admitted by the rule and are
+# now in the default:
+#   project         — an ongoing effort's state and the constraints it fixed.
+#   skill-learnings — the durable per-skill execution notes under skills/.
+#   recurring-issue — a fault that keeps coming back, and what settles it.
+# Measured, not assumed: replaying the prompt "go ahead and push and create a
+# release" against the live vault ranked skills/develop.learnings.md 4th (twice,
+# 2026-09-14), where the old five-type list discarded it before injection.
+#
+# Two types stay OUT on that same rule, deliberately rather than by oversight:
+#   session   — narrates one past session. This is the 77% above.
+#   learnings — DATED decision-quality evaluation snapshots under learnings/,
+#               each superseded by the next. Injecting an old snapshot into a
+#               live turn misinforms; the conclusions worth keeping are promoted
+#               to decision/insight notes, which ARE eligible.
+TYPES="${WORKBENCH_MEMORY_RECALL_TYPES-decision,insight,topic,feedback,reference,project,skill-learnings,recurring-issue}"
 FETCH=$((LIMIT * 4))
 
 # Truncate the search query: the raw prompt can carry pasted logs or diffs;

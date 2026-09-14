@@ -226,6 +226,7 @@ core/
 │   ├── memory-server-spawn.sh  — shared-HTTP detached supervisor (disabled; retained)
 │   ├── memory-server-down.sh   — shared-HTTP manual stop (disabled; retained)
 │   ├── memory-capture-nudge.sh — UserPromptSubmit: nudge proactive memory WRITES
+│   ├── memory-recall-nudge.sh  — UserPromptSubmit: nudge agent-initiated memory READS (what to query)
 │   ├── memory-recall.sh        — UserPromptSubmit: inject relevant memory READS (recall)
 │   ├── mcp-output-cap.sh       — PostToolUse: cap oversized MCP tool responses
 │   ├── outbound-prose-guard.sh — PreToolUse: check gh + board-MCP prose against the output style
@@ -283,6 +284,7 @@ These hooks fire across the session lifecycle and on each turn:
 | `PostCompact` | `hooks/session-warmup.sh` | Re-inject identity after context compression |
 | `SessionEnd` | `hooks/session-log.sh` | Dump final log segment and write the pending-summary marker — **no writer is spawned here** (see [Why SessionEnd does not spawn](#why-sessionend-does-not-spawn)) |
 | `UserPromptSubmit` | `hooks/memory-capture-nudge.sh` | Sparse nudge to capture durable knowledge to the vault (memory **writes**) |
+| `UserPromptSubmit` | `hooks/memory-recall-nudge.sh` | Sparse nudge to search the vault *before* scanning the repo, with a query built from the task rather than the prompt — a reminder only, it never decides whether a recall happens |
 | `UserPromptSubmit` | `hooks/memory-recall.sh` | Proactive recall — search the vault with the prompt and inject relevant memories, **once per session** per memory (memory **reads**) |
 | `PreToolUse` | `hooks/outbound-prose-guard.sh` | Check prose leaving the machine against the output style's mechanical rules — see [Outbound prose guard](#outbound-prose-guard) |
 | `PreToolUse` | `hooks/delegation-gate.sh` | Deny `Edit`/`Write`/`NotebookEdit` from the main agent so file work goes to sub-agents — see [Delegation gate](#delegation-gate) |
@@ -841,9 +843,14 @@ The default pull interval is deliberately tighter than upstream's, and `git_lfs`
 
 #### Canonical store & routing
 
-The vault is the **canonical durable memory store**. Claude Code's harness also injects per-project memory instructions every session (save to `~/.claude/projects/<encoded-cwd>/memory/` + a `MEMORY.md` index) — left alone, sessions scatter memory files there that the vault can't search. The session warmup neutralizes that channel into a router: it injects a `## Memory routing` rule at every session start (saves go to the vault via the memory MCP `write` tool with vault frontmatter; recall is vault hybrid `search`, not directory reads, and it runs *before* a repo scan, not after), and on startup it writes a self-healing router stub to the current project's `MEMORY.md` (canonical template: `references/memory-routing-stub.md`). A `MEMORY.md` without the router marker is never overwritten — the warmup flags it for human migration instead. Keep the store singular: don't install competing memory MCP servers alongside the vault.
+The vault is the **canonical durable memory store**. Claude Code's harness also injects per-project memory instructions every session (save to `~/.claude/projects/<encoded-cwd>/memory/` + a `MEMORY.md` index) — left alone, sessions scatter memory files there that the vault can't search. The session warmup neutralizes that channel into a router: it injects a `## Memory routing` rule at every session start (saves go to the vault via the memory MCP `write` tool with vault frontmatter; recall is vault hybrid `search`, not directory reads, it runs *before* a repo scan rather than after, and its query is built from the task rather than from the prompt's wording), and on startup it writes a self-healing router stub to the current project's `MEMORY.md` (canonical template: `references/memory-routing-stub.md`). A `MEMORY.md` without the router marker is never overwritten — the warmup flags it for human migration instead. Keep the store singular: don't install competing memory MCP servers alongside the vault.
 
-**Why the routing block states when recall happens, and not just where.** Capture carries two reinforcements: the standing-authorization rule in the routing block, plus `memory-capture-nudge.sh` re-stating it per turn. Recall has one hook and one prose line, and the hook's cost discipline is exactly what leaves a hole — `memory-recall.sh` reads the user's opening prompt at turn start and nothing after it, so a topic a code scan uncovers mid-task is never searched for at all. The routing block therefore carries the ordering itself: search the vault *before* scanning the repo, and again whenever the task turns up something the prompt never named. It is prose rather than a second hook for the reason the question-delivery rule under [Guardrails](#guardrails) is prose — a classifier over "is this turn worth a search" is the shape the [agent dispatch gate](#agent-dispatch-gate) measured at 83% precision / 26% recall against 34% / 84%, where the wrong answers were not tunable away.
+**Why the routing block states when recall happens and what to search for, not just where.** `memory-recall.sh` can only ever search the user's prompt, because that is the only text a `UserPromptSubmit` hook receives. Two rules follow, and the routing block (plus its router-stub twin) is the floor for both:
+
+- **When.** Search the vault *before* scanning the repo, and again whenever the task turns up something the prompt never named. A topic a code scan uncovers mid-task reaches no hook at all.
+- **What.** Build the query from the *task* — the convention, format, procedure, tool, or error you are about to produce or decide — not from the prompt's wording. This is the half with the measurement behind it: replaying "go ahead and push and create a release" against the live vault left `skills/release.learnings.md` — the note carrying the release-title rule — outside the top 8, while "release title naming convention", the query the task implies, put it in the top 5 (5th when first measured, 3rd on re-measure 2026-09-14 — ranks drift as the vault grows, the gap between the two queries does not). The agent's advantage over auto-recall is asking the better question, and a rule that says only *when* leaves that on the table.
+
+`memory-recall-nudge.sh` re-states both per turn, the way `memory-capture-nudge.sh` re-states the capture rule, because a `SessionStart`-only rule decays in a long session. **It is a reminder, never a classifier**: it decides whether to restate the rule, never whether a recall happens, and its fire policy is signal **OR** a heartbeat, so signal detection can only ever add a nudge and never remove one. The rejected alternative was a conditional that *skips* recall when the vault looks unlikely to help — that is a classifier over "is this turn worth a search", the shape the [agent dispatch gate](#agent-dispatch-gate) measured at 83% precision / 26% recall against 34% / 84%, where the wrong answers were not tunable away. A wrong skip also teaches the agent the rule is optional.
 
 #### Wiki layer and vault index
 
@@ -935,6 +942,9 @@ All config values can be overridden via environment variables for testing:
 | `WORKBENCH_MCP_SERVER_NAME` | `memory_mcp_server_name` |
 | `WORKBENCH_MEMORY_RECALL` | Set to `0` to disable proactive vault recall (`memory-recall.sh`) |
 | `WORKBENCH_MEMORY_RECALL_LIMIT` | Max memories the recall hook injects per turn (default `2`) |
+| `WORKBENCH_MEMORY_RECALL_TYPES` | Comma-separated frontmatter types eligible for injection (default `decision,insight,topic,feedback,reference,project,skill-learnings,recurring-issue`; empty disables the filter). A type belongs when a note of that type asserts something still true that should change what the agent does next — which is why `session` summaries and the dated `learnings` evaluation snapshots are excluded |
+| `WORKBENCH_MEMORY_RECALL_NUDGE` | Set to `0` to disable the recall reminder (`memory-recall-nudge.sh`). Independent of `WORKBENCH_MEMORY_RECALL`: with automatic recall off, an agent-initiated search is the only recall left |
+| `WORKBENCH_MEMORY_RECALL_NUDGE_INTERVAL` | Heartbeat interval for that reminder — one nudge per N low-signal turns (default `8`) |
 | `WORKBENCH_SETTINGS_FILE` | `~/.claude/settings.json` path (used by `install.sh` and `permissions.sh` for testing) |
 | `WORKBENCH_OUTPUT_STYLES_DIR` | `~/.claude/output-styles` path (used by `install.sh` for testing) |
 | `WORKBENCH_MEMORY_GIT_REPO_URL` | Vault git remote; unset disables cross-machine sync entirely |

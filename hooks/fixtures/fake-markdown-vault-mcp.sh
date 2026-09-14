@@ -32,6 +32,14 @@
 #                              hits in the real search payload shape.
 #   FAKE_SEARCH_NOISE=1        prepend a session-summary hit ranked FIRST, to
 #                              exercise the recall hook's curated-type filter.
+#   FAKE_SEARCH_LESSONS=1      (search subcommand only) answer with the four
+#                              lesson-shaped types instead of the canned pair: a
+#                              `learnings` eval snapshot ranked FIRST (which the
+#                              curated-type filter must DROP — it is dated and
+#                              superseded), then one `skill-learnings`, one
+#                              `recurring-issue`, and one `project` hit (which it
+#                              must KEEP). Ranking the excluded type first is what
+#                              makes the assertion discriminating.
 #   FAKE_SEARCH_SHAPE=...      which envelope carries the search hits: "content"
 #                              (default — content[].text bare array), "dual"
 #                              (BOTH content[].text AND structuredContent, like
@@ -78,6 +86,17 @@ if [ "${1:-}" = "search" ]; then
 
   if [ "${FAKE_SEARCH_EMPTY:-}" = "1" ]; then
     echo '[]'
+    exit 0
+  fi
+  if [ "${FAKE_SEARCH_LESSONS:-}" = "1" ]; then
+    cat <<JSON
+[
+  {"path":"learnings/2026-09-02-eval.md","title":"Decision-quality evaluation — 2026-09-02","folder":"learnings","score":0.99,"search_type":"semantic","frontmatter":{"name":"Decision-quality evaluation — 2026-09-02","type":"learnings","summary":"Dated eval snapshot, superseded by the next one — must not be injected."},"sections":[{"heading":null,"content":"snapshot body"}]},
+  {"path":"skills/release.learnings.md","title":"Learnings — release","folder":"skills","score":0.44,"search_type":"semantic","frontmatter":{"name":"Learnings — release","type":"skill-learnings","summary":"Canned skill-learnings hit for the recall hook test."},"sections":[{"heading":null,"content":"release body"}]},
+  {"path":"recurring-issues/2026-08-29-mcp-connection-failure.md","title":"Recurring — MCP connection failure","folder":"recurring-issues","score":0.41,"search_type":"semantic","frontmatter":{"name":"Recurring — MCP connection failure","type":"recurring-issue","summary":"Canned recurring-issue hit for the recall hook test."},"sections":[{"heading":null,"content":"recurrence body"}]},
+  {"path":"projects/canned-recall-project.md","title":"Canned project hit","folder":"projects","score":0.38,"search_type":"semantic","frontmatter":{"name":"Canned project hit","type":"project","summary":"Canned project summary for the recall hook test."},"sections":[{"heading":null,"content":"project body"}]}
+]
+JSON
     exit 0
   fi
   if [ "${FAKE_SEARCH_NOISE:-}" = "1" ]; then

@@ -244,6 +244,28 @@ echo "Curated-type filter — empty TYPES disables the filter:"
 GOT=$(run_hook "a substantive design question about the memory system" "s-tf2" "$CACHE" "$FAKE" FAKE_SEARCH_NOISE=1 WORKBENCH_MEMORY_RECALL_TYPES=)
 assert_contains "session hit injected when filter disabled" "$GOT" "noise-tick.summary.md"
 
+echo "Curated-type filter — the lesson-bearing types are eligible by default:"
+# These three types carry the vault's explicit lessons and were excluded by the
+# first five-type list, which is the whole bug this block guards. The fixture
+# ranks the ONE excluded type FIRST, so each assertion discriminates: narrow the
+# default back and all three inclusions redden; widen it to admit `learnings`
+# and the exclusion below reddens, because the snapshot displaces the third hit.
+# LIMIT=3 leaves room for exactly the three eligible hits.
+CACHE="$SANDBOX/lessons"; mk_cache "$CACHE"
+GOT=$(run_hook "what is the convention for naming a release" "s-les1" "$CACHE" "$FAKE" \
+  FAKE_SEARCH_LESSONS=1 WORKBENCH_MEMORY_RECALL_LIMIT=3)
+assert_contains "skill-learnings hit injected"  "$GOT" "skills/release.learnings.md"
+assert_contains "skill-learnings type tagged"   "$GOT" "[skill-learnings]"
+assert_contains "recurring-issue hit injected"  "$GOT" "recurring-issues/2026-08-29-mcp-connection-failure.md"
+assert_contains "recurring-issue type tagged"   "$GOT" "[recurring-issue]"
+assert_contains "project hit injected"          "$GOT" "projects/canned-recall-project.md"
+assert_contains "project type tagged"           "$GOT" "[project]"
+
+echo "Curated-type filter — a dated eval snapshot stays out even ranked first:"
+# `learnings` notes are superseded by the next snapshot, so an old one injected
+# into a live turn misinforms. Deliberate exclusion, not an oversight.
+assert_not_contains "learnings eval snapshot filtered" "$GOT" "learnings/2026-09-02-eval.md"
+
 echo "Query truncation — oversized prompt still searches and injects:"
 CACHE="$SANDBOX/trunc"; mk_cache "$CACHE"
 LONGPROMPT="how should the memory vault handle recall $(printf 'x%.0s' $(seq 1 4000))"

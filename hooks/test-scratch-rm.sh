@@ -11,10 +11,11 @@
 # the exit status was non-zero.
 #
 # WHICH ROOT THESE CASES RUN AGAINST, AND WHY IT IS THE SESSION ONE.
-# The script derives the persistent root from the password database, so no test
-# can move it: `~name` expansion ignores every variable a test could set. That
-# is the point of the check and it is not negotiable here. The session root is
-# derived from CLAUDE_CODE_SESSION_ID under /tmp/claude-*/ instead, which IS
+# Two of the three roots are derived from sources no test can move, which is the
+# point of them: the persistent root comes from the password database, where
+# `~name` expansion ignores every variable a test could set, and the temporary
+# root comes from getconf, which ignores $TMPDIR the same way. The session root
+# is derived from CLAUDE_CODE_SESSION_ID under /tmp/claude-*/ instead, which IS
 # sandboxable, so every root-agnostic case — escapes, symlinks, the root itself,
 # bad input — runs there. Two fake project directories carry the same session
 # id, which is legitimate (the glob matches any project directory holding it)
@@ -22,21 +23,37 @@
 # fixtures. /tmp is writable on macOS and Linux alike, so these run in CI rather
 # than being skipped there.
 #
-# What is left untested by construction is the delete itself beneath the REAL
-# `$HOME/Developer/scratchpad`, because the only fixture for it would be the
-# user's own live scratchpad, and a regression would then destroy the work the
-# script exists to protect. Its derivation is covered instead: the last group
-# asserts the root the script lists is the login home's, and that no $HOME a
-# caller invents ever becomes one.
+# Two cases are left untested by construction, and both for the same reason: the
+# only fixture either one could use is live state the script exists to protect.
+# Deleting beneath the REAL `$HOME/Developer/scratchpad` would need the user's
+# own scratchpad, and submitting the REAL temporary root as a target would need
+# the directory every process on this account is currently writing into — a
+# regression in either case destroys exactly what is at stake. Derivation is
+# covered instead: the last two groups assert which roots the script lists, and
+# that neither $HOME nor $TMPDIR can nominate one.
 
 set -u
 SCRIPT="$(cd "$(dirname "$0")/.." && pwd)/bin/scratch-rm.sh"
 PASS=0
 FAIL=0
 
-SANDBOX=$(mktemp -d)
+# THE FIXTURE TREE HAS TO SIT OUTSIDE EVERY APPROVED ROOT, AND `mktemp -d` NO
+# LONGER DOES.
+# Most cases here assert that a victim SURVIVES, which proves nothing if the
+# victim was a legitimate target all along. This tree came from `mktemp -d`
+# until the third root was approved — and that root is this account's per-user
+# temporary directory, which is exactly where `mktemp -d` writes. Every
+# $HOME-escape fixture became deletable, the script deleted them correctly, and
+# four cases went red reporting a regression that was not there.
+#
+# So the sandbox is spelled out instead. /tmp is under no approved root: the
+# session glob needs a `claude-` prefix at this level and this name has none,
+# the login home is elsewhere, and on Darwin /tmp resolves to /private/tmp
+# rather than into the /private/var/folders tree the temporary root lives in.
+SANDBOX="/tmp/scratchrm-sandbox-$$"
 FAKE_TMP="/tmp/claude-scratchrm-test-$$"
 trap 'rm -rf "$SANDBOX" "$FAKE_TMP"' EXIT
+mkdir -p "$SANDBOX"
 
 SID="scratchrm-$$-aaaa"
 OTHER_SID="scratchrm-$$-bbbb"
@@ -58,10 +75,11 @@ OTHER_SESSION_ROOT="$FAKE_TMP/-other-project/$OTHER_SID/scratchpad"
 DECOY_ROOT="$FAKE_TMP/$SID/scratchpad"
 
 # TWO APPROVED ROOTS WHERE ONE SITS INSIDE THE OTHER, which the roots this
-# command ships with cannot demonstrate: neither of them contains the other, so
-# they agree no matter which order the check reads them in. A third root is all
-# it would take to break that agreement, and the pair below is what a case
-# covering it needs.
+# command ships with still cannot demonstrate: the persistent, session and
+# temporary roots are three disjoint subtrees, so they agree no matter which
+# order the check reads them in. A fourth root, or a relocated one, is all it
+# would take to break that agreement, and the pair below is what a case covering
+# it needs.
 #
 # The session glob is fixed-depth, so two session roots are always the same
 # distance from /tmp and can never nest as plain directories. Each root here is
@@ -362,8 +380,8 @@ assert_survives "it survives" "$OTHER_SESSION_ROOT"
 # a single loop asking both questions per root reaches the outer root first,
 # matches its containment test against the inner root, and deletes the inner
 # root — a scratchpad root, gone, exit 0. That was reproduced against the
-# interleaved version of this check. Today's two roots cannot express the shape,
-# so these fixtures do.
+# interleaved version of this check. None of today's three roots contains
+# another, so they cannot express the shape and these fixtures do.
 #
 # Every group here re-seeds. A case that fails by deleting a root leaves the
 # next one judging a fixture the previous case destroyed, and a cascade like
@@ -466,6 +484,103 @@ assert_contains "says why" "$OUT" "names no directory that exists"
 OUT=$(run "$REAL_HOME" "$SID" "$PRECIOUS/keep.txt"); STATUS=$?
 assert_status   "the account's own home still exits 1 on an outside path" "1" "$STATUS"
 assert_contains "and the root it lists is the login home's scratchpad" "$OUT" "$REAL_HOME/Developer/scratchpad"
+
+# THE THIRD ROOT — this account's per-user temporary directory, which is where
+# `mktemp -d` writes and therefore where an agent's sandbox teardown happens.
+#
+# Derived here the same way the script must derive it: from getconf, never from
+# $TMPDIR. An independent lookup, so a wrong derivation in the script shows up
+# below as a mismatch rather than agreeing with itself.
+#
+# The root itself is never submitted as a target. Every other root has a
+# throwaway fixture; this one's only fixture is the live directory the whole
+# account is writing into, and a regression in the root refusal would delete it.
+# What is asserted instead is that the root is in the list both passes read —
+# and the nested-root cases above already prove a listed root is refused.
+TEMP_ROOT_REAL="$(/usr/bin/getconf DARWIN_USER_TEMP_DIR 2>/dev/null)" || TEMP_ROOT_REAL=""
+case "$TEMP_ROOT_REAL" in
+  /*) TEMP_ROOT_REAL="$(cd -P -- "$TEMP_ROOT_REAL" 2>/dev/null && pwd -P)" || TEMP_ROOT_REAL="" ;;
+  *) TEMP_ROOT_REAL="" ;;
+esac
+
+seed
+FAKE_TMPDIR="$SANDBOX/fake-tmpdir"
+mkdir -p "$FAKE_TMPDIR"
+echo "do not delete" > "$FAKE_TMPDIR/keep.txt"
+
+if [ -n "$TEMP_ROOT_REAL" ]; then
+  # `mktemp -d` is run bare, with whatever environment this suite inherited,
+  # because that is the case the root exists for. A shell whose $TMPDIR points
+  # somewhere else will fail the first case, and that is the correct complaint —
+  # the same shape as the $HOME line above.
+  echo "deletes a mktemp -d sandbox — the teardown this root exists for:"
+  MKTEMP_DIR="$(mktemp -d)"
+  MKTEMP_REAL="$(cd -P -- "$MKTEMP_DIR" 2>/dev/null && pwd -P)" || MKTEMP_REAL=""
+  echo "sandbox" > "$MKTEMP_DIR/file.txt"
+  case "$MKTEMP_REAL" in
+    "$TEMP_ROOT_REAL"/*)
+      PASS=$((PASS + 1)); echo "  ✅ mktemp -d lands beneath this account's temporary directory" ;;
+    *)
+      FAIL=$((FAIL + 1))
+      echo "  ❌ mktemp -d lands beneath this account's temporary directory — got \"$MKTEMP_REAL\", not under \"$TEMP_ROOT_REAL\"" ;;
+  esac
+  OUT=$(run "$EMPTY_HOME" "$SID" "$MKTEMP_DIR"); STATUS=$?
+  assert_status "tearing the sandbox down exits 0" "0" "$STATUS"
+  assert_gone   "the sandbox is gone" "$MKTEMP_DIR"
+  rm -rf "$MKTEMP_DIR"
+
+  # A session id this script cannot use must drop the session root and NOTHING
+  # else. The temporary root is listed after the session glob, so an early exit
+  # on a bad id takes root 3 with it — silently, and every other case here would
+  # still pass. Agents run outside Claude Code too, and a sandbox teardown is
+  # the one delete they all make.
+  echo "approves the temporary root independently of the session id:"
+  MKTEMP_DIR="$(mktemp -d)"
+  OUT=$(run "$EMPTY_HOME" "" "$MKTEMP_DIR"); STATUS=$?
+  assert_status "a sandbox is deletable with no session id at all" "0" "$STATUS"
+  assert_gone   "the sandbox is gone" "$MKTEMP_DIR"
+  rm -rf "$MKTEMP_DIR"
+
+  MKTEMP_DIR="$(mktemp -d)"
+  OUT=$(run "$EMPTY_HOME" "*" "$MKTEMP_DIR"); STATUS=$?
+  assert_status "and with an id that is not one" "0" "$STATUS"
+  assert_gone   "the sandbox is gone" "$MKTEMP_DIR"
+  rm -rf "$MKTEMP_DIR"
+
+  echo "\$TMPDIR does not decide which temporary directory this command may delete inside:"
+  OUT=$(run "$EMPTY_HOME" "$SID" "$PRECIOUS/keep.txt"); STATUS=$?
+  assert_status   "an outside path exits 1" "1" "$STATUS"
+  assert_contains "and the temporary root it lists is the one getconf names" "$OUT" "$TEMP_ROOT_REAL"
+
+  # The assignment rides the command substitution's own subshell, so $TMPDIR is
+  # back to the inherited value by the next case.
+  OUT=$(TMPDIR="$FAKE_TMPDIR" run "$EMPTY_HOME" "$SID" "$FAKE_TMPDIR/keep.txt"); STATUS=$?
+  assert_status   "a \$TMPDIR the caller picked exits 1" "1" "$STATUS"
+  assert_survives "the file beneath it survives" "$FAKE_TMPDIR/keep.txt"
+  assert_contains "says the \$TMPDIR is not this account's" "$OUT" "is not this account's temporary directory"
+
+  # Spelled out rather than inherited, so this asserts the note's absence and
+  # not the ambient environment: a note on every refusal would be noise.
+  OUT=$(TMPDIR="$TEMP_ROOT_REAL" run "$EMPTY_HOME" "$SID" "$PRECIOUS/keep.txt")
+  refute_contains "and says nothing about \$TMPDIR when it names that same directory" \
+    "$OUT" "is not this account's temporary directory"
+else
+  # No Darwin, no temporary root. /tmp is where `mktemp -d` falls back to and
+  # every account on the machine shares it, so approving nothing is the answer
+  # and the refusal has to say which answer it gave.
+  echo "approves no temporary root where none can be derived safely:"
+  MKTEMP_DIR="$(mktemp -d)"
+  echo "sandbox" > "$MKTEMP_DIR/file.txt"
+  OUT=$(run "$EMPTY_HOME" "$SID" "$MKTEMP_DIR/file.txt"); STATUS=$?
+  assert_status   "a mktemp -d sandbox exits 1" "1" "$STATUS"
+  assert_survives "nothing in it is deleted" "$MKTEMP_DIR/file.txt"
+  assert_contains "says no temporary root is approved" "$OUT" "No temporary root is approved"
+
+  OUT=$(TMPDIR="$FAKE_TMPDIR" run "$EMPTY_HOME" "$SID" "$FAKE_TMPDIR/keep.txt"); STATUS=$?
+  assert_status   "a \$TMPDIR the caller picked exits 1 here too" "1" "$STATUS"
+  assert_survives "the file beneath it survives" "$FAKE_TMPDIR/keep.txt"
+  rm -rf "$MKTEMP_DIR"
+fi
 
 echo
 echo "$PASS passed, $FAIL failed"

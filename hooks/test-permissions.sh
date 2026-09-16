@@ -323,6 +323,12 @@ assert_jq "no rm rule in deny" "$SHIPPED_RAILS" \
   '[.deny[] | select(.rule | startswith("Bash(rm"))] | length' "0"
 assert_jq "rm -rf is in ask"   "$SHIPPED_RAILS" \
   '[.ask[]  | select(.rule == "Bash(rm -rf:*)")] | length' "1"
+# The scratchpad helper below does not weaken that, and an rm entry in allow
+# would. The helper is a different command name, so the ask rule is never tested
+# against it; an `rm` spelling in allow would be a second rm guard that the ask
+# rule beats anyway, since ask is evaluated first.
+assert_jq "no rm rule in allow" "$SHIPPED_RAILS" \
+  '[(.allow // [])[] | select(.rule | startswith("Bash(rm"))] | length' "0"
 
 # Credential paths are guarded by hooks/credential-guard.sh, not by a deny rule.
 # A Read deny never applied to a subprocess that opens the file itself, and ANY
@@ -373,23 +379,92 @@ for MGR in pacman apt apt-get dnf yum zypper; do
   fi
 done
 
-# The allow list is the newest and most dangerous surface in this file, because
-# an allow rule is a grant rather than a brake. The rule that keeps it safe is
-# structural: an entry may name ONE plugin's MCP server and nothing else. A
-# `Bash(...)` allow pattern grants arbitrary code execution, which is precisely
-# what autoMode.allow exists to handle instead — and it is what auto mode
-# deliberately suspends. Assert the shape rather than trusting the comment.
-echo "the allow list may name an MCP server and nothing else:"
-assert_jq "no Bash pattern in allow" "$SHIPPED_RAILS" \
-  '[(.allow // [])[] | select(.rule | startswith("Bash("))] | length' "0"
+# The allow list is the most dangerous surface in this file, because an allow
+# rule is a grant rather than a brake. The rule that keeps it safe is structural,
+# and it turns on SHAPE rather than on the `Bash(` prefix: an entry may name ONE
+# plugin's MCP server, or ONE script at a fixed path under ~/.claude-workbench/
+# bin/. A shell PATTERN may never appear. `Bash(rm -rf:*)`, or any `*` inside the
+# command part, grants arbitrary code execution — precisely what autoMode.allow
+# exists to handle instead, and what auto mode deliberately suspends. A fixed
+# script path grants the logic in one file this plugin ships, installs, and
+# tests. Assert the shape rather than trusting the comment.
+echo "every allow entry names one MCP server or one installed script:"
 assert_jq "no Read pattern in allow" "$SHIPPED_RAILS" \
   '[(.allow // [])[] | select(.rule | startswith("Read("))] | length' "0"
-assert_jq "every allow rule is an mcp__ pattern" "$SHIPPED_RAILS" \
-  '[(.allow // [])[] | select(.rule | startswith("mcp__") | not)] | length' "0"
+assert_jq "every allow rule is an mcp__ pattern or a fixed bin/ script" "$SHIPPED_RAILS" \
+  '[(.allow // [])[]
+    | select(((.rule | startswith("mcp__"))
+              or (.rule | test("^Bash\\(bash \"\\$HOME/\\.claude-workbench/bin/[a-z0-9-]+\\.sh\":\\*\\)$"))) | not)]
+   | length' "0"
+# The `*` is the whole hazard, and the claim about it splits in two.
+#   VERIFIED, and what this assertion holds: no wildcard sits inside the command
+#   part, so no entry here grants a command SHAPE — only a fixed path.
+#   ASSUMED: that the trailing `:*` admits nothing but that script's own
+#   arguments. Claude Code documents deny and ask rules as checked inside
+#   command substitution, and documents nothing either way about allow rules, so
+#   an argument carrying `$(...)` is undocumented ground. A substitution holding
+#   `rm -rf` still prompts — this file's ask rule matches it, and ask is
+#   evaluated before allow — which leaves a non-rm payload as the residual. That
+#   residual is not introduced here: workbench-dev-team already ships allow
+#   entries of exactly this form for approve-commit.sh and dispatch-agent.sh.
+assert_jq "no wildcard inside the command part of a Bash allow entry" "$SHIPPED_RAILS" \
+  '[(.allow // [])[]
+    | select(.rule | startswith("Bash("))
+    | select(.rule | ltrimstr("Bash(") | rtrimstr(":*)") | contains("*"))]
+   | length' "0"
 # The vault is the canonical memory store, and a classifier hold on a write
 # loses the memory rather than deferring it — nothing retries the call.
 assert_jq "the memory MCP is allowed" "$SHIPPED_RAILS" \
   '[(.allow // [])[] | select(.rule == "mcp__plugin_workbench-core_memory__*")] | length' "1"
+# `Bash(rm -rf:*)` in ask prompts on every scratchpad cleanup, and it must keep
+# doing so. This is the command that carries the exception instead, because a
+# rule cannot: deny → ask → allow with first match winning, and no negation.
+assert_jq "the scratchpad delete helper is allowed" "$SHIPPED_RAILS" \
+  '[(.allow // [])[] | select(.rule == "Bash(bash \"$HOME/.claude-workbench/bin/scratch-rm.sh\":*)")] | length' "1"
+
+# An allow entry naming a script this plugin does not ship is a dangling grant:
+# setup installs nothing to that path, so the rule stands ready for whatever
+# lands there later. Every allowed script has to exist in bin/, which is both
+# where this plugin keeps its installable commands and the directory setup
+# installs them into — so the source and deployed basenames are the same string.
+#
+# "Tested" is the other half of what rails.json and the README claim for these
+# entries, and a claim nothing checks is exactly the drift this file exists to
+# catch: a future script plus an allow entry would otherwise pass every
+# assertion here with nobody re-deriving the safety argument. So each allowed
+# script must also have hooks/test-<name>.sh, and that suite must name
+# bin/<name>. validate.yml runs hooks/test-*.sh by glob, so a suite at that path
+# is a suite CI runs on every push. "Reviewed" is the one word no assertion can
+# hold — that is a human reading the diff, and the prose says so plainly rather
+# than implying a check that does not exist.
+echo "every allowed script is one this plugin ships, with a suite CI runs:"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+while IFS= read -r ALLOWED; do
+  [ -n "$ALLOWED" ] || continue
+  if [ -f "$REPO_ROOT/bin/$ALLOWED" ]; then
+    PASS=$((PASS + 1)); echo "  ✅ bin/$ALLOWED ships"
+  else
+    FAIL=$((FAIL + 1)); echo "  ❌ allow names $ALLOWED, which this plugin does not ship"
+  fi
+  SUITE="hooks/test-$ALLOWED"
+  if [ -f "$REPO_ROOT/$SUITE" ]; then
+    PASS=$((PASS + 1)); echo "  ✅ $SUITE exists, so CI's hooks/test-*.sh glob runs it"
+  else
+    FAIL=$((FAIL + 1)); echo "  ❌ allow names $ALLOWED with no $SUITE — nothing tests what the grant runs"
+  fi
+  # Comment lines are stripped first: every one of these suites opens by saying
+  # which script it covers, so a whole-file grep is satisfied by that sentence
+  # alone and would pass on a suite that runs something else entirely.
+  if [ -f "$REPO_ROOT/$SUITE" ] \
+     && grep -v '^[[:space:]]*#' "$REPO_ROOT/$SUITE" | grep -qF "bin/$ALLOWED"; then
+    PASS=$((PASS + 1)); echo "  ✅ $SUITE runs bin/$ALLOWED"
+  else
+    FAIL=$((FAIL + 1)); echo "  ❌ $SUITE never runs bin/$ALLOWED — it tests something else"
+  fi
+done < <(jq -r '(.allow // [])[] | .rule
+  | select(startswith("Bash("))
+  | ltrimstr("Bash(bash \"$HOME/.claude-workbench/bin/")
+  | rtrimstr("\":*)")' "$SHIPPED_RAILS")
 
 echo "ask list never blocks the unattended dev-team pipeline:"
 for RULE in "Bash(git push:*)" "Bash(git commit:*)" "Bash(gh pr create:*)"; do

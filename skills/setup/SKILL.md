@@ -223,7 +223,7 @@ Claude Code evaluates permission rules **deny → ask → allow, before the auto
 
 The rules ship as data at `${CLAUDE_PLUGIN_ROOT}/assets/permissions/rails.json`, and `scripts/permissions.sh` merges them into `~/.claude/settings.json`. The merge is **additive**: an entry is added when absent, left alone when present, and existing entries keep their position.
 
-The rails now also ship a single `allow` entry, `mcp__plugin_workbench-core_memory__*`, so a classifier hold never swallows a memory write — nothing retries that call, so a held write loses the note rather than delaying it. It is scoped to one plugin's MCP server and grants no code execution. Entries the user put in `permissions.allow` themselves are never removed, reordered, or rewritten.
+The rails also ship two `allow` entries. `mcp__plugin_workbench-core_memory__*` keeps a classifier hold from swallowing a memory write — nothing retries that call, so a held write loses the note rather than delaying it. `Bash(bash "$HOME/.claude-workbench/bin/scratch-rm.sh":*)` names one installed script, so scratchpad cleanup stops prompting (2c.3). Neither grants a command *shape*: one is a single plugin's MCP server, the other a single fixed script path, and a `Bash(...)` wildcard must never join them. Entries the user put in `permissions.allow` themselves are never removed, reordered, or rewritten.
 
 ### 2c.1 — Pick the posture (`defaultMode`)
 
@@ -245,7 +245,7 @@ Then ask with AskUserQuestion:
   - `default` — "Manual. Prompts for everything but reads."
 - The auto-provided **Other** covers `dontAsk` and `bypassPermissions`, which are deliberately not offered as one-click options.
 
-If the user would rather leave the current value alone, skip `--mode` in 2c.3 — the script then merges the rails and leaves `defaultMode` untouched.
+If the user would rather leave the current value alone, skip `--mode` in 2c.4 — the script then merges the rails and leaves `defaultMode` untouched.
 
 ⚠️ **`auto` is only honoured from user settings.** Claude Code ignores `defaultMode: "auto"` in `.claude/settings.json` and `.claude/settings.local.json` so a cloned repo can't promote itself. This script writes to `~/.claude/settings.json`, which is correct.
 
@@ -264,13 +264,13 @@ Output is `kind<TAB>rule<TAB>why`. Render it as two short tables — 🔴 deny a
 
 There is a third kind in the list, on a different layer:
 
-- **autoMode.allow** — prose exceptions to the auto-mode classifier's built-in *soft-deny* rules. Not a tool pattern; the classifier reads it as natural language. The shipped entry unblocks `workbench-dev-team` dispatch (see 2c.5).
+- **autoMode.allow** — prose exceptions to the auto-mode classifier's built-in *soft-deny* rules. Not a tool pattern; the classifier reads it as natural language. The shipped entry unblocks `workbench-dev-team` dispatch (see 2c.6).
 
 Three behaviours worth calling out by name:
 
 - `Bash(git push --force:*)` also blocks `--force-with-lease`, since that string starts with `--force`.
 - **There is deliberately no `Read()` deny rule.** Credential paths — `~/.ssh`, `~/.aws`, `~/.gnupg`, `.env` — are guarded by `hooks/credential-guard.sh` instead, a `PreToolUse` hook that exits 2 before permission rules are evaluated. A `Read` deny never applied to a subprocess that opens the file itself, and any one of them arms a circuit breaker that prompts on every relative-path `grep`/`rg`/`diff`/`git`/`cp`/`mv` in a command containing `cd`. See the `_comment` block in `assets/permissions/rails.json` for the full finding.
-- **There is deliberately no `rm` deny rule.** `Bash(rm -rf:*)` sits in `ask` instead. A deny on `rm -rf /` would match every absolute-path delete — `*` is always a wildcard, and deny beats allow regardless of specificity, so no `/tmp` exception is expressible. Claude Code already gates the catastrophic case semantically: the classifier decides root and home removals in `auto` (including inside `$(...)` and `<(...)` substitution), and they still prompt under `bypassPermissions` as a circuit breaker.
+- **There is deliberately no `rm` deny rule.** `Bash(rm -rf:*)` sits in `ask` instead. A deny on `rm -rf /` would match every absolute-path delete — `*` is always a wildcard, and deny beats allow regardless of specificity, so no `/tmp` exception is expressible. Claude Code already gates the catastrophic case semantically: the classifier decides root and home removals in `auto` (including inside `$(...)` and `<(...)` substitution), and they still prompt under `bypassPermissions` as a circuit breaker. The same reasoning says why scratchpad cleanup gets a command rather than a rule — see 2c.3.
 
 Then offer a dry run — it prints exactly what would change and writes nothing:
 
@@ -278,7 +278,52 @@ Then offer a dry run — it prints exactly what would change and writes nothing:
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/permissions.sh" --dry-run --mode <chosen-mode>
 ```
 
-### 2c.3 — Apply
+### 2c.3 — Install the scratchpad delete helper
+
+`Bash(rm -rf:*)` is in `ask`, so **every** scratchpad cleanup prompts — the one `rm -rf` an agent runs constantly. The exception cannot be written as a rule: rules are evaluated deny → ask → allow with first match winning, specificity does not reorder them, and Bash rules have no negation operator. `Bash(rm -rf /tmp/:*)` in `allow` is dead text, because the ask rule matches first every time.
+
+So the safe delete gets its own command. `bin/scratch-rm.sh` is not named `rm`, so the ask rule is never tested against it, and the allow entry 2c.4 writes resolves it outright. The real check lives inside the script, where it is logic instead of a glob: it deletes one path that resolves **strictly beneath** the session scratchpad or the login home's `Developer/scratchpad`, refuses both roots themselves (they hold other sessions' live state), resolves symlinks and `..` before deciding, and refuses rather than falling back to a plain delete. `$HOME` does not decide that second root — the script reads the login home from the password database and accepts `$HOME` only when it resolves to the same directory, because a root the caller chooses is not a root.
+
+🔁 **This step comes before 2c.4 on purpose.** The file and its grant are a pair, and the order decides where a failure lands. Install first, and a failed install leaves no rule behind — nothing is granted, nothing prompts differently. Grant first, and a failed install leaves `~/.claude/settings.json` naming a path with no file behind it, and it stays there: the merge only adds, so nothing later takes it out.
+
+The script must sit at the stable path the rule names — **not** the plugin cache, whose path carries the version and moves on every update:
+
+```bash
+set -u
+SRC="${CLAUDE_PLUGIN_ROOT}/bin/scratch-rm.sh"
+DST="$HOME/.claude-workbench/bin/scratch-rm.sh"
+
+if [ ! -f "$SRC" ]; then
+  echo "❌ bin/scratch-rm.sh is missing from the plugin — cannot install."
+  exit 1
+fi
+
+# Prove the shipped script before installing it. Its path check is the only
+# thing left between an agent and a wrong `rm -rf`, since the ask rule that
+# prompts today never fires on this command.
+if ! bash "${CLAUDE_PLUGIN_ROOT}/hooks/test-scratch-rm.sh" >/dev/null 2>&1; then
+  echo "❌ hooks/test-scratch-rm.sh FAILED — refusing to install it."
+  echo "   Re-run it directly for the detail:  bash ${CLAUDE_PLUGIN_ROOT}/hooks/test-scratch-rm.sh"
+  exit 1
+fi
+
+mkdir -p "$HOME/.claude-workbench/bin"
+install -m 755 "$SRC" "$DST"
+echo "✅ Scratchpad delete helper installed: $DST"
+echo "   Its allow rule lands in 2c.4 — until then the command still prompts."
+```
+
+**Failure here is a warning, not a stop**, and it warns in both directions. Nothing else depends on the helper, and the only cost of skipping it is the prompt the user gets today. Say the other half out loud too: 2c.4 will write the allow entry regardless, so a skipped install leaves a rule naming a path with no file. That rule is inert rather than dangerous — the command fails with *no such file* and deletes nothing — but it reads like a grant, so tell the user it is there and that re-running this step is what makes it true.
+
+Tell the user the exact spelling, because it is the only one the rule matches:
+
+```bash
+bash "$HOME/.claude-workbench/bin/scratch-rm.sh" <absolute-path>
+```
+
+`sh <path>`, a `~/` path, or the absolute path spelled out matches no rule, reaches the classifier, and prompts. That is the safe direction to fail, and it is why only the `$HOME` spelling ships: `rails.json` is static data that nothing expands.
+
+### 2c.4 — Apply
 
 ```bash
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/permissions.sh" --mode <chosen-mode>
@@ -288,7 +333,25 @@ Idempotent — re-running with the same answers reports `all shipped rails alrea
 
 If the user wants to edit the lists, point them at `~/.claude/settings.json` `permissions.deny` / `permissions.ask`. Entries they remove by hand **will be re-added** the next time setup runs, since the merge only knows how to add. Removing a rule permanently means editing `assets/permissions/rails.json` in the plugin.
 
-### 2c.4 — The headless constraint (do not "improve" the ask list)
+Then check the helper and its grant against each other. Either half alone is a defect, and each half has its own remedy:
+
+```bash
+DST="$HOME/.claude-workbench/bin/scratch-rm.sh"
+RULE_COUNT=$(jq -r '[.permissions.allow[]? | select(. == "Bash(bash \"$HOME/.claude-workbench/bin/scratch-rm.sh\":*)")] | length' \
+  "${WORKBENCH_SETTINGS_FILE:-$HOME/.claude/settings.json}" 2>/dev/null || echo 0)
+if [ -f "$DST" ] && [ "$RULE_COUNT" = "1" ]; then
+  echo "✅ Scratchpad delete helper installed and allowed: $DST"
+elif [ -f "$DST" ]; then
+  echo "⚠  $DST is installed, but its allow rule is not in settings — scratchpad cleanup keeps prompting. Re-run this step."
+elif [ "$RULE_COUNT" = "1" ]; then
+  echo "⚠  The allow rule is in settings, but $DST does not exist — the rule names a path with no file behind it."
+  echo "   It grants nothing: the command fails with 'no such file' and deletes nothing. Re-run 2c.3 to make it true."
+else
+  echo "⚠  Neither the helper nor its allow rule is in place — scratchpad cleanup keeps prompting. Re-run 2c.3, then this step."
+fi
+```
+
+### 2c.5 — The headless constraint (do not "improve" the ask list)
 
 An `ask` rule *always* forces a prompt, and a `claude -p` run has nobody to prompt — so the call is **blocked** instead. `workbench-dev-team` dispatches Watson unattended via `nohup claude -p --agent`, and Watson pushes branches, commits, and opens PRs.
 
@@ -296,11 +359,11 @@ An `ask` rule *always* forces a prompt, and a `claude -p` run has nobody to prom
 
 The git-commit approval gate stays a `PreToolUse` hook for the same reason: a hook can force a prompt *and* carry a pipeline exemption. An ask rule cannot.
 
-### 2c.5 — Why an `autoMode.allow` entry ships alongside the rules
+### 2c.6 — Why an `autoMode.allow` entry ships alongside the rules
 
 The classifier's built-in **soft-deny** list includes *auto-mode bypass*. The Dispatch task launches agents with `nohup claude -p --agent workbench-dev-team:<name> --dangerously-skip-permissions`, which reads exactly like Claude removing its own oversight — so the classifier blocks it. A soft deny clears on explicit user intent, but a scheduled task has no user message to clear it, so dispatch fails non-deterministically tick to tick.
 
-`autoMode.allow` is the documented mechanism for an exception to a soft deny, so the rails file carries one. `permissions.allow` is the wrong lever: auto mode deliberately suspends broad shell allow rules that grant arbitrary code execution, which is precisely this command's shape.
+`autoMode.allow` is the documented mechanism for an exception to a soft deny, so the rails file carries one. `permissions.allow` is the wrong lever: auto mode deliberately suspends broad shell allow rules that grant arbitrary code execution, which is precisely this command's shape. That is about the *pattern*, not the list — `workbench-dev-team` allows its own `dispatch-agent.sh` wrapper by fixed path, the same narrow shape 2c.3 uses, and the soft-deny exception is still required because the wrapper performs the same spawn.
 
 🛑 **The literal string `"$defaults"` must stay in `autoMode.allow`.** Without it, Claude Code replaces the *entire* built-in soft-deny list — force push, `curl | bash`, production deploys, auto-mode bypass, all of it. `permissions.sh` prepends `"$defaults"` whenever it is missing, including on a list a user had emptied of it. Never hand-edit it out.
 

@@ -58,7 +58,7 @@ jobs:
           done
           exit "$fail"
 
-      - name: shellcheck bin + hooks + libs + fixtures + scripts
+      - name: shellcheck every tracked shell file
         run: |
           set -euo pipefail
           # PINNED. The runner image's shellcheck floats, and a developer's local
@@ -71,14 +71,22 @@ jobs:
             | tar -xJf - -C /tmp
           SHELLCHECK="/tmp/shellcheck-${SC_VERSION}/shellcheck"
           "$SHELLCHECK" --version
+          # Every tracked shell file, not a hand-listed set of directories. A
+          # directory the list forgets is linted by nothing, and nothing says so.
+          # Tracked only, so an untracked scratch copy is not ours to gate on.
+          # The pathspec is quoted so git expands it, not the shell. Unquoted, a
+          # top-level *.sh would shrink the pathspec to that one file.
+          mapfile -t scripts < <(git ls-files '*.sh')
+          printf '%s\n' "${scripts[@]}"
           # -x lets shellcheck follow `source`d libraries under hooks/lib.
-          "$SHELLCHECK" --severity=warning -x \
-            bin/*.sh hooks/*.sh hooks/lib/*.sh hooks/fixtures/*.sh scripts/*.sh
+          "$SHELLCHECK" --severity=warning -x "${scripts[@]}"
 
-      - name: bash -n on bin + hooks + libs + fixtures + scripts
+      - name: bash -n on every tracked shell file
         run: |
           set -euo pipefail
-          for f in bin/*.sh hooks/*.sh hooks/lib/*.sh hooks/fixtures/*.sh scripts/*.sh; do
+          # Tracked files, quoted pathspec: same rule as the shellcheck step above.
+          mapfile -t scripts < <(git ls-files '*.sh')
+          for f in "${scripts[@]}"; do
             bash -n "$f"
           done
 

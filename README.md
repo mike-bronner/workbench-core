@@ -237,6 +237,7 @@ core/
 │   ├── provisioning-guard.sh   — PreToolUse: block worktree and database creation, on all four surfaces
 │   ├── delegation-gate.sh      — PreToolUse: deny main-agent Edit/Write/NotebookEdit, redirect to sub-agents
 │   ├── agent-dispatch-gate.sh  — PreToolUse: deny a main-agent Agent dispatch that skips the five-slot brief
+│   ├── peer-message-gate.sh    — PreToolUse: deny a sub-agent SendMessage to anything but main or its own children
 │   ├── lib/brief-template.sh   — the ONE definition of the five-slot brief (gate + deny message read it)
 │   ├── lib/                    — sourceable libs: memory-env / -probe / -vacuum / -install, summary-dispatch, prose-check,
 │   │                             memory-recall-core (levers both recall hooks share), scan-query (a scan's own query),
@@ -263,6 +264,7 @@ core/
 │   ├── install/                — propagate the shipped persona to live locations
 │   ├── log-now/                — dump + narrate the current session inline
 │   ├── memory-lint/            — monthly vault health-and-repair pass
+│   ├── cross-session-messaging/ — the protocol for messaging another session, and for receiving one
 │   ├── orchestrator/           — per-session on/off toggle for the delegation gate
 │   ├── process-pending-summaries/ — dispatch background agents for pending markers
 │   └── summarize-session/      — manually summarize a specific session
@@ -296,6 +298,7 @@ These hooks fire across the session lifecycle and on each turn:
 | `PreToolUse` | `hooks/outbound-prose-guard.sh` | Check prose leaving the machine against the output style's mechanical rules — see [Outbound prose guard](#outbound-prose-guard) |
 | `PreToolUse` | `hooks/delegation-gate.sh` | Deny `Edit`/`Write`/`NotebookEdit` from the main agent so file work goes to sub-agents — see [Delegation gate](#delegation-gate) |
 | `PreToolUse` | `hooks/agent-dispatch-gate.sh` | Deny an `Agent` dispatch from the main agent unless its prompt uses the five-slot brief — see [Agent dispatch gate](#agent-dispatch-gate) |
+| `PreToolUse` | `hooks/peer-message-gate.sh` | Deny a `SendMessage` from a sub-agent to anything but its own orchestrator or its own children — see [Peer message gate](#peer-message-gate) |
 
 ### Delegation gate
 
@@ -389,6 +392,43 @@ The hint emits `additionalContext` and **no `permissionDecision`**. That is deli
 Like the delegation gate, it is sidesteppable and deliberately so. Slot headers are cheap to bolt onto a 17,000-character prompt, and the gate will pass it. What survives that is the receiving agent's own check on substance, which is where the judgement belongs.
 
 Tests: `hooks/test-agent-dispatch-gate.sh` (165 cases: every allow branch independently, each of the five slots pinned by its own omission fixture, a `Workdir:` carrying a branch and one carrying a worktree, the deny and hint paths, the hint's absence of a permission grant, each exempt shape plus its prefix-smuggling counter-case, a realistic read-only dispatch passing clean, `hooks.json` wiring, the shared-definition drift guards, and agreement with the toggle skill and the summary-writer skill).
+
+### Peer message gate
+
+**Claude Code sessions can message each other, and the capability shipped ungoverned.** `ListAgents` from this repo listed five live peer sessions and `SendMessage` reached any of them, with no hook, no skill and no rule anywhere in this plugin. The behaviour is wanted — a hand-run cross-session peer review between two sessions caught a real shared-script bug — so it is bounded rather than removed. The protocol is prose, in `skills/cross-session-messaging/SKILL.md`. `hooks/peer-message-gate.sh` enforces the one part of it that is structural.
+
+**Sends are model-initiated, so the receiving side is the only human checkpoint in the loop.** A session may reach out on its own when it notices shared surface. A session that *receives* a peer message surfaces it to its own human and stops: no edit, no commit, no dispatch on the strength of it. Without that rule two models drive each other end to end with nobody watching. The harness already states that a peer message carries no user authority; the skill turns that notice into the working protocol, and the consequence worth stating is that a useful message **informs** rather than **asks**. "Your build shim drops `$TERM` under a Herdr startup command" is the shape that works. "Please fix X for me" is the shape the receive rule refuses. None of that is enforceable, and none of it is in the hook.
+
+**What the hook does enforce: a sub-agent sends up to its orchestrator and down to its own children, and nowhere else.** A sub-agent is unattended by definition, so a model-initiated peer send from one is a message nobody chose to send arriving where nobody was warned. It also does not work — per the tool's own contract a sub-agent's peer send goes out under the parent session's address and any reply lands in the parent's conversation — so the gate closes a channel that was already one-way and misattributed.
+
+| Caller | Destination | Verdict |
+|---|---|---|
+| Top-level (a human's session, or `claude -p --agent`) | anything | allow, silently |
+| Sub-agent | the literal `main` | allow, silently |
+| Sub-agent | an agent-id-shaped destination | allow, **with an advisory** |
+| Sub-agent | anything else | **deny** |
+
+**`agent_id` alone decides the caller, and that differs from the sibling gates on purpose.** [The delegation gate](#delegation-gate) and [the agent dispatch gate](#agent-dispatch-gate) key on the same measured three rows, but they allow on `agent_type` as well so a scheduled `--agent` run gets through. Here that second branch would be wrong: `agent_type` is present for a real sub-agent too, so allowing on it would allow the only case this gate gates. Row three needs nothing extra, because a top-level `--agent` run carries no `agent_id` and is already on the allow side of the single test. That is what makes a pipeline agent top-level and free to send, which was a deliberate decision taken against a recommendation to treat it as a sub-agent. Nothing is exposed by it today: no dev-team agent carries `SendMessage` at all.
+
+**The advisory branch exists because the down direction cannot be enforced, measured three ways.** Spawn records carry no spawner identity. `isSidechain` is `false` on all 722 transcript entries, so a `parentUuid` walk cannot even establish that a spawn came from a sub-agent. A sweep for agent-id-shaped values across the whole transcript found none that names a spawner. And sub-agents **share** the parent's transcript, so any "is this my child?" check would read children spawned by everyone and wave a sibling through. The harness enforces nothing here either: a sub-agent sending to a sibling it did not spawn was measured succeeding, and it *resumed* that sibling. So an id destination is allowed with a note naming the one question only the model can answer. [The agent dispatch gate](#agent-dispatch-gate) already pairs an advisory with a deny, so this is that file's pattern rather than a new one.
+
+**What is measured, and what is inferred.** Measured live on Claude Code 2.1.274 with a logging-only probe, the same method the dispatch gate cites in its own header: `PreToolUse` fires for `SendMessage` at all; `to: "main"` passes through as the literal string `main`, unrewritten, and a sub-agent sending to it succeeds; a sub-agent sending to a sibling's id succeeds; and an agent id looks like `a5a2f4470341f9233`, lowercase hex, 17 characters.
+
+One thing is **inferred, never measured**: that a peer session's destination does not look like an agent id. A peer appears in `ListAgents` as a name — `herdr-b5`, or `herdr-b5 [72839a]` — and neither form is lowercase hex. No peer send was ever captured, because messaging live sessions was forbidden and a probe message interrupts somebody's real conversation. **The fourth branch rests on that inference, which is exactly why the deny is the default rather than a narrow rule.** Every destination form nobody has measured falls into it and is refused. Wrong in this direction, a legitimate child send is denied and the sub-agent reports up instead, which costs one message. Wrong in the other, the gate would silently admit the thing it exists to stop.
+
+**Both destination fields are read, and that is not belt-and-braces.** `tool_input` carries doubled fields. One measured send produced `to` and `recipient` holding the same id, plus `message` and `content` holding **different** strings: `message` was the 74-character text actually sent, and `content` was an unrelated 50-character string that hash-testing could not derive from the message, the summary, or any truncation of either. The pairs are not guaranteed to agree, so a gate reading only `to` would be checking a field the harness might not be the one to honour. Every destination value present is classified and the strictest verdict wins — one unrecognised form denies, whatever the other field says.
+
+**The body is never read.** Not because of the doubling, but because judging whether a stated reason is a good reason is semantic, and this plugin has the measurement for what that costs: the dispatch gate's three prompt-classifying heuristics scored 83% precision at 26% recall against 34% at 84%, with the wrong answers not tunable away. The skill requires a declared reason; the gate does not check for one and does not pretend to.
+
+**The id test is spelled out in codepoints rather than written as a regex.** jq's `test` uses Oniguruma, where `$` matches at the end of the string *or* before a trailing newline, exactly as in Perl. Measured on jq 1.7.1, `"a5a2f4470341f9233\n"` satisfies `test("^[0-9a-f]{16,}$")` and would have passed as an agent id. `explode` with an explicit 48-57 / 97-102 range closes that without depending on any anchor semantics, which is the same reasoning the sibling guards give for spelling their whitespace out in ASCII instead of trusting `[[:space:]]`. Uppercase hex is therefore **not** an id: it is a form nobody measured, and it lands in the deny with everything else unmeasured. The 16-character floor sits below the 17 that was measured and above anything a session name plausibly is; pinning it to exactly 17 would deny every legitimate child send the day the harness changes its id width.
+
+**`ListAgents` is deliberately not gated,** though `PreToolUse` fires for it too. Listing peers is read-only, the send is where the harm would land, and the send is gated. Its `tool_input` also arrives **empty**, so any rule about it could only ever key on the caller. A deny there would buy a sub-agent an earlier refusal for the cost of a fork on every call, so the matcher names `SendMessage` alone.
+
+**No escape hatch, and none is needed.** This gate never fires on a human, because a person types into a top-level session and that is the first allow branch. There is nothing for `/workbench-core:orchestrator` to stand down, and wiring that toggle in would let one unrelated request — "let me edit inline" — also open peer messaging from every sub-agent in the session.
+
+**Fail-open, and what that costs you.** A malformed payload, a missing `jq`, a `tool_input` that is not an object, or a send carrying no destination at all each exit 0 and allow the call. The threat here is a confidently wrong agent, not a crafted payload. Be clear about the trade: **if this script breaks, enforcement stops silently and there is no layer behind it.** Nothing announces that the gate is down.
+
+Tests: `hooks/test-peer-message-gate.sh` (89 cases), weighted on two axes. Every allow branch is covered independently, because a gate that refuses a legitimate send is a gate that gets removed. Every deny is covered by the *form* of the destination rather than by one example — uppercase hex, short hex, hex with a separator, a trailing newline, a non-string value — so "anything nobody measured is refused" is asserted rather than assumed. The suite also pins the two files to each other: the skill slug is read out of the gate's own deny message, and the skill is checked for claiming nothing the gate contradicts.
 
 ### Outbound prose guard
 
@@ -1006,6 +1046,7 @@ Runs on every `startup` warmup:
 | `/workbench-core:memory-status` | Report the shared memory server's facts — vault/cache, server-binary presence, index & last-VACUUM |
 | `/workbench-core:install-chat-skills` | Discover skills in `@claude-workbench` plugins and install them into the Claude Mac app's Chat surface via `.skill` packaging |
 | `/workbench-core:orchestrator` | Turn the [delegation gate](#delegation-gate) off or on for this session, or report its state. `off` allows inline edits, `on` restores the gate, no argument reports |
+| `/workbench-core:cross-session-messaging` | The protocol for messaging another Claude Code session — when to reach out, what a message carries, the receive-side rule that keeps a human in the loop, and which sends a sub-agent may make. Paired with the [peer message gate](#peer-message-gate) |
 
 All skills are **execution-aware** — they check for a `skills/{name}.learnings.md` file in the vault before running and apply any accumulated learnings from prior executions.
 

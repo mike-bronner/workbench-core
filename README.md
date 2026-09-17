@@ -234,12 +234,14 @@ core/
 │   ├── credential-guard.sh     — PreToolUse: block reads of ~/.ssh, ~/.aws, ~/.gnupg, and .env files
 │   ├── destructive-database-guard.sh — PreToolUse: block Artisan resets, dropdb, and destructive SQL
 │   ├── vault-git-guard.sh      — PreToolUse: block git WRITE commands aimed at the memory vault
+│   ├── provisioning-guard.sh   — PreToolUse: block worktree and database creation, on all four surfaces
 │   ├── delegation-gate.sh      — PreToolUse: deny main-agent Edit/Write/NotebookEdit, redirect to sub-agents
 │   ├── agent-dispatch-gate.sh  — PreToolUse: deny a main-agent Agent dispatch that skips the five-slot brief
 │   ├── lib/brief-template.sh   — the ONE definition of the five-slot brief (gate + deny message read it)
 │   ├── lib/                    — sourceable libs: memory-env / -probe / -vacuum / -install, summary-dispatch, prose-check,
 │   │                             memory-recall-core (levers both recall hooks share), scan-query (a scan's own query),
-│   │                             shell_parse (shared tokeniser), destructive-db-check, vault-git-check
+│   │                             shell_parse (shared tokeniser), destructive-db-check, vault-git-check,
+│   │                             provisioning-check
 │   └── fixtures/               — test fixtures (fake-server stub, no real server)
 ├── docs/
 │   ├── session-warmup-contributions.md — how plugins contribute warmup text
@@ -462,7 +464,16 @@ A relative path resolves against the tool call's `cwd`, and a leading `cd` in th
 
 **Out of scope:** `php artisan tinker`, because an interactive REPL takes its input later. As with every guard here, this covers Claude's own tool calls and is not an OS boundary — `/sandbox` is.
 
-Tests: `hooks/test-destructive-database-guard.sh` (165 cases). The suite is weighted towards the *allow* side on purpose. A guard that blocks every destructive command and also blocks `grep -rn "drop table"` has made ordinary work impossible, which is a worse failure than the one it prevents.
+**The tab-stripping heredoc walked straight through until 2026-09-17.** `psql -d app <<-SQL` with a `DROP DATABASE` in the body exited 0, while the identical `<<SQL` form exited 1. `<<-` hides the delimiter behind a dash that `extract_heredocs` never stored, because it keys bodies by the bare name, and the whole-command fallback did not rescue it either: `<<` *is* in the token list, so `saw_heredoc` was already true and the sweep was skipped. The dash binds two ways, and running them confirmed both are valid bash, so the lookup strips a leading dash **and** steps over a bare one:
+
+```
+psql <<-SQL      tokenises as ['<<', '-SQL']
+psql <<- SQL     tokenises as ['<<', '-',  'SQL']
+```
+
+The second is the one a single `lstrip("-")` still misses. Each half of the fix has its own fixture, and dropping either one alone reddens the suite. The gap was found while building [the provisioning guard](#provisioning-guard), which shares the tokeniser and had inherited it.
+
+Tests: `hooks/test-destructive-database-guard.sh` (175 cases). The suite is weighted towards the *allow* side on purpose. A guard that blocks every destructive command and also blocks `grep -rn "drop table"` has made ordinary work impossible, which is a worse failure than the one it prevents.
 
 ### Vault git guard
 
@@ -504,6 +515,77 @@ Everything unlisted passes. git ships over 150 subcommands and the read-only one
 **It fails open,** for the reason the database guard gives rather than the one `credential-guard.sh` gives: there is no adversary, only a confidently wrong agent. A command that writes to the vault has to be valid shell to run, so it tokenises. A command whose target cannot be resolved — no `cwd` in the payload and no explicit path — also passes, because guessing at the target is how this guard would block somebody else's repository.
 
 Tests: `hooks/test-vault-git-guard.sh` (188 cases), weighted towards the allow side on two axes. A guard that stops `git status` in the vault has broken the commands the incident was investigated with, and a guard that stops `git commit` in an unrelated repository has broken every repository on the machine. Both are worse than the failure it prevents, so every write verb it blocks is tested a second time in an unrelated repository, allowed.
+
+### Provisioning guard
+
+The worktrees and the development databases on this machine are set up by hand. A worktree comes from a Herdr keybinding or a typed `git worktree add`, and a database comes from a typed `createdb`. Those are the environment an agent is meant to work **inside**. Agents kept provisioning their own instead: a stray `git worktree add`, a `createdb`, a sub-agent dispatched with worktree isolation. Each one leaves an orphan tree or an orphan database to find and clean up later, and it puts the agent's work somewhere nobody was looking.
+
+`hooks/provisioning-guard.sh` is the enforcing layer. It exits 2, so no prompt appears and no allow rule reaches it.
+
+**Four surfaces, because between them they are every path an agent has.** Two of them are not shell commands at all, which is the half no permission rule could ever have reached:
+
+| Surface | Blocked |
+|---|---|
+| `Bash` | the three rule classes in the next table |
+| `Agent` | a dispatch carrying `isolation: "worktree"`, which makes the harness provision a worktree for the sub-agent |
+| `EnterWorktree` | every call. The tool creates a worktree and moves the session into it |
+| `ExitWorktree` | only `action: "remove"`, which deletes the session's worktree and its branch |
+
+The `Bash` surface, by rule class:
+
+| Class | Blocked |
+|---|---|
+| Worktree | `git worktree add`, `git worktree remove`, `git worktree prune` |
+| Shell | `createdb`, `createuser`, `mysqladmin ... create` |
+| Raw SQL | `CREATE DATABASE\|SCHEMA` inside a SQL client's payload |
+
+**Worktree deletion is in scope, and it is the half with the blast radius.** `git worktree remove` and `git worktree prune` destroy trees somebody set up deliberately. Creating a tree leaves litter, deleting one destroys work. Database deletion is **not** here: [the destructive database guard](#destructive-database-guard) already owns that half, and nothing in this guard touches its rules.
+
+**`ExitWorktree` is the one surface beyond the four that were specified.** It earns its place. With `EnterWorktree` blocked, the only worktree a session can be sitting in is one a human made, so `remove` can only ever destroy a hand-provisioned tree. `action` is a required enum on that tool with no default, so matching `remove` exactly leaves no silent hole, and `keep` stays available so the guard never traps an agent inside a tree it cannot leave.
+
+**Verb position, not substring**, on the same reasoning [the destructive database guard](#destructive-database-guard) gives. A substring match for `createdb` blocks `grep -rn createdb .`, and one for `worktree add` blocks every search for the text of this very section. So `hooks/lib/provisioning-check.py` tokenises with the shared `hooks/lib/shell_parse.py`, splits into statements and pipeline stages, unwraps the wrappers, and only then matches. A worktree verb has to sit in git's subcommand slot, and SQL has to sit in a SQL client's payload. `grep` is neither git nor a SQL client, so code search is structurally unreachable by both rule classes.
+
+**A prefix rule cannot see any of these**, which is the argument for a hook rather than a deny rule alone:
+
+```
+cd /repo && git worktree add x          the verb is not at the front
+git -C /repo worktree add x             the verb is in the fourth slot
+bash -c "git worktree add x"            one quoted token
+ssh box "createdb app"                  one quoted token, another machine
+sail createdb app                       behind a shim
+docker compose exec db createdb app     through a container
+mysqladmin -u root create app           the verb sits after the flags
+psql -c "CREATE DATABASE app"           inside a client payload
+echo "CREATE DATABASE app" | psql       upstream of the client
+psql -d app <<'SQL' ... SQL             a heredoc body
+```
+
+**It follows a command through `ssh`,** agreeing with the database guard and not with [the vault git guard](#vault-git-guard). A worktree or a database created on another host is still one nobody asked for. That guard has to stop at `ssh` because its verdict depends on a local path, and this one's never does, so a remote command cannot produce the false block it protects against.
+
+**Two exclusions, decided deliberately. Neither is to be widened.**
+
+| Exclusion | Why |
+|---|---|
+| SQLite file creation | A Laravel migration creates `database/database.sqlite` implicitly. Blocking that breaks ordinary test runs while protecting nothing: a stray `.sqlite` file is deleted with `rm`, not hunted down. The exclusion is structural rather than a special case, because `sqlite3` is absent from the SQL client list, and no rule matches `CREATE TABLE` at all. |
+| Container and stack startup | `docker compose up`, `sail up`, `ddev start`, and `lando start` provision a database volume on first run. They are also exactly how an agent starts the environment it is meant to work inside, so blocking them defeats the purpose of the whole guard. Only a creation verb reached *through* a container blocks, which is provisioning rather than startup. |
+
+**Read-only inspection is the priority requirement.** `git worktree list`, `lock`, `unlock`, `move`, and `repair` each have a named test asserting they still run. So do `psql -c "SELECT ..."`, `mysqladmin status`, `mysqladmin ping`, `pg_dump`, and every `grep` or `rg` whose text merely contains a creation verb. `CREATE TABLE`, `CREATE INDEX`, and `CREATE EXTENSION` pass, because a table inside a database somebody already made is not provisioning.
+
+**It is a block list, and the limit is stated rather than hidden.** A creation path nobody listed walks through. `pg_restore --create` is one, and a `CREATE DATABASE` hidden in a file handed to `psql -f` is another. Reading a referenced `.sql` file is what the destructive guard does for `DROP`, and it is deliberately not repeated here: a missed `CREATE` costs one `dropdb` to undo, while the missed `DROP` that guard exists for cost several hours of imported data.
+
+**The block is absolute, and that is not a stylistic match with its siblings.** A root-cause investigation on 2026-09-11 measured that a `PreToolUse` hook returning `permissionDecision: "ask"` is silently auto-approved by the auto-mode classifier, because a hook cannot set `classifierApprovable`. Only a hard block is real. When a worktree or a database is genuinely wanted, the human runs the command with the `!` prefix, and every message the guard prints says so.
+
+**No deny rules ship in `rails.json` for this, deliberately.** `Bash(createdb:*)` and `Bash(git worktree add:*)` would both satisfy that file's own test, since the first words decide the outcome. They are still absent, because `scripts/permissions.sh` merges additively and never removes, so a rule added there is permanent in a user's `settings.json` and cannot be taken back out by editing this repo. The database *denies* earn that permanence by guarding against data loss. An orphan worktree costs one command to remove, the hook already blocks it absolutely, and leaving the rule out stays reversible in a way that adding it does not.
+
+**It fails open,** on the reasoning the sibling guards give rather than the one `credential-guard.sh` gives. There is no adversary here, only a confidently wrong agent. A command that actually creates a worktree must be valid shell to run, so it tokenises. A malformed payload, a missing `jq`, a missing `python3`, or an absent checker all exit 0.
+
+**It pays almost nothing on an ordinary Bash call.** Every rule needs one of two substrings in the command text, `worktree` or `create`, so a command holding neither exits before Python starts. The case-insensitive match is a bash `case` with bracket classes rather than `tr` or `grep -i`, because macOS ships bash 3.2 with no `${var,,}` and either alternative costs the fork the check exists to avoid.
+
+**A heredoc body belongs to the stage that redirects it, and to no other.** The database guard carries a fallback that sweeps every heredoc body in the command whenever a SQL client stands anywhere in it, for a redirect "that did not survive tokenising". This guard does not, because the fallback was measured rather than assumed. Across all eight spellings — `<<SQL`, `<<'SQL'`, `<<"SQL"`, `<< SQL` and each with `-` — plus after a `cd`, before a pipe, and behind `sudo`, the redirect token survives every time, so the sweep caught nothing it could not reach directly. It did produce a false block: writing a `setup.sql` heredoc in a command that also runs `psql` matched the unrelated body. A guard that fails open cannot carry a branch whose only measured effect is a false block on ordinary work.
+
+**Measuring that is what turned up the `<<-` gap**, in this checker and in [the database guard](#destructive-database-guard), which had it first and where it let a `DROP DATABASE` past. Both are fixed in this change, the same way.
+
+Tests: `hooks/test-provisioning-guard.sh` (187 cases), weighted towards the allow side on three axes. A guard that stops `git worktree list` has broken the only way to see the trees it protects. A guard that stops `grep -rn createdb` gets turned off, which is worse than not having one. And a guard that stops `docker compose up` or a migration writing `database.sqlite` has broken the environment an agent is supposed to work inside, which is the whole thing this guard exists to keep it in.
 
 ### Logging pipeline
 
@@ -739,6 +821,8 @@ Two matching behaviours worth knowing: `Bash(git push --force:*)` also blocks `-
 `hooks/credential-guard.sh` replaces them: a `PreToolUse` hook on `Bash|Read|Edit|Write|NotebookEdit` that exits 2 *before* permission rules are evaluated, so no prompt appears and no allow rule can override it. It covers strictly more than the rules did — `python3 -c "print(open('~/.ssh/id_rsa').read())"` is blocked here and never was there. For Bash it requires a file-reading program alongside the protected path, so `ls ~/.ssh`, `stat ~/.ssh/id_rsa`, and `find . -name ".env*"` stay allowed: they list names without exposing contents, and blocking them would make the guard its own source of prompt noise. It guards Claude's own tool calls, not the OS — for that, enable the sandbox. `hooks/test-permissions.sh` asserts no `Read()` rule creeps back in.
 
 **Why databases get a hook and only seven deny rules.** `Bash(dropdb:*)`, `Bash(dropuser:*)`, `Bash(mysqladmin drop:*)`, `Bash(docker volume rm:*)`, `Bash(docker volume prune:*)`, `Bash(lando destroy:*)`, and `Bash(wp-env destroy:*)` ship as denies, because no agent has a legitimate use for them, and the first words of each decide the outcome. The four Artisan reset verbs deliberately **do not**, and adding one would be a silent regression. A deny rule matches a prefix, so it cannot read `--env=testing`, which means it cannot carry the exemption the guard relies on. The hook exiting 0 is *neutral*, not an allow, so a deny rule would block a correctly scoped testing reset anyway and the exemption would never fire. That mistake would also stick: `permissions.sh` merges additively and never removes, so deleting the rule from `rails.json` later does not take it out of a user's `settings.json`. `Bash(docker compose down:*)` is absent for the same reason and would be worse: the plain form keeps named volumes and is how a stack gets stopped, so a deny would block routine teardown while the destructive `--volumes` flag sits where a prefix cannot read it. `Bash(ddev delete:*)` is absent on the same grounds, because `ddev delete images` removes Docker images rather than project data. Three instances of one rule, so state it plainly: **a deny rule belongs here only when the first words of the command decide the outcome.** When the verdict depends on a flag or a later argument, the hook is the enforcement and a deny rule is a trap. `hooks/test-destructive-database-guard.sh` asserts that no `artisan`, `docker compose`, or `ddev` rule appears in either list. The enforcement lives in [Destructive database guard](#destructive-database-guard).
+
+**Why worktree and database *creation* gets no deny rule at all.** `Bash(createdb:*)` and `Bash(git worktree add:*)` would both pass the test stated above, since the first words decide the outcome. They are still absent. A rule added here is permanent in a user's `settings.json`, because the merge never removes, and the harm it guards against is an orphan tree or database that one command cleans up. [The provisioning guard](#provisioning-guard) blocks all of it absolutely, and leaving the rule out keeps the decision reversible in a way that adding it would not.
 
 **Why `systemctl` is blanket rather than scoped.** A rule like `Bash(systemctl enable:*)` reads tighter, but it would never match `systemctl --user enable foo` — the flag precedes the verb, and matching is by prefix. That rootless invocation is exactly the one most in need of the rail, since it needs no sudo to install persistence. `secret-tool` *is* scoped (`store`, `clear`) because it always takes its verb as the first argument, which leaves `lookup` unprompted, mirroring `security find-generic-password` on macOS. `hooks/test-permissions.sh` asserts both shapes.
 

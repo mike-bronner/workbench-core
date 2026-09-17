@@ -85,7 +85,7 @@ follow a command THROUGH them — a database on another host is still a database
 being destroyed, while another machine's vault is not this vault. That
 disagreement is why unwrap() is not in the shared parser.
 
-FAIL OPEN, on the same reasoning the other two guards give:
+FAIL OPEN, on the same reasoning every sibling guard gives:
 There is no adversary here. The threat is a confidently wrong agent, not a
 crafted payload. A command that actually writes to the vault has to be valid
 shell to run at all, so it tokenises. Anything unparseable is something bash
@@ -97,8 +97,9 @@ this covers Claude's own tool calls and is not an OS boundary; `/sandbox`
 enforces in the kernel, for every subprocess.
 
 The tokeniser, statement splitting, and no-op-prefix stripping come from
-hooks/lib/shell_parse.py, shared with the database guard. Only that mechanical
-half is shared: the verb tables and every decision below stay here.
+hooks/lib/shell_parse.py, shared with the database guard and the provisioning
+guard. Only that mechanical half is shared: the verb tables and every decision
+below stay here.
 """
 
 import os

@@ -74,11 +74,11 @@ file, and reading it could only ever produce a false block.
 THE TOKENISER IS SHARED; THE RULES ARE NOT:
 Tokenising, statement/pipeline splitting, heredoc lifting, and no-op-prefix
 stripping live in hooks/lib/shell_parse.py, imported below and also used by
-hooks/lib/vault-git-check.py. Only that mechanical half is shared. Every verb
-table, regex, and blocking decision in this file stays in this file, and so does
-unwrap(): the vault guard must STOP at `ssh`, where this one follows through,
-because a database on another host is still a database while another machine's
-vault is not this vault.
+hooks/lib/vault-git-check.py and hooks/lib/provisioning-check.py. Only that
+mechanical half is shared. Every verb table, regex, and blocking decision in
+this file stays in this file, and so does unwrap(): the vault guard must STOP at
+`ssh`, where this one follows through, because a database on another host is
+still a database while another machine's vault is not this vault.
 
 Deliberately out of scope:
   php artisan tinker        an interactive REPL takes its input later
@@ -392,8 +392,23 @@ def sql_payloads(tokens, bodies):
             index += 2
             continue
         if token in {"<<", "<<-"} and index + 1 < len(tokens):
-            payloads.extend(bodies.get(tokens[index + 1], []))
-            index += 2
+            # The tab-stripping form hides the delimiter behind a dash that
+            # extract_heredocs never stored, because it keys bodies by the bare
+            # name. Two spellings, both valid bash and both measured:
+            #
+            #   psql <<-SQL    tokenises as ['<<', '-SQL']
+            #   psql <<- SQL   tokenises as ['<<', '-', 'SQL']
+            #
+            # Before this, `psql -d app <<-SQL` with a DROP DATABASE in the body
+            # exited 0. The whole-command fallback below did not rescue it
+            # either: `<<` IS in the token list, so saw_heredoc is already true.
+            # A delimiter can never legitimately start with a dash, since
+            # HEREDOC_START requires a letter or an underscore.
+            delimiter, step = tokens[index + 1], 2
+            if delimiter == "-" and index + 2 < len(tokens):
+                delimiter, step = tokens[index + 2], 3
+            payloads.extend(bodies.get(delimiter.lstrip("-"), []))
+            index += step
             continue
         if token == "<<<" and index + 1 < len(tokens):
             payloads.append(tokens[index + 1])

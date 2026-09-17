@@ -218,7 +218,7 @@ check 0 "malformed json"           'not json at all'
 check 0 "empty object"             '{}'
 
 # Stage 2 may only NARROW a block, so a checker that cannot run has to leave
-# that block in place — the opposite of the other two guards, which fail open.
+# that block in place — the opposite of the sibling guards, which all fail open.
 # Both cases run a COPY of the guard from a temp directory: a suite that moves
 # the live checker aside leaves the machine unguarded if it is interrupted
 # between the move and the restore.

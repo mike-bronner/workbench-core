@@ -1,36 +1,44 @@
 #!/usr/bin/env python3
 """shell_parse: the mechanical half of reading a shell command.
 
-WARNING — TWO SAFETY GUARDS IMPORT THIS FILE, AND BOTH FAIL SILENTLY.
+WARNING — EVERY SAFETY GUARD THAT IMPORTS THIS FILE FAILS SILENTLY.
 
 hooks/lib/destructive-db-check.py is the enforcement behind
 hooks/destructive-database-guard.sh, which exists because a real development
 database was destroyed on 2026-09-04. hooks/lib/vault-git-check.py is the
-enforcement behind hooks/vault-git-guard.sh. Both hooks fail OPEN by design: a
-checker that cannot run exits 0, and exit 0 means allow. So a change here that
-raises, renames a symbol, or merely re-splits a command differently does not
-produce an error anybody sees. It produces a guard that never blocks again.
+enforcement behind hooks/vault-git-guard.sh. hooks/lib/provisioning-check.py is
+the enforcement behind hooks/provisioning-guard.sh. Every one of those hooks
+fails OPEN by design: a checker that cannot run exits 0, and exit 0 means allow.
+So a change here that raises, renames a symbol, or merely re-splits a command
+differently does not produce an error anybody sees. It produces a guard that
+never blocks again.
 
-Run BOTH suites after touching anything below:
+THE RULE, which outlives the list under it: after touching anything below, run
+the suite of EVERY checker that imports this file. A count in this sentence
+would go stale the next time a guard is added, and nothing would say so. As of
+this writing the importers are:
     hooks/test-destructive-database-guard.sh
     hooks/test-vault-git-guard.sh
+    hooks/test-provisioning-guard.sh
 
 WHAT BELONGS HERE, AND WHAT DOES NOT:
 Only mechanical parsing — tokenising, splitting a line into statements and
 pipeline stages, lifting heredoc bodies out of the way, and dropping the no-op
 prefixes that push the real command further along the token list. No rules. No
 verb tables, no regexes over payloads, no blocking decisions. Those stay in the
-guard that owns them, because the two guards read the same command differently
-and a shared rule would have to be wrong for one of them.
+guard that owns them, because the guards read the same command differently and a
+shared rule would have to be wrong for one of them.
 
 The sharpest instance is `ssh`, and it is why unwrap() is deliberately NOT here.
 The database guard follows a command through ssh, because a database on another
 host is still a database being destroyed. The vault guard stops dead at it,
 because another machine's vault is not this vault and reading it could only ever
 produce a false block. Same token, opposite meaning. Each guard keeps its own
-unwrap().
+unwrap(). The provisioning guard is a third opinion rather than a tiebreaker: it
+follows through, for its own reason, which is that its verdict never depends on
+a path and so a remote command cannot mislead it.
 
-The tokenising story, which both guards depend on: a substring match cannot
+The tokenising story, which every importer depends on: a substring match cannot
 decide any of this. `grep -rn "drop table" app/` and `git log --grep="git rm"`
 both contain a destructive verb and neither touches anything. So text is split
 into tokens with shlex, operators become tokens of their own, and a rule reads

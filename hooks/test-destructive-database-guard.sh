@@ -197,6 +197,41 @@ check 2 "quoted heredoc" "$(bash_json "$(printf 'psql -d app <<%s\nDROP DATABASE
 check 2 "bare heredoc"   "$(bash_json "$(printf 'mysql app <<EOF\nTRUNCATE TABLE verses;\nEOF\n')")"
 check 2 "cat heredoc piped in" \
   "$(bash_json "$(printf 'cat <<EOF | psql -d app\nDROP TABLE verses;\nEOF\n')")"
+check 2 "double-quoted heredoc" \
+  "$(bash_json "$(printf 'psql -d app <<%s\nDROP DATABASE app;\nSQL\n' '"SQL"')")"
+check 2 "a spaced delimiter" \
+  "$(bash_json "$(printf 'psql -d app << SQL\nDROP DATABASE app;\nSQL\n')")"
+
+# THE TAB-STRIPPING FORM, which walked straight through until 2026-09-17.
+# `<<-` hides the delimiter behind a dash the heredoc table never stored, since
+# extract_heredocs keys bodies by the bare name. The whole-command fallback did
+# not rescue it either: `<<` IS in the token list, so saw_heredoc was already
+# true and the sweep was skipped. `psql -d app <<-SQL` with a DROP DATABASE in
+# the body exited 0 while the identical `<<SQL` form exited 1.
+#
+# Four spellings, because the dash binds two different ways and both are valid
+# bash, verified by running them:
+#     <<-SQL  <<-'SQL'  <<-"SQL"   tokenise as ['<<', '-SQL']
+#     <<- SQL                      tokenises as ['<<', '-', 'SQL']
+# The fourth is the one a single lstrip("-") still misses, which is why the
+# lookup also steps over a bare dash.
+echo "blocks the tab-stripping heredoc, in every spelling of the dash:"
+check 2 "<<-SQL"    "$(bash_json "$(printf 'psql -d app <<-SQL\n\tDROP DATABASE app;\n\tSQL\n')")"
+check 2 "<<-'SQL'"  "$(bash_json "$(printf 'psql -d app <<-%s\n\tDROP DATABASE app;\n\tSQL\n' "'SQL'")")"
+check 2 '<<-"SQL"'  "$(bash_json "$(printf 'psql -d app <<-%s\n\tDROP DATABASE app;\n\tSQL\n' '"SQL"')")"
+check 2 "<<- SQL"   "$(bash_json "$(printf 'psql -d app <<- SQL\n\tDROP DATABASE app;\n\tSQL\n')")"
+# The same dash form carrying the other two SQL rule classes, so the fix is
+# pinned for the whole rule set rather than for DROP alone.
+check 2 "<<- with TRUNCATE" \
+  "$(bash_json "$(printf 'mysql app <<-EOF\n\tTRUNCATE TABLE verses;\n\tEOF\n')")"
+check 2 "<<- with a bare DELETE" \
+  "$(bash_json "$(printf 'psql -d app <<-EOF\n\tDELETE FROM verses;\n\tEOF\n')")"
+# And the allow side of the same shape: a dash heredoc that is not destructive
+# must still pass, or the fix has simply moved the failure.
+check 0 "<<- with a SELECT" \
+  "$(bash_json "$(printf 'psql -d app <<-SQL\n\tSELECT * FROM verses;\n\tSQL\n')")"
+check 0 "<<- with a qualified DELETE" \
+  "$(bash_json "$(printf 'psql -d app <<-SQL\n\tDELETE FROM verses WHERE id = 1;\n\tSQL\n')")"
 
 # A prefix permission rule sees the first word and nothing else. Every shape
 # below hides the verb behind something, which is why the hook exists.

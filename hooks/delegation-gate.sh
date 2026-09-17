@@ -36,6 +36,23 @@
 # cost is real and is documented in the README: when this script breaks,
 # enforcement stops silently, and there is no second layer behind it.
 #
+# THE REFUSAL IS SPLIT ACROSS THE TWO CHANNELS A HOOK HAS. Measured on Claude
+# Code 2.1.274 with a probe hook (insights/2026-09-17-hook-message-channels-
+# measured.md in the vault): `permissionDecisionReason` becomes the tool_result
+# and is the text a PERSON reads, and `additionalContext` survives a deny and
+# arrives in its own block, which only the model reads. So the reason is ONE
+# line naming the action that was gated, and every recovery instruction only an
+# agent acts on lives in the context instead. Nothing is cut; it stops being in
+# the human's way. `systemMessage` is not used: it is the purer human channel,
+# but it never reached this user's client at all, so a line written only there
+# would land nowhere.
+#
+# NO MARKDOWN EMPHASIS, ANYWHERE. Whether a client renders the reason as
+# Markdown is unsettled, and the model receives the raw source either way. So
+# emphasis is carried by POSITION — the action leads the line — and by
+# backticks, which read as a quoted command whether or not they are rendered.
+# Asterisks would show up as asterisks.
+#
 # Exit 0 with no output = allow (normal permission flow applies).
 # Exit 0 with permissionDecision "deny" = the harness refuses the call.
 
@@ -95,20 +112,26 @@ case "$TOOL_NAME" in
   *) exit 0 ;;
 esac
 
-# The denial names a destination that exists in every install. A dev-team
-# plugin, when one is installed, gets named too — a runtime directory probe,
-# never a build-time dependency, so core stays agnostic either way.
-REASON='🚦 Delegation gate: the main agent orchestrates and does not edit files. Dispatch a sub-agent with the Agent tool to make this change. To edit inline in this session, run /workbench-core:orchestrator off.'
+# The human line names the action and stops. The destination, the plugin that
+# owns development work, and the escape hatch are all things an agent acts on,
+# so they go to the model's channel. A dev-team plugin gets named there when one
+# is installed — a runtime directory probe, never a build-time dependency, so
+# core stays agnostic either way.
+REASON='🛑 Blocked: editing a file from the main agent. File work goes to a sub-agent.'
+
+CONTEXT='Delegation gate (workbench-core). The main conversation orchestrates and does not edit files, which is what keeps its context lean. Dispatch a sub-agent with the Agent tool to make this change.'
 for candidate in "${HOME:-}"/.claude/plugins/cache/*/workbench-dev-team; do
   [ -d "$candidate" ] || continue
-  REASON="$REASON For development work, dispatch Dr. Watson in Direct mode per /workbench-dev-team:orchestrate."
+  CONTEXT="$CONTEXT For development work, dispatch Dr. Watson in Direct mode per /workbench-dev-team:orchestrate."
   break
 done
+CONTEXT="$CONTEXT Report the deny rather than routing around it. Only the human lifts the gate, by asking for /workbench-core:orchestrator off."
 
-jq -nc --arg reason "$REASON" '{
+jq -nc --arg reason "$REASON" --arg context "$CONTEXT" '{
   hookSpecificOutput: {
     hookEventName: "PreToolUse",
     permissionDecision: "deny",
-    permissionDecisionReason: $reason
+    permissionDecisionReason: $reason,
+    additionalContext: $context
   }
 }'

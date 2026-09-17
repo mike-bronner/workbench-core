@@ -2,9 +2,14 @@
 """vault-git-check: decide whether a shell command runs a git WRITE in the vault.
 
 Reads one shell command on stdin. argv[1] is the tool call's working directory,
-argv[2] is the memory vault's path. Prints a single reason line to stdout and
-exits 1 when the command writes to the vault's git; exits 0 and prints nothing
-otherwise.
+argv[2] is the memory vault's path. Exits 1 when the command writes to the
+vault's git, and exits 0 and prints nothing otherwise.
+
+THE OUTPUT CONTRACT IS TWO LINES, and the caller splits them across the two
+channels a PreToolUse hook has. Line 1 is a short ACTION label, which the gate
+puts in `permissionDecisionReason` — the text a person reads. Line 2 is the
+DETAIL, which goes to `additionalContext`, where only the model reads it. Adding
+a finding here means writing both.
 
 THE INCIDENT THIS EXISTS FOR:
 On 2026-09-04 an agent deleted a memory note by running
@@ -348,6 +353,7 @@ def main():
     findings = scan(stripped, cwd, vault, depth=0)
     if findings:
         verb, target = findings[0]
+        print(f"`git {verb}` in the memory vault")
         print(f"`git {verb}` writes to the memory vault's git, at {target}.")
         return 1
     return 0

@@ -44,14 +44,35 @@
 # of assets/permissions/rails.json; this is that argument applied to creation.
 #
 # HARD BLOCK, NO PROMPT, NO OVERRIDE:
-# A PreToolUse hook exiting 2 blocks before permission rules are evaluated, so
-# no allow rule and no permission mode reaches it. That is not a stylistic match
-# with the sibling guards. A root-cause investigation on 2026-09-11 measured
-# that a PreToolUse hook returning permissionDecision "ask" is silently
-# auto-approved by the auto-mode classifier, because a hook cannot set
-# classifierApprovable. Only a hard block is real. When a worktree or a database
+# A PreToolUse hook returning permissionDecision "deny" refuses the call
+# outright: no allow rule and no permission mode reaches it, bypassPermissions
+# included. That is not a stylistic match with the sibling guards. A root-cause
+# investigation on 2026-09-11 measured that a PreToolUse hook returning
+# permissionDecision "ask" is silently auto-approved by the auto-mode
+# classifier, because a hook cannot set classifierApprovable. Of the three
+# verdicts a hook can return, only "deny" binds. When a worktree or a database
 # is genuinely wanted, the human runs the command with the ! prefix, and the
 # messages below say so.
+#
+# WHY THE JSON DENY RATHER THAN exit 2, WHICH THIS GUARD USED TO USE:
+# Measured on Claude Code 2.1.274 (insights/2026-09-17-hook-message-channels-
+# measured.md in the vault), exit 2 prefixes the model's message with this
+# script's absolute filesystem path and silently discards stdout. That is a path
+# in a message meant for a person, and it takes the first line away from the
+# author. The JSON deny gives both back, and it is the only mechanism that can
+# carry additionalContext. Both refuse the call equally hard.
+#
+# THE REFUSAL IS SPLIT ACROSS THE TWO CHANNELS THAT MEASUREMENT FOUND.
+# `permissionDecisionReason` becomes the tool_result and is the text a PERSON
+# reads, so it is ONE line naming the action that was gated.
+# `additionalContext` survives a deny and arrives in its own block, which only
+# the model reads, so the advice block lives there. Nothing is cut; it stops
+# being in the human's way.
+#
+# NO MARKDOWN EMPHASIS, ANYWHERE. Whether a client renders the reason as
+# Markdown is unsettled, and the model receives the raw source either way. So
+# emphasis is carried by POSITION — the action leads the line — and by
+# backticks, which read as a quoted command whether or not they are rendered.
 #
 # TWO EXCLUSIONS, DECIDED DELIBERATELY, NEITHER TO BE WIDENED. SQLite file
 # creation stays allowed, because a Laravel migration creates
@@ -71,8 +92,8 @@
 # guard here, this covers Claude's own tool calls and is not an OS boundary —
 # `/sandbox` enforces in the kernel, for every subprocess.
 #
-# Exit codes: 0 = allow (default). 2 = block; stderr is surfaced to the model
-# on a blocking PreToolUse hook.
+# Exit 0 with no output = allow (default).
+# Exit 0 with permissionDecision "deny" = the harness refuses the call.
 
 set -u
 
@@ -94,39 +115,40 @@ FIELDS=$(printf '%s' "$PAYLOAD" | jq -r '
     ((.tool_input // {}).action // "" | tostring) ] | join("\u001f")' 2>/dev/null) || exit 0
 IFS=$'\x1f' read -r TOOL_NAME ISOLATION ACTION <<<"$FIELDS"
 
-# One exit path for every surface, so the banner and the guard's name can never
-# drift between them. $1 is the finding, $2 is the advice block.
+# One exit path for every surface, so the format can never drift between them.
+# $1 is the ACTION the human line names, $2 is the one clause that follows it,
+# and $3 is the detail the model gets. The guard's own name opens the detail
+# rather than the human line: a person needs to know what they did, and only an
+# agent needs to know which of nine gates said so.
 deny() {
-  printf '🛑 Blocked by provisioning-guard: %s\n' "$1" >&2
-  printf '%s\n' "$2" >&2
-  exit 2
+  jq -nc --arg reason "🛑 Blocked: $1. $2" --arg context "Provisioning guard (workbench-core). $3" '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: $reason,
+      additionalContext: $context
+    }
+  }'
+  exit 0
 }
 
 case "$TOOL_NAME" in
   EnterWorktree)
-    deny "EnterWorktree creates a git worktree and moves this session into it." \
-"💡 Work in the directory you were given. The worktrees on this machine are set
-   up by hand, and an agent-made one is an orphan tree somebody has to find
-   later. If a new worktree is genuinely needed, create it yourself with the !
-   prefix and start the session there."
+    deny "creating a git worktree" "Work in the directory you were given." \
+"EnterWorktree creates a git worktree and moves this session into it. The worktrees on this machine are set up by hand, and an agent-made one is an orphan tree somebody has to find later. If a new worktree is genuinely needed, the human creates it with the ! prefix and starts the session there."
     ;;
   ExitWorktree)
     # "keep" is the ordinary exit and leaves the tree on disk. Only "remove"
     # deletes it, and the field is a required enum, so an absent value is a
     # malformed call rather than a default.
     [ "$ACTION" = "remove" ] || exit 0
-    deny "ExitWorktree with action \"remove\" deletes this session's worktree and its branch." \
-"💡 Exit with action \"keep\" instead. It leaves the worktree and the branch on
-   disk, which costs nothing. Deleting a tree somebody set up by hand is the
-   human's call, with the ! prefix."
+    deny "deleting this session's worktree" "Exit with action \"keep\" instead." \
+"ExitWorktree with action \"remove\" deletes this session's worktree and its branch. Exit with action \"keep\" instead: it leaves the worktree and the branch on disk, which costs nothing. Deleting a tree somebody set up by hand is the human's call, with the ! prefix."
     ;;
   Agent)
     [ "$ISOLATION" = "worktree" ] || exit 0
-    deny "an Agent dispatch with isolation: \"worktree\" makes the harness provision a git worktree for the sub-agent." \
-"💡 Dispatch without isolation, so the sub-agent works in the tree you are
-   already in. To put it somewhere else, pass cwd with a directory that already
-   exists. If the work genuinely needs its own worktree, ask for one and let it
-   be created with the ! prefix."
+    deny "dispatching a sub-agent into its own worktree" "Dispatch without isolation instead." \
+"An Agent dispatch with isolation: \"worktree\" makes the harness provision a git worktree for the sub-agent. Dispatch without isolation, so the sub-agent works in the tree you are already in. To put it somewhere else, pass cwd with a directory that already exists. If the work genuinely needs its own worktree, ask for one and let it be created with the ! prefix."
     ;;
   Bash) ;;
   *) exit 0 ;;
@@ -157,16 +179,14 @@ CHECKER="$(cd "$(dirname "$0")" && pwd)/lib/provisioning-check.py"
 # No working directory is passed, unlike the sibling guards. Their verdict turns
 # on which path a command resolves to; this one's never does, and it reads no
 # files at all.
-REASON=$(printf '%s' "$COMMAND" | python3 "$CHECKER" 2>/dev/null)
+FINDING=$(printf '%s' "$COMMAND" | python3 "$CHECKER" 2>/dev/null)
 STATUS=$?
 
-if [ "$STATUS" = "1" ] && [ -n "$REASON" ]; then
-  deny "$REASON" \
-"💡 The worktrees and databases on this machine are provisioned by hand, and
-   they are the environment you are meant to work inside. If a new one is
-   genuinely needed, run the command yourself with the ! prefix. Read-only
-   inspection is untouched: git worktree list, psql -c \"SELECT ...\", and
-   mysqladmin status all still run."
+if [ "$STATUS" = "1" ] && [ -n "$FINDING" ]; then
+  # Line 1 is the action label, the rest is the detail. See the checker's
+  # docstring for the contract.
+  deny "${FINDING%%$'\n'*}" "Run it yourself with the ! prefix if you meant it." \
+"${FINDING#*$'\n'} The worktrees and databases on this machine are provisioned by hand, and they are the environment you are meant to work inside. If a new one is genuinely needed, it is the human who runs the command, with the ! prefix. Read-only inspection is untouched: git worktree list, psql -c \"SELECT ...\", and mysqladmin status all still run."
 fi
 
 exit 0

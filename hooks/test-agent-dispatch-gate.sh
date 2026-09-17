@@ -594,10 +594,34 @@ assert_jq_out() {
 }
 assert_jq_out "declares the PreToolUse event" '.hookSpecificOutput.hookEventName' "PreToolUse"
 assert_jq_out "decision is deny"              '.hookSpecificOutput.permissionDecision' "deny"
-assert_contains "reason names the template"   "$DENY_OUT" "five-slot brief"
-assert_contains "reason says research counts" "$DENY_OUT" "research included"
-assert_contains "reason lists every slot"     "$DENY_OUT" "Done when: (observable finish line)"
-assert_contains "reason names the toggle"     "$DENY_OUT" "/workbench-core:orchestrator off"
+
+# The refusal is split across the hook's two channels, and each half is asserted
+# on the channel it belongs to — asserting on the whole payload would pass
+# whichever field the text ended up in, which is exactly the drift to catch.
+# `permissionDecisionReason` becomes the tool_result a PERSON reads, so it is one
+# short line naming the action plus the missing slots, which are the one fact
+# that says which half of the brief was forgotten. Everything an agent acts on —
+# the slot catalogue, the routing, the toggle — goes to `additionalContext`.
+DENY_REASON=$(printf '%s' "$DENY_OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+DENY_CONTEXT=$(printf '%s' "$DENY_OUT" | jq -r '.hookSpecificOutput.additionalContext')
+assert_contains "the human line names the action" \
+  "$DENY_REASON" "🛑 Blocked: an Agent dispatch without a complete brief."
+assert_contains "the human line names the missing slots" "$DENY_REASON" "Missing:"
+if [ "$(printf '%s' "$DENY_REASON" | wc -l | tr -d ' ')" = "0" ] && [ "${#DENY_REASON}" -le 160 ]; then
+  PASS=$((PASS + 1)); echo "  ✅ the human line is one line and stays short (${#DENY_REASON} chars)"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ the human line grew past one short line (${#DENY_REASON} chars)"
+fi
+assert_missing "the human line carries no Markdown emphasis" "$DENY_REASON" "**"
+assert_missing "the human line does not carry the slot catalogue" "$DENY_REASON" "Done when: (observable finish line)"
+assert_missing "the human line does not carry the toggle" "$DENY_REASON" "/workbench-core:orchestrator off"
+
+assert_contains "context names the template"   "$DENY_CONTEXT" "five-slot brief"
+assert_contains "context says research counts" "$DENY_CONTEXT" "research included"
+assert_contains "context lists every slot"     "$DENY_CONTEXT" "Done when: (observable finish line)"
+assert_contains "context names the toggle"     "$DENY_CONTEXT" "/workbench-core:orchestrator off"
+assert_contains "context names the gate, so the model can report which one fired" \
+  "$DENY_CONTEXT" "Dispatch gate (workbench-core)"
 # The gate must never claim to judge substance — that belongs to the receiving
 # agent, and a deny that implies otherwise sends the model chasing a fix the
 # hook cannot check.

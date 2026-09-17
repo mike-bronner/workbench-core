@@ -24,10 +24,31 @@
 # the two are belt and braces, not duplicates.
 #
 # HARD BLOCK, NO PROMPT, NO OVERRIDE:
-# A PreToolUse hook exiting 2 blocks before permission rules are evaluated, so no
-# allow rule and no permission mode reaches it. That is deliberate. An agent has
-# no routine reason to destroy a database. When a reset is genuinely needed, the
-# human runs it with the ! prefix.
+# A PreToolUse hook returning permissionDecision "deny" refuses the call outright:
+# no allow rule and no permission mode reaches it, and bypassPermissions does not
+# get through it either. That is deliberate. An agent has no routine reason to
+# destroy a database. When a reset is genuinely needed, the human runs it with the
+# ! prefix.
+#
+# WHY THE JSON DENY RATHER THAN exit 2, WHICH THIS GUARD USED TO USE:
+# Measured on Claude Code 2.1.274 (insights/2026-09-17-hook-message-channels-
+# measured.md in the vault), exit 2 prefixes the model's message with this
+# script's absolute filesystem path and silently discards stdout. That is a path
+# in a message meant for a person, and it takes the first line away from the
+# author. The JSON deny gives both back, and it is the only mechanism that can
+# carry additionalContext. Both refuse the call equally hard.
+#
+# THE REFUSAL IS SPLIT ACROSS THE TWO CHANNELS THAT MEASUREMENT FOUND.
+# `permissionDecisionReason` becomes the tool_result and is the text a PERSON
+# reads, so it is ONE line naming the action that was gated. `additionalContext`
+# survives a deny and arrives in its own block, which only the model reads, so
+# the checker's finding and the recovery advice live there. Nothing is cut; it
+# stops being in the human's way.
+#
+# NO MARKDOWN EMPHASIS, ANYWHERE. Whether a client renders the reason as Markdown
+# is unsettled, and the model receives the raw source either way. So emphasis is
+# carried by POSITION — the action leads the line — and by backticks, which read
+# as a quoted command whether or not they are rendered.
 #
 # The exemptions are about scope, not trust. An Artisan reset carrying
 # --env=testing or --database=testing is allowed, because rebuilding the testing
@@ -45,8 +66,8 @@
 # As with credential-guard.sh, this guards Claude's own tool calls and is not an
 # OS boundary — `/sandbox` enforces in the kernel, for every subprocess.
 #
-# Exit codes: 0 = allow (default). 2 = block; stderr is surfaced to the model
-# on a blocking PreToolUse hook.
+# Exit 0 with no output = allow (default).
+# Exit 0 with permissionDecision "deny" = the harness refuses the call.
 
 set -u
 
@@ -78,10 +99,20 @@ REASON=$(printf '%s' "$COMMAND" | python3 "$CHECKER" "$CWD" 2>/dev/null)
 STATUS=$?
 
 if [ "$STATUS" = "1" ] && [ -n "$REASON" ]; then
-  printf '🛑 Blocked by destructive-database-guard: %s\n' "$REASON" >&2
-  printf '💡 Nothing an agent does should destroy a database. If this reset is\n' >&2
-  printf '   genuinely needed, run it yourself with the ! prefix.\n' >&2
-  exit 2
+  # One label covers every finding here, because every finding is the same
+  # action: this guard blocks nothing else. The checker's sentence — which
+  # command, which target, which flag — is the detail, and detail is the model's
+  # half of the split.
+  jq -nc \
+    --arg reason '🛑 Blocked: destroying a database. Run it yourself with the ! prefix if you meant it.' \
+    --arg context "Destructive-database guard (workbench-core). $REASON Nothing an agent does should destroy a database, and there is no flag to clear and no path around this. If this reset is genuinely needed, it is the human who runs it, with the ! prefix. Read-only inspection is untouched." '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: $reason,
+      additionalContext: $context
+    }
+  }'
 fi
 
 exit 0

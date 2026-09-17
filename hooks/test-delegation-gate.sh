@@ -35,7 +35,13 @@ SESSION="b94bbff5-0f68-4c1c-b3ec-3a899d30bc05"
 # The exact bytes the gate must emit on a deny with no dev-team plugin present.
 # Asserted verbatim below: the harness parses this, and a stray space or a
 # reordered key is a silent break.
-EXPECTED_DENY='{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"🚦 Delegation gate: the main agent orchestrates and does not edit files. Dispatch a sub-agent with the Agent tool to make this change. To edit inline in this session, run /workbench-core:orchestrator off."}}'
+#
+# Two fields carry the refusal, and which text is in which is the whole design.
+# `permissionDecisionReason` becomes the tool_result a PERSON reads, so it is one
+# short line naming the action. `additionalContext` arrives in its own block that
+# only the model reads, and it survives the deny, so every instruction an agent
+# acts on lives there. Both were measured on Claude Code 2.1.274.
+EXPECTED_DENY='{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"🛑 Blocked: editing a file from the main agent. File work goes to a sub-agent.","additionalContext":"Delegation gate (workbench-core). The main conversation orchestrates and does not edit files, which is what keeps its context lean. Dispatch a sub-agent with the Agent tool to make this change. Report the deny rather than routing around it. Only the human lifts the gate, by asking for /workbench-core:orchestrator off."}}'
 DEVTEAM_LINE='For development work, dispatch Dr. Watson in Direct mode per /workbench-dev-team:orchestrate.'
 
 # Builds a payload from key=value pairs. A value of - omits the key entirely,
@@ -231,9 +237,26 @@ if printf '%s' "$DENY_OUT" | jq -e . >/dev/null 2>&1; then
 else
   FAIL=$((FAIL + 1)); echo "  ❌ deny JSON does not parse"
 fi
-assert_contains "reason names the behaviour" "$DENY_OUT" "orchestrates and does not edit files"
-assert_contains "reason names the destination" "$DENY_OUT" "Dispatch a sub-agent with the Agent tool"
-assert_contains "reason names the toggle" "$DENY_OUT" "/workbench-core:orchestrator off"
+# Each half is asserted on the channel it belongs to, because putting either one
+# in the other channel is the regression this split exists to prevent.
+DENY_REASON=$(printf '%s' "$DENY_OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+DENY_CONTEXT=$(printf '%s' "$DENY_OUT" | jq -r '.hookSpecificOutput.additionalContext')
+assert_contains "the human line names the action" "$DENY_REASON" "🛑 Blocked: editing a file from the main agent."
+if [ "$(printf '%s' "$DENY_REASON" | wc -l | tr -d ' ')" = "0" ] && [ "${#DENY_REASON}" -le 120 ]; then
+  PASS=$((PASS + 1)); echo "  ✅ the human line is one line and stays short (${#DENY_REASON} chars)"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ the human line grew past one short line (${#DENY_REASON} chars)"
+fi
+# No Markdown emphasis: whether the client renders it is unsettled, and the model
+# gets the raw source either way, so asterisks would just show up as asterisks.
+assert_missing "the human line carries no Markdown emphasis" "$DENY_REASON" "**"
+# These three are instructions only an agent acts on, so they belong in the
+# model's channel and must not reappear in the person's.
+assert_contains "context names the behaviour" "$DENY_CONTEXT" "orchestrates and does not edit files"
+assert_contains "context names the destination" "$DENY_CONTEXT" "Dispatch a sub-agent with the Agent tool"
+assert_contains "context names the toggle" "$DENY_CONTEXT" "/workbench-core:orchestrator off"
+assert_missing "the human line does not repeat the destination" "$DENY_REASON" "Agent tool"
+assert_missing "the human line does not repeat the toggle" "$DENY_REASON" "/workbench-core:orchestrator off"
 
 echo "the deny reason names a dev-team plugin only when one is installed:"
 # A runtime directory probe, not a build-time dependency. Core ships the same

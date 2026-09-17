@@ -17,10 +17,11 @@
 #      route, so no allow rule and no permission mode overrides it, and
 #      narrowing the rules does not help — only removing them all disarms it.
 #
-# A PreToolUse hook exiting 2 blocks the call BEFORE permission rules are
-# evaluated, so no prompt appears and no allow rule can override it. It also
-# covers strictly more than the deny rules did: `python3 -c
-# "print(open('~/.ssh/id_rsa').read())"` is caught here and never was there.
+# A PreToolUse hook returning permissionDecision "deny" refuses the call
+# outright: no prompt appears, no allow rule overrides it, and bypassPermissions
+# does not get through it. It also covers strictly more than the deny rules did:
+# `python3 -c "print(open('~/.ssh/id_rsa').read())"` is caught here and never was
+# there.
 #
 # TWO STAGES, AND WHY THE DOTENV RULE NEEDED A SECOND ONE:
 # Stage 1 is the jq filter below. It runs on every Bash call, so it has to stay
@@ -53,8 +54,32 @@
 # that, enable the sandbox (`/sandbox`), which enforces in the kernel for every
 # subprocess. So anything unparseable exits 0 rather than blocking the session.
 #
-# Exit codes: 0 = allow (default). 2 = block; stderr is surfaced to the model
-# on a blocking PreToolUse hook.
+# WHY THE JSON DENY RATHER THAN exit 2, WHICH THIS GUARD USED TO USE:
+# Measured on Claude Code 2.1.274 (insights/2026-09-17-hook-message-channels-
+# measured.md in the vault), exit 2 prefixes the model's message with this
+# script's absolute filesystem path and silently discards stdout. That is a path
+# in a message meant for a person, and it takes the first line away from the
+# author. The JSON deny gives both back, and it is the only mechanism that can
+# carry additionalContext.
+#
+# The switch adds NO dependency to the fail-closed story. Stage 1 — the decision
+# itself — already runs inside jq, so a missing or broken jq already allowed at
+# the top of this file. Emitting the verdict through the same jq cannot make the
+# guard fail open in a case where it did not already.
+#
+# THE REFUSAL IS SPLIT ACROSS THE TWO CHANNELS THAT MEASUREMENT FOUND.
+# `permissionDecisionReason` becomes the tool_result and is the text a PERSON
+# reads, so it is ONE line naming the action that was gated. `additionalContext`
+# survives a deny and arrives in its own block, which only the model reads, so
+# the matched path and the rule that caught it live there.
+#
+# NO MARKDOWN EMPHASIS, ANYWHERE. Whether a client renders the reason as Markdown
+# is unsettled, and the model receives the raw source either way. So emphasis is
+# carried by POSITION — the action leads the line — and by backticks, which read
+# as a quoted command whether or not they are rendered.
+#
+# Exit 0 with no output = allow (default).
+# Exit 0 with permissionDecision "deny" = the harness refuses the call.
 
 set -u
 
@@ -196,6 +221,22 @@ if [ "$KIND" = "env" ]; then
   fi
 fi
 
-printf '🛑 Blocked by credential-guard: %s\n' "$MESSAGE" >&2
-printf 'If this is a false positive, run it yourself with the ! prefix.\n' >&2
-exit 2
+# The human line names the action in the guard's own two kinds. The matched
+# path, the enumeration of the protected directories, and the reader-program
+# rule are all detail, and detail is the model's half of the split.
+case "$KIND" in
+  dir) ACTION='reading a credential directory' ;;
+  *)   ACTION='reading a .env file' ;;
+esac
+
+jq -nc \
+  --arg reason "🛑 Blocked: $ACTION. Run it yourself with the ! prefix if this is wrong." \
+  --arg context "Credential guard (workbench-core): $MESSAGE It guards Claude's own tool calls rather than the OS, so a false positive is the human's to override with the ! prefix. Never re-run the same read through another program to get around it." '{
+  hookSpecificOutput: {
+    hookEventName: "PreToolUse",
+    permissionDecision: "deny",
+    permissionDecisionReason: $reason,
+    additionalContext: $context
+  }
+}'
+exit 0

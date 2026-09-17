@@ -51,8 +51,29 @@
 # likely reject too. A command whose target cannot be resolved passes for the
 # same reason — guessing at it is how this guard would block an unrelated repo.
 #
-# Exit codes: 0 = allow (default). 2 = block; stderr is surfaced to the model
-# on a blocking PreToolUse hook.
+# WHY THE JSON DENY RATHER THAN exit 2, WHICH THIS GUARD USED TO USE:
+# Measured on Claude Code 2.1.274 (insights/2026-09-17-hook-message-channels-
+# measured.md in the vault), exit 2 prefixes the model's message with this
+# script's absolute filesystem path and silently discards stdout. That is a path
+# in a message meant for a person, and it takes the first line away from the
+# author. The JSON deny gives both back, and it is the only mechanism that can
+# carry additionalContext. Both refuse the call equally hard: no allow rule and
+# no permission mode reaches a deny, bypassPermissions included.
+#
+# THE REFUSAL IS SPLIT ACROSS THE TWO CHANNELS THAT MEASUREMENT FOUND.
+# `permissionDecisionReason` becomes the tool_result and is the text a PERSON
+# reads, so it is ONE line naming the action that was gated. `additionalContext`
+# survives a deny and arrives in its own block, which only the model reads, so
+# the vault path, the sweep story, and the list of MCP tools live there. The
+# checker supplies both halves: line 1 is the label, line 2 is the detail.
+#
+# NO MARKDOWN EMPHASIS, ANYWHERE. Whether a client renders the reason as Markdown
+# is unsettled, and the model receives the raw source either way. So emphasis is
+# carried by POSITION — the action leads the line — and by backticks, which read
+# as a quoted command whether or not they are rendered.
+#
+# Exit 0 with no output = allow (default).
+# Exit 0 with permissionDecision "deny" = the harness refuses the call.
 
 set -u
 
@@ -99,17 +120,24 @@ memory_load_env 2>/dev/null || exit 0
 # the cwd sits in, so without this the incident's third shape is invisible.
 CWD=$(printf '%s' "$PAYLOAD" | jq -r '.cwd // ""' 2>/dev/null)
 
-REASON=$(printf '%s' "$COMMAND" | python3 "$CHECKER" "$CWD" "$MEMORY_PATH" 2>/dev/null)
+FINDING=$(printf '%s' "$COMMAND" | python3 "$CHECKER" "$CWD" "$MEMORY_PATH" 2>/dev/null)
 STATUS=$?
 
-if [ "$STATUS" = "1" ] && [ -n "$REASON" ]; then
-  printf '🛑 Blocked by vault-git-guard: %s\n' "$REASON" >&2
-  printf '💡 The vault'"'"'s git belongs to the memory server, which commits and\n' >&2
-  printf '   pushes on its own deferred queue. A staged change gets swept into\n' >&2
-  printf '   the next unrelated write commit, under that write'"'"'s message.\n' >&2
-  printf '   Use the memory MCP instead: delete, edit, write, append, rename,\n' >&2
-  printf '   or git_sync to force a sync. Read-only git here is fine.\n' >&2
-  exit 2
+if [ "$STATUS" = "1" ] && [ -n "$FINDING" ]; then
+  # Line 1 is the action label, the rest is the detail. See the checker's
+  # docstring for the contract.
+  LABEL=${FINDING%%$'\n'*}
+  DETAIL=${FINDING#*$'\n'}
+  jq -nc \
+    --arg reason "🛑 Blocked: $LABEL. Use the memory MCP instead." \
+    --arg context "Vault-git guard (workbench-core). $DETAIL The vault's git belongs to the memory server, which commits and pushes on its own deferred queue, so a staged change gets swept into the next unrelated write commit under that write's message. Use the memory MCP instead: delete, edit, write, append, rename, or git_sync to force a sync. Read-only git here is fine." '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: $reason,
+      additionalContext: $context
+    }
+  }'
 fi
 
 exit 0

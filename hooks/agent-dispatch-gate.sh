@@ -65,8 +65,25 @@
 # must never brick a session. The cost is real and documented in the README:
 # when this script breaks, enforcement stops silently.
 #
+# THE REFUSAL IS SPLIT ACROSS THE TWO CHANNELS A HOOK HAS. Measured on Claude
+# Code 2.1.274 with a probe hook (insights/2026-09-17-hook-message-channels-
+# measured.md in the vault): `permissionDecisionReason` becomes the tool_result
+# and is the text a PERSON reads, and `additionalContext` survives a deny and
+# arrives in its own block, which only the model reads. So the reason is ONE
+# line naming the action that was gated, and every recovery instruction only an
+# agent acts on lives in the context instead. The missing slots stay in the
+# human line, because they are the one fact that says which half of the brief
+# the orchestrator forgot.
+#
+# NO MARKDOWN EMPHASIS, ANYWHERE. Whether a client renders the reason as
+# Markdown is unsettled, and the model receives the raw source either way. So
+# emphasis is carried by POSITION — the action leads the line — and by
+# backticks, which read as a quoted command whether or not they are rendered.
+#
 # Exit 0 with no output = allow (normal permission flow applies).
-# Exit 0 with permissionDecision "deny" = the harness refuses the call.
+# Exit 0 with permissionDecision "deny" = the harness refuses the call. The deny
+#   carries additionalContext too, and that combination is measured: the context
+#   is not dropped when the call is refused.
 # Exit 0 with additionalContext and NO permissionDecision = allow, with a note.
 #   Omitting permissionDecision is deliberate: the harness only touches
 #   permission behaviour when that key is present (verified against the 2.1.263
@@ -265,10 +282,11 @@ for slot_record in "${WORKBENCH_BRIEF_SLOTS[@]}"; do
     || add_missing "$(brief_slot_field "$slot_record" 1)"
 done
 
-# A plugin that owns the brief gets named, but only when one is installed. A
-# runtime directory probe, never a build-time dependency, so core stays agnostic
-# either way. The wording names the team rather than one agent: routing to the
-# right specialist covers triage and review as well as development.
+# A plugin that owns the brief gets named in the model's channel, but only when
+# one is installed. A runtime directory probe, never a build-time dependency, so
+# core stays agnostic either way. The wording names the team rather than one
+# agent: routing to the right specialist covers triage and review as well as
+# development.
 PLUGIN_LINE=""
 for candidate in "${HOME:-}"/.claude/plugins/cache/*/workbench-dev-team; do
   [ -d "$candidate" ] || continue
@@ -277,14 +295,16 @@ for candidate in "${HOME:-}"/.claude/plugins/cache/*/workbench-dev-team; do
 done
 
 if [ -n "$MISSING" ]; then
-  # The slot list is generated from the same records the check above greps for,
+  # Both strings name the slots from the same records the check above greps for,
   # so a renamed slot cannot ask for one name while refusing another.
-  REASON="🚦 Dispatch gate: every Agent dispatch from the main session uses the five-slot brief, research included. Missing: ${MISSING}. Slots: $(brief_slot_summary). Add the missing slots and dispatch again.${PLUGIN_LINE} To dispatch without the brief in this session, run /workbench-core:orchestrator off."
-  jq -nc --arg reason "$REASON" '{
+  REASON="🛑 Blocked: an Agent dispatch without a complete brief. Missing: ${MISSING}."
+  CONTEXT="Dispatch gate (workbench-core). Every Agent dispatch from the main session uses the five-slot brief, research included. Slots: $(brief_slot_summary). Add the missing slots and dispatch again.${PLUGIN_LINE} To dispatch without the brief in this session, the human can ask for /workbench-core:orchestrator off."
+  jq -nc --arg reason "$REASON" --arg context "$CONTEXT" '{
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       permissionDecision: "deny",
-      permissionDecisionReason: $reason
+      permissionDecisionReason: $reason,
+      additionalContext: $context
     }
   }'
   exit 0

@@ -141,8 +141,24 @@
 # real and documented in the README: when this script breaks, enforcement stops
 # silently.
 #
+# THE REFUSAL IS SPLIT ACROSS THE TWO CHANNELS A HOOK HAS. Measured on Claude
+# Code 2.1.274 with a probe hook (insights/2026-09-17-hook-message-channels-
+# measured.md in the vault): `permissionDecisionReason` becomes the tool_result
+# and is the text a PERSON reads, and `additionalContext` survives a deny and
+# arrives in its own block, which only the model reads. So the reason is ONE
+# line naming the action that was gated, and the reasoning an agent acts on —
+# why the channel does not work, and the protocol to read — lives in the
+# context instead.
+#
+# NO MARKDOWN EMPHASIS, ANYWHERE. Whether a client renders the reason as
+# Markdown is unsettled, and the model receives the raw source either way. So
+# emphasis is carried by POSITION — the action leads the line — and by
+# backticks, which read as a quoted command whether or not they are rendered.
+#
 # Exit 0 with no output = allow (normal permission flow applies).
-# Exit 0 with permissionDecision "deny" = the harness refuses the call.
+# Exit 0 with permissionDecision "deny" = the harness refuses the call. The deny
+#   carries additionalContext too, and that combination is measured: the context
+#   is not dropped when the call is refused.
 # Exit 0 with additionalContext and NO permissionDecision = allow, with a note.
 #   Omitting permissionDecision is deliberate: the harness only touches
 #   permission behaviour when that key is present (verified against the 2.1.263
@@ -225,12 +241,14 @@ case "$DEST" in
     ;;
 
   deny)
-    REASON="🚦 Peer message gate: a sub-agent messages its own orchestrator and its own children, and nothing else. This send names a destination that is neither — not the literal \"main\", and not an agent id. A peer session reached from inside a sub-agent also goes out under your parent session's address, and any reply is delivered to that conversation rather than to you, so the channel does not work even where it is allowed. Send to \"main\" and let the orchestrator decide whether to reach out. ${SKILL_LINE}"
-    jq -nc --arg reason "$REASON" '{
+    REASON='🛑 Blocked: a sub-agent messaging a peer session. Send to "main" instead.'
+    CONTEXT="Peer message gate (workbench-core). A sub-agent messages its own orchestrator and its own children, and nothing else. This send names a destination that is neither the literal \"main\" nor an agent id. A peer session reached from inside a sub-agent also goes out under your parent session's address, and any reply is delivered to that conversation rather than to you, so the channel does not work even where it is allowed. Send to \"main\" and let the orchestrator decide whether to reach out. ${SKILL_LINE}"
+    jq -nc --arg reason "$REASON" --arg context "$CONTEXT" '{
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
-        permissionDecisionReason: $reason
+        permissionDecisionReason: $reason,
+        additionalContext: $context
       }
     }'
     exit 0

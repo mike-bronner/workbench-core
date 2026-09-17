@@ -2,9 +2,16 @@
 """provisioning-check: decide whether a shell command provisions a git worktree
 or a database.
 
-Reads one shell command on stdin. Prints a single reason line to stdout and
-exits 1 when the command creates a worktree or a database, or destroys a
-worktree; exits 0 and prints nothing otherwise.
+Reads one shell command on stdin. Exits 1 when the command creates a worktree or
+a database, or destroys a worktree, and exits 0 and prints nothing otherwise.
+
+THE OUTPUT CONTRACT IS TWO LINES, and the caller splits them across the two
+channels a PreToolUse hook has. Line 1 is a short ACTION label, which the gate
+puts in `permissionDecisionReason` — the text a person reads. Line 2 is the
+DETAIL, which goes to `additionalContext`, where only the model reads it. Adding
+a rule here means writing both. The detail is what later stages append to, so a
+finding that gets wrapped ("... It is handed to `psql` ...") keeps its label on
+line 1 untouched.
 
 WHY THIS EXISTS:
 The worktrees and the development databases on this machine are set up by hand.
@@ -239,13 +246,16 @@ def check_git(tokens):
     words = [token for token in rest[1:] if not token.startswith("-")]
     verb = words[0] if words else None
     if verb in WORKTREE_CREATE:
-        return ("`git worktree add` creates a git worktree, and nothing "
+        return ("creating a git worktree\n"
+                "`git worktree add` creates a git worktree, and nothing "
                 "afterwards cleans it up.")
     if verb == "remove":
-        return ("`git worktree remove` deletes a worktree, and the worktrees "
+        return ("deleting a git worktree\n"
+                "`git worktree remove` deletes a worktree, and the worktrees "
                 "on this machine were set up by hand.")
     if verb == "prune":
-        return ("`git worktree prune` deletes the records of every worktree "
+        return ("pruning git's worktree records\n"
+                "`git worktree prune` deletes the records of every worktree "
                 "git believes is gone, which breaks a tree that is only "
                 "unmounted.")
     return None
@@ -255,11 +265,14 @@ def check_create_command(tokens):
     """The creation binaries, mirroring the drop pair the database guard owns."""
     head = base(tokens[0])
     if head == "createdb":
-        return "`createdb` creates a PostgreSQL database that nothing will clean up."
+        return ("creating a PostgreSQL database\n"
+                "`createdb` creates a PostgreSQL database that nothing will clean up.")
     if head == "createuser":
-        return "`createuser` creates a PostgreSQL role that nothing will clean up."
+        return ("creating a PostgreSQL role\n"
+                "`createuser` creates a PostgreSQL role that nothing will clean up.")
     if head == "mysqladmin" and "create" in tokens[1:]:
-        return "`mysqladmin create` creates a MySQL database that nothing will clean up."
+        return ("creating a MySQL database\n"
+                "`mysqladmin create` creates a MySQL database that nothing will clean up.")
     return None
 
 
@@ -269,7 +282,8 @@ def check_sql(payload):
     for statement in SQL_LITERAL.sub("''", payload).split(";"):
         match = SQL_CREATE.search(statement)
         if match:
-            return f"the SQL runs CREATE {match.group(1).upper()}."
+            return (f"creating a {match.group(1).lower()} from SQL\n"
+                    f"the SQL runs CREATE {match.group(1).upper()}.")
     return None
 
 

@@ -232,16 +232,34 @@ check "recipient: a peer session, with no to field at all" \
   "$(sub_payload recipient="$PEER_PLAIN" message="$BODY" | gate)" deny
 
 DENY=$(sub_payload to="$PEER_PLAIN" message="$BODY" | gate)
-assert_contains "the deny states the rule it enforces" \
-  "$DENY" "its own orchestrator and its own children"
-# One marker per verdict, matching agent-dispatch-gate.sh: 🚦 refuses, and the
+DENY_REASON=$(printf '%s' "$DENY" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+DENY_CONTEXT=$(printf '%s' "$DENY" | jq -r '.hookSpecificOutput.additionalContext')
+
+# The refusal is split across the hook's two channels. The human line is ONE
+# line naming the ACTION; the rule, the reasoning, and the protocol link are
+# instructions an agent acts on, so they live in additionalContext, which
+# survives a deny and reaches only the model.
+assert_contains "the human line names the action" \
+  "$DENY_REASON" "🛑 Blocked: a sub-agent messaging a peer session."
+assert_contains "the human line names the destination that would have worked" \
+  "$DENY_REASON" 'Send to "main" instead.'
+if [ "$(printf '%s' "$DENY_REASON" | wc -l | tr -d ' ')" = "0" ] && [ "${#DENY_REASON}" -le 120 ]; then
+  PASS=$((PASS + 1)); echo "  ✅ the human line is one line and stays short (${#DENY_REASON} chars)"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ the human line grew past one short line (${#DENY_REASON} chars)"
+fi
+assert_missing "the human line carries no Markdown emphasis" "$DENY_REASON" "**"
+
+assert_contains "the context states the rule it enforces" \
+  "$DENY_CONTEXT" "its own orchestrator and its own children"
+assert_contains "the context names the gate, so the model can report which one fired" \
+  "$DENY_CONTEXT" "Peer message gate (workbench-core)"
+assert_contains "the context names the skill that carries the protocol" \
+  "$DENY_CONTEXT" "/workbench-core:cross-session-messaging"
+# One marker per verdict, matching agent-dispatch-gate.sh: 🛑 refuses, and the
 # advisory wears something else. Sharing a banner across a deny and an allow is
 # how a note gets read as a refusal.
-assert_contains "the deny wears the refusal banner" "$DENY" "🚦 Peer message gate"
-assert_missing "the advisory does not wear the refusal banner" "$ADVISORY" "🚦"
-assert_contains "the deny names the destination that would have worked" "$DENY" '\"main\"'
-assert_contains "the deny names the skill that carries the protocol" \
-  "$DENY" "/workbench-core:cross-session-messaging"
+assert_missing "the advisory does not wear the refusal banner" "$ADVISORY" "🛑"
 assert_eq "the deny names the hook event" \
   "$(printf '%s' "$DENY" | jq -r '.hookSpecificOutput.hookEventName')" "PreToolUse"
 

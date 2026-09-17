@@ -300,11 +300,46 @@ These hooks fire across the session lifecycle and on each turn:
 | `PreToolUse` | `hooks/agent-dispatch-gate.sh` | Deny an `Agent` dispatch from the main agent unless its prompt uses the five-slot brief — see [Agent dispatch gate](#agent-dispatch-gate) |
 | `PreToolUse` | `hooks/peer-message-gate.sh` | Deny a `SendMessage` from a sub-agent to anything but its own orchestrator or its own children — see [Peer message gate](#peer-message-gate) |
 
+### How a gate speaks
+
+Every gate here refuses the same way, and says so in the same shape. Read this once and the other seven sections need only name what each one blocks.
+
+**The mechanism is the JSON deny, everywhere.** A `PreToolUse` hook that returns `permissionDecision: "deny"` refuses the call outright: no prompt appears, no allow rule overrides it, and `bypassPermissions` does not get through. Four guards used to block by exiting 2 instead, and exit 2 is strictly worse at the same job. Measured on Claude Code 2.1.274, it prefixes the model's message with the hook script's own absolute filesystem path and silently discards stdout, so the author does not control the first line a reader hits. Of the three verdicts a hook can return, only `deny` binds at all: `ask` is classifier-approvable and gets auto-answered under `permissions.defaultMode "auto"`.
+
+**The refusal is split across two channels, because they have different readers.** The same measurement established where each field lands:
+
+| Field | Reaches the human | Reaches the model |
+|---|---|---|
+| `permissionDecisionReason` | ✅ it becomes the `tool_result` | ✅ in full |
+| `additionalContext` | ❌ | ✅ in its own block, and it **survives a deny** |
+| `systemMessage` | it is the pure human channel by construction | ❌ never |
+
+So a refusal is written twice over:
+
+```
+permissionDecisionReason   🛑 Blocked: destroying a database. Run it yourself with the ! prefix if you meant it.
+additionalContext          Destructive-database guard (workbench-core). `php artisan db:wipe` empties or
+                           rebuilds the database it resolves to … Nothing an agent does should destroy a
+                           database, and there is no flag to clear and no path around this …
+```
+
+**The human line names the action, and stops.** One line, under about 120 characters, opening with `🛑 Blocked:` and then what you were trying to do. It carries at most one more clause, and only when that clause is something the *human* acts on — the `!` prefix, or a different tool argument. It never replays the command, never carries a request id, and never explains policy. Those are all things only an agent acts on, and they are exactly what used to fill the screen.
+
+**Everything an agent needs to recover is in `additionalContext`**, opening with the gate's own name so the model can report which gate fired. Nothing was deleted in this split; it stopped being in the way. A gate that refuses without telling the agent how to proceed turns one refusal into several.
+
+**`systemMessage` is not used for the human line**, despite being the purer channel. None of the probe's sentinels reached this user's client, so a line written only there would land somewhere nobody reads. `permissionDecisionReason` is the text already on screen, so shortening that is what answers the complaint, whatever a given client does with the rest.
+
+**No Markdown emphasis, anywhere.** Whether a client renders these fields as Markdown is unsettled, and the model receives the raw source either way, so `**commit**` risks showing up as `**commit**`. Emphasis is carried by position — the action leads the line — and by backticks, which read as a quoted command whether or not they render.
+
+The record behind all of this is `insights/2026-09-17-hook-message-channels-measured.md` in the memory vault.
+
+Two `PreToolUse` hooks still exit 2 and are not gates in this sense: `hooks/outbound-prose-guard.sh` and `hooks/summary-writer-guard.sh`. Both hand a revision brief to the model rather than a verdict to a person.
+
 ### Delegation gate
 
-**The main agent orchestrates. It does not edit files.** Guardrail 10, "delegate work to sub-agents by default", has said so in prose since it shipped, and prose drifts: the main conversation edits one file to "just fix it quickly", and the context it was supposed to stay lean for is gone. `hooks/delegation-gate.sh` makes it structural. `Edit`, `Write`, and `NotebookEdit` from the main agent return `permissionDecision: "deny"`, and the denial names the destination and the escape hatch. The deny is not overridable by permission mode: `bypassPermissions` does not get through it.
+**The main agent orchestrates. It does not edit files.** Guardrail 10, "delegate work to sub-agents by default", has said so in prose since it shipped, and prose drifts: the main conversation edits one file to "just fix it quickly", and the context it was supposed to stay lean for is gone. `hooks/delegation-gate.sh` makes it structural. `Edit`, `Write`, and `NotebookEdit` from the main agent return `permissionDecision: "deny"`. Per [How a gate speaks](#how-a-gate-speaks), the human reads `🛑 Blocked: editing a file from the main agent. File work goes to a sub-agent.`, and the destination and the escape hatch go to the model in `additionalContext`. The deny is not overridable by permission mode: `bypassPermissions` does not get through it.
 
-It is deliberately plugin-agnostic. Every install ships built-in sub-agents (general-purpose, Explore, Plan) reachable through the `Agent` tool, so the gate always has somewhere to send the work. When a dev-team plugin *is* installed, the denial names it too, via a runtime directory probe of `~/.claude/plugins/cache/*/workbench-dev-team`. That is a runtime read, never a build-time dependency: core stays ignorant of any plugin, and a plugin opts into core's contract rather than the other way round.
+It is deliberately plugin-agnostic. Every install ships built-in sub-agents (general-purpose, Explore, Plan) reachable through the `Agent` tool, so the gate always has somewhere to send the work. When a dev-team plugin *is* installed, the `additionalContext` names it too, via a runtime directory probe of `~/.claude/plugins/cache/*/workbench-dev-team`. That is a runtime read, never a build-time dependency: core stays ignorant of any plugin, and a plugin opts into core's contract rather than the other way round.
 
 **How it tells a main agent from a sub-agent.** The `PreToolUse` payload carries the signal, verified empirically on Claude Code 2.1.260 against a logging-only hook:
 
@@ -328,7 +363,7 @@ That third row is why `agent_type` alone has to allow: a scheduled `claude -p --
 
 A session id holding anything outside `[A-Za-z0-9._-]` is refused rather than resolved, which keeps a `../` from walking out of the state directory. Refusal means fail-open here: a session that cannot address its own toggle has no honest escape hatch, so the gate stands down rather than trapping the user.
 
-Tests: `hooks/test-delegation-gate.sh` (48 cases: every allow branch independently, the deny path, byte-exact deny JSON, the conditional dev-team enrichment, `hooks.json` wiring, and agreement with both the toggle skill and guardrail 10).
+Tests: `hooks/test-delegation-gate.sh` (53 cases: every allow branch independently, the deny path, byte-exact deny JSON, the conditional dev-team enrichment, `hooks.json` wiring, and agreement with both the toggle skill and guardrail 10).
 
 ### Agent dispatch gate
 
@@ -391,7 +426,7 @@ The hint emits `additionalContext` and **no `permissionDecision`**. That is deli
 
 Like the delegation gate, it is sidesteppable and deliberately so. Slot headers are cheap to bolt onto a 17,000-character prompt, and the gate will pass it. What survives that is the receiving agent's own check on substance, which is where the judgement belongs.
 
-Tests: `hooks/test-agent-dispatch-gate.sh` (165 cases: every allow branch independently, each of the five slots pinned by its own omission fixture, a `Workdir:` carrying a branch and one carrying a worktree, the deny and hint paths, the hint's absence of a permission grant, each exempt shape plus its prefix-smuggling counter-case, a realistic read-only dispatch passing clean, `hooks.json` wiring, the shared-definition drift guards, and agreement with the toggle skill and the summary-writer skill).
+Tests: `hooks/test-agent-dispatch-gate.sh` (183 cases: every allow branch independently, each of the five slots pinned by its own omission fixture, a `Workdir:` carrying a branch and one carrying a worktree, the deny and hint paths, the hint's absence of a permission grant, each exempt shape plus its prefix-smuggling counter-case, a realistic read-only dispatch passing clean, `hooks.json` wiring, the shared-definition drift guards, and agreement with the toggle skill and the summary-writer skill).
 
 ### Peer message gate
 
@@ -428,7 +463,7 @@ One thing is **inferred, never measured**: that a peer session's destination doe
 
 **Fail-open, and what that costs you.** A malformed payload, a missing `jq`, a `tool_input` that is not an object, or a send carrying no destination at all each exit 0 and allow the call. The threat here is a confidently wrong agent, not a crafted payload. Be clear about the trade: **if this script breaks, enforcement stops silently and there is no layer behind it.** Nothing announces that the gate is down.
 
-Tests: `hooks/test-peer-message-gate.sh` (89 cases), weighted on two axes. Every allow branch is covered independently, because a gate that refuses a legitimate send is a gate that gets removed. Every deny is covered by the *form* of the destination rather than by one example — uppercase hex, short hex, hex with a separator, a trailing newline, a non-string value — so "anything nobody measured is refused" is asserted rather than assumed. The suite also pins the two files to each other: the skill slug is read out of the gate's own deny message, and the skill is checked for claiming nothing the gate contradicts.
+Tests: `hooks/test-peer-message-gate.sh` (92 cases), weighted on two axes. Every allow branch is covered independently, because a gate that refuses a legitimate send is a gate that gets removed. Every deny is covered by the *form* of the destination rather than by one example — uppercase hex, short hex, hex with a separator, a trailing newline, a non-string value — so "anything nobody measured is refused" is asserted rather than assumed. The suite also pins the two files to each other: the skill slug is read out of the gate's own deny message, and the skill is checked for claiming nothing the gate contradicts.
 
 ### Outbound prose guard
 
@@ -460,7 +495,7 @@ That is not hypothetical. `insight-llc/decisioncloud#21665` shipped a 1,855-word
 
 On 2026-09-04, in an unrelated Laravel repo, Claude ran `php artisan db:wipe --database=pgsql --force`, believing `pgsql` named the testing database. It does not. `phpunit.xml` only overrides `DB_DATABASE=testing` inside a test run, so an Artisan command typed at the shell resolves `pgsql` against `.env` — the development database. Every table was dropped and several hours of imported data went with them. No permission rule matched, so nothing prompted: the rails guarded disks, git history, and `rm`, and said nothing at all about databases.
 
-`hooks/destructive-database-guard.sh` is the enforcing layer. It is a `PreToolUse` hook on `Bash` that exits 2, so no prompt appears and no allow rule reaches it. Three rule classes:
+`hooks/destructive-database-guard.sh` is the enforcing layer. It is a `PreToolUse` hook on `Bash` that returns `permissionDecision: "deny"`, so no prompt appears and no allow rule reaches it. The human reads `🛑 Blocked: destroying a database. Run it yourself with the ! prefix if you meant it.`; which command, which target, and which flag go to the model in `additionalContext` (see [How a gate speaks](#how-a-gate-speaks)). Three rule classes:
 
 | Class | Blocked |
 |---|---|
@@ -513,13 +548,15 @@ psql <<- SQL     tokenises as ['<<', '-',  'SQL']
 
 The second is the one a single `lstrip("-")` still misses. Each half of the fix has its own fixture, and dropping either one alone reddens the suite. The gap was found while building [the provisioning guard](#provisioning-guard), which shares the tokeniser and had inherited it.
 
-Tests: `hooks/test-destructive-database-guard.sh` (175 cases). The suite is weighted towards the *allow* side on purpose. A guard that blocks every destructive command and also blocks `grep -rn "drop table"` has made ordinary work impossible, which is a worse failure than the one it prevents.
+Tests: `hooks/test-destructive-database-guard.sh` (180 cases). The suite is weighted towards the *allow* side on purpose. A guard that blocks every destructive command and also blocks `grep -rn "drop table"` has made ordinary work impossible, which is a worse failure than the one it prevents.
 
 ### Vault git guard
 
 On 2026-09-04 an agent deleted a memory note by running `git -C ~/Documents/Claude/Memory rm identity/profile.md`. That is a Bash call, so it staged a deletion in the vault's git index and stopped there. The vault's git does not belong to the agent: the memory MCP server owns it and runs a **deferred-commit queue** over it. On the server's next write it swept the staged deletion into commit `014f51b1`, whose message reads `write: insights/credential-guard-blocks-prose-about-dotenv.md`. A 71-line profile deletion is now filed in vault history under a message describing an unrelated note being written.
 
 The correct tool was available the whole time. The MCP `delete` tool produces its own accurately-named commit. It went unused because nothing said the vault's git was off limits — `references/vault-conventions.md` ran to 76 lines and did not contain the word "git" once. `hooks/vault-git-guard.sh` is the enforcing half of that gap; the [git section now in `vault-conventions.md`](references/vault-conventions.md) is the explaining half, and it cites the incident commit by hash because a rule with no incident attached gets relaxed later.
+
+It returns `permissionDecision: "deny"`. The human reads ``🛑 Blocked: `git rm` in the memory vault. Use the memory MCP instead.``; the vault's absolute path, the sweep story, and the list of MCP tools go to the model in `additionalContext` (see [How a gate speaks](#how-a-gate-speaks)).
 
 **The verdict turns on which repository, not on which verb.** `Bash(git rm:*)` would block `git rm` in every repository on the machine, which is ordinary work, and would *still* miss the incident — `git -C <path> rm` puts the verb in the fourth slot. So the command is tokenised and the target directory resolved. Four shapes, all covered:
 
@@ -554,13 +591,13 @@ Everything unlisted passes. git ships over 150 subcommands and the read-only one
 
 **It fails open,** for the reason the database guard gives rather than the one `credential-guard.sh` gives: there is no adversary, only a confidently wrong agent. A command that writes to the vault has to be valid shell to run, so it tokenises. A command whose target cannot be resolved — no `cwd` in the payload and no explicit path — also passes, because guessing at the target is how this guard would block somebody else's repository.
 
-Tests: `hooks/test-vault-git-guard.sh` (188 cases), weighted towards the allow side on two axes. A guard that stops `git status` in the vault has broken the commands the incident was investigated with, and a guard that stops `git commit` in an unrelated repository has broken every repository on the machine. Both are worse than the failure it prevents, so every write verb it blocks is tested a second time in an unrelated repository, allowed.
+Tests: `hooks/test-vault-git-guard.sh` (193 cases), weighted towards the allow side on two axes. A guard that stops `git status` in the vault has broken the commands the incident was investigated with, and a guard that stops `git commit` in an unrelated repository has broken every repository on the machine. Both are worse than the failure it prevents, so every write verb it blocks is tested a second time in an unrelated repository, allowed.
 
 ### Provisioning guard
 
 The worktrees and the development databases on this machine are set up by hand. A worktree comes from a Herdr keybinding or a typed `git worktree add`, and a database comes from a typed `createdb`. Those are the environment an agent is meant to work **inside**. Agents kept provisioning their own instead: a stray `git worktree add`, a `createdb`, a sub-agent dispatched with worktree isolation. Each one leaves an orphan tree or an orphan database to find and clean up later, and it puts the agent's work somewhere nobody was looking.
 
-`hooks/provisioning-guard.sh` is the enforcing layer. It exits 2, so no prompt appears and no allow rule reaches it.
+`hooks/provisioning-guard.sh` is the enforcing layer. It returns `permissionDecision: "deny"`, so no prompt appears and no allow rule reaches it. Each of the four surfaces names its own action in the human line — `creating a git worktree`, `deleting a git worktree`, `deleting this session's worktree`, `dispatching a sub-agent into its own worktree`, `creating a PostgreSQL database` — and the advice goes to the model in `additionalContext` (see [How a gate speaks](#how-a-gate-speaks)).
 
 **Four surfaces, because between them they are every path an agent has.** Two of them are not shell commands at all, which is the half no permission rule could ever have reached:
 
@@ -613,7 +650,7 @@ psql -d app <<'SQL' ... SQL             a heredoc body
 
 **It is a block list, and the limit is stated rather than hidden.** A creation path nobody listed walks through. `pg_restore --create` is one, and a `CREATE DATABASE` hidden in a file handed to `psql -f` is another. Reading a referenced `.sql` file is what the destructive guard does for `DROP`, and it is deliberately not repeated here: a missed `CREATE` costs one `dropdb` to undo, while the missed `DROP` that guard exists for cost several hours of imported data.
 
-**The block is absolute, and that is not a stylistic match with its siblings.** A root-cause investigation on 2026-09-11 measured that a `PreToolUse` hook returning `permissionDecision: "ask"` is silently auto-approved by the auto-mode classifier, because a hook cannot set `classifierApprovable`. Only a hard block is real. When a worktree or a database is genuinely wanted, the human runs the command with the `!` prefix, and every message the guard prints says so.
+**The block is absolute, and that is not a stylistic match with its siblings.** A root-cause investigation on 2026-09-11 measured that a `PreToolUse` hook returning `permissionDecision: "ask"` is silently auto-approved by the auto-mode classifier, because a hook cannot set `classifierApprovable`. Only a hard block is real. When a worktree or a database is genuinely wanted, the human runs the command with the `!` prefix, and every human line the guard prints says so.
 
 **No deny rules ship in `rails.json` for this, deliberately.** `Bash(createdb:*)` and `Bash(git worktree add:*)` would both satisfy that file's own test, since the first words decide the outcome. They are still absent, because `scripts/permissions.sh` merges additively and never removes, so a rule added there is permanent in a user's `settings.json` and cannot be taken back out by editing this repo. The database *denies* earn that permanence by guarding against data loss. An orphan worktree costs one command to remove, the hook already blocks it absolutely, and leaving the rule out stays reversible in a way that adding it does not.
 
@@ -625,7 +662,7 @@ psql -d app <<'SQL' ... SQL             a heredoc body
 
 **Measuring that is what turned up the `<<-` gap**, in this checker and in [the database guard](#destructive-database-guard), which had it first and where it let a `DROP DATABASE` past. Both are fixed in this change, the same way.
 
-Tests: `hooks/test-provisioning-guard.sh` (187 cases), weighted towards the allow side on three axes. A guard that stops `git worktree list` has broken the only way to see the trees it protects. A guard that stops `grep -rn createdb` gets turned off, which is worse than not having one. And a guard that stops `docker compose up` or a migration writing `database.sqlite` has broken the environment an agent is supposed to work inside, which is the whole thing this guard exists to keep it in.
+Tests: `hooks/test-provisioning-guard.sh` (205 cases), weighted towards the allow side on three axes. A guard that stops `git worktree list` has broken the only way to see the trees it protects. A guard that stops `grep -rn createdb` gets turned off, which is worse than not having one. And a guard that stops `docker compose up` or a migration writing `database.sqlite` has broken the environment an agent is supposed to work inside, which is the whole thing this guard exists to keep it in.
 
 ### Logging pipeline
 
@@ -858,7 +895,7 @@ Two matching behaviours worth knowing: `Bash(git push --force:*)` also blocks `-
 
 **Why credential paths get a hook instead of a deny rule.** The rails used to ship `Read(~/.ssh/**)`, `Read(~/.aws/**)`, `Read(~/.gnupg/**)`, and `Read(**/.env)`. Both halves of what those rules promised turned out to be false. They were never *enforcement*: Anthropic's own documentation states that Read and Edit deny rules apply to the built-in file tools and to the file commands Claude Code recognises in Bash — `cat`, `head`, `tail`, `sed` — and "don't apply to arbitrary subprocesses that read or write files indirectly, like a Python or Node script that opens files itself." And they were expensive: `xce()` in the Claude Code binary is a plain boolean over the deny list, so the presence of *any* `Read()` rule makes the `deniedPathInsideDirectory` circuit breaker return `ask` for every `grep`/`rg`/`diff`/`git`/`cp`/`mv` carrying a relative path in a command that also contains `cd` — without ever consulting a rule. That breaker is registered `bypassImmune` and is not classifier-routed, so no allow rule and no permission mode overrides it, and narrowing the rules does nothing. Only removing all four disarms it.
 
-`hooks/credential-guard.sh` replaces them: a `PreToolUse` hook on `Bash|Read|Edit|Write|NotebookEdit` that exits 2 *before* permission rules are evaluated, so no prompt appears and no allow rule can override it. It covers strictly more than the rules did — `python3 -c "print(open('~/.ssh/id_rsa').read())"` is blocked here and never was there. For Bash it requires a file-reading program alongside the protected path, so `ls ~/.ssh`, `stat ~/.ssh/id_rsa`, and `find . -name ".env*"` stay allowed: they list names without exposing contents, and blocking them would make the guard its own source of prompt noise. It guards Claude's own tool calls, not the OS — for that, enable the sandbox. `hooks/test-permissions.sh` asserts no `Read()` rule creeps back in.
+`hooks/credential-guard.sh` replaces them: a `PreToolUse` hook on `Bash|Read|Edit|Write|NotebookEdit` that returns `permissionDecision: "deny"`, so no prompt appears and no allow rule can override it. The human reads `🛑 Blocked: reading a credential directory.` or `🛑 Blocked: reading a .env file.`, and the matched path goes to the model in `additionalContext` — which also keeps a credential path out of a scrolling terminal (see [How a gate speaks](#how-a-gate-speaks)). It covers strictly more than the rules did — `python3 -c "print(open('~/.ssh/id_rsa').read())"` is blocked here and never was there. For Bash it requires a file-reading program alongside the protected path, so `ls ~/.ssh`, `stat ~/.ssh/id_rsa`, and `find . -name ".env*"` stay allowed: they list names without exposing contents, and blocking them would make the guard its own source of prompt noise. It guards Claude's own tool calls, not the OS — for that, enable the sandbox. `hooks/test-permissions.sh` asserts no `Read()` rule creeps back in.
 
 **Why databases get a hook and only seven deny rules.** `Bash(dropdb:*)`, `Bash(dropuser:*)`, `Bash(mysqladmin drop:*)`, `Bash(docker volume rm:*)`, `Bash(docker volume prune:*)`, `Bash(lando destroy:*)`, and `Bash(wp-env destroy:*)` ship as denies, because no agent has a legitimate use for them, and the first words of each decide the outcome. The four Artisan reset verbs deliberately **do not**, and adding one would be a silent regression. A deny rule matches a prefix, so it cannot read `--env=testing`, which means it cannot carry the exemption the guard relies on. The hook exiting 0 is *neutral*, not an allow, so a deny rule would block a correctly scoped testing reset anyway and the exemption would never fire. That mistake would also stick: `permissions.sh` merges additively and never removes, so deleting the rule from `rails.json` later does not take it out of a user's `settings.json`. `Bash(docker compose down:*)` is absent for the same reason and would be worse: the plain form keeps named volumes and is how a stack gets stopped, so a deny would block routine teardown while the destructive `--volumes` flag sits where a prefix cannot read it. `Bash(ddev delete:*)` is absent on the same grounds, because `ddev delete images` removes Docker images rather than project data. Three instances of one rule, so state it plainly: **a deny rule belongs here only when the first words of the command decide the outcome.** When the verdict depends on a flag or a later argument, the hook is the enforcement and a deny rule is a trap. `hooks/test-destructive-database-guard.sh` asserts that no `artisan`, `docker compose`, or `ddev` rule appears in either list. The enforcement lives in [Destructive database guard](#destructive-database-guard).
 

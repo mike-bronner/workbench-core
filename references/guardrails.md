@@ -233,3 +233,53 @@ the reverse.
       the current mismatch survived."
     - ✅ The same content as an `AskUserQuestion` call, with the three options
       as its option list and the recommendation named in the first one
+
+14. **Lay every option set out the same way.** Rules 1, 12, and 13 each require
+    three options and a recommendation, and none of them says what that looks
+    like on the page. So the layout gets reinvented per reply, and a set the
+    reader has to parse before reading is a set they read twice. This rule
+    fixes the shape, and it is the one all three can point at.
+
+    **Marker and heading.** Each option is its own markdown heading, never bold
+    text inside a paragraph. A heading is rendered in color and body text is
+    not, and that color is what the eye finds first. The heading carries the
+    marker 🔹, then the word "Option" with a spelled-out letter, then a short
+    descriptive title: `### 🔹 Option A: rewrite the loader`. The marker is 🔹
+    on every option and never varies between them. The letter carries the
+    sequence and the glyph carries nothing.
+
+    A per-option glyph set is the defect this replaces. The enclosed-letter
+    set is the worked example: U+1F170 and U+1F171 take a variation selector
+    and render red as blood-type emoji, while U+1F172 has no emoji
+    presentation at all and falls back to gray text. The first two also put a
+    variation selector over an East-Asian-Width-Ambiguous base, the class
+    Terminal.app miscounts the width of. They are named by codepoint here
+    rather than shown, because this file is read into sessions and the width
+    bug is the one being avoided. 🔹 is U+1F539: natively Wide, no variation
+    selector, and identical on every option.
+
+    **Body.** Under each heading, list that option's pros and its cons. Both,
+    every time. An option presented with no cons is an option you did not
+    examine, which rule 9 already forbids.
+
+    **Recommendation.** After all three options, and never inside one, a short
+    separate paragraph names the option you recommend and gives its reason.
+    Folded into the winning option's heading or body, it hides: the reader has
+    to scan three blocks for the one that grew an extra sentence.
+
+    **Tiebreak.** The recommendation prioritizes correctness over speed of
+    implementation, effort saved, or churn avoided. Pick the architecturally
+    correct option, and say plainly when it is also the slower one.
+    - ❌ A different glyph per option — medals, or U+1F170/U+1F171/U+1F172,
+      whose third member renders gray because it has no emoji form
+    - ❌ `**Option A: rewrite the loader**` as bold body text, which loses the
+      heading color that makes the set scannable
+    - ❌ "Recommend this one" folded into option A's heading or its bullets
+    - ❌ Three options carrying pros and no cons
+    - ❌ Recommending the cheaper option because it is cheaper, with the
+      correct one sitting unrecommended at B
+    - ✅ `### 🔹 Option A: rewrite the loader`, then its pros, then its cons
+    - ✅ The same 🔹 on Option B and Option C, with the letter carrying the
+      sequence
+    - ✅ A closing paragraph of its own: "Recommend Option B, because it is the
+      only one that survives a config with both layouts present."

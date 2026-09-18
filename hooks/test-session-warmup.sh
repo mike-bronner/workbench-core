@@ -113,6 +113,12 @@ assert_contains "guardrails place questions last"       "$OUT" "END of the respo
 # session rather than in the repo, so the injected text is where it has to land.
 assert_contains "guardrails carry the question contents" "$OUT" "state it as a question"
 assert_contains "guardrails separate a fork from a defect" "$OUT" "a choice is not a problem"
+# Rule 14 says how the options rules 1, 12 and 13 demand are laid out. It is a
+# render-time rule, so the injected copy is the only one that can reach the
+# reply being written. Two assertions, because the marker and the placement of
+# the recommendation were the two things that drifted.
+assert_contains "guardrails carry the option marker" "$OUT" "🔹"
+assert_contains "guardrails separate the recommendation" "$OUT" "separate paragraph"
 assert_missing  "skills-protocol not inlined"      "$OUT" "SKILLSPROTO-CANARY"
 assert_contains "skills-protocol pointer present"  "$OUT" "Skills protocol: read \`$SANDBOX/memory/identity/skills-protocol.md\`"
 # The recall-ORDERING rule has no hook that can carry it in full — memory-recall.sh

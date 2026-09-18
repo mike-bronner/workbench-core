@@ -158,6 +158,50 @@ for f in "$FULL" "$INLINE" "$OVERRIDES" "$STYLE"; do
     'three options,? and a recommendation with its reason'
 done
 
+# ── Guardrail 14: every option set is laid out the same way ──────────────────
+#
+# Rules 1, 12 and 13 all demand three options and a recommendation, and none of
+# them said what that looks like on the page. So the layout was reinvented per
+# reply. The last drift put a different medal glyph on each option, shortened
+# the titles to fragments, and folded the recommendation into the option it
+# picked, which the user reported as hard to read against a form that used to
+# be clean. Rule 14 pins the shape.
+#
+# Six checks per mirror, because the rule has six separable halves and dropping
+# any one of them brings back a piece of the original defect. The marker and
+# its invariance are counted apart on purpose: a mirror can name 🔹 and still
+# permit a different glyph per option, which is the exact inconsistency that
+# started this — 🅰️ and 🅱️ render red as blood-type emoji while 🅲 (U+1F172)
+# has no emoji presentation and falls back to gray.
+echo
+echo "guardrail 14 — option-set layout reaches every mirror:"
+for f in "$FULL" "$INLINE" "$OVERRIDES" "$STYLE"; do
+  m="$(basename "$f")"
+  # Half 1 — the marker itself. 🔹 is U+1F539: natively Wide, no variation
+  # selector, so it is not in the class Terminal.app miscounts.
+  has "$m names 🔹 as the option marker" "$f" '🔹'
+  # Half 2 — the marker is the same on every option. Without this the rule
+  # permits a per-option glyph set, which is the defect it was written for.
+  has "$m keeps the marker identical across options" "$f" \
+    '(never var(y|ies) the glyph|the glyph carries nothing)'
+  # Half 3 — each option is a heading carrying a spelled-out letter. A bold
+  # line in a paragraph loses the color the renderer gives a real heading, and
+  # the color is what makes the set scannable.
+  has "$m spells the option letter out in a heading" "$f" 'Option A'
+  # Half 4 — pros AND cons under each option. Pros alone is the presentation
+  # rule 9 already forbids, and this is where it becomes a layout slot.
+  has "$m requires pros and cons under each option" "$f" \
+    'pros and( its)? cons'
+  # Half 5 — the recommendation stands alone after all three options. Folded
+  # into the winning option, it is the form the user reported as unreadable.
+  has "$m puts the recommendation in a separate paragraph" "$f" \
+    'separate paragraph'
+  # Half 6 — the tiebreak. Without it a recommendation can be argued from
+  # convenience and no rule contradicts it.
+  has "$m ties the recommendation to architectural correctness" "$f" \
+    'architecturally correct'
+done
+
 # ── Cons before pros: ordering is not labelling ──────────────────────────────
 #
 # "Lead with what is wrong or risky" is an ordering instruction, and nothing
@@ -201,6 +245,10 @@ anchor "guardrails.md rule 13 is still the question-contents rule" \
   '^13\. \*\*Every question carries' "$FULL"
 anchor "guardrails-inline.md rule 13 is still the question-contents rule" \
   '^13\. \*\*Every question carries' "$INLINE"
+anchor "guardrails.md rule 14 is still the option-layout rule" \
+  '^14\. \*\*Lay every option set' "$FULL"
+anchor "guardrails-inline.md rule 14 is still the option-layout rule" \
+  '^14\. \*\*Lay every option set' "$INLINE"
 
 # ── The inline copy condenses the full text, so the rule counts must agree ────
 #
@@ -227,12 +275,14 @@ fi
 # it. Trimming the test back to four checks would silently un-enforce hard rule
 # 9, trimming it back to five would do the same to hard rule 10, and trimming it
 # back to six would do the same to hard rule 11 — which spends two of the checks,
-# because its two failure modes are independent. All three rules need the cover
-# for one reason: a finding reported as a bare fact, a question with no options,
-# and a fork labelled a problem are send-time failures, and the drift test is the
-# only thing that reads the whole reply before it goes out.
+# because its two failure modes are independent. Trimming it back to eight would
+# do the same to hard rule 12. All four rules need the cover for one reason: a
+# finding reported as a bare fact, a question with no options, a fork labelled a
+# problem, and an option set laid out however this reply felt like laying it out
+# are send-time failures, and the drift test is the only thing that reads the
+# whole reply before it goes out.
 echo
-echo "the persona's drift test checks question placement, question contents, and finding verdicts:"
+echo "the persona's drift test checks question placement, question contents, finding verdicts, and option layout:"
 if printf '%s' "$(flat "$STYLE")" | grep -qiE 'Is every open question'; then
   ok "output-style.md drift test asks where the open questions are"
 else
@@ -259,6 +309,14 @@ if printf '%s' "$(flat "$STYLE")" | grep -qiE 'fork .{0,40}(as a fork|rather tha
 else
   no "output-style.md drift test asks whether a fork was stated as a fork" \
      "the drift test no longer separates a fork from a problem"
+fi
+# Hard rule 12 is a send-time check like the three above it: the layout is wrong
+# only once the reply is written, and nothing earlier in the turn can see it.
+if printf '%s' "$(flat "$STYLE")" | grep -qiE 'Does every option set'; then
+  ok "output-style.md drift test asks whether options use the 🔹 heading layout"
+else
+  no "output-style.md drift test asks whether options use the 🔹 heading layout" \
+     "the drift test no longer mentions option layout"
 fi
 
 echo

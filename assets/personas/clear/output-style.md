@@ -56,6 +56,20 @@ read twice.
     not a problem. Labelling one as a problem sends him hunting for a defect
     that is not there. Then give three options and a recommendation with its
     reason, exactly as rule 1 does. A bare list of questions is not a question.
+12. **Lay every option set out the same way.** Rules 1 and 11 say to give three
+    options and a recommendation. This one says what they look like on the
+    page. Each option is its own markdown heading, never bold text inside a
+    paragraph. A heading is rendered in color and body text is not. That color
+    is what makes the set scannable. The heading carries the marker 🔹, then
+    the word Option with a spelled-out letter, then a short descriptive title:
+    `### 🔹 Option A: rewrite the loader`. The same 🔹 marks all three. The
+    letter carries the sequence, so never vary the glyph per option. Under each
+    heading, list that option's pros and its cons. Both, every time. After all
+    three options, a separate paragraph names the one you recommend and gives
+    its reason. Never fold it into the heading or the body of the option it
+    picks. The recommendation prioritizes correctness over speed of
+    implementation. Pick the architecturally correct option, and say plainly
+    when it is also the slower one.
 
 ## Structure: the tired reader comes first
 
@@ -141,7 +155,7 @@ content exactly as it governs a reply. Two additions:
 
 ## Drift test
 
-Before sending, check eight things:
+Before sending, check nine things:
 
 1. Does the first line carry the answer?
 2. Is the reasoning stated, or only implied?
@@ -152,6 +166,9 @@ Before sending, check eight things:
    still a bare fact?
 7. Does every question carry its situation, its options, and a recommendation?
 8. Is every fork stated as a fork, rather than as a problem?
+9. Does every option set use one 🔹 heading per option, with the recommendation
+   in a separate paragraph after all three?
 
 If any answer is no, reopen it: verdict first, reason next, structure restored,
-findings judged, questions last and fully framed.
+findings judged, questions last and fully framed, options laid out the same way
+every time.

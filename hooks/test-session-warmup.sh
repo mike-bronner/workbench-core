@@ -577,22 +577,34 @@ mkdir -p "$SANDBOX/bin"
 printf '#!/bin/sh\nexit 0\n' > "$SANDBOX/bin/claude"
 chmod +x "$SANDBOX/bin/claude"
 DRAIN_LOGDIR="$SANDBOX/memory/sessions/2026-02-02"
+DRAIN_TRANSCRIPTDIR="$SANDBOX/transcripts"
 
-# Create marker $1 with mtime $2 (touch -t stamp). Writes a matching log unless
-# $3 is "nolog", so the undrainable path can be exercised.
+# Create marker $1 with mtime $2 (touch -t stamp). $3 selects which of the
+# marker's two sources exist on disk — the marker always names both, exactly as
+# session-log.sh writes it:
+#   log        (default) log only, transcript already past its ~30-day retention
+#   both       log and transcript present
+#   nolog      log pruned at 7 days, transcript still readable — RECOVERABLE
+#   nosource   both gone — the only genuinely undrainable shape
 make_marker() {
   local sid="$1" stamp="$2" mode="${3:-log}"
   local logpath="$DRAIN_LOGDIR/$sid.log.md"
-  mkdir -p "$DRAIN_LOGDIR" "$SANDBOX/cache/pending-summaries"
-  [ "$mode" = "nolog" ] || printf '# log for %s\n' "$sid" > "$logpath"
-  printf '{"session_id":"%s","log_path":"%s","mode":"final","event":"SessionEnd"}\n' \
-    "$sid" "$logpath" > "$SANDBOX/cache/pending-summaries/$sid.json"
+  local transcript="$DRAIN_TRANSCRIPTDIR/$sid.jsonl"
+  mkdir -p "$DRAIN_LOGDIR" "$DRAIN_TRANSCRIPTDIR" "$SANDBOX/cache/pending-summaries"
+  case "$mode" in
+    log|both) printf '# log for %s\n' "$sid" > "$logpath" ;;
+  esac
+  case "$mode" in
+    both|nolog) printf '{"type":"user","sessionId":"%s"}\n' "$sid" > "$transcript" ;;
+  esac
+  printf '{"session_id":"%s","transcript_path":"%s","log_path":"%s","mode":"final","event":"SessionEnd"}\n' \
+    "$sid" "$transcript" "$logpath" > "$SANDBOX/cache/pending-summaries/$sid.json"
   touch -t "$stamp" "$SANDBOX/cache/pending-summaries/$sid.json"
 }
 
 reset_drain() {
   rm -f "$SANDBOX/cache/pending-summaries"/*.json 2>/dev/null
-  rm -rf "$DRAIN_LOGDIR" "$SANDBOX/cache/summary-drain.lock" 2>/dev/null
+  rm -rf "$DRAIN_LOGDIR" "$DRAIN_TRANSCRIPTDIR" "$SANDBOX/cache/summary-drain.lock" 2>/dev/null
   rm -f "$SANDBOX/cache/summary-drain.stamp" "$SANDBOX/cache/summary-dispatch-errors.log" 2>/dev/null
 }
 
@@ -658,20 +670,78 @@ assert_missing  "second start inside cooldown is suppressed" "$OUT" "DISPATCH si
 OUT=$(run_drain startup "WORKBENCH_DRAIN_BATCH=1 WORKBENCH_DRAIN_COOLDOWN_MIN=0")
 assert_contains "cooldown of 0 drains again"      "$OUT" "DISPATCH sid=cool-1"
 
-echo "drain — undrainable marker is logged and does NOT consume a batch slot:"
+echo "drain — a pruned log with a live transcript is DRAINED, not rejected:"
+# The log is a 7-day vault cache; the transcript is the ~30-day original, and
+# agents/summary-writer.md step 2 tells the writer to fall back to it. Gating on
+# the log alone made this drain stricter than the agent it gates: on 2026-09-18
+# it rejected 778 of 779 markers, 503 with a readable transcript still on disk.
 reset_drain
-make_marker "gone-log" "202601010000" nolog
+make_marker "cache-expired" "202601010000" nolog
+OUT=$(run_drain startup "WORKBENCH_DRAIN_BATCH=1")
+assert_contains "marker with only a transcript is dispatched" "$OUT" "DISPATCH sid=cache-expired"
+assert_contains "the writer is handed the transcript"         "$OUT" "DISPATCH transcript=$DRAIN_TRANSCRIPTDIR/cache-expired.jsonl"
+assert_missing  "and is not written off as undrainable"       \
+  "$(cat "$SANDBOX/cache/summary-dispatch-errors.log" 2>/dev/null)" "cache-expired"
+
+echo "drain — both sources present still dispatches, and names both:"
+reset_drain
+make_marker "both-live" "202601010000" both
+OUT=$(run_drain startup "WORKBENCH_DRAIN_BATCH=1")
+assert_contains "dispatched"          "$OUT" "DISPATCH sid=both-live"
+assert_contains "log path passed"     "$OUT" "DISPATCH log=$DRAIN_LOGDIR/both-live.log.md"
+assert_contains "transcript passed"   "$OUT" "DISPATCH transcript=$DRAIN_TRANSCRIPTDIR/both-live.jsonl"
+
+echo "drain — only a marker with BOTH sources gone is undrainable:"
+reset_drain
+make_marker "all-gone" "202601010000" nosource
 make_marker "good-1"   "202601020000"
 make_marker "good-2"   "202601030000"
 OUT=$(run_drain startup "WORKBENCH_DRAIN_BATCH=2")
-assert_missing  "marker with no log not dispatched" "$OUT" "DISPATCH sid=gone-log"
+assert_missing  "marker with no log and no transcript not dispatched" "$OUT" "DISPATCH sid=all-gone"
 assert_contains "slot passed to next marker"        "$OUT" "DISPATCH sid=good-1"
 assert_contains "second slot still available"       "$OUT" "DISPATCH sid=good-2"
-if grep -q "undrainable marker=.*gone-log" "$SANDBOX/cache/summary-dispatch-errors.log" 2>/dev/null; then
-  PASS=$((PASS + 1)); echo "  ✅ undrainable marker recorded to the dispatch log"
+if grep -q "undrainable marker=.*all-gone.*transcript=" "$SANDBOX/cache/summary-dispatch-errors.log" 2>/dev/null; then
+  PASS=$((PASS + 1)); echo "  ✅ undrainable marker recorded with both sources named"
 else
   FAIL=$((FAIL + 1)); echo "  ❌ undrainable marker not recorded to the dispatch log"
 fi
+
+echo "drain — a marker with no session id is undrainable whatever its sources:"
+reset_drain
+# Both sources on disk, so only the empty session id can reject this one.
+make_marker "sidless" "202601010000" both
+printf '{"log_path":"%s","transcript_path":"%s"}\n' \
+  "$DRAIN_LOGDIR/sidless.log.md" "$DRAIN_TRANSCRIPTDIR/sidless.jsonl" \
+  > "$SANDBOX/cache/pending-summaries/sidless.json"
+touch -t "202601010000" "$SANDBOX/cache/pending-summaries/sidless.json"
+make_marker "after-sidless" "202601020000"
+OUT=$(run_drain startup "WORKBENCH_DRAIN_BATCH=1")
+assert_contains "slot passed to the next marker" "$OUT" "DISPATCH sid=after-sidless"
+if [ "$(printf '%s' "$OUT" | grep -c '^DISPATCH sid=')" = "1" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ the sidless marker spawned nothing"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ the sidless marker spawned a writer"
+fi
+if grep -q "undrainable marker=.*sidless.*sid=?" "$SANDBOX/cache/summary-dispatch-errors.log" 2>/dev/null; then
+  PASS=$((PASS + 1)); echo "  ✅ the sidless marker is recorded as undrainable"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ the sidless marker is not recorded as undrainable"
+fi
+
+echo "drain — the writer's brief carries both pointers and the fallback rule:"
+# The dry-run print is a test affordance; the prompt is what the child actually
+# reads. Assert on the prompt itself so a regression in one cannot hide in the
+# other.
+BRIEF=$(env MEMORY_PATH="$SANDBOX/memory" bash -c '
+  . "$0" 2>/dev/null
+  summary_dispatch_prompt sid-x /marker.json /vault/sid-x.log.md /projects/sid-x.jsonl' \
+  "$REPO_ROOT/hooks/lib/summary-dispatch.sh")
+assert_contains "brief carries session_id"      "$BRIEF" "session_id: sid-x"
+assert_contains "brief carries marker_path"     "$BRIEF" "marker_path: /marker.json"
+assert_contains "brief carries log_path"        "$BRIEF" "log_path: /vault/sid-x.log.md"
+assert_contains "brief carries transcript_path" "$BRIEF" "transcript_path: /projects/sid-x.jsonl"
+assert_contains "brief states the fallback"     "$BRIEF" "summarize from transcript_path"
+assert_contains "brief asks for the source stamp" "$BRIEF" "source: transcript"
 
 echo "drain — disabled and zero-batch paths spawn nothing:"
 reset_drain

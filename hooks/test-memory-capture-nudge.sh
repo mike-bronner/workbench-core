@@ -79,6 +79,19 @@ if [ ! -f "$SANDBOX/state/sched-a.count" ]; then
 else
   FAIL=$((FAIL + 1)); echo "  ❌ scheduled fire created a heartbeat counter"
 fi
+# ...except the verdict itself, which memory-capture-stop.sh reads. A Stop
+# payload carries no prompt, so that hook cannot re-run this match — without the
+# marker, every scheduled tick gets a capture block at its turn ends.
+if [ -f "$SANDBOX/state/sched-a.scheduled" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ scheduled fire records its verdict for the Stop hook"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ scheduled fire left no verdict for the Stop hook"
+fi
+if [ ! -f "$SANDBOX/state/sched-neg.scheduled" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ a human prompt records no scheduled verdict"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ a human prompt was recorded as scheduled"
+fi
 
 # (b) A neutral prompt below the heartbeat threshold emits nothing.
 echo "neutral prompt below threshold is silent:"

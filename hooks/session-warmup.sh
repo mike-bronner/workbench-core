@@ -652,17 +652,28 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
           [ -f "$marker" ] || continue
           DRAIN_SID="$(jq -r '.session_id // empty' "$marker" 2>/dev/null)"
           DRAIN_LOG="$(jq -r '.log_path // empty' "$marker" 2>/dev/null)"
+          DRAIN_TRANSCRIPT="$(jq -r '.transcript_path // empty' "$marker" 2>/dev/null)"
           # Fail closed on a marker we cannot act on. A malformed marker, or one
-          # whose log has been deleted, would otherwise be retried on every
-          # session start forever, permanently consuming batch slots that the
-          # drainable markers behind it need.
-          if [ -z "$DRAIN_SID" ] || [ -z "$DRAIN_LOG" ] || [ ! -r "$DRAIN_LOG" ]; then
-            printf '%s undrainable marker=%s sid=%s log=%s\n' \
-              "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$marker" "${DRAIN_SID:-?}" "${DRAIN_LOG:-?}" \
+          # whose log AND transcript are both gone, would otherwise be retried on
+          # every session start forever, permanently consuming batch slots that
+          # the drainable markers behind it need.
+          #
+          # A missing log alone is NOT that case. The log is a 7-day vault cache
+          # and the transcript is the ~30-day original, so a pruned log is a
+          # cache miss the writer recovers from (agents/summary-writer.md step
+          # 2). Refusing on the log alone made this gate stricter than the agent
+          # it gates: on 2026-09-18 it rejected 778 of 779 markers, 503 of which
+          # still had a readable transcript. Transcript retention is the real
+          # deadline, and those 503 were expiring against it untouched.
+          if [ -z "$DRAIN_SID" ] \
+             || ! summary_dispatch_readable "$DRAIN_LOG" "$DRAIN_TRANSCRIPT"; then
+            printf '%s undrainable marker=%s sid=%s log=%s transcript=%s\n' \
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$marker" "${DRAIN_SID:-?}" \
+              "${DRAIN_LOG:-?}" "${DRAIN_TRANSCRIPT:-?}" \
               >> "$(summary_dispatch_logfile)" 2>/dev/null || true
             continue
           fi
-          if summary_dispatch_spawn "$DRAIN_SID" "$marker" "$DRAIN_LOG"; then
+          if summary_dispatch_spawn "$DRAIN_SID" "$marker" "$DRAIN_LOG" "$DRAIN_TRANSCRIPT"; then
             DRAINED=$((DRAINED + 1))
           fi
         done <<< "$(ls -tr "$PENDING_SUMMARIES_DIR"/*.json 2>/dev/null)"

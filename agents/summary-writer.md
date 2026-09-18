@@ -12,13 +12,16 @@ You are a headless, short-lived agent. A Claude Code session just ended (or comp
 
 ## Inputs
 
-The dispatching command provides three values in the initial prompt:
+The dispatching command provides four values in the initial prompt:
 
 - `session_id` — the session to process
 - `marker_path` — absolute path to `~/.claude-memory-cache/pending-summaries/<session_id>.json`
 - `log_path` — absolute path to the raw log this marker references
+- `transcript_path` — absolute path to the original Claude Code JSONL for the same session
 
-If any are missing, or any referenced file does not exist, abort with a clear error and exit.
+If `session_id` or `marker_path` is missing, abort with a clear error and exit.
+
+`log_path` and `transcript_path` are two pointers to the same content with different lifetimes, so **one of them being absent from disk is a normal, workable state** — see step 2. Abort only when both are gone.
 
 ## What you are NOT
 

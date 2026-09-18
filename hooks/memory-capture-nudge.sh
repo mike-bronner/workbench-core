@@ -62,6 +62,20 @@ if [ -z "$SESSION_ID" ]; then
   exit 0
 fi
 
+# ──────────── State dir (per-session heartbeat counter) ────────────
+# Follow the workbench state-dir convention (~/.claude-workbench/, where
+# session-warmup keeps chat-skills-state.json). Tests point this elsewhere via
+# WORKBENCH_MEMORY_NUDGE_STATE so real session state is never touched.
+# Resolved before the scheduled-task guard because that guard leaves a marker
+# here for hooks/memory-capture-stop.sh to read.
+STATE_DIR="${WORKBENCH_MEMORY_NUDGE_STATE:-$HOME/.claude-workbench/memory-nudge}"
+mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
+
+# Sanitize the session id before using it as a filename (defense in depth —
+# ids are normally hex/UUID, but never trust an external value in a path).
+SAFE_SID=$(printf '%s' "$SESSION_ID" | tr -c 'A-Za-z0-9._-' '_')
+STATE_FILE="$STATE_DIR/${SAFE_SID}.count"
+
 # ──────────── Scheduled-task guard ────────────
 # An unattended cron fire gets no nudge. Nudging it is worse than useless: the
 # rule this hook reinforces is standing authorization for the agent to capture
@@ -73,8 +87,15 @@ fi
 # The harness wraps a scheduled task's prompt in a `<scheduled-task name="..."
 # file="...">` element; it is the only available signal. See the matching guard
 # in memory-recall.sh for the full evidence on what was ruled out.
+#
+# The Stop-side twin of this guard cannot repeat the match — a Stop payload
+# carries no prompt — so record the verdict for it here. One empty file per
+# scheduled session, pruned with the counters below.
 case "$(printf '%s' "$PROMPT" | tr '\n' ' ' | sed 's/^ *//')" in
-  '<scheduled-task '*) exit 0 ;;
+  '<scheduled-task '*)
+    : > "$STATE_DIR/${SAFE_SID}.scheduled" 2>/dev/null || true
+    exit 0
+    ;;
 esac
 
 # ──────────── Heartbeat interval ────────────
@@ -85,22 +106,11 @@ case "$INTERVAL" in
 esac
 [ "$INTERVAL" -lt 1 ] && INTERVAL=8
 
-# ──────────── State dir (per-session heartbeat counter) ────────────
-# Follow the workbench state-dir convention (~/.claude-workbench/, where
-# session-warmup keeps chat-skills-state.json). Tests point this elsewhere via
-# WORKBENCH_MEMORY_NUDGE_STATE so real session state is never touched.
-STATE_DIR="${WORKBENCH_MEMORY_NUDGE_STATE:-$HOME/.claude-workbench/memory-nudge}"
-mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
-
-# Sanitize the session id before using it as a filename (defense in depth —
-# ids are normally hex/UUID, but never trust an external value in a path).
-SAFE_SID=$(printf '%s' "$SESSION_ID" | tr -c 'A-Za-z0-9._-' '_')
-STATE_FILE="$STATE_DIR/${SAFE_SID}.count"
-
 # ──────────── State hygiene ────────────
-# Prune counter files older than 3 days so the dir doesn't grow unbounded —
-# mirrors session-warmup's find -mtime retention sweep. Fire-and-forget.
-find "$STATE_DIR" -name '*.count' -mtime +3 -delete 2>/dev/null
+# Prune per-session state older than 3 days so the dir doesn't grow unbounded —
+# mirrors session-warmup's find -mtime retention sweep. Fire-and-forget. The
+# scheduled markers written above are swept on the same schedule as the counters.
+find "$STATE_DIR" \( -name '*.count' -o -name '*.scheduled' \) -mtime +3 -delete 2>/dev/null
 
 # ──────────── Signal detection ────────────
 # Case-insensitive match over the prompt for capture-worthy classes. Kept tight

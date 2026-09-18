@@ -52,17 +52,61 @@ _summary_dispatch_cap_log() {
   fi
 }
 
-# summary_dispatch_spawn <session_id> <marker_path> <log_path>
+# summary_dispatch_readable <log_path> <transcript_path>
+#
+# True when at least one of the writer's two sources is on disk. A marker
+# carries two pointers to the same session with different lifetimes: the vault
+# log is a 7-day cache (session-warmup.sh prunes at -mtime +7) and the
+# transcript is the original Claude Code JSONL, which lives about 30 days. A
+# missing log therefore means the cache expired, never that the session is lost,
+# and agents/summary-writer.md step 2 tells the writer to fall back to the
+# transcript and stamp `source: transcript`.
+#
+# Gating on the log alone made this helper stricter than the agent it gates, so
+# the documented fallback was unreachable: on 2026-09-18, 778 of 779 markers
+# were refused here and 503 of them still had a readable transcript on disk.
+summary_dispatch_readable() {
+  local log_path="${1:-}" transcript_path="${2:-}"
+  { [ -n "$log_path" ] && [ -r "$log_path" ]; } \
+    || { [ -n "$transcript_path" ] && [ -r "$transcript_path" ]; }
+}
+
+# summary_dispatch_prompt <session_id> <marker_path> <log_path> <transcript_path>
+#
+# The writer's whole brief, on stdout. Split out of the spawn so a test can read
+# what the child is actually told without launching one — the pointers and the
+# fallback rule ARE the fix, so they need an assertion of their own.
+summary_dispatch_prompt() {
+  printf 'Process pending session summary.
+
+session_id: %s
+marker_path: %s
+log_path: %s
+transcript_path: %s
+memory_vault: %s
+
+The log is a 7-day cache inside the vault. The transcript is the original
+Claude Code JSONL and lives about 30 days. A missing log therefore means the
+cache expired, never that the session is lost — summarize from transcript_path
+whenever log_path is gone, and stamp `source: transcript` in the frontmatter.
+
+Follow your agent definition. Write the summary via the memory MCP using a
+vault-relative path (starting with '"'"'sessions/'"'"'), promote any decisions, delete
+the marker, and exit. Never write summary files with Bash.
+' "$1" "$2" "$3" "$4" "$MEMORY_PATH"
+}
+
+# summary_dispatch_spawn <session_id> <marker_path> <log_path> [transcript_path]
 #
 # Spawns one detached writer and returns immediately. Returns non-zero without
-# spawning if the log the writer needs is unreadable — the writer cannot produce
-# a summary without it, and a marker whose log has vanished would otherwise spin
-# forever on every session start.
+# spawning when NEITHER source is readable — the writer cannot produce a summary
+# from nothing, and such a marker would otherwise spin forever on every session
+# start. A readable transcript is enough on its own.
 summary_dispatch_spawn() {
-  local session_id="$1" marker_path="$2" log_path="$3"
+  local session_id="$1" marker_path="$2" log_path="$3" transcript_path="${4:-}"
   local model errlog
 
-  [ -r "$log_path" ] || return 1
+  summary_dispatch_readable "$log_path" "$transcript_path" || return 1
 
   model="$(summary_dispatch_model)"
   errlog="$(summary_dispatch_logfile)"
@@ -71,8 +115,12 @@ summary_dispatch_spawn() {
     # Test hook (hooks/test-session-log.sh, hooks/test-session-warmup.sh): print
     # the resolved invocation instead of spawning. Set only by tests; never in
     # production. Emits the session id so a multi-marker drain can be asserted
-    # marker-by-marker rather than only by dispatch count.
+    # marker-by-marker rather than only by dispatch count. The two source paths
+    # are printed so a test can tell a log dispatch from a transcript-fallback
+    # dispatch, which is the whole point of accepting either one.
     printf 'DISPATCH sid=%s\n' "$session_id"
+    printf 'DISPATCH log=%s\n' "$log_path"
+    printf 'DISPATCH transcript=%s\n' "$transcript_path"
     printf 'DISPATCH cwd=%s\n' "$MEMORY_PATH"
     printf 'DISPATCH env WORKBENCH_MEMORY_PATH=%s\n' "$MEMORY_PATH"
     printf 'DISPATCH env WORKBENCH_SUMMARY_WRITER=1\n'
@@ -84,16 +132,9 @@ summary_dispatch_spawn() {
 
   _summary_dispatch_cap_log "$errlog"
 
-  local prompt="Process pending session summary.
-
-session_id: ${session_id}
-marker_path: ${marker_path}
-log_path: ${log_path}
-memory_vault: ${MEMORY_PATH}
-
-Follow your agent definition. Write the summary via the memory MCP using a
-vault-relative path (starting with 'sessions/'), promote any decisions, delete
-the marker, and exit. Never write summary files with Bash."
+  local prompt
+  prompt="$(summary_dispatch_prompt \
+    "$session_id" "$marker_path" "$log_path" "$transcript_path")"
 
   # Safeguards (unchanged from the original session-log.sh dispatch):
   #   - WORKBENCH_SKIP_LOG=1 stops the child's own SessionEnd hook recursing.

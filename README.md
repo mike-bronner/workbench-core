@@ -226,6 +226,7 @@ core/
 │   ├── memory-server-spawn.sh  — shared-HTTP detached supervisor (disabled; retained)
 │   ├── memory-server-down.sh   — shared-HTTP manual stop (disabled; retained)
 │   ├── memory-capture-nudge.sh — UserPromptSubmit: nudge proactive memory WRITES
+│   ├── memory-capture-stop.sh  — Stop: make the live session write its findings before context is shed
 │   ├── memory-recall-nudge.sh  — UserPromptSubmit: nudge agent-initiated memory READS (what to query)
 │   ├── memory-recall.sh        — UserPromptSubmit: inject relevant memory READS (recall)
 │   ├── memory-scan-recall.sh   — PostToolUse: recall mid-turn, using a repo scan's own query
@@ -292,6 +293,7 @@ These hooks fire across the session lifecycle and on each turn:
 | `PreCompact` | `hooks/session-log.sh` | Dump raw log checkpoint, spawn summary-writer |
 | `PostCompact` | `hooks/session-warmup.sh` | Re-inject identity after context compression |
 | `SessionEnd` | `hooks/session-log.sh` | Dump final log segment and write the pending-summary marker — **no writer is spawned here** (see [Why SessionEnd does not spawn](#why-sessionend-does-not-spawn)) |
+| `Stop` | `hooks/memory-capture-stop.sh` | Early in a session, then rarely, block the stop and have the live session write its durable findings to the vault — see [Pre-shed capture](#pre-shed-capture) |
 | `UserPromptSubmit` | `hooks/memory-capture-nudge.sh` | Sparse nudge to capture durable knowledge to the vault (memory **writes**) |
 | `UserPromptSubmit` | `hooks/memory-recall-nudge.sh` | Sparse nudge to search the vault *before* scanning the repo, with a query built from the task rather than the prompt — a reminder only, it never decides whether a recall happens |
 | `UserPromptSubmit` | `hooks/memory-recall.sh` | Proactive recall — search the vault with the prompt and inject relevant memories, **once per session** per memory (memory **reads**) |
@@ -700,6 +702,46 @@ A child process started as the parent CLI exits is killed during teardown. `nohu
 So `mode=final` writes the marker and stops. The next session start drains it, where the parent is alive by definition. Work triggered at process death cannot be made to outlive the process by backgrounding it harder.
 
 The drain is bounded (`WORKBENCH_DRAIN_BATCH`, default 3) and rate-limited (`WORKBENCH_DRAIN_COOLDOWN_MIN`, default 5) so a large backlog clears over several sessions instead of forking a swarm at one session start. It takes the **oldest** markers first: the retention sweep refuses to delete any raw log that still has a marker, so draining newest-first would pin the oldest logs on disk indefinitely. Writer stdout and stderr go to `{memory_cache}/summary-dispatch-errors.log` — the original dispatch discarded both to `/dev/null`, which is why a two-week outage went unnoticed.
+
+#### A marker has two sources, and either one is enough
+
+Each marker names both the vault log (`log_path`) and the original Claude Code transcript (`transcript_path`). They are the same session with different lifetimes: the log is a 7-day cache the retention sweep prunes, the transcript lives about 30 days. So a missing log means **the cache expired**, never that the session is lost — the writer falls back to the transcript and stamps `source: transcript` in the summary's frontmatter (`agents/summary-writer.md`, step 2).
+
+The drain therefore accepts a marker when **either** source is readable, and refuses only when both are gone. Gating on the log alone made the drain stricter than the agent it gates, so that documented fallback was unreachable: measured on 2026-09-18, 778 of 779 markers were refused, and 503 of them still had a readable transcript on disk. Transcript retention is the real deadline, and those 503 were aging out against it untouched.
+
+A marker with both sources gone is logged as `undrainable` and left alone. **Purging one is a deliberate human call, not the drain's** — it is the only surviving record that the session went unsummarised.
+
+### Pre-shed capture
+
+The logging pipeline above always produces a narrative summary, and that summary is always a **reconstruction**. The summary-writer reads a raw JSONL transcript with no lived context, and its own definition forbids it from padding a thin reconstruction into a confident one. The curated output — a decision with the alternatives it rejected, a root cause, a correction to how the agent works — exists only inside the session that formed it, and until now nothing asked that session for it unless the human did.
+
+`hooks/memory-capture-stop.sh` asks. At a turn end it returns `decision: block` with the capture instruction as the reason, which refuses the stop and hands the instruction to the model as its next move. The instruction explicitly permits writing nothing: a forced turn with no escape manufactures a memory to justify itself, which is worse than no memory at all.
+
+**It is a backstop against the per-turn nudge being ignored, not a periodic reminder**, and that is what sets its timing. A backstop has to fire at least once per session to be one at all, so the **first** fire matters far more than the repeat. It lands on turn 5 (`WORKBENCH_CAPTURE_STOP_FIRST`) and then settles onto a sparse 40 (`WORKBENCH_CAPTURE_STOP_INTERVAL`), which exists only to catch findings that crystallize late in a long session. Measured over 467 transcripts of this project:
+
+| First fire | Sessions reached |
+|---|---|
+| turn 5 | 411 of 467 (88%) |
+| turn 9 | 55% |
+| turn 21 | 76 of 467 (16%) |
+
+A flat interval of 20 would therefore have captured nothing in 84% of sessions. Both numbers are estimates from one project's history, so both are independently overridable.
+
+**It is not tuned to beat compaction.** Exactly one of those 467 sessions ever compacted. The real context-loss events here are quit and `/clear`, and neither gives any warning a hook can read — the `Stop` payload carries no context-pressure field, so "fire when the shed is near" is unavailable at any price.
+
+Five things switch it off, and each closes a real failure:
+
+| Condition | Why |
+|---|---|
+| `stop_hook_active` is true | That flag means our own block is already being served. Blocking inside it is an infinite loop. Anything but a definite `false` counts as active. |
+| `agent_id` is present | A sub-agent's findings belong to the session that dispatched it, which gets its own turn ends. |
+| `WORKBENCH_SUMMARY_WRITER=1` | The background writer's whole job is one summary from a log it was handed. |
+| `WORKBENCH_DEV_TEAM_PIPELINE=1` | An unattended dev-team agent. In `claude -p` a blocked stop makes the capture reply the run's final output, which is what the dispatcher logs as the agent's report. |
+| The nudge recorded a scheduled tick | A Stop payload carries no prompt, so `memory-capture-nudge.sh` leaves a marker beside its own state when it matches `<scheduled-task …>`. An unattended tick writing memories about its own routing is the noise the vault does not want. |
+
+**Why `Stop`, and not `PreCompact`.** Only two events can make a live model act: `UserPromptSubmit` (via `additionalContext` on the next human turn) and `Stop` (via `decision: block`). `PreCompact` is not one of them — measured against the shipped CLI (2.1.277), its executor reads each hook's stdout and its blocked/succeeded state and nothing else, and no model turn is open there to run a tool in. A PreCompact hook can block compaction or say nothing, and neither writes a memory. Stop is the right event anyway: compaction happens between turns, so the last Stop before one is the last moment the session still holds everything it is about to shed.
+
+**A hard quit is not covered, and cannot be.** `SessionEnd` runs after the model can no longer act — the same reason it cannot dispatch a summary-writer. Those sessions still get the background summary; they just do not get the curated pass.
 
 ### Identity injection
 
@@ -1137,6 +1179,9 @@ All config values can be overridden via environment variables for testing:
 | `WORKBENCH_MEMORY_RECALL_TYPES` | Comma-separated frontmatter types eligible for injection (default `decision,insight,topic,feedback,reference,project,skill-learnings,recurring-issue`; empty disables the filter). A type belongs when a note of that type asserts something still true that should change what the agent does next — which is why `session` summaries and the dated `learnings` evaluation snapshots are excluded |
 | `WORKBENCH_MEMORY_RECALL_NUDGE` | Set to `0` to disable the recall reminder (`memory-recall-nudge.sh`). Independent of `WORKBENCH_MEMORY_RECALL`: with automatic recall off, an agent-initiated search is the only recall left |
 | `WORKBENCH_MEMORY_RECALL_NUDGE_INTERVAL` | Heartbeat interval for that reminder — one nudge per N low-signal turns (default `8`) |
+| `WORKBENCH_CAPTURE_STOP` | Set to `0` to disable [pre-shed capture](#pre-shed-capture) (`memory-capture-stop.sh`). `WORKBENCH_MEMORY_NUDGE=0` also disables it — that one is the family kill switch for every capture reminder |
+| `WORKBENCH_CAPTURE_STOP_FIRST` | Turn end of the **first** capture block (default `5`). The number that decides whether the backstop fires at all: at 5 it reaches 88% of this project's sessions, at 21 it reaches 16% |
+| `WORKBENCH_CAPTURE_STOP_INTERVAL` | Turn ends between **later** capture blocks (default `40`). Sparse on purpose: a block buys a whole extra model turn, where a nudge costs a line of context. Independent of `_FIRST` so either can be retuned alone |
 | `WORKBENCH_SETTINGS_FILE` | `~/.claude/settings.json` path (used by `install.sh` and `permissions.sh` for testing) |
 | `WORKBENCH_OUTPUT_STYLES_DIR` | `~/.claude/output-styles` path (used by `install.sh` for testing) |
 | `WORKBENCH_MEMORY_GIT_REPO_URL` | Vault git remote; unset disables cross-machine sync entirely |

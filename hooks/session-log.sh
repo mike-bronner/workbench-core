@@ -253,7 +253,7 @@ EOF
 # any future teardown-time hook inherits the safe path (write the marker, let the
 # next session start drain it) instead of the one that loses work.
 if [ "$MODE" != "final" ] && summary_dispatch_enabled; then
-  summary_dispatch_spawn "$SESSION_ID" "$PENDING_SUMMARY_FILE" "$SEG_FILE" || true
+  summary_dispatch_spawn "$SESSION_ID" "$PENDING_SUMMARY_FILE" "$SEG_FILE" "$TRANSCRIPT" || true
 fi
 
 exit 0

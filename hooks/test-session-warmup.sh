@@ -356,6 +356,80 @@ assert_contains "layer 2 names the gate's escape hatch"     "$OV_CLAUDE" "/workb
 # standard only. Harness mechanics belong in CLAUDE.md, not there.
 assert_missing "layer 1 carries no harness mechanics"       "$OV_SYSTEM" "## Delegation gate"
 
+echo "the sanctioned scratchpad-delete command rides in the managed block:"
+# This block is the ONLY channel that reaches a sub-agent. A freshly spawned one
+# starts with ~/.claude/CLAUDE.md in context and without this hook's stdout, so
+# the stdout copy of the rule reaches the main session and nothing else. Drop it
+# from here and every sub-agent on the machine is back to `rm -rf` and a
+# permission prompt, with nothing else going red.
+#
+# Scoped to the managed block, never to the whole file: ~/.claude/CLAUDE.md also
+# carries the warmup block and the user's own prose below it, and either could
+# name scratch-rm and satisfy a whole-file grep while the managed block had lost
+# the rule entirely.
+OV_ID_BLOCK=$(awk '
+  $0 == "<!-- workbench-identity:start -->" { inblock=1 }
+  inblock { print }
+  $0 == "<!-- workbench-identity:end -->"   { inblock=0 }
+' "$OV_HOME/.claude/CLAUDE.md" 2>/dev/null)
+assert_contains "block heads the scratch-delete rule" "$OV_ID_BLOCK" "## Scratch file deletes"
+assert_contains "block says the spelling is load-bearing" "$OV_ID_BLOCK" "literal \`\$HOME\`"
+
+# Pin the command against its MATCHER rather than against a second copy of
+# itself. Only the allow entry decides whether the command runs unprompted, and
+# its rule reads `Bash(<command-prefix>:*)` — so the property under test is that
+# SOME shipped Bash allow prefix is a substring of the block's instruction.
+#
+# Stated that way rather than as "find the rule named scratch-rm" on purpose: a
+# name-keyed lookup misses the rename it exists to catch. Renaming the helper to
+# `scratch-remove.sh` in rails.json alone makes a `test("scratch-rm")` select
+# return nothing, which empties the needle, and `grep -F ""` matches every file
+# — the assertion goes green on exactly the drift it was written for. Measured,
+# not reasoned: the name-keyed draft of this check passed that mutation.
+SCRATCH_RULES=$(jq -r '(.allow // [])[] | .rule | select(startswith("Bash("))' \
+  "$REPO_ROOT/assets/permissions/rails.json" 2>/dev/null)
+SCRATCH_CMD=""
+while IFS= read -r rule; do
+  [ -n "$rule" ] || continue
+  prefix=${rule#Bash(}
+  prefix=${prefix%:\*)}
+  [ -n "$prefix" ] && [ "$prefix" != "$rule" ] || continue
+  case "$OV_ID_BLOCK" in *"$prefix"*) SCRATCH_CMD="$prefix"; break ;; esac
+done <<< "$SCRATCH_RULES"
+if [ -n "$SCRATCH_CMD" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ block's command is covered by a shipped allow rule"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ no shipped Bash allow rule matches the block's command"
+fi
+# A sentinel rather than an empty string, for the vacuous-green reason above:
+# the argument assertion has to redden too when the prefix was never found.
+[ -n "$SCRATCH_CMD" ] || SCRATCH_CMD="<no allow rule covered the block's command>"
+assert_contains "block spells the argument as one absolute path" \
+  "$OV_ID_BLOCK" "$SCRATCH_CMD <absolute-path>"
+
+# The hook names the command TWICE — this block for sub-agents, and its own
+# stdout for the main session — and the stdout copy had nothing pinning it.
+# Pin it against the SAME derived prefix rather than a second literal: two
+# unpinned copies let a rename update one and leave the other on the old
+# spelling, which puts the original bug back in the main-session channel while
+# the suite stays green. Reusing SCRATCH_CMD also inherits the sentinel, so a
+# prefix that was never found reddens here too instead of passing vacuously.
+#
+# A fresh capture, not the $OUT already in scope: the last assignment to it
+# above is the agent-dispatch run, whose entire stdout is deliberately empty.
+#
+# That emptiness speaks for one population only. A headless `claude -p --agent`
+# run — Watson under cron — misses the stdout because the warmup exits at the
+# CLAUDE_CODE_AGENT guard. An in-process Agent-tool sub-agent leaves that
+# variable UNSET (measured) and misses the stdout for an unrelated reason:
+# SessionStart never fires on sub-agent spawn, so the hook does not run at all.
+# The second population is the one that hit the original bug. Neither reads
+# stdout and both load ~/.claude/CLAUDE.md, which is why the rule lives in the
+# managed block and why stdout is pinned beside it rather than instead of it.
+SCRATCH_STDOUT=$(run_warmup startup)
+assert_contains "stdout copy carries the same allow-matching spelling" \
+  "$SCRATCH_STDOUT" "$SCRATCH_CMD <absolute-path>"
+
 echo "behavioral overrides — an unreadable source fails CLOSED, never blanks a layer:"
 # A missing shipped source must leave both destinations exactly as they were.
 # Stale-but-good content beats a truncated or emptied identity block.

@@ -249,6 +249,15 @@ ensure_claude_md_enforcement() {
   local overrides
   overrides="$(render_behavioral_overrides)" || return 1
 
+  # The scratch-delete section at the end of this block is here rather than in
+  # the SessionStart stdout below, and both carry it for different readers. A
+  # sub-agent starts with ~/.claude/CLAUDE.md in context and WITHOUT this hook's
+  # stdout — measured by asking a freshly spawned one to introspect before its
+  # first tool call — so the stdout copy reaches the main session only, and an
+  # agent that never saw it reaches for `rm -rf` by reflex and prompts the user.
+  # This is the channel that reaches every agent type at once, including
+  # general-purpose, Explore, Plan, and any agent added later; per-agent
+  # definitions would each have to be edited and would still miss those.
   local identity_block=""
   read -r -d '' identity_block <<'CMDEOF' || true
 <!-- workbench-identity:start -->
@@ -271,6 +280,16 @@ The main agent orchestrates and does not edit files. `Edit`, `Write`, and
 the Agent tool instead. Reads and Bash stay open, and sub-agents are exempt.
 A deny is the system working, so report it and delegate. Never route around it.
 Only the user lifts the gate, with `/workbench-core:orchestrator off`.
+
+## Scratch file deletes
+
+Delete anything under a scratchpad root — the session scratchpad,
+`~/Developer/scratchpad`, or a `mktemp -d` sandbox — with
+`bash "$HOME/.claude-workbench/bin/scratch-rm.sh" <absolute-path>`, one path per
+call. That spelling exactly, with the literal `$HOME`: no other form matches the
+allow rule, so no other form runs unprompted. `rm -rf` on those paths prompts the
+user every time, and a PreToolUse guard blocks it and replies with the command to
+retry.
 <!-- workbench-identity:end -->
 CMDEOF
   identity_block="${identity_block//BEHAVIORAL_OVERRIDES_PLACEHOLDER/$overrides}"

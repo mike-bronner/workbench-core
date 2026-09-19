@@ -551,6 +551,23 @@ printf -- '- Recall = vault `search` (mode hybrid), not directory reads.\n'
 printf -- '- Recall comes FIRST: the moment a task turns up a topic — an error, a tool, a design choice, a repo or file you have worked before — `search` the vault BEFORE you scan the repo for the answer. Auto-recall only ever sees the user'\''s opening prompt, so anything a scan surfaces mid-task has had NO memory searched against it unless you search it yourself.\n'
 printf -- '- Build the recall QUERY from the TASK, not from the prompt: name the thing you are about to produce or decide — the convention, the format, the procedure, the tool, the error — in the words a note about it would use, and search THAT. Auto-recall can only ever run the user'\''s own wording, so your advantage over it is asking the better question; a recorded rule filed under another phrase is one query away and will not arrive on its own.\n\n'
 
+# Scratchpad deletes — the one `rm -rf` an agent runs constantly, and the one
+# that prompts every single time. `Bash(rm -rf:*)` sits in permissions.ask and
+# stays there; bin/scratch-rm.sh is the sanctioned way past it, and it has been
+# shipping unread, because nothing that reaches a session ever named it. This is
+# that naming, and hooks/scratch-delete-guard.sh is the enforcing half — an
+# instruction alone competes with a reflex and fades as a session fills.
+#
+# Two lines, and no more, deliberately. This block sits inside the byte-stable
+# cache prefix, so its bytes are fixed text and vary run to run not at all; the
+# cost it carries is the tokens themselves, on every session. The spelling is
+# the part that must be exact — the allow entry matches the `$HOME` form and no
+# other — so the command is quoted whole and everything else is compressed
+# around it.
+printf '## Scratch file deletes\n\n'
+printf -- '- Deleting anything under a scratchpad root — the session scratchpad, `~/Developer/scratchpad`, or a `mktemp -d` sandbox — goes through `bash "$HOME/.claude-workbench/bin/scratch-rm.sh" <absolute-path>`, which runs with no permission prompt. Type that spelling exactly, with the literal `$HOME`: no other form matches the allow rule, and one path per call.\n'
+printf -- '- `rm -rf` on those paths prompts the user every time, so reach for it only where scratch-rm refuses — it deletes nothing outside a scratch root and never a root itself. A PreToolUse guard blocks the `rm` and replies with the exact command to retry.\n\n'
+
 # A soul file is OPTIONAL. An agent with no persona carries its standard in the
 # output style instead, which is system-prompt tier and survives compaction on
 # its own — nothing for this block to re-inject. Three cases, in order:

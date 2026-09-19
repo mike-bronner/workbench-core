@@ -125,7 +125,23 @@
 # lands outside every root and is refused — back to prompting, which is the safe
 # direction to fail.
 #
-# Exit codes: 0 ok/no-op · 1 refused, nothing deleted · 2 usage error.
+# `--check` IS THE SAME VERDICT WITHOUT THE DELETE, AND IT EXISTS FOR THE GUARD.
+# hooks/scratch-delete-guard.sh intercepts an `rm` aimed at a scratchpad path,
+# refuses it, and tells the agent to run this command instead. That guard has to
+# reach the SAME verdict this script would. If it refuses an `rm` that this
+# script then refuses as well, the agent is handed two closed doors and no way
+# through — so a second implementation of "what counts as a scratch root" is not
+# an option, however carefully it were written.
+#
+# So the guard does not have one. It runs `--check <path>`, which performs every
+# refusal above and stops at the line immediately before the delete. Nothing is
+# written, nothing is removed, and no message is printed: the exit status is the
+# entire answer, and 0 means this script would accept that delete. The guard
+# runs the INSTALLED copy — the one the sanctioned spelling above names — so the
+# code answering the guard is the code that will run the delete, byte for byte.
+#
+# Exit codes: 0 ok/no-op (or, with --check, would be accepted) · 1 refused,
+# nothing deleted · 2 usage error.
 
 set -u
 CDPATH=''
@@ -277,8 +293,14 @@ roots_report() {
   [ -z "$TMP_NOTE" ] || printf '%s\n' "$TMP_NOTE"
 }
 
+# `--check` is read here and nowhere else, so every line below it judges the
+# path exactly as an ordinary run does. It is deliberately absent from the usage
+# text: the spelling a person or an agent types is the one SANCTIONED names, and
+# this flag is a hook's private call into the same verdict.
+CHECK=0
 case "${1:-}" in
   -h | --help) usage ;;
+  --check) CHECK=1; shift ;;
 esac
 
 [ "$#" -eq 1 ] || usage "❌ scratch-rm.sh takes exactly one path, and was given $#."
@@ -360,6 +382,12 @@ if [ "$INSIDE" -ne 1 ]; then
          "   Approved roots right now:" \
          "$(roots_report)"
 fi
+
+# The verdict is settled and nothing has been touched. A checking caller stops
+# on this line, BEFORE the existence test below: a path that does not exist yet
+# is still a path this command would accept, and the guard's question is whether
+# the delete is sanctioned rather than whether there is anything there today.
+[ "$CHECK" -eq 0 ] || exit 0
 
 if [ ! -e "$RESOLVED" ] && [ ! -L "$RESOLVED" ]; then
   printf '%s\n' "✅ Nothing to delete — $RESOLVED does not exist."

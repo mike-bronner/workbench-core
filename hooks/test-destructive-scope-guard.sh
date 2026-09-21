@@ -115,9 +115,25 @@ context_of() { printf '%s' "$1" | jq -r '.hookSpecificOutput.additionalContext /
 # payload <command> [cwd] [session-id]
 # `${2-}` rather than `${2:-}`: an EMPTY cwd is a case under test and must reach
 # the payload instead of being defaulted away. Same for the session id.
+#
+# THE COMMAND REACHES jq ON STDIN, NOT AS AN ARGUMENT, AND THAT IS LOAD-BEARING.
+# `--arg c "$1"` put the whole command in a single argv entry, and Linux caps
+# ONE argument at MAX_ARG_STRLEN — 32 pages, 128KB on a 4KB-page system —
+# independently of the total ARG_MAX budget. The read-ceiling case below feeds
+# 200,000 characters on purpose, so on a GitHub Linux runner jq died with
+# "Argument list too long", the payload came back empty, and the guard read an
+# empty payload as neutral. The assertion then failed for a reason that had
+# nothing to do with the ceiling it exists to pin. macOS caps only the total,
+# which is why the same suite passed here; the runner's ARG_MAX is twice this
+# machine's and still failed, which is what rules the total out.
+#
+# `printf` is a bash builtin, so the command never crosses an execve on its way
+# to the pipe. `-R` reads stdin raw and `-s` slurps it whole, so `.` is the
+# entire command as one string — newlines, quotes and backslashes intact — and
+# `printf '%s'` appends nothing, so the empty command still produces "".
 payload() {
-  jq -nc --arg c "$1" --arg d "${2-}" --arg s "${3-$SID}" \
-    '{tool_name: "Bash", tool_input: {command: $c}, cwd: $d, session_id: $s}'
+  printf '%s' "$1" | jq -Rsc --arg d "${2-}" --arg s "${3-$SID}" \
+    '{tool_name: "Bash", tool_input: {command: .}, cwd: $d, session_id: $s}'
 }
 
 # check <expected> <description> <command> [cwd] [session-id]
@@ -390,8 +406,18 @@ check neutral "cat fed the same TEXT"          "$(printf 'cat <<EOF\nrm -rf %s/k
 check neutral "cat fed a path that looks like a delete" "$(printf 'cat <<EOF\nrm -rf /\nEOF')"
 
 echo "refuses what it could not read in full or read exactly:"
-check deny "a command past the read ceiling" \
-  "$(python3 -c "print('# ' + 'x' * 200000); print('rm -rf $VICTIM/keep.txt')")"
+# The padding is 200,000 characters against the checker's 200,000-byte ceiling,
+# so the command clears it by the comment marker and the rm line alone. Shrink
+# the padding and this case stops reaching the branch it exists to pin.
+OVERSIZED=$(python3 -c "print('# ' + 'x' * 200000); print('rm -rf $VICTIM/keep.txt')")
+check deny "a command past the read ceiling" "$OVERSIZED"
+# The verdict alone does not discriminate: several branches deny, so a deny
+# arriving from any OTHER one would read as a pass while the ceiling went
+# unchecked. The reason is what says the ceiling is what refused it.
+assert_contains "the refusal names the read ceiling, not another branch" \
+  "$(reason_of "$(payload "$OVERSIZED" | run_guard 2>/dev/null)")" \
+  "too long for this guard to read"
+unset OVERSIZED
 check deny "lines merged by a multi-line quote" \
   "$(printf 'M="a\nb"\nmkdir -p %s/x\nrm -rf %s/keep.txt' "$PROJECT" "$VICTIM")"
 assert_survives "the victim survived the unreadable commands" "$VICTIM/keep.txt"

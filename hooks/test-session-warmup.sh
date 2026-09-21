@@ -356,64 +356,59 @@ assert_contains "layer 2 names the gate's escape hatch"     "$OV_CLAUDE" "/workb
 # standard only. Harness mechanics belong in CLAUDE.md, not there.
 assert_missing "layer 1 carries no harness mechanics"       "$OV_SYSTEM" "## Delegation gate"
 
-echo "the sanctioned scratchpad-delete command rides in the managed block:"
+echo "the destructive-command scope rule rides in the managed block:"
 # This block is the ONLY channel that reaches a sub-agent. A freshly spawned one
 # starts with ~/.claude/CLAUDE.md in context and without this hook's stdout, so
 # the stdout copy of the rule reaches the main session and nothing else. Drop it
-# from here and every sub-agent on the machine is back to `rm -rf` and a
-# permission prompt, with nothing else going red.
+# from here and every sub-agent on the machine writes `rm -rf "$VAR/x"` by
+# reflex and is hard-denied, with nothing else going red — the guard denies what
+# it cannot resolve and there is no permission rule under it to prompt instead.
 #
 # Scoped to the managed block, never to the whole file: ~/.claude/CLAUDE.md also
 # carries the warmup block and the user's own prose below it, and either could
-# name scratch-rm and satisfy a whole-file grep while the managed block had lost
-# the rule entirely.
+# name a scratchpad root and satisfy a whole-file grep while the managed block
+# had lost the rule entirely.
 OV_ID_BLOCK=$(awk '
   $0 == "<!-- workbench-identity:start -->" { inblock=1 }
   inblock { print }
   $0 == "<!-- workbench-identity:end -->"   { inblock=0 }
 ' "$OV_HOME/.claude/CLAUDE.md" 2>/dev/null)
-assert_contains "block heads the scratch-delete rule" "$OV_ID_BLOCK" "## Scratch file deletes"
-assert_contains "block says the spelling is load-bearing" "$OV_ID_BLOCK" "literal \`\$HOME\`"
+assert_contains "block heads the scope rule" "$OV_ID_BLOCK" \
+  "## Destructive commands are scoped, not asked"
+# The half an agent acts on. "It runs unprompted inside scope" changes nothing
+# about what gets typed; "it DENIES what it cannot read" is what makes an agent
+# write the literal path the first time, so that half is pinned explicitly.
+assert_contains "block says an unreadable target is denied" "$OV_ID_BLOCK" \
+  "cannot read"
+assert_contains "block names the shapes it cannot read" "$OV_ID_BLOCK" \
+  '`$variable`'
+assert_contains "block names the way through"  "$OV_ID_BLOCK" "\`!\` prefix"
 
-# Pin the command against its MATCHER rather than against a second copy of
-# itself. Only the allow entry decides whether the command runs unprompted, and
-# its rule reads `Bash(<command-prefix>:*)` — so the property under test is that
-# SOME shipped Bash allow prefix is a substring of the block's instruction.
-#
-# Stated that way rather than as "find the rule named scratch-rm" on purpose: a
-# name-keyed lookup misses the rename it exists to catch. Renaming the helper to
-# `scratch-remove.sh` in rails.json alone makes a `test("scratch-rm")` select
-# return nothing, which empties the needle, and `grep -F ""` matches every file
-# — the assertion goes green on exactly the drift it was written for. Measured,
-# not reasoned: the name-keyed draft of this check passed that mutation.
-SCRATCH_RULES=$(jq -r '(.allow // [])[] | .rule | select(startswith("Bash("))' \
-  "$REPO_ROOT/assets/permissions/rails.json" 2>/dev/null)
-SCRATCH_CMD=""
-while IFS= read -r rule; do
-  [ -n "$rule" ] || continue
-  prefix=${rule#Bash(}
-  prefix=${prefix%:\*)}
-  [ -n "$prefix" ] && [ "$prefix" != "$rule" ] || continue
-  case "$OV_ID_BLOCK" in *"$prefix"*) SCRATCH_CMD="$prefix"; break ;; esac
-done <<< "$SCRATCH_RULES"
-if [ -n "$SCRATCH_CMD" ]; then
-  PASS=$((PASS + 1)); echo "  ✅ block's command is covered by a shipped allow rule"
+# Pin the instruction against the layer that ENFORCES it, not against a second
+# copy of itself. The block promises these commands run unprompted inside scope,
+# and only hooks/destructive-scope-guard.sh makes that true — retire the guard
+# and the promise becomes a lie the machine now tells every sub-agent at
+# startup. Registration is checked as well as the file, because an unregistered
+# guard is a file that runs never.
+if [ -f "$REPO_ROOT/hooks/destructive-scope-guard.sh" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ the guard the block promises is shipped"
 else
-  FAIL=$((FAIL + 1)); echo "  ❌ no shipped Bash allow rule matches the block's command"
+  FAIL=$((FAIL + 1)); echo "  ❌ block promises a guard this plugin does not ship"
 fi
-# A sentinel rather than an empty string, for the vacuous-green reason above:
-# the argument assertion has to redden too when the prefix was never found.
-[ -n "$SCRATCH_CMD" ] || SCRATCH_CMD="<no allow rule covered the block's command>"
-assert_contains "block spells the argument as one absolute path" \
-  "$OV_ID_BLOCK" "$SCRATCH_CMD <absolute-path>"
+GUARD_HOOKS=$(jq -r '[.hooks.PreToolUse[].hooks[]
+  | select(.command | test("destructive-scope-guard.sh"))] | length' \
+  "$REPO_ROOT/hooks/hooks.json" 2>/dev/null)
+if [ "$GUARD_HOOKS" = "1" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ the guard is registered, so the promise holds"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ the guard the block promises is not registered once"
+fi
 
-# The hook names the command TWICE — this block for sub-agents, and its own
-# stdout for the main session — and the stdout copy had nothing pinning it.
-# Pin it against the SAME derived prefix rather than a second literal: two
-# unpinned copies let a rename update one and leave the other on the old
-# spelling, which puts the original bug back in the main-session channel while
-# the suite stays green. Reusing SCRATCH_CMD also inherits the sentinel, so a
-# prefix that was never found reddens here too instead of passing vacuously.
+# The hook carries the rule TWICE — this block for sub-agents, and its own
+# stdout for the main session. Pin them against EACH OTHER on a string DERIVED
+# from one of them rather than on a third literal: two independently written
+# copies let an edit update one and leave the other stating the old roots, which
+# puts an agent back to a hard deny while the suite stays green.
 #
 # A fresh capture, not the $OUT already in scope: the last assignment to it
 # above is the agent-dispatch run, whose entire stdout is deliberately empty.
@@ -427,8 +422,16 @@ assert_contains "block spells the argument as one absolute path" \
 # stdout and both load ~/.claude/CLAUDE.md, which is why the rule lives in the
 # managed block and why stdout is pinned beside it rather than instead of it.
 SCRATCH_STDOUT=$(run_warmup startup)
-assert_contains "stdout copy carries the same allow-matching spelling" \
-  "$SCRATCH_STDOUT" "$SCRATCH_CMD <absolute-path>"
+assert_contains "stdout copy heads its own section" "$SCRATCH_STDOUT" \
+  "## Destructive commands"
+# The root list, lifted out of the stdout copy and required of the block. An
+# empty extraction is a sentinel rather than an empty needle, because `grep -F
+# ""` matches everything and would go green on exactly the drift this catches.
+SCRATCH_ROOTS=$(printf '%s\n' "$SCRATCH_STDOUT" \
+  | sed -n 's/.*\(the session scratchpad[^.]*sandbox\).*/\1/p' | head -1)
+[ -n "$SCRATCH_ROOTS" ] || SCRATCH_ROOTS="<the stdout copy names no scratchpad roots>"
+assert_contains "both copies name the same scratchpad roots" \
+  "$OV_ID_BLOCK" "$SCRATCH_ROOTS"
 
 echo "behavioral overrides — an unreadable source fails CLOSED, never blanks a layer:"
 # A missing shipped source must leave both destinations exactly as they were.

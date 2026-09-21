@@ -60,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/scratch-delete-guard.sh\""
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/destructive-scope-guard.sh\""
           }
         ]
       },

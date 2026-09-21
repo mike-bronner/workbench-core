@@ -249,7 +249,7 @@ ensure_claude_md_enforcement() {
   local overrides
   overrides="$(render_behavioral_overrides)" || return 1
 
-  # The scratch-delete section at the end of this block is here rather than in
+  # The destructive-command section at the end of this block is here rather than in
   # the SessionStart stdout below, and both carry it for different readers. A
   # sub-agent starts with ~/.claude/CLAUDE.md in context and WITHOUT this hook's
   # stdout — measured by asking a freshly spawned one to introspect before its
@@ -281,15 +281,19 @@ the Agent tool instead. Reads and Bash stay open, and sub-agents are exempt.
 A deny is the system working, so report it and delegate. Never route around it.
 Only the user lifts the gate, with `/workbench-core:orchestrator off`.
 
-## Scratch file deletes
+## Destructive commands are scoped, not asked
 
-Delete anything under a scratchpad root — the session scratchpad,
-`~/Developer/scratchpad`, or a `mktemp -d` sandbox — with
-`bash "$HOME/.claude-workbench/bin/scratch-rm.sh" <absolute-path>`, one path per
-call. That spelling exactly, with the literal `$HOME`: no other form matches the
-allow rule, so no other form runs unprompted. `rm -rf` on those paths prompts the
-user every time, and a PreToolUse guard blocks it and replies with the command to
-retry.
+`rm`, `rmdir`, `git reset --hard`, `git clean`, and `git stash clear`/`drop` run
+unprompted when every path they act on resolves inside the project or a
+scratchpad root:
+the session scratchpad, `~/Developer/scratchpad`, or a `mktemp -d` sandbox.
+A PreToolUse guard resolves each path and permits the call.
+
+Outside those roots it denies, and it also denies any target it cannot read:
+a `$variable`, a glob, `bash -c`, `ssh`, `xargs`, `find -delete`, or a loop
+body. So spell paths out literally, and keep the delete its own command. The
+denial is not a wall — reaching outside the project is the user's call, and they
+run the command themselves with the `!` prefix.
 <!-- workbench-identity:end -->
 CMDEOF
   identity_block="${identity_block//BEHAVIORAL_OVERRIDES_PLACEHOLDER/$overrides}"
@@ -570,22 +574,20 @@ printf -- '- Recall = vault `search` (mode hybrid), not directory reads.\n'
 printf -- '- Recall comes FIRST: the moment a task turns up a topic — an error, a tool, a design choice, a repo or file you have worked before — `search` the vault BEFORE you scan the repo for the answer. Auto-recall only ever sees the user'\''s opening prompt, so anything a scan surfaces mid-task has had NO memory searched against it unless you search it yourself.\n'
 printf -- '- Build the recall QUERY from the TASK, not from the prompt: name the thing you are about to produce or decide — the convention, the format, the procedure, the tool, the error — in the words a note about it would use, and search THAT. Auto-recall can only ever run the user'\''s own wording, so your advantage over it is asking the better question; a recorded rule filed under another phrase is one query away and will not arrive on its own.\n\n'
 
-# Scratchpad deletes — the one `rm -rf` an agent runs constantly, and the one
-# that prompts every single time. `Bash(rm -rf:*)` sits in permissions.ask and
-# stays there; bin/scratch-rm.sh is the sanctioned way past it, and it has been
-# shipping unread, because nothing that reaches a session ever named it. This is
-# that naming, and hooks/scratch-delete-guard.sh is the enforcing half — an
-# instruction alone competes with a reflex and fades as a session fills.
+# Destructive commands — scoped by hooks/destructive-scope-guard.sh rather than
+# asked about by a permission rule. What an agent has to know is not a command
+# to type any more; it is the SHAPE that lets the guard read the call. A delete
+# whose path is a `$variable` or a glob is denied rather than prompted, because
+# that guard has no permission rule underneath it and denies what it cannot
+# resolve. An agent told this writes the literal path the first time.
 #
 # Two lines, and no more, deliberately. This block sits inside the byte-stable
 # cache prefix, so its bytes are fixed text and vary run to run not at all; the
-# cost it carries is the tokens themselves, on every session. The spelling is
-# the part that must be exact — the allow entry matches the `$HOME` form and no
-# other — so the command is quoted whole and everything else is compressed
-# around it.
-printf '## Scratch file deletes\n\n'
-printf -- '- Deleting anything under a scratchpad root — the session scratchpad, `~/Developer/scratchpad`, or a `mktemp -d` sandbox — goes through `bash "$HOME/.claude-workbench/bin/scratch-rm.sh" <absolute-path>`, which runs with no permission prompt. Type that spelling exactly, with the literal `$HOME`: no other form matches the allow rule, and one path per call.\n'
-printf -- '- `rm -rf` on those paths prompts the user every time, so reach for it only where scratch-rm refuses — it deletes nothing outside a scratch root and never a root itself. A PreToolUse guard blocks the `rm` and replies with the exact command to retry.\n\n'
+# cost it carries is the tokens themselves, on every session. So the shape rule
+# leads and the root list is compressed around it.
+printf '## Destructive commands\n\n'
+printf -- '- `rm`, `rmdir`, `git reset --hard`, `git clean`, and `git stash clear`/`drop` run with no prompt when every path they act on resolves inside the project or a scratchpad root — the session scratchpad, `~/Developer/scratchpad`, or a `mktemp -d` sandbox. A PreToolUse guard resolves each path and permits the call.\n'
+printf -- '- Outside those roots it DENIES, and so does any target it cannot read: a `$variable`, a glob, `bash -c`, `ssh`, `xargs`, `find -delete`, or a loop body. Spell paths out literally and keep the delete its own command. Reaching outside the project is the user'"'"'s call — they run it themselves with the `!` prefix.\n\n'
 
 # A soul file is OPTIONAL. An agent with no persona carries its standard in the
 # output style instead, which is system-prompt tier and survives compaction on

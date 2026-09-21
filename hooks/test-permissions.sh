@@ -28,7 +28,7 @@ cat > "$RAILS" <<'EOF'
     { "rule": "Bash(dd:*)", "why": "destroys disks" }
   ],
   "ask": [
-    { "rule": "Bash(rm -rf:*)", "why": "prompt first" },
+    { "rule": "Bash(npm publish:*)", "why": "prompt first" },
     { "rule": "Bash(gh pr merge:*)", "why": "human gate" }
   ],
   "allow": [
@@ -89,7 +89,7 @@ run "$S" >/dev/null
 assert_jq "deny populated"        "$S" '.permissions.deny | length' "2"
 assert_jq "ask populated"         "$S" '.permissions.ask  | length' "2"
 assert_jq "first deny rule"       "$S" '.permissions.deny[0]' "Bash(sudo:*)"
-assert_jq "first ask rule"        "$S" '.permissions.ask[0]'  "Bash(rm -rf:*)"
+assert_jq "first ask rule"        "$S" '.permissions.ask[0]'  "Bash(npm publish:*)"
 assert_jq "defaultMode untouched" "$S" '.permissions.defaultMode // "unset"' "unset"
 
 echo "preserves unrelated keys:"
@@ -313,22 +313,50 @@ assert_jq "every autoMode entry has a rule" "$SHIPPED_RAILS" \
 assert_jq "every autoMode entry has a why"  "$SHIPPED_RAILS" \
   '[.autoMode.allow[] | select(.why  == null)] | length' "0"
 
-# `*` is always a wildcard in a Bash rule and deny cannot carry an allow
-# exception, so any `rm -rf /`-shaped deny would block every absolute-path
-# delete. Claude Code already gates root/home removals semantically — the
-# classifier decides them in auto mode and they still prompt under
-# bypassPermissions. The ask rule is deliberately the only rm guard.
-echo "rm is guarded by ask alone — no rm deny may creep back in:"
-assert_jq "no rm rule in deny" "$SHIPPED_RAILS" \
-  '[.deny[] | select(.rule | startswith("Bash(rm"))] | length' "0"
-assert_jq "rm -rf is in ask"   "$SHIPPED_RAILS" \
-  '[.ask[]  | select(.rule == "Bash(rm -rf:*)")] | length' "1"
-# The scratchpad helper below does not weaken that, and an rm entry in allow
-# would. The helper is a different command name, so the ask rule is never tested
-# against it; an `rm` spelling in allow would be a second rm guard that the ask
-# rule beats anyway, since ask is evaluated first.
-assert_jq "no rm rule in allow" "$SHIPPED_RAILS" \
-  '[(.allow // [])[] | select(.rule | startswith("Bash(rm"))] | length' "0"
+# THE FIVE SCOPE-ABLE VERBS ARE GATED BY A HOOK AND BY NO RULE AT ALL.
+#
+# `Bash(rm -rf:*)` and the four git entries used to sit in `ask`. They encoded a
+# VERB-based policy — prompt wherever the verb acts — and the policy this
+# machine runs is SCOPE-based: inside the project and the scratch roots is
+# permitted, outside is the human's call. That exception cannot be layered on
+# top of an ask entry, because a matching ask rule still prompts even when a
+# PreToolUse hook returned "allow". So the five had to leave rather than be
+# narrowed, and hooks/destructive-scope-guard.sh answers in their place.
+#
+# A deny was never an option either, in any era: `*` is always a wildcard in a
+# Bash rule and deny cannot carry an allow exception, so an `rm -rf /`-shaped
+# deny would block every absolute-path delete.
+echo "the five scope-able verbs are gated by the hook, and by no rule:"
+for RULE in "Bash(rm -rf:*)" "Bash(git reset --hard:*)" "Bash(git clean -fd:*)" \
+            "Bash(git stash drop:*)" "Bash(git stash clear:*)"; do
+  COUNT="$(jq -r --arg r "$RULE" \
+    '[(.deny + .ask + (.allow // []))[] | select(.rule == $r)] | length' "$SHIPPED_RAILS")"
+  if [ "$COUNT" = "0" ]; then
+    PASS=$((PASS + 1)); echo "  ✅ $RULE is in no list"
+  else
+    FAIL=$((FAIL + 1)); echo "  ❌ $RULE is back — it re-prompts wherever the verb acts, and overrides the guard's permit"
+  fi
+done
+# Prefix-wide, not just the exact spellings above: `Bash(rm:*)` or
+# `Bash(git reset:*)` would re-arm the same verb-based prompt under a different
+# string, and the loop above would not see it.
+assert_jq "no rm rule anywhere" "$SHIPPED_RAILS" \
+  '[(.deny + .ask + (.allow // []))[] | select(.rule | startswith("Bash(rm"))] | length' "0"
+
+# THE OTHER HALF, AND IT IS THE ONE THAT MATTERS. Every assertion above is
+# satisfied by a file that ships no rules AND no guard — which is these verbs
+# gated by nothing, and it would read here as success. So the guard is pinned
+# too: shipped, and registered exactly once on Bash. Delete the guard and the
+# absence of the rules stops being a policy and becomes a hole.
+REPO_ROOT_RAILS="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -f "$REPO_ROOT_RAILS/hooks/destructive-scope-guard.sh" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ the guard that replaced them ships"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ the five are gone and no guard ships — these verbs are gated by nothing"
+fi
+assert_jq "the guard is registered once on Bash" "$REPO_ROOT_RAILS/hooks/hooks.json" \
+  '[.hooks.PreToolUse[] | select(.hooks[].command | test("destructive-scope-guard.sh")) | .matcher] | join(",")' \
+  "Bash"
 
 # Credential paths are guarded by hooks/credential-guard.sh, not by a deny rule.
 # A Read deny never applied to a subprocess that opens the file itself, and ANY
@@ -403,10 +431,12 @@ assert_jq "every allow rule is an mcp__ pattern or a fixed bin/ script" "$SHIPPE
 #   arguments. Claude Code documents deny and ask rules as checked inside
 #   command substitution, and documents nothing either way about allow rules, so
 #   an argument carrying `$(...)` is undocumented ground. A substitution holding
-#   `rm -rf` still prompts — this file's ask rule matches it, and ask is
-#   evaluated before allow — which leaves a non-rm payload as the residual. That
-#   residual is not introduced here: workbench-dev-team already ships allow
-#   entries of exactly this form for approve-commit.sh and dispatch-agent.sh.
+#   `rm -rf` used to be covered by this file's own ask rule, which is no longer
+#   here — hooks/destructive-scope-guard.sh reads it instead, because a `$(...)`
+#   becomes a statement of its own when the command is tokenised and its verb
+#   slot is judged like any other. That residual is not introduced here anyway:
+#   workbench-dev-team already ships allow entries of exactly this form for
+#   approve-commit.sh and dispatch-agent.sh.
 assert_jq "no wildcard inside the command part of a Bash allow entry" "$SHIPPED_RAILS" \
   '[(.allow // [])[]
     | select(.rule | startswith("Bash("))
@@ -416,11 +446,16 @@ assert_jq "no wildcard inside the command part of a Bash allow entry" "$SHIPPED_
 # loses the memory rather than deferring it — nothing retries the call.
 assert_jq "the memory MCP is allowed" "$SHIPPED_RAILS" \
   '[(.allow // [])[] | select(.rule == "mcp__plugin_workbench-core_memory__*")] | length' "1"
-# `Bash(rm -rf:*)` in ask prompts on every scratchpad cleanup, and it must keep
-# doing so. This is the command that carries the exception instead, because a
-# rule cannot: deny → ask → allow with first match winning, and no negation.
-assert_jq "the scratchpad delete helper is allowed" "$SHIPPED_RAILS" \
-  '[(.allow // [])[] | select(.rule == "Bash(bash \"$HOME/.claude-workbench/bin/scratch-rm.sh\":*)")] | length' "1"
+# No Bash allow entry ships at all. The one that did named a command at a fixed
+# path under ~/.claude-workbench/bin/ which deleted inside a scratchpad without
+# prompting; hooks/destructive-scope-guard.sh answers that question directly
+# now, by resolving the path, so the command and its grant were retired.
+#
+# Asserted rather than left to the loop below, which iterates Bash allow entries
+# and is therefore satisfied by an empty list — it cannot tell "no entry" from
+# "no entry checked". This states the zero.
+assert_jq "no Bash allow entry ships" "$SHIPPED_RAILS" \
+  '[(.allow // [])[] | select(.rule | startswith("Bash("))] | length' "0"
 
 # An allow entry naming a script this plugin does not ship is a dangling grant:
 # setup installs nothing to that path, so the rule stands ready for whatever

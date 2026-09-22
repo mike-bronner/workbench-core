@@ -49,6 +49,10 @@ segment that does not parse keeps the block. Refusing to relax a block on text
 this file could not read is the only safe direction, and the shapes prose
 actually takes are fine — shlex reads an apostrophe inside a quoted string as
 an ordinary character, and drops a `#` comment before it reads it at all.
+
+A COMMAND PAST THE READ CEILING KEEPS THE BLOCK, on that same reasoning. Text
+this file never read cannot be text it cleared, so MAX_INPUT is read with one
+byte of headroom and an overrun returns BLOCK before anything is parsed.
 """
 
 import os
@@ -115,7 +119,20 @@ def segments(command):
 
 
 def main():
-    command = sys.stdin.read(MAX_INPUT)
+    # MAX_INPUT + 1, so an input that fills the buffer can be told from one that
+    # overran it. A truncated read is text that could not be read, which is the
+    # unparseable case below wearing different clothes — and it gets the same
+    # answer, BLOCK. Reading exactly MAX_INPUT made the two states identical,
+    # so a `cat .env` past the cutoff reached print(ALLOW_SENTINEL) and cleared
+    # a block stage 1 had correctly raised. Measured on 2026-09-21 against the
+    # shipped hook: 200KB of padding turned a deny into silence.
+    #
+    # Nothing is printed here, and that is the refusal. The sentinel is the only
+    # thing this file ever writes to stdout, so keeping stdout empty IS keeping
+    # the block — see the exit-code note in the docstring.
+    command = sys.stdin.read(MAX_INPUT + 1)
+    if len(command) > MAX_INPUT:
+        return BLOCK
     if not command.strip():
         return BLOCK
     for segment in segments(command):

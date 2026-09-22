@@ -69,7 +69,21 @@ assert_contains() {
   fi
 }
 
-bash_json() { jq -nc --arg c "$1" '{tool_name: "Bash", tool_input: {command: $c}}'; }
+# THE COMMAND REACHES jq ON STDIN, NOT AS AN ARGUMENT. `--arg c "$1"` puts the
+# whole command in one argv entry, and Linux caps a single argument at
+# MAX_ARG_STRLEN — 32 pages, 128KB on a 4KB-page system — independently of the
+# total ARG_MAX budget. The read-ceiling cases below feed 200,000 characters and
+# more, so the argv form dies with "Argument list too long" there, hands the
+# guard an EMPTY payload, and the case then passes or fails for a reason that
+# has nothing to do with the ceiling it exists to pin. macOS caps only the
+# total, so the argv form looks fine here and breaks on a Linux runner. Measured
+# that way once already; the full note is in hooks/test-destructive-scope-guard.sh.
+#
+# `printf` is a bash builtin, so the command never crosses an execve on its way
+# to the pipe. `-R` reads stdin raw and `-s` slurps it whole, so `.` is the
+# whole command — newlines, quotes and backslashes intact — and `printf '%s'`
+# appends nothing, so an empty command still produces "".
+bash_json() { printf '%s' "$1" | jq -Rsc '{tool_name: "Bash", tool_input: {command: .}}'; }
 file_json() { jq -nc --arg t "$1" --arg p "$2" '{tool_name: $t, tool_input: {file_path: $p}}'; }
 
 # The guard's BEFORE/AFTER boundary classes are the only [[:space:]] left in a
@@ -255,6 +269,71 @@ mkdir -p "$FAILCLOSED/lib"
 printf 'raise RuntimeError("boom")\n' > "$FAILCLOSED/lib/credential-check.py"
 check_guard "$FAILCLOSED/credential-guard.sh" deny "the checker raises" \
   "$(bash_json 'cat .env.example')"
+
+# THE READ CEILING IS THE THIRD WAY STAGE 2 CANNOT READ ITS INPUT, and it is
+# asserted as a PAIR one byte apart, because every refusal this guard prints
+# reads the same whatever branch produced it. A single deny would prove nothing:
+# the prose rule, the template rule and the unparseable branch all deny too. The
+# pair leaves the length as the only difference between an allow and a block, so
+# the length is what decided.
+#
+# `pad_to` builds a command of EXACTLY <total> characters, ending in <tail>. The
+# padding is one `echo` argument: it tokenises cleanly and matches no rule, so
+# only the tail can move a verdict. 200000 is the checker's declared MAX_INPUT,
+# read with one byte of headroom, so 200000 is the last length it reads whole
+# and 200001 is the first it cannot.
+pad_to() {
+  python3 -c 'import sys
+total, tail = int(sys.argv[1]), sys.argv[2]
+head = "echo "
+sys.stdout.write(head + "x" * (total - len(head) - len(tail) - 2) + "; " + tail)' "$1" "$2"
+}
+echo "keeps the block for a command past the checker's read ceiling:"
+CEILING_TAIL='cat "a note about the .env file"'
+UNDER=$(pad_to 200000 "$CEILING_TAIL")
+OVER=$(pad_to 200001 "$CEILING_TAIL")
+# The two lengths ARE the premise of the pair, so they are measured rather than
+# assumed. A padding bug that left both under the ceiling would leave the allow
+# case green and prove nothing, which is the shape of failure this pair exists
+# to rule out.
+if [ "${#UNDER}" = "200000" ] && [ "${#OVER}" = "200001" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ the pair straddles the ceiling exactly (${#UNDER} / ${#OVER})"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ the pair misses the ceiling (${#UNDER} / ${#OVER}), so neither case pins it"
+fi
+check allow "at the ceiling exactly, the prose rule still clears it" "$(bash_json "$UNDER")"
+check deny  "one byte past it, the same command keeps the block"     "$(bash_json "$OVER")"
+# And the bypass itself, in the shape it was measured in on 2026-09-21: the
+# dotenv read sits PAST the cutoff, where a truncated read cannot see it. This
+# payload came back as an allow while the bare `cat .env` denied.
+check deny "a dotenv read hidden past the read ceiling" \
+  "$(bash_json "$(python3 -c "print('echo ' + 'x' * 200000); print('cat .env')")")"
+# THE SAME BYPASS, PADDED WITH SPACES INSTEAD OF `x`. The padding is an INPUT,
+# not filler: 200,001 whitespace characters `.strip()` to "", so a checker that
+# tests emptiness above its length check reads this as an empty command. In the
+# vault-git checker that returned silence, and the first cut of this fix shipped
+# with it.
+#
+# THIS CASE PINS NEITHER BRANCH. It is here to document a handled shape, and the
+# comment says so because a case that claims coverage it does not have is worse
+# than no case. Whitespace padding blocks at this guard however the two branches
+# are ordered: both return BLOCK, and both are silent, so nothing in the output
+# can name which one answered. MEASURED, not reasoned — the mutations and their
+# colours: reverting the read to MAX_INPUT, green; dropping the length refusal,
+# green; relaxing the empty-command branch, green. Only rewriting a branch to
+# print the allow sentinel outright moves it, and that mutation reddens the
+# `x`-padded case and the OVER half of the straddle pair as well. The length
+# branch is pinned in this suite by those two cases, and not by this one.
+#
+# THE RULE UNDERNEATH, for the next suite that needs it: two branches returning
+# the same verdict cannot be told apart by a test asserting only the verdict.
+# Discriminating them needs output that NAMES the branch. That is why the
+# whitespace cases in the scope, database and provisioning suites do
+# discriminate — each asserts a ceiling refusal that prints its own line — and
+# why this one cannot, since silence is this checker's refusal by design.
+check deny "a dotenv read hidden behind whitespace padding" \
+  "$(bash_json "$(python3 -c "print(' ' * 200001); print('cat .env')")")"
+unset CEILING_TAIL UNDER OVER
 
 # The refusal is split across the hook's two channels, and each half is asserted
 # on the channel it belongs to. The human line is ONE line naming the ACTION —

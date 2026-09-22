@@ -92,6 +92,13 @@
 # guard here, this covers Claude's own tool calls and is not an OS boundary —
 # `/sandbox` enforces in the kernel, for every subprocess.
 #
+# ONE EXCEPTION, AND IT IS THE READ CEILING: a command longer than the checker's
+# MAX_INPUT is refused. An unparseable command is one the checker read and could
+# not understand; a truncated one is text it never saw, and the worktree verb
+# can be in the part it never saw. Until 2026-09-21 the two were
+# indistinguishable, and 200KB of padding in front of `git worktree add` turned
+# this deny into silence.
+#
 # Exit 0 with no output = allow (default).
 # Exit 0 with permissionDecision "deny" = the harness refuses the call.
 

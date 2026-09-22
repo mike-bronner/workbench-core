@@ -3,6 +3,9 @@
 
 Reads one shell command on stdin. Prints a single reason line to stdout and
 exits 1 when the command is destructive; exits 0 and prints nothing otherwise.
+Exit 2 is a third verdict: the command was too long to read, so it is refused
+without any claim about what it does. Both non-zero codes block, and only the
+human line the guard prints differs between them.
 
 The whole difficulty of this check is VERB POSITION. A substring match for
 "drop table" blocks `grep -rn "drop table" app/` and reading a migration named
@@ -49,6 +52,12 @@ be syntactically valid to run at all, so it tokenises. Anything this checker
 cannot parse is something bash would likely reject too, and blocking it would
 break every awk one-liner with an odd quote while buying nothing. One hardening
 step before giving up: a POSIX tokenise failure is retried with posix=False.
+
+ONE EXCEPTION, AND IT IS THE READ CEILING: a command longer than MAX_INPUT is
+REFUSED. Unparseable text is text this checker read and could not understand,
+which is the case the paragraph above is about. A truncated read is text it
+never saw at all, and the Artisan reset can be sitting in the part it never saw
+— so the two are not the same case and do not get the same answer.
 
 SQL FROM A FILE IS READ, NOT GUESSED AT:
 `psql -f reset.sql` and `mysql app < dump.sql` hide the payload in a file, so the
@@ -564,7 +573,25 @@ def scan(command, bodies, depth=0, cwd=None):
 
 
 def main():
-    command = sys.stdin.read(MAX_INPUT)
+    # MAX_INPUT + 1, so an input that fills the buffer can be told from one that
+    # overran it. Reading exactly MAX_INPUT makes those two states identical,
+    # and this checker's silence is an allow, so a `db:wipe` sitting past the
+    # cutoff came back as a command nobody read. Measured on 2026-09-21 against
+    # the shipped hook: 200KB of padding turned a deny into silence.
+    #
+    # EXIT 2, NOT 1, AND THAT IS THE WHOLE POINT OF THE CODE. Every finding this
+    # checker returns on exit 1 is a command that destroys a database, which is
+    # why the guard prints one human line for all of them. This one is not: the
+    # command was never read, so nobody can say what it does. The separate code
+    # lets hooks/destructive-database-guard.sh say that instead of accusing a
+    # 200KB shell script of dropping a table.
+    command = sys.stdin.read(MAX_INPUT + 1)
+    if len(command) > MAX_INPUT:
+        print("The command is longer than %d bytes, so it could not be read in "
+              "full, and a statement that destroys a database past that point "
+              "would be invisible here. Split it into smaller commands."
+              % MAX_INPUT)
+        return 2
     if not command.strip():
         return 0
     # argv[1] is the tool call's working directory, which is what a relative

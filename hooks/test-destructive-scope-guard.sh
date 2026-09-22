@@ -417,7 +417,19 @@ check deny "a command past the read ceiling" "$OVERSIZED"
 assert_contains "the refusal names the read ceiling, not another branch" \
   "$(reason_of "$(payload "$OVERSIZED" | run_guard 2>/dev/null)")" \
   "too long for this guard to read"
-unset OVERSIZED
+# THE SAME DELETE, PADDED WITH SPACES INSTEAD OF `x`. The padding is an INPUT,
+# not filler, and its character class is the whole question: 200,001 whitespace
+# characters `.strip()` to "", so an emptiness test placed above the length
+# check reads this as an empty command and returns silence while the delete sits
+# past the cutoff unread. That ordering shipped in the vault-git checker on
+# 2026-09-21 and was caught in review. This checker orders them the other way
+# round; nothing but this case says so, and here silence is a permitted delete.
+WS_OVERSIZED=$(python3 -c "print(' ' * 200001); print('rm -rf $VICTIM/keep.txt')")
+check deny "the same delete behind whitespace padding" "$WS_OVERSIZED"
+assert_contains "whitespace reaches the ceiling branch, not the empty-command branch" \
+  "$(reason_of "$(payload "$WS_OVERSIZED" | run_guard 2>/dev/null)")" \
+  "too long for this guard to read"
+unset OVERSIZED WS_OVERSIZED
 check deny "lines merged by a multi-line quote" \
   "$(printf 'M="a\nb"\nmkdir -p %s/x\nrm -rf %s/keep.txt' "$PROJECT" "$VICTIM")"
 assert_survives "the victim survived the unreadable commands" "$VICTIM/keep.txt"

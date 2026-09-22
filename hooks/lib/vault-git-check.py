@@ -101,6 +101,13 @@ produces a false block on an unrelated repository. As with the other guards,
 this covers Claude's own tool calls and is not an OS boundary; `/sandbox`
 enforces in the kernel, for every subprocess.
 
+ONE EXCEPTION, AND IT IS THE READ CEILING: a command longer than MAX_INPUT is
+REFUSED, provided a vault path was named. Unparseable text is text this checker
+read and could not understand, which is the case the paragraph above is about.
+A truncated read is text it never saw at all, and the vault git write can be
+sitting in the part it never saw — so the two are not the same case and do not
+get the same answer.
+
 The tokeniser, statement splitting, and no-op-prefix stripping come from
 hooks/lib/shell_parse.py, shared with the database guard and the provisioning
 guard. Only that mechanical half is shared: the verb tables and every decision
@@ -337,12 +344,32 @@ def scan(command, cwd, vault, depth=0):
 
 
 def main():
-    command = sys.stdin.read(MAX_INPUT)
-    if not command.strip():
-        return 0
+    # MAX_INPUT + 1, so an input that fills the buffer can be told from one that
+    # overran it. Reading exactly MAX_INPUT makes those two states identical,
+    # and this checker's silence is an allow, so a vault git write sitting past
+    # the cutoff came back as a command nobody read. Measured on 2026-09-21
+    # against the shipped hook: 200KB of padding turned a deny into silence.
+    command = sys.stdin.read(MAX_INPUT + 1)
     cwd = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None
     vault = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else None
     if not vault:
+        return 0
+    # TWO EARLY RETURNS SIT ABOVE AND BELOW THIS CHECK, AND BOTH POSITIONS ARE
+    # THE VERDICT. The vault argument is read first, because with no vault named
+    # there is nothing to protect and a refusal defends nobody. The emptiness
+    # test comes AFTER, because .strip() turns 200,001 characters of spaces or
+    # tabs into "" and every one of those characters is padding that a real
+    # vault write can hide behind: the first cut of this fix had the test above,
+    # and swapping an `x` for a space walked straight through it. A check placed
+    # late is a check every earlier return can preempt.
+    if len(command) > MAX_INPUT:
+        print("a command too long for the vault-git guard to read\n"
+              "The command is longer than %d bytes, so it could not be read in "
+              "full, and a git write inside the memory vault past that point "
+              "would be invisible here. Split it into smaller commands."
+              % MAX_INPUT)
+        return 1
+    if not command.strip():
         return 0
     vault = os.path.realpath(os.path.expanduser(vault))
     if cwd:

@@ -66,6 +66,13 @@
 # As with credential-guard.sh, this guards Claude's own tool calls and is not an
 # OS boundary — `/sandbox` enforces in the kernel, for every subprocess.
 #
+# ONE EXCEPTION, AND IT IS THE READ CEILING: a command longer than the checker's
+# MAX_INPUT is refused. An unparseable command is one the checker read and could
+# not understand; a truncated one is text it never saw, and the db:wipe can be
+# in the part it never saw. Until 2026-09-21 the two were indistinguishable, and
+# 200KB of padding in front of `php artisan migrate:fresh` turned this deny into
+# silence.
+#
 # Exit 0 with no output = allow (default).
 # Exit 0 with permissionDecision "deny" = the harness refuses the call.
 
@@ -98,13 +105,21 @@ CWD=$(printf '%s' "$PAYLOAD" | jq -r '.cwd // ""' 2>/dev/null)
 REASON=$(printf '%s' "$COMMAND" | python3 "$CHECKER" "$CWD" 2>/dev/null)
 STATUS=$?
 
-if [ "$STATUS" = "1" ] && [ -n "$REASON" ]; then
-  # One label covers every finding here, because every finding is the same
-  # action: this guard blocks nothing else. The checker's sentence — which
-  # command, which target, which flag — is the detail, and detail is the model's
-  # half of the split.
+# One label covers every finding on exit 1, because every one of them is the
+# same action: this guard blocks nothing else. The checker's sentence — which
+# command, which target, which flag — is the detail, and detail is the model's
+# half of the split.
+#
+# Exit 2 is the one finding that is NOT that action. The command was longer than
+# the checker's read ceiling, so it was never read and nothing here knows what
+# it does. Telling the human "destroying a database" there would send them
+# hunting for a db:wipe that may not exist, so the ceiling gets its own line.
+LABEL='destroying a database'
+[ "$STATUS" = "2" ] && LABEL='a command too long for the database guard to read'
+
+if { [ "$STATUS" = "1" ] || [ "$STATUS" = "2" ]; } && [ -n "$REASON" ]; then
   jq -nc \
-    --arg reason '🛑 Blocked: destroying a database. Run it yourself with the ! prefix if you meant it.' \
+    --arg reason "🛑 Blocked: $LABEL. Run it yourself with the ! prefix if you meant it." \
     --arg context "Destructive-database guard (workbench-core). $REASON Nothing an agent does should destroy a database, and there is no flag to clear and no path around this. If this reset is genuinely needed, it is the human who runs it, with the ! prefix. Read-only inspection is untouched." '{
     hookSpecificOutput: {
       hookEventName: "PreToolUse",

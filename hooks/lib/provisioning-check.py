@@ -76,6 +76,12 @@ would likely reject too, and blocking it would break ordinary quoted one-liners
 for nothing. As with the siblings, this guards Claude's own tool calls and is
 not an OS boundary — `/sandbox` enforces in the kernel, for every subprocess.
 
+ONE EXCEPTION, AND IT IS THE READ CEILING: a command longer than MAX_INPUT is
+REFUSED. Unparseable text is text this checker read and could not understand,
+which is the case the paragraph above is about. A truncated read is text it
+never saw at all, and the worktree verb can be sitting in the part it never saw
+— so the two are not the same case and do not get the same answer.
+
 THE TOKENISER IS SHARED; THE RULES AND unwrap() ARE NOT:
 Tokenising, statement and pipeline splitting, heredoc lifting, no-op-prefix
 stripping, and the option skip that finds git's subcommand slot all come from
@@ -396,7 +402,19 @@ def scan(command, bodies, depth=0):
 
 
 def main():
-    command = sys.stdin.read(MAX_INPUT)
+    # MAX_INPUT + 1, so an input that fills the buffer can be told from one that
+    # overran it. Reading exactly MAX_INPUT makes those two states identical,
+    # and this checker's silence is an allow, so a `git worktree add` sitting
+    # past the cutoff came back as a command nobody read. Measured on 2026-09-21
+    # against the shipped hook: 200KB of padding turned a deny into silence.
+    command = sys.stdin.read(MAX_INPUT + 1)
+    if len(command) > MAX_INPUT:
+        print("a command too long for the provisioning guard to read\n"
+              "The command is longer than %d bytes, so it could not be read in "
+              "full, and a worktree or database being created past that point "
+              "would be invisible here. Split it into smaller commands."
+              % MAX_INPUT)
+        return 1
     if not command.strip():
         return 0
     # Heredoc bodies are prose to the tokeniser and would wreck it, so they come

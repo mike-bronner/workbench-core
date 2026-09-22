@@ -87,13 +87,27 @@ assert_contains() {
   fi
 }
 
-bash_json() { jq -nc --arg c "$1" '{tool_name: "Bash", tool_input: {command: $c}}'; }
+# THE COMMAND REACHES jq ON STDIN, NOT AS AN ARGUMENT. `--arg c "$1"` puts the
+# whole command in one argv entry, and Linux caps a single argument at
+# MAX_ARG_STRLEN — 32 pages, 128KB on a 4KB-page system — independently of the
+# total ARG_MAX budget. The read-ceiling case below feeds more than 200,000
+# characters, so the argv form dies with "Argument list too long" there, hands
+# the guard an EMPTY payload, and the case then passes or fails for a reason
+# that has nothing to do with the ceiling it exists to pin. macOS caps only the
+# total, so the argv form looks fine here and breaks on a Linux runner. Measured
+# that way once already; the full note is in hooks/test-destructive-scope-guard.sh.
+#
+# `printf` is a bash builtin, so the command never crosses an execve on its way
+# to the pipe. `-R` reads stdin raw and `-s` slurps it whole, so `.` is the
+# whole command — newlines, quotes and backslashes intact — and `printf '%s'`
+# appends nothing, so an empty command still produces "".
+bash_json() { printf '%s' "$1" | jq -Rsc '{tool_name: "Bash", tool_input: {command: .}}'; }
 # The cwd key is what a bare `git commit` acts on, so most cases need it. Note
 # `${2-}` rather than `${2:-}`: an EMPTY cwd is a case under test, and it must
 # reach the payload rather than being defaulted.
 cwd_json() {
-  jq -nc --arg c "$1" --arg d "${2-}" \
-    '{tool_name: "Bash", tool_input: {command: $c}, cwd: $d}'
+  printf '%s' "$1" | jq -Rsc --arg d "${2-}" \
+    '{tool_name: "Bash", tool_input: {command: .}, cwd: $d}'
 }
 
 # The command that lost a profile's provenance on 2026-09-04. It staged a
@@ -266,6 +280,51 @@ check allow "an empty cwd"            "$(cwd_json 'git commit -am x' '')"
 # An unbalanced quote is shell bash itself would reject. Blocking it would break
 # ordinary one-liners and stop nothing that could actually run.
 check allow "an unbalanced quote"     "$(bash_json "git -C $VAULT rm \"unclosed")"
+
+# The one unreadable shape this guard REFUSES, and the contrast with the blocks
+# above is the whole distinction: text the checker read and could not parse or
+# resolve is allowed, text it never read at all is not. The padding is 200,000
+# characters against the checker's 200,000-byte ceiling, so the command clears
+# it by the `echo` and the git line alone. Shrink the padding and this case
+# stops reaching the branch it exists to pin.
+echo "refuses a command too long to read, where the vault write hides past the cutoff:"
+OVERSIZED=$(python3 -c "print('echo ' + 'x' * 200000); print('git -C $VAULT commit -m x')")
+check deny "a vault commit hidden past the read ceiling" "$(bash_json "$OVERSIZED")"
+# The verdict alone does not discriminate: every deny above would satisfy it,
+# and before 2026-09-21 this payload was SILENT while the bare command denied.
+# The human line is what says the ceiling refused it, and it names THIS guard's
+# subject rather than a sibling's.
+OUT=$(bash_json "$OVERSIZED" | run_guard 2>/dev/null)
+assert_contains "the human line names the ceiling, not another branch" \
+  "$(reason_of "$OUT")" "too long for the vault-git guard to read"
+assert_contains "the detail names the vault stake" \
+  "$(context_of "$OUT")" "git write inside the memory vault past that point"
+# THE SAME COMMAND, PADDED WITH SPACES INSTEAD OF `x`, AND THIS GUARD IS WHERE
+# THAT MATTERED. The padding is an INPUT, not filler: 200,001 whitespace
+# characters `.strip()` to "", and the first cut of this fix tested emptiness
+# ABOVE the length check, so this exact payload came back silent while the vault
+# write sat past the cutoff unread. Swapping an `x` for a space was the entire
+# attack, and a suite padded only with `x` stayed green through it.
+WS_OVERSIZED=$(python3 -c "print(' ' * 200001); print('git -C $VAULT commit -m x')")
+check deny "the same vault commit behind whitespace padding" "$(bash_json "$WS_OVERSIZED")"
+assert_contains "whitespace reaches the ceiling branch, not the empty-command branch" \
+  "$(reason_of "$(bash_json "$WS_OVERSIZED" | run_guard 2>/dev/null)")" \
+  "too long for the vault-git guard to read"
+# An empty command is still nothing to guard, and the early return that says so
+# survived the move — it now sits BELOW the length check rather than above it.
+check allow "an all-whitespace command under the ceiling" "$(bash_json "   ")"
+# With no vault to protect there is nothing to fail closed FOR, so the checker
+# reads its vault argument BEFORE it judges the length. Asserted against the
+# checker directly, because the guard shell exits earlier on an unset vault and
+# could never show this. Without that ordering, a machine with no memory vault
+# would have every oversized command refused by a guard with nothing to defend.
+NOVAULT=$(printf '%s' "$OVERSIZED" | python3 "$HOOKS_DIR/lib/vault-git-check.py" "" ""; echo "exit=$?")
+if [ "$NOVAULT" = "exit=0" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ the checker stays silent when no vault is named"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ an oversized command was judged with no vault to protect — [$NOVAULT]"
+fi
+unset OVERSIZED WS_OVERSIZED OUT NOVAULT
 
 # The refusal is split across the hook's two channels, and each half is asserted
 # on the channel it belongs to. The human line is ONE line naming the ACTION —

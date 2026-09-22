@@ -51,6 +51,13 @@
 # likely reject too. A command whose target cannot be resolved passes for the
 # same reason — guessing at it is how this guard would block an unrelated repo.
 #
+# ONE EXCEPTION, AND IT IS THE READ CEILING: a command longer than the checker's
+# MAX_INPUT is refused. An unparseable command is one the checker read and could
+# not understand; a truncated one is text it never saw, and the vault git write
+# can be in the part it never saw. Until 2026-09-21 the two were
+# indistinguishable, and 200KB of padding in front of `git -C <vault> commit`
+# turned this deny into silence.
+#
 # WHY THE JSON DENY RATHER THAN exit 2, WHICH THIS GUARD USED TO USE:
 # Measured on Claude Code 2.1.274 (insights/2026-09-17-hook-message-channels-
 # measured.md in the vault), exit 2 prefixes the model's message with this

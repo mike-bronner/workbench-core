@@ -67,13 +67,27 @@ assert_contains() {
   fi
 }
 
-bash_json() { jq -nc --arg c "$1" '{tool_name: "Bash", tool_input: {command: $c}}'; }
+# THE COMMAND REACHES jq ON STDIN, NOT AS AN ARGUMENT. `--arg c "$1"` puts the
+# whole command in one argv entry, and Linux caps a single argument at
+# MAX_ARG_STRLEN — 32 pages, 128KB on a 4KB-page system — independently of the
+# total ARG_MAX budget. The read-ceiling case below feeds more than 200,000
+# characters, so the argv form dies with "Argument list too long" there, hands
+# the guard an EMPTY payload, and the case then passes or fails for a reason
+# that has nothing to do with the ceiling it exists to pin. macOS caps only the
+# total, so the argv form looks fine here and breaks on a Linux runner. Measured
+# that way once already; the full note is in hooks/test-destructive-scope-guard.sh.
+#
+# `printf` is a bash builtin, so the command never crosses an execve on its way
+# to the pipe. `-R` reads stdin raw and `-s` slurps it whole, so `.` is the
+# whole command — newlines, quotes and backslashes intact — and `printf '%s'`
+# appends nothing, so an empty command still produces "".
+bash_json() { printf '%s' "$1" | jq -Rsc '{tool_name: "Bash", tool_input: {command: .}}'; }
 # The cwd key is what a relative path in the command resolves against, so the
 # file-payload cases need it. Note `${2-}` rather than `${2:-}`: an EMPTY cwd is
 # a case under test, and it must reach the payload rather than being defaulted.
 cwd_json() {
-  jq -nc --arg c "$1" --arg d "${2-}" \
-    '{tool_name: "Bash", tool_input: {command: $c}, cwd: $d}'
+  printf '%s' "$1" | jq -Rsc --arg d "${2-}" \
+    '{tool_name: "Bash", tool_input: {command: .}, cwd: $d}'
 }
 
 # A sandbox of real .sql files. The guard reads contents, not names, so the
@@ -322,6 +336,39 @@ check allow "an empty command"        "$(bash_json '')"
 # An unbalanced quote is shell bash itself would reject. Blocking it would break
 # ordinary awk and sed one-liners and stop nothing that could actually run.
 check allow "an unbalanced quote"     "$(bash_json 'grep -rn "unclosed app/')"
+
+# The one unreadable shape this guard REFUSES, and the contrast with the block
+# above is the whole distinction: text the checker read and could not parse is
+# allowed, text it never read at all is not. The padding is 200,000 characters
+# against the checker's 200,000-byte ceiling, so the command clears it by the
+# `echo` and the Artisan line alone. Shrink the padding and this case stops
+# reaching the branch it exists to pin.
+echo "refuses a command too long to read, where the reset hides past the cutoff:"
+OVERSIZED=$(python3 -c "print('echo ' + 'x' * 200000); print('php artisan migrate:fresh')")
+check deny "a reset hidden past the read ceiling" "$(bash_json "$OVERSIZED")"
+# The verdict alone does not discriminate: every deny above would satisfy it,
+# and before 2026-09-21 this payload was SILENT while the bare reset denied. The
+# human line is what says the ceiling refused it — and it must say the ceiling
+# rather than "destroying a database", because nothing read this command and
+# nobody can claim it destroys anything.
+OUT=$(bash_json "$OVERSIZED" | bash "$GUARD" 2>/dev/null)
+assert_contains "the human line names the ceiling, not another branch" \
+  "$(reason_of "$OUT")" "too long for the database guard to read"
+assert_contains "the detail names the database stake"  \
+  "$(context_of "$OUT")" "destroys a database past that point"
+# THE SAME COMMAND, PADDED WITH SPACES INSTEAD OF `x`. The padding is an INPUT,
+# not filler, and its character class is the whole question: 200,001 whitespace
+# characters `.strip()` to "", so an emptiness test sitting above the length
+# check returns 0 — silence — while the reset sits past the cutoff unread. The
+# first cut of this fix had exactly that ordering in the vault-git checker, and
+# a suite padded only with `x` could not see it. This checker orders them the
+# other way round today; nothing but this case says so.
+WS_OVERSIZED=$(python3 -c "print(' ' * 200001); print('php artisan migrate:fresh')")
+check deny "the same reset behind whitespace padding" "$(bash_json "$WS_OVERSIZED")"
+assert_contains "whitespace reaches the ceiling branch, not the empty-command branch" \
+  "$(reason_of "$(bash_json "$WS_OVERSIZED" | bash "$GUARD" 2>/dev/null)")" \
+  "too long for the database guard to read"
+unset OVERSIZED WS_OVERSIZED OUT
 
 # The refusal is split across the hook's two channels, and each half is asserted
 # on the channel it belongs to. The human line is ONE line that names the ACTION

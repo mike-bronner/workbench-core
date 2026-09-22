@@ -199,8 +199,12 @@ MESSAGE=${RESULT#*$'\n'}
 
 # Stage 2. The dotenv rule only, and only for Bash: the file tools hand over a
 # single path that stage 1 has already judged in full, and DIR_RE is never
-# refined. Every failure here — no python3, no checker, a checker that raises —
-# falls through to the block, because this pass may only narrow one.
+# refined. Every failure here — no python3, no checker, a checker that raises,
+# and a command past the checker's read ceiling — falls through to the block,
+# because this pass may only narrow one. The ceiling was the hole: until
+# 2026-09-21 the checker read exactly MAX_INPUT and could not tell a truncated
+# command from a complete one, so 200KB of padding in front of `cat .env`
+# cleared the block that stage 1 had correctly raised.
 if [ "$KIND" = "env" ]; then
   COMMAND=$(printf '%s' "$PAYLOAD" | jq -r '
     if (.tool_name // "") == "Bash"

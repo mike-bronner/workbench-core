@@ -260,6 +260,57 @@ else
   FAIL=$((FAIL + 1)); echo "  ❌ dry run modified the file"
 fi
 
+# additionalDirectories carries the two scratchpad trees, computed for the
+# account running setup. A bare /tmp entry is removed, because it advertised all
+# of /tmp as a working directory and agents made scratch there by hand.
+echo "writes the scratchpad directories for the running account:"
+EXPECT_SESSION="$(cd /tmp && pwd -P)/claude-$(id -u)"
+FAKE_HOME="$SANDBOX/home"
+S="$SANDBOX/dirs.json"
+HOME="$FAKE_HOME" run "$S" >/dev/null
+assert_jq "the session tree is claude-<uid> under the physical /tmp" "$S" \
+  '.permissions.additionalDirectories[0]' "$EXPECT_SESSION"
+# HOME is pointed elsewhere so a hardcoded home would show up here.
+assert_jq "the scratchpad follows the running account's home" "$S" \
+  '.permissions.additionalDirectories[1]' "$FAKE_HOME/Developer/scratchpad"
+assert_jq "exactly the two entries" "$S" \
+  '.permissions.additionalDirectories | length' "2"
+
+echo "drops a bare /tmp entry and keeps the user's other directories:"
+S="$SANDBOX/dirs-bare.json"
+jq -n '{permissions: {additionalDirectories: ["/private/tmp", "/Users/x/repo",
+  "/tmp", "/tmp/", "/private/tmp/", "/private/tmp/keep-me"]}}' > "$S"
+BEFORE="$(cat "$S")"
+OUT=$(HOME="$FAKE_HOME" run "$S" --dry-run)
+assert_contains "a dry run previews the removal" "$OUT" \
+  "would remove additionalDirectories: /private/tmp"
+if [ "$BEFORE" = "$(cat "$S")" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ the dry run left the file unchanged"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ the dry run modified the file"
+fi
+HOME="$FAKE_HOME" run "$S" >/dev/null
+assert_jq "every bare /tmp spelling is gone, the rest keep their order" "$S" \
+  '.permissions.additionalDirectories | join(",")' \
+  "/Users/x/repo,/private/tmp/keep-me,$EXPECT_SESSION,$FAKE_HOME/Developer/scratchpad"
+
+echo "adds nothing already present, and a second run changes nothing:"
+S="$SANDBOX/dirs-present.json"
+jq -n --arg a "$FAKE_HOME/Developer/scratchpad" --arg b "$EXPECT_SESSION" \
+  '{permissions: {additionalDirectories: [$a, "/opt/x", $b]}}' > "$S"
+HOME="$FAKE_HOME" run "$S" >/dev/null
+assert_jq "present entries are not duplicated or moved" "$S" \
+  '.permissions.additionalDirectories | join(",")' \
+  "$FAKE_HOME/Developer/scratchpad,/opt/x,$EXPECT_SESSION"
+FIRST="$(cat "$S")"
+OUT=$(HOME="$FAKE_HOME" run "$S")
+assert_contains "reports nothing to add" "$OUT" "all shipped rails already present"
+if [ "$FIRST" = "$(cat "$S")" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ second run left the directories alone"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ second run changed the directories"
+fi
+
 echo "refuses to touch a malformed settings.json:"
 S="$SANDBOX/broken.json"
 printf '{ this is not json' > "$S"

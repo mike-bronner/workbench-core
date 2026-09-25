@@ -285,15 +285,20 @@ Only the user lifts the gate, with `/workbench-core:orchestrator off`.
 
 `rm`, `rmdir`, `git reset --hard`, `git clean`, and `git stash clear`/`drop` run
 unprompted when every path they act on resolves inside the project or a
-scratchpad root:
+scratch root:
 the session scratchpad, `~/Developer/scratchpad`, or a `mktemp -d` sandbox.
 A PreToolUse guard resolves each path and permits the call.
 
+Make new scratch in the session scratchpad or `~/Developer/scratchpad`.
+Never create it anywhere under `/tmp` outside your session scratchpad.
+Scratch there is outside every root, so nothing can clean it up for you.
+
 Outside those roots it denies, and it also denies any target it cannot read:
 a `$variable`, a glob, `bash -c`, `ssh`, `xargs`, `find -delete`, or a loop
-body. So spell paths out literally, and keep the delete its own command. The
-denial is not a wall — reaching outside the project is the user's call, and they
-run the command themselves with the `!` prefix.
+body. So spell paths out literally, and keep the delete its own command.
+Never hand the user a `!` command to delete your own scratch.
+A target outside every root that is not scratch is the user's call, and they
+run it with the `!` prefix.
 <!-- workbench-identity:end -->
 CMDEOF
   identity_block="${identity_block//BEHAVIORAL_OVERRIDES_PLACEHOLDER/$overrides}"
@@ -581,13 +586,16 @@ printf -- '- Build the recall QUERY from the TASK, not from the prompt: name the
 # that guard has no permission rule underneath it and denies what it cannot
 # resolve. An agent told this writes the literal path the first time.
 #
-# Two lines, and no more, deliberately. This block sits inside the byte-stable
+# Three lines, and no more, deliberately. This block sits inside the byte-stable
 # cache prefix, so its bytes are fixed text and vary run to run not at all; the
 # cost it carries is the tokens themselves, on every session. So the shape rule
-# leads and the root list is compressed around it.
+# leads and the root list is compressed around it. The middle line exists
+# because agents made probe roots by hand under /tmp, which is no root, and then
+# handed their cleanup to the user as a `!` command.
 printf '## Destructive commands\n\n'
-printf -- '- `rm`, `rmdir`, `git reset --hard`, `git clean`, and `git stash clear`/`drop` run with no prompt when every path they act on resolves inside the project or a scratchpad root — the session scratchpad, `~/Developer/scratchpad`, or a `mktemp -d` sandbox. A PreToolUse guard resolves each path and permits the call.\n'
-printf -- '- Outside those roots it DENIES, and so does any target it cannot read: a `$variable`, a glob, `bash -c`, `ssh`, `xargs`, `find -delete`, or a loop body. Spell paths out literally and keep the delete its own command. Reaching outside the project is the user'"'"'s call — they run it themselves with the `!` prefix.\n\n'
+printf -- '- `rm`, `rmdir`, `git reset --hard`, `git clean`, and `git stash clear`/`drop` run with no prompt when every path they act on resolves inside the project or a scratch root: the session scratchpad, `~/Developer/scratchpad`, or a `mktemp -d` sandbox. A PreToolUse guard resolves each path and permits the call.\n'
+printf -- '- Make new scratch in the session scratchpad or `~/Developer/scratchpad`. Never create it anywhere under `/tmp` outside your session scratchpad. Scratch there is outside every root, so nothing can clean it up for you.\n'
+printf -- '- Outside those roots it DENIES, and so does any target it cannot read: a `$variable`, a glob, `bash -c`, `ssh`, `xargs`, `find -delete`, or a loop body. Spell paths out literally and keep the delete its own command. Never hand the user a `!` command to delete your own scratch. A target outside every root that is not scratch is the user'"'"'s call, and they run it with the `!` prefix.\n\n'
 
 # A soul file is OPTIONAL. An agent with no persona carries its standard in the
 # output style instead, which is system-prompt tier and survives compaction on

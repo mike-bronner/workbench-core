@@ -78,7 +78,14 @@
 # classifierApprovable. Of the three verdicts a hook can return, only "deny"
 # does anything. So an out-of-scope or unreadable command is hard-blocked, and
 # the way through is the human running it themselves with the ! shell-mode
-# prefix. Every message below says so.
+# prefix. Every message below says so — for a target that is not scratch. The
+# model-facing detail also says that scratch cleanup is never routed to the
+# human, and that new scratch goes only into the scratchpads: an agent once made
+# a probe root by hand under /tmp, and handed its cleanup to the user as a
+# `! rm -rf` command, which spends the human's attention on the agent's
+# leftovers. Those scratch sentences LEAD the detail, ahead of the checker's own
+# text in $2: several of its refusals end "or run the command yourself with the
+# ! prefix", and an agent that reads that first relays it to the user.
 #
 # THE ALLOW IS NARROW ON PURPOSE. A hook "allow" bypasses the permission system
 # for the WHOLE call, so it is emitted only when the command does nothing but
@@ -121,7 +128,7 @@ command -v jq >/dev/null 2>&1 || exit 0
 # One exit path per verdict, so the JSON shape can never drift between them.
 deny() {
   jq -nc --arg reason "🛑 Blocked: $1. Run it yourself with the ! prefix if you meant it." \
-         --arg context "Destructive-scope guard (workbench-core). $2 This guard permits a destructive command only when every path it acts on resolves inside the project or a scratch root, and it denies rather than guessing when it cannot resolve one — there is no permission rule underneath it any more, so a command it waves through is a command nothing checked. Reaching outside the project is the human's call, with the ! prefix." '{
+         --arg context "Destructive-scope guard (workbench-core). Scratch cleanup is never the user's job, so never hand them a ! command to delete your scratch. If the target is scratch you made, spell its path out literally and retry, or leave it and name the path in your report. Make new scratch only in the session scratchpad or ~/Developer/scratchpad, never anywhere under /tmp outside your session scratchpad. $2 This guard permits a destructive command only when every path it acts on resolves inside the project or a scratch root: the session scratchpad, ~/Developer/scratchpad, or the mktemp -d temporary directory. It denies rather than guessing when it cannot resolve a path, because there is no permission rule underneath it. A target that is not your scratch and sits outside every root is the user's call, and they run it with the ! prefix." '{
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       permissionDecision: "deny",

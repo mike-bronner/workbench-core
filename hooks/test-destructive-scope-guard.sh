@@ -676,9 +676,28 @@ assert_contains "the detail names the offending target" "$CONTEXT" "$VICTIM/keep
 assert_contains "the detail names the project root"     "$CONTEXT" "$PROJECT"
 assert_contains "the detail says there is no rule underneath" "$CONTEXT" \
   "no permission rule underneath it"
+# An agent once relayed this refusal to the human as a `! rm -rf` for a probe
+# root it had made by hand under /tmp. The model's half now says scratch cleanup
+# is never routed to the human, and where new scratch belongs.
+assert_contains "the detail keeps scratch cleanup off the human" "$CONTEXT" \
+  "Scratch cleanup is never the user's job"
+assert_contains "the detail names where scratch belongs" "$CONTEXT" \
+  "never anywhere under /tmp outside your session scratchpad"
 
 echo "an unresolvable target says WHY it could not be read:"
 DENIAL=$(payload 'rm -rf "$SP/x"' "$PROJECT" | run_guard 2>/dev/null)
+# The checker's own detail for this refusal ends "or run the command yourself
+# with the ! prefix". The scratch sentence has to come FIRST, or an agent reads
+# the ! route and relays it to the user for its own scratch.
+UNREAD_CONTEXT=$(context_of "$DENIAL")
+SCRATCH_AT=${UNREAD_CONTEXT%%Scratch cleanup is never*}
+BANG_AT=${UNREAD_CONTEXT%%! prefix*}
+if [ "${#SCRATCH_AT}" -lt "${#UNREAD_CONTEXT}" ] \
+    && [ "${#SCRATCH_AT}" -lt "${#BANG_AT}" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ the scratch sentence comes before any ! wording"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ the ! wording comes before the scratch sentence"
+fi
 assert_contains "names the operand" "$(context_of "$DENIAL")" '$SP/x'
 assert_contains "says the text settles no path" "$(context_of "$DENIAL")" \
   "does not say which paths are meant"

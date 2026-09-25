@@ -38,6 +38,16 @@
 # rules above. The literal "$defaults" is prepended whenever missing, because
 # omitting it makes Claude Code discard every built-in soft-deny rule.
 #
+# It also writes `permissions.additionalDirectories`: the two scratchpad trees,
+# so every session sees them as working directories. They are computed for the
+# account running this script, never hardcoded. One is the harness's session
+# tree, `claude-<uid>` under the physical /tmp, which holds every session's
+# scratchpad. The other is ~/Developer/scratchpad. A bare /tmp or /private/tmp
+# entry is REMOVED, which is the one place this script takes something out: that
+# entry advertised all of /tmp as a working directory, and agents made scratch
+# there by hand as a result. Every other directory the user listed is kept, in
+# its place.
+#
 # Usage:
 #   permissions.sh [--dry-run] [--mode <mode>]
 #   permissions.sh --list
@@ -56,6 +66,14 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(dirname "$SCRIPT_DIR")}"
 
 SETTINGS_FILE="${WORKBENCH_SETTINGS_FILE:-$HOME/.claude/settings.json}"
 RAILS_FILE="${WORKBENCH_RAILS_FILE:-$PLUGIN_ROOT/assets/permissions/rails.json}"
+
+# The two scratchpad trees for the account running this script. /tmp is
+# resolved physically because the harness creates the session tree under the
+# real directory: /private/tmp on Darwin, where /tmp is a symlink, and /tmp
+# elsewhere.
+TMP_PHYSICAL="$(cd /tmp 2>/dev/null && pwd -P || echo /tmp)"
+SESSION_TREE="$TMP_PHYSICAL/claude-$(id -u)"
+SCRATCHPAD="$HOME/Developer/scratchpad"
 
 VALID_MODES="default acceptEdits plan auto dontAsk bypassPermissions"
 
@@ -136,7 +154,8 @@ fi
 
 # Which rules are genuinely new? Reported before the write so a dry run is useful.
 ADDED="$(mktemp)"
-jq -r --slurpfile rails "$RAILS_FILE" '
+jq -r --slurpfile rails "$RAILS_FILE" \
+  --arg session "$SESSION_TREE" --arg scratch "$SCRATCHPAD" '
   ($rails[0].deny  // [] | map(.rule)) as $deny
   | ($rails[0].ask   // [] | map(.rule)) as $ask
   | ($rails[0].allow // [] | map(.rule)) as $allow
@@ -144,19 +163,16 @@ jq -r --slurpfile rails "$RAILS_FILE" '
   | (($deny  - (.permissions.deny  // [])) | map("deny\t"  + .)),
     (($ask   - (.permissions.ask   // [])) | map("ask\t"   + .)),
     (($allow - (.permissions.allow // [])) | map("allow\t" + .)),
-    (($auto  - (.autoMode.allow    // [])) | map("autoMode.allow\t" + .))
+    (($auto  - (.autoMode.allow    // [])) | map("autoMode.allow\t" + .)),
+    (([$session, $scratch] - (.permissions.additionalDirectories // []))
+      | map("additionalDirectories\t" + .)),
+    ((.permissions.additionalDirectories // [])
+      | map(select(IN("/tmp", "/tmp/", "/private/tmp", "/private/tmp/")))
+      | map("remove additionalDirectories\t" + .))
   | .[]
 ' "$CURRENT" > "$ADDED"
 
-DENY_NEW=$(grep -c '^deny	' "$ADDED" || true)
-ASK_NEW=$(grep -c '^ask	' "$ADDED" || true)
-# Anchored, so this counts the allow list alone and never the autoMode.allow
-# lines that also contain the word.
-ALLOW_NEW=$(grep -c '^allow	' "$ADDED" || true)
-AUTO_NEW=$(grep -c '^autoMode.allow	' "$ADDED" || true)
-
-if [ "$DENY_NEW" -eq 0 ] && [ "$ASK_NEW" -eq 0 ] && [ "$ALLOW_NEW" -eq 0 ] \
-   && [ "$AUTO_NEW" -eq 0 ]; then
+if [ ! -s "$ADDED" ]; then
   echo "  ✓ all shipped rails already present"
 else
   while IFS=$'\t' read -r kind rule; do
@@ -165,7 +181,13 @@ else
     if [ "${#rule}" -gt 72 ]; then
       rule="${rule:0:69}..."
     fi
-    if [ "$DRY_RUN" -eq 1 ]; then
+    if [ "${kind#remove }" != "$kind" ]; then
+      if [ "$DRY_RUN" -eq 1 ]; then
+        echo "  ~ would remove ${kind#remove }: $rule"
+      else
+        echo "  🧹 removed ${kind#remove }: $rule"
+      fi
+    elif [ "$DRY_RUN" -eq 1 ]; then
       echo "  ~ would add $kind: $rule"
     else
       echo "  ✅ $kind: $rule"
@@ -206,8 +228,12 @@ fi
 # without it Claude Code replaces the entire built-in soft-deny list (force
 # push, `curl | bash`, production deploys, auto-mode bypass). So it is prepended
 # whenever absent, including on a list a user had emptied of it.
+#
+# additionalDirectories drops a bare /tmp entry first, then appends whichever
+# scratchpad tree is missing, so a second run changes nothing.
 MERGED="$(mktemp)"
-jq --slurpfile rails "$RAILS_FILE" --arg mode "$MODE" '
+jq --slurpfile rails "$RAILS_FILE" --arg mode "$MODE" \
+  --arg session "$SESSION_TREE" --arg scratch "$SCRATCHPAD" '
   ($rails[0].deny  // [] | map(.rule)) as $deny
   | ($rails[0].ask   // [] | map(.rule)) as $ask
   | ($rails[0].allow // [] | map(.rule)) as $allow
@@ -219,6 +245,11 @@ jq --slurpfile rails "$RAILS_FILE" --arg mode "$MODE" '
       .permissions.allow =
         ((.permissions.allow // []) as $cur | $cur + ($allow - $cur))
     end
+  | .permissions.additionalDirectories = (
+      (.permissions.additionalDirectories // [])
+      | map(select(IN("/tmp", "/tmp/", "/private/tmp", "/private/tmp/") | not))
+      | . + ([$session, $scratch] - .)
+    )
   | if $mode == "" then . else .permissions.defaultMode = $mode end
   | if ($auto | length) == 0 then . else
       .autoMode = (.autoMode // {})

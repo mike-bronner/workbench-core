@@ -432,6 +432,20 @@ SCRATCH_ROOTS=$(printf '%s\n' "$SCRATCH_STDOUT" \
 [ -n "$SCRATCH_ROOTS" ] || SCRATCH_ROOTS="<the stdout copy names no scratchpad roots>"
 assert_contains "both copies name the same scratchpad roots" \
   "$OV_ID_BLOCK" "$SCRATCH_ROOTS"
+# Agents made probe roots by hand under /tmp, which is no root, and then handed
+# the cleanup to the user. Both copies have to steer new scratch into the
+# scratchpads, or one of them goes on teaching the old habit.
+SCRATCH_WHERE="Never create it anywhere under \`/tmp\` outside your session scratchpad."
+assert_contains "stdout copy says where new scratch goes" \
+  "$SCRATCH_STDOUT" "$SCRATCH_WHERE"
+assert_contains "block says where new scratch goes" \
+  "$OV_ID_BLOCK" "$SCRATCH_WHERE"
+# The refusal once routed an agent's own scratch cleanup to the human as a
+# `! rm -rf`. Both copies now say that is not the route.
+assert_contains "stdout copy keeps scratch cleanup off the user" \
+  "$SCRATCH_STDOUT" "Never hand the user a \`!\` command to delete your own scratch."
+assert_contains "block keeps scratch cleanup off the user" \
+  "$OV_ID_BLOCK" "Never hand the user a \`!\` command to delete your own scratch."
 
 echo "behavioral overrides — an unreadable source fails CLOSED, never blanks a layer:"
 # A missing shipped source must leave both destinations exactly as they were.

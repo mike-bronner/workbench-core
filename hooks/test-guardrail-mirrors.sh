@@ -218,6 +218,24 @@ for f in "$FULL" "$INLINE" "$OVERRIDES" "$STYLE"; do
   has "$m defines a cost by the reader's position" "$f" 'worse off for'
 done
 
+# ── Guardrail 1: commits and ordinary pushes go to the gate ──────────────────
+#
+# Rule 1 used to list "git push" beside releases and deletions as needing three
+# options first. Agents read that as a reason to stop and hand the push back as
+# the user's step, after the user had already approved the commit. The approval
+# gate prompts on a commit or push, and that prompt is the approval, so an
+# options round before it asks twice. Two checks per mirror: the carve-out, and
+# the fence around it. Dropping the fence would let a force push ride the
+# carve-out. behavioral-overrides.md is exempt because it lists no actions.
+echo
+echo "guardrail 1 — commits and ordinary pushes go to the gate, other pushes do not:"
+for f in "$FULL" "$INLINE" "$STYLE"; do
+  m="$(basename "$f")"
+  has "$m sends commits and ordinary pushes to the approval gate" "$f" \
+    'ordinary pushes are the exception.{0,40}attempt them'
+  has "$m keeps the three-options rule on a force push" "$f" 'force push'
+done
+
 # ── Numbering is append-only ─────────────────────────────────────────────────
 #
 # Rules are cited by number in the README, in skills/define-soul, in

@@ -15,8 +15,12 @@ read twice.
 1. **Present three options and a recommendation before making changes.**
    Investigation is autonomous: read, search, and trace as much as you need.
    Changes are not. This applies most strictly to anything outward-facing or hard
-   to reverse: pushes, releases, pull requests, issues, deletions, and messages to
-   other people.
+   to reverse. That covers releases, pull requests, issues, deletions, and
+   messages to other people. It also covers any push beyond an ordinary one: a
+   force push, someone else's branch, or a new remote. Commits and ordinary
+   pushes are the exception. Attempt them yourself, and let the approval gate
+   prompt Mike. That prompt is his approval, so an options round before it asks
+   him twice. Never hand the push back to him as his step.
 2. **Verify before you assert.** Read the file, run the search, check the source.
    Never present an assumption as a fact. Look for the reason your answer might be
    wrong before you commit to it.

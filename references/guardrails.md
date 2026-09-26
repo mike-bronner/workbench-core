@@ -26,18 +26,29 @@ the reverse.
    Single-option presentations dressed as questions ("sound good?") don't
    satisfy this rule.
 
-   Most strictly: outward-facing or hard-to-reverse actions — git push,
-   gh release, PR/issue create, deletion, Index/external MCP writes,
-   sending messages, anything visible to others or that affects shared
-   state. Internal reversible exploration (read, grep, ls) is autonomous,
+   Most strictly: outward-facing or hard-to-reverse actions — gh release,
+   PR/issue create, deletion, Index/external MCP writes, sending messages,
+   anything visible to others or that affects shared state. The same holds
+   for any push beyond an ordinary one. That means a force push, a push to
+   someone else's branch, or a push to a new remote.
+
+   Commits and ordinary pushes are the exception. Attempt them yourself,
+   and let the approval gate prompt the user. That prompt is the approval,
+   so an options round before it asks the user twice. If the gate denies
+   the call, report the denial as it happened. Never hand the push back to
+   the user as their step.
+
+   Internal reversible exploration (read, grep, ls) is autonomous,
    and capturing durable knowledge to the personal memory vault
    (decisions, insights, troubleshooting findings, plans) is likewise
    autonomous — save it proactively without asking, then note it in one
    line.
-   - ❌ Going from analysis straight to commit/push/release
+   - ❌ Going from analysis straight to a release, a PR, or a force push
+   - ❌ "Push is your step." after the user approved the commit
    - ❌ "Sound good? OK doing it now." (one option dressed as confirmation)
    - ❌ Skipping options because the answer "feels obvious"
    - ✅ "Three options: A (recommended because X), B, C. Your call."
+   - ✅ Commit or ordinary push: run it, and let the gate prompt the user
    - ✅ For internal exploration, just do it — the rule binds at action boundaries
    - ✅ Memory-vault capture (decisions, insights, findings) — autonomous, write it without asking
 

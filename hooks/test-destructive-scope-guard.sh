@@ -106,6 +106,15 @@ echo "leftover" > "$LEFT_SCRATCH/sub/file.txt"
 ln -s "$VICTIM" "$LEFT_LINK"
 ln -s "$VICTIM" "$LEFT_SCRATCH/escape"
 echo "not a folder" > "$LEFT_FILE"
+
+# Two Darwin facts some cases depend on, probed rather than read off uname so a
+# case-sensitive APFS volume is judged by what it does. Where /private/tmp is
+# /tmp, a /private spelling names the same entry. Where /tmp folds case, a case
+# variant does. Elsewhere, Linux CI among them, both spellings name nothing and
+# the guard denies them by failing closed. That deny is correct, but a case that
+# expects it proves nothing, so the cases run only where the fact holds.
+PRIVATE_TMP=no; [ /private/tmp -ef /tmp ] && PRIVATE_TMP=yes
+CASE_FOLDING=no; [ -d "/tmp/CLAUDE-SCRATCH-DSCOPE-$$" ] && CASE_FOLDING=yes
 # The live session tree, by its real name. It holds every session's scratchpad,
 # and the guard only ever reads it here.
 SESSION_TREE="/tmp/claude-$(id -u)"
@@ -272,7 +281,13 @@ check allow "a path that does not exist yet" "rm -rf $SCRATCH/never-made"
 # the live session tree on case-insensitive APFS.
 echo "permits a delete of a leftover claude-*scratch* folder in /tmp:"
 check allow "the folder itself"               "rm -rf $LEFT_SCRATCH"
-check allow "the folder, by its /private path" "rm -rf /private$LEFT_SCRATCH"
+# Without /private/tmp the spelling names no entry, so the guard must refuse it.
+if [ "$PRIVATE_TMP" = yes ]; then
+  check allow "the folder, by its /private path" "rm -rf /private$LEFT_SCRATCH"
+else
+  check deny  "the folder's /private spelling, with no /private/tmp" \
+    "rm -rf /private$LEFT_SCRATCH"
+fi
 check allow "the folder, with a trailing slash" "rm -rf $LEFT_SCRATCH/"
 check allow "a file inside it"                "rm -f $LEFT_SCRATCH/sub/file.txt"
 check allow "a subtree inside it"             "rm -rf $LEFT_SCRATCH/sub"
@@ -310,23 +325,35 @@ assert_survives "the victim behind the family symlinks" "$VICTIM/keep.txt"
 echo "refuses the live claude-<uid> session tree under every spelling:"
 check deny "the tree itself"                  "rm -rf $SESSION_TREE"
 check deny "the tree, trailing slash"         "rm -rf $SESSION_TREE/"
-check deny "the tree, upper case"             "rm -rf $UPPER_TREE"
-check deny "the tree, mixed case"             "rm -rf $MIXED_TREE"
-check deny "the tree, mixed case with a slash" "rm -rf $MIXED_TREE/"
-check deny "the tree, by its /private path"   "rm -rf /private$SESSION_TREE"
-check deny "the tree, /private in upper case" "rm -rf /private$UPPER_TREE"
 check deny "the tree, doubled slashes"        "rm -rf /tmp//claude-$(id -u)"
-check deny "the tree, through the firmlink"   "rm -rf /System/Volumes/Data/private$SESSION_TREE"
-check deny "the tree, firmlink and case"      "rm -rf /System/Volumes/Data/private$MIXED_TREE"
 check deny "the tree, via .."                 "rm -rf /tmp/claude-$(id -u)/../claude-$(id -u)"
 check deny "a sibling session inside it"      "rm -rf $SESSION_TREE/-any-project/any-session/scratchpad"
-check deny "a sibling, mixed case"            "rm -rf $MIXED_TREE/-any-project/any-session/scratchpad"
-check deny "the fake session tree, case-shifted" "rm -rf /tmp/CLAUDE-dscope-test-$$"
+# A case variant reaches the tree only where /tmp folds case. The /private and
+# firmlink spellings reach it only on Darwin. Elsewhere each names nothing.
+if [ "$CASE_FOLDING" = yes ]; then
+  check deny "the tree, upper case"             "rm -rf $UPPER_TREE"
+  check deny "the tree, mixed case"             "rm -rf $MIXED_TREE"
+  check deny "the tree, mixed case with a slash" "rm -rf $MIXED_TREE/"
+  check deny "a sibling, mixed case"            "rm -rf $MIXED_TREE/-any-project/any-session/scratchpad"
+  check deny "the fake session tree, case-shifted" "rm -rf /tmp/CLAUDE-dscope-test-$$"
+else
+  echo "  (5 case-variant spellings not run: /tmp here is case-sensitive)"
+fi
+if [ "$PRIVATE_TMP" = yes ]; then
+  check deny "the tree, by its /private path"   "rm -rf /private$SESSION_TREE"
+  check deny "the tree, through the firmlink"   "rm -rf /System/Volumes/Data/private$SESSION_TREE"
+  if [ "$CASE_FOLDING" = yes ]; then
+    check deny "the tree, /private in upper case" "rm -rf /private$UPPER_TREE"
+    check deny "the tree, firmlink and case"      "rm -rf /System/Volumes/Data/private$MIXED_TREE"
+  fi
+else
+  echo "  (4 /private and firmlink spellings not run: this host has no /private/tmp)"
+fi
 
 # THE FAMILY IS JUDGED ON THE NAME ON DISK, NOT THE NAME TYPED. Only a
 # case-insensitive filesystem lets two spellings reach one entry, so the case
 # cases run where that is true and say so where it is not.
-if [ -d "/tmp/CLAUDE-SCRATCH-DSCOPE-$$" ]; then
+if [ "$CASE_FOLDING" = yes ]; then
   echo "judges the on-disk name, not the typed one (case-insensitive /tmp):"
   check allow "a lower-case leftover, typed in capitals" \
     "rm -rf /tmp/CLAUDE-SCRATCH-DSCOPE-$$"

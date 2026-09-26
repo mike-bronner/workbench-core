@@ -34,7 +34,10 @@
 # and this account's per-user temporary directory — are deliberately NOT
 # exercised: they come from the password database and from getconf, and neither
 # ignores a test the way it ignores an attacker. They ignore it identically,
-# which is the property that makes them trustworthy roots.
+# which is the property that makes them trustworthy roots. The leftover
+# claude-*scratch* family in /tmp is exercised against real folders this suite
+# makes and its trap removes, and against the live claude-<uid> tree, which the
+# guard only ever reads.
 
 set -u
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -52,7 +55,25 @@ FAIL=0
 # nothing.
 SANDBOX="/tmp/dscope-sandbox-$$"
 FAKE_TMP="/tmp/claude-dscope-test-$$"
-trap 'rm -rf "$SANDBOX" "$FAKE_TMP"' EXIT
+
+# Leftover agent-scratch folders, directly in /tmp and named in the
+# `claude-*scratch*` family the guard approves. Each is made here and removed by
+# the trap, so nothing real in /tmp is ever a case. LEFT_MIXED is spelled with
+# capitals ON DISK: the family is read from the name the entry really carries,
+# so typing it in lower case must not earn the allow a lower-case folder gets.
+LEFT_SCRATCH="/tmp/claude-scratch-dscope-$$"
+LEFT_SUMMARY="/tmp/claude-dscope-$$-summary-scratch"
+LEFT_MIXED="/tmp/Claude-Scratch-dscope-mixed-$$"
+LEFT_LINK="/tmp/claude-scratch-dscope-link-$$"
+LEFT_FILE="/tmp/claude-scratch-dscope-file-$$"
+OFF_FAMILY="/tmp/dscope-scratch-$$"
+# Carries the family inside its name without starting with it, so only a
+# whole-name match refuses it.
+PREFIXED_FAMILY="/tmp/x-claude-scratch-dscope-$$"
+# A family-named link to a REAL leftover. Its target is itself approved, so only
+# refusing the link itself, rather than following it, denies this.
+LEFT_INNER_LINK="/tmp/claude-scratch-dscope-inlink-$$"
+trap 'rm -rf "$SANDBOX" "$FAKE_TMP" "$LEFT_SCRATCH" "$LEFT_SUMMARY" "$LEFT_MIXED" "$LEFT_LINK" "$LEFT_FILE" "$OFF_FAMILY" "$PREFIXED_FAMILY" "$LEFT_INNER_LINK"' EXIT
 
 SID="dscope-$$-aaaa"
 OTHER_SID="dscope-$$-bbbb"
@@ -76,6 +97,20 @@ echo "project" > "$PROJECT/file.txt"
 echo "do not delete" > "$VICTIM/keep.txt"
 echo "another session's work" > "$OTHER_SCRATCH/file.txt"
 ln -s "$VICTIM" "$PROJECT/escape"
+
+mkdir -p "$LEFT_SCRATCH/sub" "$LEFT_SUMMARY" "$LEFT_MIXED" "$OFF_FAMILY" \
+         "$PREFIXED_FAMILY" "$LEFT_SCRATCH/repo"
+ln -s "$LEFT_SCRATCH" "$LEFT_INNER_LINK"
+git -C "$LEFT_SCRATCH/repo" init -q . 2>/dev/null
+echo "leftover" > "$LEFT_SCRATCH/sub/file.txt"
+ln -s "$VICTIM" "$LEFT_LINK"
+ln -s "$VICTIM" "$LEFT_SCRATCH/escape"
+echo "not a folder" > "$LEFT_FILE"
+# The live session tree, by its real name. It holds every session's scratchpad,
+# and the guard only ever reads it here.
+SESSION_TREE="/tmp/claude-$(id -u)"
+UPPER_TREE="/tmp/CLAUDE-$(id -u)"
+MIXED_TREE="/tmp/Claude-$(id -u)"
 
 # A sibling of the project whose path SHARES ITS PREFIX. Nothing here needs it
 # except the containment test, and that is the point: with `beneath` reduced to
@@ -228,6 +263,101 @@ check allow "cd relative, then rm"       "cd sub && rm -rf inner" "$PROJECT"
 echo "permits a delete inside this session's scratchpad:"
 check allow "a directory in the scratchpad" "rm -rf $SCRATCH/sub"
 check allow "a path that does not exist yet" "rm -rf $SCRATCH/never-made"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LEFTOVER SCRATCH IN /tmp. Agents once made scratch folders by hand directly in
+# /tmp, and the guard refused to let them clean those up. This one folder
+# family is approved, and nothing else in /tmp is: a first attempt approved all
+# of /private/tmp behind protected names, and `rm -rf /tmp/Claude-503` reached
+# the live session tree on case-insensitive APFS.
+echo "permits a delete of a leftover claude-*scratch* folder in /tmp:"
+check allow "the folder itself"               "rm -rf $LEFT_SCRATCH"
+check allow "the folder, by its /private path" "rm -rf /private$LEFT_SCRATCH"
+check allow "the folder, with a trailing slash" "rm -rf $LEFT_SCRATCH/"
+check allow "a file inside it"                "rm -f $LEFT_SCRATCH/sub/file.txt"
+check allow "a subtree inside it"             "rm -rf $LEFT_SCRATCH/sub"
+check allow "a path inside it not made yet"   "rm -rf $LEFT_SCRATCH/never-made"
+check allow "a symlink inside it, not its target" "rm -rf $LEFT_SCRATCH/escape"
+check allow "scratch after a middle word"     "rm -rf $LEFT_SUMMARY"
+check allow "relative to /tmp"                "rm -rf ${LEFT_SCRATCH#/tmp/}" "/tmp"
+check allow "two leftovers at once"           "rmdir $LEFT_SUMMARY $LEFT_SCRATCH/sub"
+
+echo "refuses every other /tmp entry, and every way out of the family:"
+check deny "a /tmp folder named outside the family" "rm -rf $OFF_FAMILY"
+check deny "claude- with no scratch in the name" "rm -rf $FAKE_TMP/-fake-project"
+check deny "/tmp itself"                      "rm -rf /tmp"
+check deny "/tmp itself, trailing slash"      "rm -rf /tmp/"
+check deny "a family name that does not exist" "rm -rf /tmp/claude-scratch-dscope-never-$$"
+check deny "a family name that is a file"     "rm -f $LEFT_FILE"
+check deny "a family name that is a symlink"  "rm -rf $LEFT_LINK"
+check deny "a family symlink to a real leftover" "rm -rf $LEFT_INNER_LINK"
+check deny "the family inside a longer name"  "rm -rf $PREFIXED_FAMILY"
+# The family is approved for rm and rmdir only. It is not a root, so a git verb
+# acting on a worktree inside it is still refused.
+check deny "a git verb in a leftover"         "git -C $LEFT_SCRATCH/repo clean -fdx" "$SANDBOX"
+check deny "a git verb in a leftover, by cwd" "git reset --hard" "$LEFT_SCRATCH/repo"
+check deny "through a family-named symlink"   "rm -rf $LEFT_LINK/keep.txt"
+check deny "a family symlink, trailing slash" "rm -rf $LEFT_LINK/"
+check deny "a symlink out of a leftover"      "rm -rf $LEFT_SCRATCH/escape/keep.txt"
+check deny "a symlink out, trailing slash"    "rm -rf $LEFT_SCRATCH/escape/"
+check deny "a .. out of a leftover"           "rm -rf $LEFT_SCRATCH/../${VICTIM#/tmp/}"
+check deny "a .. into the session tree"       "rm -rf $LEFT_SCRATCH/../claude-$(id -u)"
+check deny "one leftover, one path outside"   "rm -rf $LEFT_SCRATCH $VICTIM/keep.txt"
+assert_survives "the victim behind the family symlinks" "$VICTIM/keep.txt"
+
+# The live session tree holds every session's scratchpad. Every spelling of it
+# must deny, and the case variants are the ones that reached it last time.
+echo "refuses the live claude-<uid> session tree under every spelling:"
+check deny "the tree itself"                  "rm -rf $SESSION_TREE"
+check deny "the tree, trailing slash"         "rm -rf $SESSION_TREE/"
+check deny "the tree, upper case"             "rm -rf $UPPER_TREE"
+check deny "the tree, mixed case"             "rm -rf $MIXED_TREE"
+check deny "the tree, mixed case with a slash" "rm -rf $MIXED_TREE/"
+check deny "the tree, by its /private path"   "rm -rf /private$SESSION_TREE"
+check deny "the tree, /private in upper case" "rm -rf /private$UPPER_TREE"
+check deny "the tree, doubled slashes"        "rm -rf /tmp//claude-$(id -u)"
+check deny "the tree, through the firmlink"   "rm -rf /System/Volumes/Data/private$SESSION_TREE"
+check deny "the tree, firmlink and case"      "rm -rf /System/Volumes/Data/private$MIXED_TREE"
+check deny "the tree, via .."                 "rm -rf /tmp/claude-$(id -u)/../claude-$(id -u)"
+check deny "a sibling session inside it"      "rm -rf $SESSION_TREE/-any-project/any-session/scratchpad"
+check deny "a sibling, mixed case"            "rm -rf $MIXED_TREE/-any-project/any-session/scratchpad"
+check deny "the fake session tree, case-shifted" "rm -rf /tmp/CLAUDE-dscope-test-$$"
+
+# THE FAMILY IS JUDGED ON THE NAME ON DISK, NOT THE NAME TYPED. Only a
+# case-insensitive filesystem lets two spellings reach one entry, so the case
+# cases run where that is true and say so where it is not.
+if [ -d "/tmp/CLAUDE-SCRATCH-DSCOPE-$$" ]; then
+  echo "judges the on-disk name, not the typed one (case-insensitive /tmp):"
+  check allow "a lower-case leftover, typed in capitals" \
+    "rm -rf /tmp/CLAUDE-SCRATCH-DSCOPE-$$"
+  check deny  "a capitalised folder, typed in lower case" \
+    "rm -rf $(printf '%s' "$LEFT_MIXED" | tr '[:upper:]' '[:lower:]')"
+else
+  echo "judges the on-disk name, not the typed one (case-sensitive /tmp):"
+  check deny  "a spelling no entry carries" "rm -rf /tmp/CLAUDE-SCRATCH-DSCOPE-$$"
+fi
+check deny "a capitalised family folder, typed as it is" "rm -rf $LEFT_MIXED"
+assert_survives "the leftover survived every case" "$LEFT_SCRATCH/sub/file.txt"
+
+# Ownership cannot be staged for real without root, so the account is swapped
+# under the checker instead. The folder on disk is this account's, so a checker
+# that stopped reading the owner would still approve it here.
+echo "refuses a family folder another account owns:"
+OWNER_REPORT=$(cd "$ROOT_DIR/hooks/lib" && python3 -c "
+import importlib.util, os
+spec = importlib.util.spec_from_file_location('c', 'destructive-scope-check.py')
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+path = os.path.realpath('$LEFT_SCRATCH')
+mine = m.leftover_scratch(path)
+real = os.getuid
+m.os.getuid = lambda: real() + 1
+print('mine' if mine else 'NOT-MINE', 'OTHER' if m.leftover_scratch(path) else 'refused')
+" 2>&1)
+if [ "$OWNER_REPORT" = "mine refused" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ this account's folder passes, another account's does not"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ owner check is wrong: $OWNER_REPORT"
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # The git half. These verbs destroy uncommitted state INSIDE a worktree without

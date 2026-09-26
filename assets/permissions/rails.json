@@ -207,7 +207,13 @@
     "CLAUDE_PROJECT_DIR, which Claude Code sets for hook commands and which is",
     "absent from the Bash tool environment entirely. Paths are resolved",
     "physically before comparison, because a string prefix accepts a symlink",
-    "pointing out of the tree."
+    "pointing out of the tree.",
+    "",
+    "One folder family beyond the roots is approved for deletes: a leftover",
+    "agent-scratch folder directly in /tmp, named claude-*scratch*, that is a",
+    "real directory this account owns. Its name is read from the directory",
+    "listing rather than from the caller's spelling, because on case-insensitive",
+    "APFS /tmp/Claude-503 is the live claude-<uid> session tree."
   ],
 
   "deny": [

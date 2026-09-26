@@ -63,11 +63,28 @@ environment variable the CALLER can set:
      this, because `mktemp -d` falls back to the shared /tmp there and every
      account on the machine can reach it.
 
+ONE MORE PLACE A DELETE MAY LAND, AND IT IS NOT A ROOT. Agents once made
+scratch folders by hand directly in /tmp — /private/tmp/claude-scratch-2cceb0cd,
+/private/tmp/claude-summary-scratch — and this guard refused to let them clean
+those up, so a human deleted six of them with `!`. So a delete is also
+permitted when its target IS, or sits inside, a folder that sits directly in
+the shared temporary directory, is named in the `claude-*scratch*` family, is a
+real directory rather than a symlink, and is owned by this account. See
+leftover_scratch() for how each of those is read. Nothing else in /tmp and
+nothing else under /private qualifies: a first attempt approved all of
+/private/tmp behind a list of protected names, and it was rejected in review
+because `rm -rf /tmp/Claude-503` matched no protected spelling on
+case-insensitive APFS and still reached the live claude-<uid> tree, which
+holds every session's scratchpad.
+
 A DELETE MUST LAND STRICTLY BENEATH A ROOT; A GIT VERB MAY ACT ON ONE. The
 asymmetry is the blast radius, not an oversight. `rm` destroys the path it names,
 and each root holds live state that is not the caller's to destroy — the
 scratchpads are shared across sessions and the temporary root holds every
-process's working files — so a root ITSELF is never a delete target. A git verb
+process's working files — so a root ITSELF is never a delete target. A
+leftover scratch folder is the opposite case: it is one agent's abandoned
+working files rather than shared live state, and removing the folder itself is
+the delete it is approved for. A git verb
 destroys uncommitted state inside a worktree without removing the worktree, so
 the worktree being the project root is the ordinary case and is permitted.
 
@@ -102,6 +119,7 @@ import os
 import pwd
 import re
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -327,13 +345,74 @@ def within(path, roots):
     return any(path == root for root in roots) or beneath(path, roots)
 
 
+# The folder family a leftover scratch folder is named in, read against the
+# name the entry carries ON DISK. Lower case on purpose: that is how every
+# leftover was spelled, and `claude-<uid>` can never match, because it carries
+# no `scratch`.
+SCRATCH_FAMILY = re.compile(r"claude-[^/]*scratch[^/]*")
+
+
+def _on_disk_name(directory, entry):
+    """The name the directory entry with this lstat identity carries on disk,
+    or None when no entry has it or the directory cannot be listed."""
+    try:
+        with os.scandir(directory) as listing:
+            for candidate in listing:
+                if candidate.inode() != entry.st_ino:
+                    continue
+                try:
+                    if os.path.samestat(candidate.stat(follow_symlinks=False),
+                                        entry):
+                        return candidate.name
+                except OSError:
+                    continue
+    except OSError:
+        return None
+    return None
+
+
+def leftover_scratch(path):
+    """True when the physical path IS, or sits inside, a leftover agent-scratch
+    folder directly in the shared temporary directory.
+
+    THE NAME IS READ FROM THE DIRECTORY LISTING, NEVER FROM THE TEXT THE CALLER
+    TYPED. On case-insensitive APFS `/tmp/Claude-503` and `/tmp/claude-503` are
+    one entry, so a spelling test judges a name no file carries. This finds the
+    entry the path lands on by lstat identity and reads the name that entry
+    really has, so a case variant is judged exactly as the entry itself is.
+
+    The rest is reused rather than rebuilt. `path` comes from physical(), which
+    has already resolved every ancestor and collapsed any `..`, so the
+    temporary directory is compared as its realpath and a symlink out of it
+    never reaches here under a /tmp spelling. The top-level entry is lstat'ed,
+    so a symlink named in the family is refused rather than followed, and so is
+    a plain file. An entry another account owns is refused too, because on a
+    shared /tmp anyone can create a folder with this name. Anything this cannot
+    read — a missing entry, an unlistable directory — is False, which denies.
+    """
+    tmp = os.path.realpath("/tmp")
+    if tmp == "/" or not path.startswith(tmp + os.sep):
+        return False
+    top = os.path.join(tmp, path[len(tmp) + 1:].split(os.sep, 1)[0])
+    try:
+        entry = os.lstat(top)
+    except OSError:
+        return False
+    if not stat.S_ISDIR(entry.st_mode) or entry.st_uid != os.getuid():
+        return False
+    name = _on_disk_name(tmp, entry)
+    return bool(name and SCRATCH_FAMILY.fullmatch(name))
+
+
 def roots_note(roots):
     """What a refusal says about the scope it checked against. An empty list
     with no explanation is the one refusal nobody can act on."""
+    family = (" A delete may also remove a leftover scratch folder of this "
+              "account's own directly in /tmp, named claude-*scratch*.")
     if not roots:
         return ("No scope root resolved at all: CLAUDE_PROJECT_DIR names no "
-                "directory, and neither does any scratch root.")
-    return "In scope right now: " + ", ".join(roots) + "."
+                "directory, and neither does any scratch root." + family)
+    return "In scope right now: " + ", ".join(roots) + "." + family
 
 
 # ── path resolution ──────────────────────────────────────────────────────────
@@ -884,7 +963,8 @@ def judge(command, cwd, roots):
                                 "sessions, or the working files of everything "
                                 "this account is running. Delete what is "
                                 "inside it instead." % (token, path))
-                        if not beneath(path, roots):
+                        if not beneath(path, roots) \
+                                and not leftover_scratch(path):
                             raise Deny(
                                 "deleting a path outside this project and "
                                 "every scratch root",

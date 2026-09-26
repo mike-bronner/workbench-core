@@ -288,10 +288,11 @@ unprompted when every path they act on resolves inside the project or a
 scratch root:
 the session scratchpad, `~/Developer/scratchpad`, or a `mktemp -d` sandbox.
 A PreToolUse guard resolves each path and permits the call.
+`rm` and `rmdir` may also remove a leftover `/tmp/claude-*scratch*` folder you own, the folder itself included. It is not a root, so `git` verbs there are still denied.
 
 Make new scratch in the session scratchpad or `~/Developer/scratchpad`.
 Never create it anywhere under `/tmp` outside your session scratchpad.
-Scratch there is outside every root, so nothing can clean it up for you.
+Do not put new scratch in an old `claude-*scratch*` folder there either.
 
 Outside those roots it denies, and it also denies any target it cannot read:
 a `$variable`, a glob, `bash -c`, `ssh`, `xargs`, `find -delete`, or a loop
@@ -593,8 +594,8 @@ printf -- '- Build the recall QUERY from the TASK, not from the prompt: name the
 # because agents made probe roots by hand under /tmp, which is no root, and then
 # handed their cleanup to the user as a `!` command.
 printf '## Destructive commands\n\n'
-printf -- '- `rm`, `rmdir`, `git reset --hard`, `git clean`, and `git stash clear`/`drop` run with no prompt when every path they act on resolves inside the project or a scratch root: the session scratchpad, `~/Developer/scratchpad`, or a `mktemp -d` sandbox. A PreToolUse guard resolves each path and permits the call.\n'
-printf -- '- Make new scratch in the session scratchpad or `~/Developer/scratchpad`. Never create it anywhere under `/tmp` outside your session scratchpad. Scratch there is outside every root, so nothing can clean it up for you.\n'
+printf -- '- `rm`, `rmdir`, `git reset --hard`, `git clean`, and `git stash clear`/`drop` run with no prompt when every path they act on resolves inside the project or a scratch root: the session scratchpad, `~/Developer/scratchpad`, or a `mktemp -d` sandbox. A PreToolUse guard resolves each path and permits the call. `rm` and `rmdir` may also remove a leftover `/tmp/claude-*scratch*` folder you own, the folder itself included. It is not a root, so `git` verbs there are still denied.\n'
+printf -- '- Make new scratch in the session scratchpad or `~/Developer/scratchpad`. Never create it anywhere under `/tmp` outside your session scratchpad. Do not put new scratch in an old `claude-*scratch*` folder there either.\n'
 printf -- '- Outside those roots it DENIES, and so does any target it cannot read: a `$variable`, a glob, `bash -c`, `ssh`, `xargs`, `find -delete`, or a loop body. Spell paths out literally and keep the delete its own command. Never hand the user a `!` command to delete your own scratch. A target outside every root that is not scratch is the user'"'"'s call, and they run it with the `!` prefix.\n\n'
 
 # A soul file is OPTIONAL. An agent with no persona carries its standard in the

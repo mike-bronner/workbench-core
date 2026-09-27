@@ -91,6 +91,11 @@ install_file() {
   fi
   if [ "$DRY_RUN" -eq 1 ]; then
     echo "  ~ would write $label → $dest"
+    # A stale live copy is the case a re-sync exists for, so show what changes.
+    if [ -f "$dest" ]; then
+      echo "      Diff (current → shipped):"
+      diff -u "$dest" "$src" 2>/dev/null | sed 's/^/      /' || true
+    fi
     return 0
   fi
   local tmp

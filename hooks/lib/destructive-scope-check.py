@@ -77,6 +77,17 @@ because `rm -rf /tmp/Claude-503` matched no protected spelling on
 case-insensitive APFS and still reached the live claude-<uid> tree, which
 holds every session's scratchpad.
 
+AND ONE MARKER FILE AT A TIME IN THE MEMORY CACHE. The summary-writer agent,
+log-now and summarize-session each finish by deleting their session's marker
+in <cache>/pending-summaries/, and this guard denied every one of those deletes
+from the day it shipped, so the backlog only grew. So a delete is also
+permitted when its target is a `*.json` name directly in that folder and is
+either absent or a regular file this account owns. The folder is the one
+hooks/session-log.sh writes markers into, passed in as the third argument by the
+guard, which resolves it through hooks/lib/memory-env.sh from the hook's own
+environment and config. The folder and the cache root above it must be real
+directories this account owns. See marker_dir() and pending_marker().
+
 A DELETE MUST LAND STRICTLY BENEATH A ROOT; A GIT VERB MAY ACT ON ONE. The
 asymmetry is the blast radius, not an oversight. `rm` destroys the path it names,
 and each root holds live state that is not the caller's to destroy — the
@@ -404,11 +415,70 @@ def leftover_scratch(path):
     return bool(name and SCRATCH_FAMILY.fullmatch(name))
 
 
+# A session-summary marker's name: the session id, then `.json`. The leading
+# character is a letter or digit so `.` and `..`-shaped names never match.
+MARKER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.json")
+
+
+def marker_dir(candidate):
+    """The pending-summaries directory as a physical path, or None when it is
+    not one this account owns as a real directory.
+
+    The location arrives from the guard, which resolves it the way the writer
+    of the markers does (hooks/lib/memory-env.sh), from the hook's own
+    environment and config rather than from the command being judged. Ancestors
+    above the cache root may be links, the way /tmp is on Darwin, and realpath
+    resolves them. The cache root and pending-summaries itself may not be:
+    lstat refuses a link there rather than following it, because a link is how
+    a caller would aim this permit at a directory of its choosing.
+    """
+    if not candidate or not os.path.isabs(candidate):
+        return None
+    candidate = os.path.normpath(candidate)
+    for level in (os.path.dirname(candidate), candidate):
+        try:
+            entry = os.lstat(level)
+        except OSError:
+            return None
+        if not stat.S_ISDIR(entry.st_mode) or entry.st_uid != os.getuid():
+            return None
+    real = os.path.realpath(candidate)
+    return real if real != "/" else None
+
+
+def pending_marker(path, markers):
+    """True when the physical path is a session-summary marker: a `*.json` name
+    directly inside the pending-summaries directory, and either absent or a
+    regular file this account owns.
+
+    THIS IS AS NARROW AS THE LEFTOVER-SCRATCH PERMIT, AND ON PURPOSE. The
+    summary-writer, log-now and summarize-session each end by deleting one
+    marker file, and nothing else under the cache is theirs to delete. So the
+    directory itself is refused, a subdirectory is refused, a name outside the
+    marker shape is refused, and so is a link or a directory that happens to
+    carry a marker's name. An absent marker is permitted, because `rm -f` of a
+    missing file deletes nothing.
+    """
+    if not markers or os.path.dirname(path) != markers:
+        return False
+    if not MARKER_NAME.fullmatch(os.path.basename(path)):
+        return False
+    try:
+        entry = os.lstat(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return stat.S_ISREG(entry.st_mode) and entry.st_uid == os.getuid()
+
+
 def roots_note(roots):
     """What a refusal says about the scope it checked against. An empty list
     with no explanation is the one refusal nobody can act on."""
     family = (" A delete may also remove a leftover scratch folder of this "
-              "account's own directly in /tmp, named claude-*scratch*.")
+              "account's own directly in /tmp, named claude-*scratch*, and "
+              "a single session-summary marker file directly in the memory "
+              "cache's pending-summaries folder.")
     if not roots:
         return ("No scope root resolved at all: CLAUDE_PROJECT_DIR names no "
                 "directory, and neither does any scratch root." + family)
@@ -828,9 +898,9 @@ def cd_target(stage, here):
     return os.path.join(here, destination) if here else None
 
 
-def judge(command, cwd, roots):
+def judge(command, cwd, roots, markers=None):
     """(destructive targets seen, whether the command does nothing else), or a
-    Deny."""
+    Deny. `markers` is the physical pending-summaries directory, or None."""
     lines, exact, bodies = token_lines_ex(command)
     if not lines:
         if DESTRUCTIVE_WORD.search(command):
@@ -964,7 +1034,8 @@ def judge(command, cwd, roots):
                                 "this account is running. Delete what is "
                                 "inside it instead." % (token, path))
                         if not beneath(path, roots) \
-                                and not leftover_scratch(path):
+                                and not leftover_scratch(path) \
+                                and not pending_marker(path, markers):
                             raise Deny(
                                 "deleting a path outside this project and "
                                 "every scratch root",
@@ -1019,12 +1090,13 @@ def main():
         return 0
     cwd = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None
     session_id = sys.argv[2] if len(sys.argv) > 2 else ""
+    markers = marker_dir(sys.argv[3] if len(sys.argv) > 3 else "")
     if cwd:
         cwd = os.path.expanduser(cwd)
 
     roots = scope_roots(session_id)
     try:
-        targets, only_destructive = judge(command, cwd, roots)
+        targets, only_destructive = judge(command, cwd, roots, markers)
     except Deny as deny:
         sys.stdout.write(deny.action + "\n" + deny.detail + "\n")
         return 1

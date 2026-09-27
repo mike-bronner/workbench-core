@@ -31,6 +31,9 @@ trap cleanup EXIT
 STATE="$SANDBOX/state"
 # Set by the scheduled-task cases; empty means the payload carries no transcript.
 TRANSCRIPT_PATH=""
+# Set by the sub-agent cases; empty means the payload carries no agent_id, which
+# is how a main-session hook payload looks.
+AGENT_ID=""
 
 # run_hook <tool> <raw-input> <session_id> <cache> <SERVER_BIN> [EXTRA_ENV=val ...]
 # <raw-input> lands in tool_input.pattern for Grep and tool_input.command for
@@ -40,9 +43,10 @@ run_hook() {
   local payload key
   if [ "$tool" = "Grep" ] || [ "$tool" = "Glob" ]; then key="pattern"; else key="command"; fi
   payload=$(jq -cn --arg t "$tool" --arg k "$key" --arg v "$raw" --arg s "$sid" \
-                   --arg tr "$TRANSCRIPT_PATH" '
+                   --arg tr "$TRANSCRIPT_PATH" --arg ag "$AGENT_ID" '
     {tool_name:$t, tool_input:{($k):$v}, session_id:$s, hook_event_name:"PostToolUse"}
-    + (if $tr == "" then {} else {transcript_path:$tr} end)')
+    + (if $tr == "" then {} else {transcript_path:$tr} end)
+    + (if $ag == "" then {} else {agent_id:$ag} end)')
   printf '%s' "$payload" | env \
     WORKBENCH_CONFIG_FILE="$NO_CONFIG" \
     WORKBENCH_MEMORY_CACHE="$cache" \
@@ -195,6 +199,26 @@ echo "Dedup is per-session — a DIFFERENT session injects the same memory again
 STATE="$SANDBOX/s-dedup"
 assert_contains "fresh session re-injects" \
   "$(run_hook Bash "$SCAN" s-other-session "$CACHE" "$FAKE")" "Canned recall hit one"
+
+echo "A sub-agent is its own context — the main session's dedup never hides a note from it:"
+# A sub-agent's payload carries its parent's session_id plus its own agent_id.
+# The main session has already run this exact scan and seen hit one, so a key
+# built from session_id alone suppresses it twice over: by the query file, and
+# by the seen-file. The sub-agent's context holds neither, so it must get it.
+STATE="$SANDBOX/s-agent"
+run_hook Bash "$SCAN" s-agent "$CACHE" "$FAKE" >/dev/null
+AGENT_ID="agent-a1"
+assert_contains "a sub-agent receives a note its parent already saw" \
+  "$(run_hook Bash "$SCAN" s-agent "$CACHE" "$FAKE")" "Canned recall hit one"
+# And the bound still holds WITHIN the sub-agent's own context.
+assert_empty "the same sub-agent does not get it twice" \
+  "$(run_hook Bash 'rg -n "vault recall once more" hooks/' s-agent "$CACHE" "$FAKE")"
+AGENT_ID="agent-b2"
+assert_contains "a second sub-agent receives it too" \
+  "$(run_hook Bash "$SCAN" s-agent "$CACHE" "$FAKE")" "Canned recall hit one"
+AGENT_ID=""
+assert_empty "and the main session still does not get it again" \
+  "$(run_hook Bash 'rg -n "vault recall once more" hooks/' s-agent "$CACHE" "$FAKE")"
 
 echo "Per-session QUERY dedup — the same scan repeated never searches twice:"
 # Discriminating: the repeat runs against a fixture that would return four

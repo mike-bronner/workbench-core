@@ -192,6 +192,36 @@ else
   FAIL=$((FAIL + 1)); echo "  ❌ exited non-zero"
 fi
 
+echo "The marker lands where the destructive-scope guard permits deleting it:"
+# The guard permits a marker delete only in the folder memory_resolve_cache_path
+# names. So the writer has to resolve the cache the same way, WORKBENCH_CONFIG_FILE
+# included. A private copy of the lookup ignored that variable and wrote markers
+# to $HOME's default cache instead, where no permit reached them. With no
+# WORKBENCH_MEMORY_CACHE, the config file alone must decide.
+# In /tmp, not the mktemp sandbox: on Darwin the sandbox sits inside the per-user
+# temporary root the guard already approves, so a delete there would pass without
+# the marker permit and prove nothing about it.
+CFG_CACHE="/tmp/slog-cfg-cache-$$"
+trap 'rm -rf "$SANDBOX" "$CFG_CACHE"' EXIT
+CFG_FILE="$SANDBOX/cfg.json"
+mkdir -p "$CFG_CACHE"
+jq -n --arg c "$CFG_CACHE" '{memory_cache: $c}' > "$CFG_FILE"
+printf '{"session_id":"%s","transcript_path":"%s","hook_event_name":"SessionEnd"}' \
+  "sid-cfg" "$TRANSCRIPT" | \
+  env -u WORKBENCH_MEMORY_CACHE HOME="$SANDBOX/home" PATH="$SANDBOX/bin:$PATH" \
+    WORKBENCH_MEMORY_PATH="$SANDBOX/memory" WORKBENCH_CONFIG_FILE="$CFG_FILE" \
+    WORKBENCH_DISPATCH_DRY_RUN=1 bash "$LOG_HOOK" >/dev/null 2>&1
+assert_file "the marker follows WORKBENCH_CONFIG_FILE's memory_cache" \
+  "$CFG_CACHE/pending-summaries/sid-cfg.json"
+assert_no_file "and not the \$HOME default cache" \
+  "$SANDBOX/home/.claude-memory-cache/pending-summaries/sid-cfg.json"
+GUARD_OUT=$(jq -nc --arg c "rm -f $CFG_CACHE/pending-summaries/sid-cfg.json" \
+    '{tool_name: "Bash", tool_input: {command: $c}, cwd: "/", session_id: "sid-cfg"}' | \
+  env -u WORKBENCH_MEMORY_CACHE HOME="$SANDBOX/home" WORKBENCH_CONFIG_FILE="$CFG_FILE" \
+    CLAUDE_PROJECT_DIR="$SANDBOX/memory" bash "$(dirname "$LOG_HOOK")/destructive-scope-guard.sh" 2>/dev/null)
+assert_contains "the guard permits deleting that same marker" \
+  "$(printf '%s' "$GUARD_OUT" | jq -r '.hookSpecificOutput.permissionDecision // "neutral"')" "allow"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

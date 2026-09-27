@@ -55,8 +55,10 @@ Read `${CLAUDE_PLUGIN_ROOT}/references/vault-conventions.md` for conventions.
 Delete the pending-summary marker:
 
 ```bash
-rm ~/.claude-memory-cache/pending-summaries/<session_id>.json
+rm -f /Users/<you>/.claude-memory-cache/pending-summaries/<session_id>.json
 ```
+
+Spell the absolute path out, home directory included. The destructive-scope guard refuses `~` and `$variables` as a delete target, because it cannot tell which file they name, and permits a literal marker path.
 
 Tell the user what you wrote: log path, summary path, any decisions promoted, links added, topic page touched. Keep it terse.
 

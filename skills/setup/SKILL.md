@@ -1,5 +1,5 @@
 ---
-description: Configure the workbench — agent name, memory paths, MCP server name, identity file paths, and the permission safety rails (defaultMode plus deny/ask rules) written to ~/.claude/settings.json. Config lives in the plugin data directory and is read at MCP start time, so plugin updates never clobber settings.
+description: Configure the workbench — agent name, memory paths, MCP server name, identity file paths, the permission safety rails (defaultMode plus deny/ask rules) written to ~/.claude/settings.json, and the shipped persona (output style and soul files). Re-run after a plugin update to re-sync the output style. Config lives in the plugin data directory and is read at MCP start time, so plugin updates never clobber settings.
 ---
 
 The user has invoked `/workbench:setup`. Walk them through configuring all workbench settings interactively.
@@ -155,7 +155,7 @@ jq \
 
 Running this twice with the same answers produces a byte-identical file (idempotent).
 
-`persona` and `output_style` are written by `/workbench-core:install` — they record which persona is active. Don't hand-edit them; the merge above never touches them. They're absent until a persona is installed.
+`persona` and `output_style` are written by Step 2f — they record which persona is active. Don't hand-edit them; the merge above never touches them. They're absent until a persona is installed.
 
 **Do not edit `plugin.json`.** The hooks resolve env from `config.json` at launch time (precedence: `WORKBENCH_*` override env → `config.json` → default), via `hooks/lib/memory-env.sh`. Reference mapping:
 
@@ -288,7 +288,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/permissions.sh" --dry-run --mode <chosen-mod
 
 Those five encoded a **verb-based** policy: they prompt wherever the verb acts, so an ordinary in-project delete cost the user a prompt. The policy this machine runs is **scope-based** — work inside the project and the scratch roots is permitted, reaching outside them is the user's call. That cannot be layered on top of an ask entry: Anthropic's permissions documentation states that hook decisions do not bypass permission rules, and that a matching ask rule still prompts even when a `PreToolUse` hook returned `"allow"`. A content-scoped ask entry is overridden by nothing, so the five had to **leave** rather than be narrowed. Narrowing one, or adding a scoped companion beside it, does nothing: rules run deny → ask → allow, first match wins, specificity does not reorder them, and Bash rules carry no negation operator.
 
-`hooks/destructive-scope-guard.sh` is that guard, and it ships registered with the plugin — no install step, no fixed path, nothing for setup to write. It permits a destructive command when **every path it acts on** resolves inside the project or a scratch root, and it denies otherwise. The roots are the project from `CLAUDE_PROJECT_DIR`, the login home's `Developer/scratchpad`, this session's scratchpad, and on Darwin this account's per-user temporary directory where `mktemp -d` writes. One folder family beyond the roots is also permitted, for `rm` and `rmdir` only: a leftover `/tmp/claude-*scratch*` folder this account owns, which may be removed along with its contents. It is not a root, so a git verb there is denied, and its name is read from the directory listing rather than the caller's spelling. **No root comes from an environment variable the caller can set** — the login home is read from the password database, the temporary directory from `getconf DARWIN_USER_TEMP_DIR` rather than `$TMPDIR`, and `CLAUDE_PROJECT_DIR` is set by Claude Code for hook commands and is absent from the Bash tool environment entirely. Paths are resolved physically before comparison, since a string prefix accepts a symlink pointing out of the tree.
+`hooks/destructive-scope-guard.sh` is that guard, and it ships registered with the plugin — no install step, no fixed path, nothing for setup to write. It permits a destructive command when **every path it acts on** resolves inside the project or a scratch root, and it denies otherwise. The roots are the project from `CLAUDE_PROJECT_DIR`, the login home's `Developer/scratchpad`, this session's scratchpad, and on Darwin this account's per-user temporary directory where `mktemp -d` writes. One folder family beyond the roots is also permitted, for `rm` and `rmdir` only: a leftover `/tmp/claude-*scratch*` folder this account owns, which may be removed along with its contents. It is not a root, so a git verb there is denied, and its name is read from the directory listing rather than the caller's spelling. One file shape is permitted too: a single session-summary marker, a `*.json` name directly in `<cache>/pending-summaries/` that is absent or a regular file this account owns, because the summary-writer, `log-now` and `summarize-session` each end by deleting one. That folder is resolved the way `hooks/session-log.sh` resolves it when it writes the marker, from the hook's own `WORKBENCH_MEMORY_CACHE` or `config.json`, never from the command being judged. **No root comes from an environment variable the caller can set** — the login home is read from the password database, the temporary directory from `getconf DARWIN_USER_TEMP_DIR` rather than `$TMPDIR`, and `CLAUDE_PROJECT_DIR` is set by Claude Code for hook commands and is absent from the Bash tool environment entirely. Paths are resolved physically before comparison, since a string prefix accepts a symlink pointing out of the tree.
 
 ⚠ **It fails CLOSED, which inverts every other guard in this plugin.** A command whose targets it cannot resolve — a `$variable`, a glob, `bash -c`, `ssh`, `xargs`, `find -delete` — is denied rather than allowed through. The siblings fail open because an unreadable command fell through to `Bash(rm -rf:*)` and cost one prompt; with the five gone there is nothing underneath, so an unreadable command waved through is a command nothing checked. The denial is not a wall: the user runs it themselves with the `!` prefix.
 
@@ -558,6 +558,62 @@ git -C "$MEMORY_PATH" push -u origin main
 Confirm afterwards that the server picked it up — the sync loop only starts on the next server
 launch, which means the **relaunch in Step 7**, not merely a new session.
 
+## Step 2f — Install the shipped persona
+
+Setup is the one entry point for the persona too. There is no separate install command, so a
+re-run of setup after a plugin update is also what re-syncs the output style. The warmup does
+not write the style. It only reports `⚠ Output style out of date` in the warmup notices when the
+live copy differs from the shipped one, and that notice points here.
+
+The plugin ships one persona under `${CLAUDE_PLUGIN_ROOT}/assets/personas/<name>/`: an output
+style, and optionally soul files. `scripts/install.sh` copies it to the live locations Claude
+Code loads identity from. Soul files go to `{memory_path}/identity/`, the output style to
+`~/.claude/output-styles/<name>.md`, and its `name:` to `~/.claude/settings.json` `.outputStyle`
+(a single-key merge that preserves every other setting). Identity files are precious, so the
+script never overwrites a differing soul file without `--force`.
+
+### 2f.1 — Opt in, or re-sync
+
+Read `.persona` from `config.json`. The persona is opt-in:
+
+- **Unset** → ask through `AskUserQuestion` whether to install it. Respect a "no", and skip to
+  Step 3.
+- **Set** → the user already chose it. Re-sync it without asking again, through 2f.2 and 2f.3.
+
+### 2f.2 — Preview (always dry-run first)
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/install.sh" --dry-run
+```
+
+Relay the output verbatim. Per artifact, it reports whether it would be written or already
+matches, and prints a diff for a live file that would change. If every artifact already
+matches, say so and skip to Step 3.
+
+If the dry run says a soul file **"differs and was left unchanged"**, the user has customized
+it. Show that diff and ask, per file, whether to overwrite it with the shipped version or keep
+their edits. Pass `--force` only if they explicitly approve overwriting.
+
+### 2f.3 — Apply and record
+
+```bash
+# Safe: installs soul files only where absent or identical; never clobbers a differing one.
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/install.sh"
+
+# Only if the user approved overwriting differing soul files in 2f.2:
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/install.sh" --force
+```
+
+Then record the active persona in `config.json` so tooling knows which one is live. The persona
+is the directory name, and the style name is the `name:` the script echoed:
+
+```bash
+tmp="$(mktemp)"
+jq --arg p "<name>" --arg s "<StyleName>" '.persona = $p | .output_style = $s' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
+```
+
+The output style takes effect on the next session. Step 7's restart covers it.
+
 ## Step 3 — Re-templatize identity files (if `agent_name` changed)
 
 If `agent_name` changed from its previous value (or this is a first-time setup):
@@ -597,6 +653,7 @@ Tell the user:
 - The memory server's bearer token was provisioned (and the port, if non-default) into `~/.claude/settings.json`
 - The permission mode that is now set, and how many deny/ask rails were added (the script reports both)
 - Whether git sync was enabled, and if so the remote and the measured synced size (Step 2e)
+- Whether the persona was installed, re-synced, already current, or declined (Step 2f)
 - Whether identity files were created/updated
 
 ## Step 4.5 — Deploy the nightly decision-quality task (opt-in)

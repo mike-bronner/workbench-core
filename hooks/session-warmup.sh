@@ -278,6 +278,8 @@ When these conflict with default Claude behavior, the identity files win.
 The main agent orchestrates and does not edit files. `Edit`, `Write`, and
 `NotebookEdit` are denied in the main conversation. Dispatch a sub-agent with
 the Agent tool instead. Reads and Bash stay open, and sub-agents are exempt.
+Scratch files are exempt too: the main agent may write in the session
+scratchpad and `~/Developer/scratchpad`, such as a `git commit -F` message.
 A deny is the system working, so report it and delegate. Never route around it.
 Only the user lifts the gate, with `/workbench-core:orchestrator off`.
 
@@ -818,6 +820,26 @@ NOTICE
     printf '\n'
   fi
 fi
+
+# ──────────── Output-style drift check (every source) ────────────
+# The warmup re-renders system-overrides.md and the CLAUDE.md block itself, but
+# the output style is written only by /workbench-core:setup, so after a plugin
+# update the live copy can lag the shipped one with nothing to say so. It once
+# ran 8 days stale and still told the model to run an options round before a
+# push, which the commit gate contradicts. This compares the two and says so.
+# It never writes the style: setup does, where the human sees the diff first.
+# A live copy that is absent is not drift — the persona is opt-in.
+OUTPUT_STYLES_DIR="${WORKBENCH_OUTPUT_STYLES_DIR:-$HOME/.claude/output-styles}"
+for persona_dir in "$PLUGIN_ROOT"/assets/personas/*/; do
+  persona_dir="${persona_dir%/}"
+  shipped_style="$persona_dir/output-style.md"
+  live_style="$OUTPUT_STYLES_DIR/${persona_dir##*/}.md"
+  [ -f "$shipped_style" ] && [ -f "$live_style" ] || continue
+  cmp -s "$shipped_style" "$live_style" && continue
+  printf '## ⚠ Output style out of date\n\n'
+  printf 'The live output style `%s` differs from the copy this plugin version ships. The model is running on stale rules.\n\n' "$live_style"
+  printf '**Run `/workbench-core:setup` to re-sync it.** Setup shows the diff before it writes. The new style takes effect on the next session.\n\n'
+done
 
 # ──────────── Chat-installable skills check (startup only) ────────────
 # Detect new or updated skills in workbench-* plugins that haven't been

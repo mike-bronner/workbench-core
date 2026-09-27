@@ -26,8 +26,9 @@ trap cleanup EXIT
 run_hook() {
   local prompt="$1" sid="$2" cache="$3" bin="$4"; shift 4
   local payload
-  payload=$(jq -cn --arg p "$prompt" --arg s "$sid" \
-    '{prompt:$p, session_id:$s, hook_event_name:"UserPromptSubmit"}')
+  payload=$(jq -cn --arg p "$prompt" --arg s "$sid" --arg ag "${AGENT_ID:-}" \
+    '{prompt:$p, session_id:$s, hook_event_name:"UserPromptSubmit"}
+     + (if $ag == "" then {} else {agent_id:$ag} end)')
   printf '%s' "$payload" | env \
     WORKBENCH_CONFIG_FILE="$NO_CONFIG" \
     WORKBENCH_MEMORY_CACHE="$cache" \
@@ -189,6 +190,12 @@ EVT=$(printf '%s' "$GOT" | jq -r '.hookSpecificOutput.hookEventName' 2>/dev/null
 echo "Per-session dedup — same session, second turn re-injects nothing:"
 GOT2=$(run_hook "remind me about the recall mechanism design again" s-happy "$CACHE" "$FAKE")
 assert_empty "already-seen paths not re-injected in same session" "$GOT2"
+
+echo "A sub-agent keeps its own dedup — its parent's seen notes still reach it:"
+# Same session_id as the turn above, which already injected hit one. A sub-agent
+# payload adds its own agent_id, and its context has seen nothing.
+GOTA=$(AGENT_ID=agent-r1 run_hook "remind me about the recall mechanism design again" s-happy "$CACHE" "$FAKE")
+assert_contains "a sub-agent of the same session receives the hit" "$GOTA" "Canned recall hit one"
 
 echo "Dedup is per-session — a DIFFERENT session injects the hits again:"
 GOT3=$(run_hook "how should I design the memory recall mechanism" s-other "$CACHE" "$FAKE")

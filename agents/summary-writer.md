@@ -56,7 +56,7 @@ Never treat a missing log as terminal while the transcript is on disk. On 2026-0
 
 If the log shows a **scheduled dispatch/maintenance tick that found no work** — a dispatch orchestrator or version-check run whose outcome is "0 items dispatched" / "no work found" / "idle", with no other substantive activity (no code changes, no decisions, no user conversation) — do **not** write a summary document. Idle-tick summaries are index pollution: at one point they were 20–45% of the searchable vault (2026-07-08 audit).
 
-Instead: delete the marker (`rm "$marker_path"`), print `summary-writer: skipped sid={session_id} reason=idle-tick marker=deleted`, and exit. The raw log remains on disk for the 7-day retention window as the only record, which is enough for a session that did nothing.
+Instead: delete the marker the way step 7 does, print `summary-writer: skipped sid={session_id} reason=idle-tick marker=deleted`, and exit. The raw log remains on disk for the 7-day retention window as the only record, which is enough for a session that did nothing.
 
 **The bar is strict**: any dispatched item, any error worth remembering, any human interaction → not an idle tick; write the summary.
 
@@ -94,8 +94,10 @@ Read `references/vault-conventions.md` for the profile update conventions. Only 
 ### 7. Delete the marker
 
 ```bash
-rm "$marker_path"
+rm -f /absolute/path/to/pending-summaries/<session_id>.json
 ```
+
+Write the `marker_path` value out literally, exactly as the dispatch gave it. Never `rm "$marker_path"`: nothing sets that variable in your shell, and the destructive-scope guard refuses a `$variable`, a `~`, or a glob as a delete target because it cannot tell which file the text names. A literal marker path inside the pending-summaries folder is the one delete there it permits.
 
 Do this LAST. If you delete the marker without writing a summary, the summary is silently lost.
 

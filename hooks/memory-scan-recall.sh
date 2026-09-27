@@ -116,6 +116,9 @@ command -v python3 >/dev/null 2>&1 || exit 0
 
 TOOL=$(printf '%s' "$PAYLOAD" | jq -r '.tool_name // empty' 2>/dev/null)
 SESSION_ID=$(printf '%s' "$PAYLOAD" | jq -r '.session_id // empty' 2>/dev/null)
+# Present only inside a sub-agent, which gets its own dedup state: see
+# memory_recall_context_key in lib/memory-recall-core.sh.
+AGENT_ID=$(printf '%s' "$PAYLOAD" | jq -r '.agent_id // empty' 2>/dev/null)
 
 # No session to key dedup state on → the accumulation bound cannot be honored,
 # so nothing is injected. This fails closed on purpose: unbounded is the one
@@ -158,6 +161,11 @@ printf '%s' "$QUERY" | grep -q '[A-Za-z]' 2>/dev/null || exit 0
 # capture-nudge and the warmup sweep. The session id is sanitized before it
 # becomes a filename: ids are normally hex/UUID, but an external value never
 # belongs in a path unfiltered.
+#
+# The seen-file and the query file are keyed per CONTEXT WINDOW — the main
+# session, or one sub-agent — through memory_recall_context_key. The origin
+# verdict below stays keyed per session: a sub-agent of a scheduled tick is part
+# of that tick.
 STATE_DIR="${WORKBENCH_MEMORY_RECALL_STATE:-$HOME/.claude-workbench/memory-recall}"
 mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
 find "$STATE_DIR" \( -name '*.queries' -o -name '*.origin' \) -mtime +3 -delete 2>/dev/null
@@ -212,7 +220,11 @@ fi
 # Recorded BEFORE the search, not after: a query whose search fails will most
 # likely fail again, and retrying it on every scan is the unbounded cost this
 # lever exists to stop. One missed recall is the cheap side of that trade.
-QUERY_FILE="$STATE_DIR/${SAFE_SID}.queries"
+#
+# Keyed per context window like the seen-file, not per session: a query the main
+# session already ran is a query a sub-agent has not, and skipping it would hide
+# the hit from the sub-agent's context just as a shared seen-file did.
+QUERY_FILE="$STATE_DIR/$(memory_recall_context_key "$SESSION_ID" "$AGENT_ID").queries"
 grep -Fxq "$QUERY" "$QUERY_FILE" 2>/dev/null && exit 0
 printf '%s\n' "$QUERY" >> "$QUERY_FILE" 2>/dev/null || true
 
@@ -237,7 +249,7 @@ RESPONSE=$(memory_recall_search "$SERVER_BIN" "$QUERY" "$MODE" "$FETCH" "$TIMEOU
 ROWS=$(memory_recall_rows "$RESPONSE" "$LIMIT" "$TYPES")
 [ -n "$ROWS" ] || exit 0
 
-SEEN_FILE=$(memory_recall_seen_file "$STATE_DIR" "$SESSION_ID") || exit 0
+SEEN_FILE=$(memory_recall_seen_file "$STATE_DIR" "$SESSION_ID" "$AGENT_ID") || exit 0
 memory_recall_bullets "$ROWS" "$SEEN_FILE"
 
 # Every hit already injected this session → stay silent (the bound at work).

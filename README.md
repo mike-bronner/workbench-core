@@ -135,13 +135,15 @@ Configuration is stored in `~/.claude/plugins/data/workbench-core-claude-workben
 
 There are three ways to get identity files in place — pick one:
 
-**Fastest — install the shipped persona.** The plugin ships one ready-made persona under `assets/personas/<name>/`. Install it with:
+**Fastest — install the shipped persona.** The plugin ships one ready-made persona under `assets/personas/<name>/`. `/workbench-core:setup` offers to install it (Step 2f), and every later run of setup re-syncs it:
 
 ```
-/workbench-core:install
+/workbench-core:setup
 ```
 
 It propagates whatever that persona directory contains — an output style to `~/.claude/output-styles/` plus the `outputStyle` setting, and soul files to your vault if it ships any. It is non-destructive: existing hand-edited files are diffed and confirmed before any overwrite. This is the quickest path to a durable voice, because the output style sits in the system prompt (which outranks context).
+
+The warmup does not write the output style, so a plugin update can leave the live copy behind the shipped one. When it does, the warmup notices report `⚠ Output style out of date`, and a re-run of setup brings it current. The persona used to have its own `/workbench-core:install` command, and nothing prompted a re-run of it: the live style once ran 8 days stale.
 
 The persona shipped today is `clear`: an output style only, with no soul files. It defines a writing standard rather than a character, so nothing lands in `identity/`. A persona directory may ship `soul-hot.md` and `soul-core.md` as well — both are optional, and each installs only when present.
 
@@ -185,9 +187,9 @@ The protocol is driven by `{memory_path}/identity/skills-protocol.md`, installed
 
 #### Compaction
 
-When a learnings file exceeds **30 entries**, the protocol flags it for compaction. `/workbench:compact-learnings` walks through each entry interactively:
+When a learnings file exceeds **30 entries**, the protocol flags it for compaction. `/workbench-core:compact-learnings` recommends a verdict for every entry and asks about them in batches through `AskUserQuestion`. `scripts/find-workbench-skill.sh` decides which kind of skill it is, by reading `~/.claude/plugins/installed_plugins.json`:
 
-- **Workbench plugin skills** — learnings can be integrated directly into the SKILL.md (improving the skill definition) or kept/dropped
+- **Workbench plugin skills** — learnings can be integrated into the SKILL.md (improving the skill definition) or kept/dropped. Integration is handed to Dr. Watson as a brief against the plugin's source clone, so it goes through the development flow and the commit gate; the installed copy is never edited
 - **All other skills** — learnings are compacted (kept, rewritten, or dropped) without touching the SKILL.md
 
 ### Shared references
@@ -264,7 +266,6 @@ core/
 │   ├── propose-upgrades/       — learnings → reviewed proposals → apply on sign-off (REPS gears 3+4)
 │   ├── define-profile/         — interactive user profile interview
 │   ├── define-soul/            — interactive agent identity onboarding
-│   ├── install/                — propagate the shipped persona to live locations
 │   ├── log-now/                — dump + narrate the current session inline
 │   ├── memory-lint/            — monthly vault health-and-repair pass
 │   ├── cross-session-messaging/ — the protocol for messaging another session, and for receiving one
@@ -353,7 +354,7 @@ It is deliberately plugin-agnostic. Every install ships built-in sub-agents (gen
 
 That third row is why `agent_type` alone has to allow: a scheduled `claude -p --agent <name>` run is top-level in its own session and carries no `agent_id`, so gating on `agent_id` alone would kill every scheduled run at its first file write. `CLAUDE_CODE_CHILD_SESSION` is **not** a usable signal, because it was `1` in all three cases, including a plain main session.
 
-**Allow branches, in order.** Any one of these lets the call through: (a) `agent_id` is set, so the call is a sub-agent, which is the destination this gate redirects to; (b) `agent_type` is set, a top-level `--agent` dispatch; (c) `WORKBENCH_ORCHESTRATOR=0` in the environment, which is how an automated harness opts its own run out; (d) the session toggle is off; (e) the tool is not one of the three, which the matcher should already have handled; (f) anything went wrong.
+**Allow branches, in order.** Any one of these lets the call through: (a) `agent_id` is set, so the call is a sub-agent, which is the destination this gate redirects to; (b) `agent_type` is set, a top-level `--agent` dispatch; (c) `WORKBENCH_ORCHESTRATOR=0` in the environment, which is how an automated harness opts its own run out; (d) the session toggle is off; (e) the tool is not one of the three, which the matcher should already have handled; (f) the target is a file in a scratchpad: this session's, matched by session id with no symlink at any level, or the login home's `Developer/scratchpad`, with the home read from the password database rather than `$HOME`. The target is compared physically and may not itself be a symlink. The main session writes a `git commit -F` message or a PR body there, as the identity block and the commit gate tell it to, and every such write used to be denied; (g) anything went wrong.
 
 **Turning it off for a session.** `/workbench-core:orchestrator off` writes an empty file named for the current session under `$WORKBENCH_ORCHESTRATOR_STATE_DIR` (default `~/.claude-workbench/orchestrator-mode/`). The gate stands down while that file exists. `on` removes it, and no argument reports the state. The gate is **ON by default**, so an absent file means enforcement: every new session starts gated and nothing leaks between sessions. The file is keyed by `$CLAUDE_CODE_SESSION_ID`, which equals the `.session_id` the hook reads from its payload (verified live), so the skill and the hook agree on the key without passing anything between them. Each invocation prunes state files older than 7 days, so the directory does not accumulate one file per session forever.
 
@@ -904,7 +905,7 @@ The marker is one glyph repeated, not a set, and that is the half with a measure
 | `references/guardrails.md` | Full text, with ❌/✅ examples | Read on demand; loaded by the interview skills |
 | `references/guardrails-inline.md` | One line per rule | Injected into context by the warmup hook, every session source |
 | `references/behavioral-overrides.md` | Terse overrides of base-prompt defaults | Rendered onto disk into `~/.claude/system-overrides.md` (Layer 1) and the managed `~/.claude/CLAUDE.md` block (Layer 2) |
-| `assets/personas/clear/output-style.md` | The persona's own voice, plus its drift test | Installed as the active output style by `/workbench-core:install` |
+| `assets/personas/clear/output-style.md` | The persona's own voice, plus its drift test | Installed as the active output style by `/workbench-core:setup` (Step 2f) |
 
 `hooks/test-guardrail-mirrors.sh` pins the rule in all four and fails when one of them drops it. `hooks/test-session-warmup.sh` additionally proves the injected copies carry it at runtime, which is the property the mirror check cannot see.
 
@@ -937,7 +938,7 @@ The merge is **additive**: entries are added when absent, and existing rules kee
 
 **That exception cannot be layered on top of an ask entry, which is why the entries have to leave rather than be narrowed.** Rules are evaluated deny → ask → allow with **first match winning**, specificity does not reorder them, and Bash rules support no negation operator, so `Bash(rm -rf /tmp/:*)` in `allow` is dead text the ask rule beats every time. Nor does a hook rescue it: Anthropic's permissions documentation states that hook decisions do not bypass permission rules, and that a matching ask rule still prompts **even when a `PreToolUse` hook returned `"allow"`** — the sandboxing documentation says the same for sandboxed commands. A content-scoped ask entry is therefore overridden by nothing.
 
-**`hooks/destructive-scope-guard.sh` is what answers in their place.** It permits a destructive command when **every path it acts on** resolves inside the project or a scratch root, and denies it otherwise. Four roots: the project from `CLAUDE_PROJECT_DIR`, the login home's `Developer/scratchpad`, this session's scratchpad matched by session id, and — on Darwin — this account's per-user temporary directory, which is where `mktemp -d` writes and so where an agent's sandbox teardown happens. Off Darwin that fourth root is not approved at all: `mktemp -d` falls back to `/tmp` there and every account on the machine shares it. One folder family in `/tmp` is approved as well, and it is not a root: a leftover agent-scratch folder directly in `/tmp`, named `claude-*scratch*` (such as `claude-scratch-<id>` or `claude-summary-scratch`), that is a real directory owned by this account. Agents once made those by hand, and the guard refused to let them clean up. A delete may remove the folder itself as well as anything in it. The name is read from the directory listing, never from the spelling the caller typed: on case-insensitive APFS `/tmp/Claude-503` is the live `claude-<uid>` session tree, so a spelling test would judge a name no file carries. No other `/tmp` name qualifies, and neither does anything reached through a symlink out of `/tmp`. A delete must land **strictly beneath** a root, because each root holds live state that is not the session's to destroy; a git verb may act **on** one, because it destroys uncommitted state inside a worktree without removing it. It also reaches what no rule can: `rm -r` without `-f`, plain `rm`, and `rmdir` match no entry in `rails.json` at all, and a verb behind `cd x &&`, `sudo`, or a pipeline sits where a prefix rule cannot read it.
+**`hooks/destructive-scope-guard.sh` is what answers in their place.** It permits a destructive command when **every path it acts on** resolves inside the project or a scratch root, and denies it otherwise. Four roots: the project from `CLAUDE_PROJECT_DIR`, the login home's `Developer/scratchpad`, this session's scratchpad matched by session id, and — on Darwin — this account's per-user temporary directory, which is where `mktemp -d` writes and so where an agent's sandbox teardown happens. Off Darwin that fourth root is not approved at all: `mktemp -d` falls back to `/tmp` there and every account on the machine shares it. One folder family in `/tmp` is approved as well, and it is not a root: a leftover agent-scratch folder directly in `/tmp`, named `claude-*scratch*` (such as `claude-scratch-<id>` or `claude-summary-scratch`), that is a real directory owned by this account. Agents once made those by hand, and the guard refused to let them clean up. A delete may remove the folder itself as well as anything in it. The name is read from the directory listing, never from the spelling the caller typed: on case-insensitive APFS `/tmp/Claude-503` is the live `claude-<uid>` session tree, so a spelling test would judge a name no file carries. No other `/tmp` name qualifies, and neither does anything reached through a symlink out of `/tmp`. One file shape is approved too: a single session-summary marker, a `*.json` name directly in `<cache>/pending-summaries/` that is absent or a regular file this account owns. The summary-writer, `log-now` and `summarize-session` each end by deleting one, and before this permit every one of those deletes was denied. The folder is resolved the way `hooks/session-log.sh` resolves it when it writes the marker, from the hook's own `WORKBENCH_MEMORY_CACHE` or `config.json`, never from the command. The folder and the cache root above it must be real directories rather than links. A delete must land **strictly beneath** a root, because each root holds live state that is not the session's to destroy; a git verb may act **on** one, because it destroys uncommitted state inside a worktree without removing it. It also reaches what no rule can: `rm -r` without `-f`, plain `rm`, and `rmdir` match no entry in `rails.json` at all, and a verb behind `cd x &&`, `sudo`, or a pipeline sits where a prefix rule cannot read it.
 
 **No root is decided by an environment variable the caller can set.** A root the caller chooses is not a root: point `$HOME` at a directory holding a `Developer/scratchpad` symlink and every other defence still passes while the wrong tree is deleted, which was reproduced against the guard's predecessor. So the login home comes from the password database through `getpwuid(3)`, which no variable and no `PATH` can redirect; `$TMPDIR` is the same hole under a new name and gets the same answer, with the temporary root read from `getconf DARWIN_USER_TEMP_DIR`, which answers from the account rather than the environment; and `CLAUDE_PROJECT_DIR` is trustworthy for the opposite reason — Claude Code sets it for hook commands and it is absent from the Bash tool environment entirely, so `CLAUDE_PROJECT_DIR=/ rm -rf x` sets it for the command being judged and never for the judge. Every path is resolved **physically** before comparison, because a string prefix accepts `<root>/link/x` where `link` points at a repository, and `<root>/../../etc`.
 
@@ -1145,9 +1146,8 @@ Runs on every `startup` warmup:
 
 | Skill | Description |
 |-------|-------------|
-| `/workbench:setup` | Configure agent name, paths, summary model, identity files |
+| `/workbench:setup` | Configure agent name, paths, summary model, identity files, and the shipped persona (output style + soul files); re-run after an update to re-sync the style |
 | `/workbench:define-soul` | Interactive onboarding/refinement for agent identity (soul-hot, soul-core) |
-| `/workbench-core:install` | Install the shipped persona — soul files + output style + `outputStyle` setting — into your live locations; non-destructive |
 | `/workbench:define-profile` | Interactive interview to build/refine the user's profile.md (role, working style, stack, privacy, session quality) |
 | `/workbench:log-now` | Dump the current session log and write a narrative summary inline |
 | `/workbench:summarize-session` | Manually summarize a specific session (or pick from unsummarized) |
@@ -1234,6 +1234,6 @@ All config values can be overridden via environment variables for testing:
 
 ## Design philosophy
 
-The plugin is **infrastructure first, persona optional**. Your agent's personality comes from the identity files *you* customize — the framework imposes none. Templates in `assets/templates/` use `{{agent_name}}` placeholders if you'd rather start from blank ones. The plugin also ships one ready-made persona under `assets/personas/<name>/` (soul files + output style) as an optional starting point: you opt in via `/workbench-core:install`, which copies it to *your* editable locations — it's never enforced, and nothing stops you from editing it into something else entirely once it's yours. The one thing that isn't optional is `references/guardrails.md` — universal quality constraints (no sycophancy, no hedging, verify before asserting), not personality.
+The plugin is **infrastructure first, persona optional**. Your agent's personality comes from the identity files *you* customize — the framework imposes none. Templates in `assets/templates/` use `{{agent_name}}` placeholders if you'd rather start from blank ones. The plugin also ships one ready-made persona under `assets/personas/<name>/` (soul files + output style) as an optional starting point: you opt in through `/workbench-core:setup`, which copies it to *your* editable locations — it's never enforced, and nothing stops you from editing it into something else entirely once it's yours. The one thing that isn't optional is `references/guardrails.md` — universal quality constraints (no sycophancy, no hedging, verify before asserting), not personality.
 
 Memory files live **outside any git repo**, at a user-configured path. Memory is personal state; the plugin is code. They are intentionally separate.

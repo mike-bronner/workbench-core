@@ -952,6 +952,61 @@ else
   FAIL=$((FAIL + 1)); echo "  ❌ warmup output drifted between two identical runs"
 fi
 
+echo "output-style drift — a stale live style is reported, never rewritten:"
+# The live copy once ran 8 days behind the shipped one, still telling the model
+# to run an options round before a push. The warmup re-syncs other live files,
+# but not this one, so the notice is the only thing that makes the lag visible.
+STYLES_DIR="$SANDBOX/home/.claude/output-styles"
+SHIPPED_DIRS=("$REPO_ROOT"/assets/personas/*/)
+SHIPPED_DIR="${SHIPPED_DIRS[0]%/}"
+LIVE_STYLE="$STYLES_DIR/${SHIPPED_DIR##*/}.md"
+rm -rf "$STYLES_DIR"
+run_warmup startup >/dev/null
+assert_missing "no live style: no notice (the persona is opt-in)" "$(notices)" "Output style out of date"
+mkdir -p "$STYLES_DIR"
+cp "$SHIPPED_DIR/output-style.md" "$LIVE_STYLE"
+run_warmup startup >/dev/null
+assert_missing "a current live style: no notice" "$(notices)" "Output style out of date"
+printf 'Run an options round before every push.\n' >> "$LIVE_STYLE"
+STALE_BEFORE=$(cat "$LIVE_STYLE")
+OUT_STYLE=$(run_warmup startup)
+assert_contains "a stale live style: the notice appears" "$(notices)" "Output style out of date"
+assert_contains "the notice names the live file" "$(notices)" "$LIVE_STYLE"
+assert_contains "the notice points at setup" "$(notices)" "/workbench-core:setup"
+assert_missing "the notice stays out of the cached payload" "$OUT_STYLE" "Output style out of date"
+run_warmup resume >/dev/null
+assert_contains "a resumed session reports it too" "$(notices)" "Output style out of date"
+if [ "$(cat "$LIVE_STYLE")" = "$STALE_BEFORE" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ the warmup leaves the live style untouched"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ the warmup rewrote the live style"
+fi
+rm -rf "$STYLES_DIR"
+
+echo "the persona installs through setup, the one entry point:"
+SETUP_SKILL="$REPO_ROOT/skills/setup/SKILL.md"
+assert_contains "setup previews the persona install" "$(cat "$SETUP_SKILL")" \
+  'bash "${CLAUDE_PLUGIN_ROOT}/scripts/install.sh" --dry-run'
+assert_contains "setup applies it" "$(cat "$SETUP_SKILL")" \
+  'bash "${CLAUDE_PLUGIN_ROOT}/scripts/install.sh"'
+# The warmup notice promises that setup shows the diff before it writes, so the
+# dry run has to print one for a stale live style, and must write nothing.
+mkdir -p "$STYLES_DIR"
+cp "$SHIPPED_DIR/output-style.md" "$LIVE_STYLE"
+printf 'STALE-STYLE-CANARY\n' >> "$LIVE_STYLE"
+DRY=$(WORKBENCH_OUTPUT_STYLES_DIR="$STYLES_DIR" \
+      WORKBENCH_SETTINGS_FILE="$SANDBOX/home/.claude/settings.json" \
+      WORKBENCH_MEMORY_PATH="$SANDBOX/memory" HOME="$SANDBOX/home" \
+      CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$REPO_ROOT/scripts/install.sh" --dry-run 2>&1)
+assert_contains "the dry run shows the stale line it would remove" "$DRY" "-STALE-STYLE-CANARY"
+assert_contains "the live style is still the stale one" "$(cat "$LIVE_STYLE")" "STALE-STYLE-CANARY"
+rm -rf "$STYLES_DIR"
+if [ ! -e "$REPO_ROOT/skills/install" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ no second install command"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ skills/install still ships beside setup"
+fi
+
 echo "exit code is always 0:"
 if printf '{"source":"compact"}' | HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" >/dev/null 2>&1; then
   PASS=$((PASS + 1)); echo "  ✅ compact exits 0"

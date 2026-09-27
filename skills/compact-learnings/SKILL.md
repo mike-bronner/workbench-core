@@ -4,7 +4,7 @@ description: Review and compact accumulated skill learnings. For workbench plugi
 
 This is an execution-aware skill — check `skills/compact-learnings.learnings.md` in the vault before proceeding. If it exists, apply accumulated learnings.
 
-The user has invoked `/workbench:compact-learnings`, or the skills protocol flagged a learnings file above the 30-entry threshold.
+The user has invoked `/workbench-core:compact-learnings`, or the skills protocol flagged a learnings file above the 30-entry threshold.
 
 ## Step 1 — Identify targets
 
@@ -26,18 +26,19 @@ If under 30 entries and this is an unprompted manual run (no specific skill), as
 
 ### Classify the skill
 
-Determine if this is a **workbench plugin skill** by searching for a matching SKILL.md in installed plugins whose directory name includes `claude-workbench`:
+Determine whether this is a **workbench plugin skill** — one shipped by an installed `@claude-workbench` plugin. The script reads the plugin registry, `~/.claude/plugins/installed_plugins.json`, and checks each workbench plugin's `installPath` for the skill:
 
 ```bash
-find ~/.claude/plugins/installed/*claude-workbench*/skills -name "SKILL.md" -path "*/{skill-name}/*" 2>/dev/null
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/find-workbench-skill.sh" {skill-name}
 ```
 
-- **Workbench plugin skill** → hybrid mode (compact + offer integration into installed SKILL.md, then sync to git repo)
-- **Any other skill** → compact only (rewrite learnings, don't touch SKILL.md)
+- **Exit 0** → a **workbench plugin skill**. Each output line is `plugin`, `repository`, and the installed `SKILL.md` path, tab-separated. Use hybrid mode: compact, plus offer integration into the plugin's source.
+- **Exit 1** → **any other skill**. Compact only: rewrite the learnings, and do not touch any SKILL.md.
+- **Exit 2** → the registry could not be read. Stop and report the script's message. Never fall back to "other": a classifier that silently answers "other" is what kept every workbench skill out of the integrate path.
 
-### Walk through each entry
+### Walk through the entries
 
-Present each learning to the user with **three options** and your recommendation.
+Decide a recommendation for every entry first, with a one-line reason. Then ask the user through **`AskUserQuestion`**, one question per entry, batched up to 4 per call (the tool's maximum). Put the recommended option first and mark it `(Recommended)`. Never walk the entries one message at a time: each round trip spends the user's attention, which is the scarce resource here.
 
 **For workbench plugin skills:**
 
@@ -55,8 +56,6 @@ Present each learning to the user with **three options** and your recommendation
 | **Rewrite** | Valid learning but poorly worded — rewrite concisely |
 | **Drop** | Remove |
 
-For each entry, state your recommendation and a one-line rationale. Wait for the user's choice before moving on.
-
 ## Step 3 — Apply changes
 
 ### Compact the learnings file
@@ -65,26 +64,28 @@ Rewrite with only kept/rewritten entries. Maintain chronological order. Write vi
 
 If all entries were dropped or integrated, write a minimal file with just frontmatter and no entries.
 
+**Integrated entries leave the learnings file only once the integration is handed off.** If the hand-off below does not happen, keep them in the file, so no learning is lost between the two.
+
 ### Integrate into SKILL.md (workbench plugin skills only)
+
+**Never write the installed copy under `~/.claude/plugins/cache`, and never copy a file into the source repository yourself.** A plugin update overwrites the installed copy. A change copied into the repository skips the development flow, its tests, and the commit gate. Integration is development work on the plugin, so it goes to Dr. Watson.
 
 For entries marked "Integrate":
 
-1. Read the current SKILL.md from the installed plugin directory found in Step 2.
-2. Determine where each learning fits — it may modify an existing step, add a caveat, or add a note.
-3. Present the proposed changes to the user for approval before writing.
-4. Write the updated SKILL.md to the installed copy.
-5. Sync to the git source repo: read the `repository` field from the plugin's `plugin.json` to identify the GitHub repo. Derive the local clone path by finding a directory whose `git remote -v` origin matches the repository URL. Copy the updated SKILL.md to the corresponding path in the source repo.
+1. Read the installed SKILL.md that Step 2 found, to see the skill's current structure.
+2. Decide where each learning fits: an existing step, a caveat, or a note. If several learnings point at the same issue, consolidate them into one change.
+3. Find the local clone of the plugin's source repository, the `repository` column from Step 2. If the session cannot tell where it is, ask the user through `AskUserQuestion`. Never guess a path.
+4. Dispatch Dr. Watson in Direct mode through `/workbench-dev-team:orchestrate`, with a five-slot brief. `Workdir:` is the clone. `Goal:` is the skill behaving as the learnings describe. `Context:` quotes each integrated learning verbatim and says why it earned integration. `Done when:` is the SKILL.md carrying the guidance, woven into its existing structure, with the tree left uncommitted for the user to review.
+5. If `workbench-dev-team` is not installed, do not integrate. Report each proposed change, with the file it belongs in, and keep those entries in the learnings file.
 
-Weave integrated learnings into the existing structure. Do NOT append a "learnings" section — the guidance should read as if it was always part of the skill.
-
-If multiple learnings point to the same issue, consolidate into a single change.
+The guidance has to read as if it was always part of the skill. Say so in the brief: no appended "learnings" section.
 
 ## Step 4 — Report
 
 ```
 compact-learnings: {skill-name}
   entries: {total} → integrated: {n}, kept: {n}, dropped: {n}
-  SKILL.md: {updated|unchanged}
+  SKILL.md: {handed to Watson|unchanged}
 ```
 
 ## Notes

@@ -84,6 +84,9 @@ command -v jq >/dev/null 2>&1 || exit 0
 
 PROMPT=$(printf '%s' "$PAYLOAD" | jq -r '.prompt // empty' 2>/dev/null)
 SESSION_ID=$(printf '%s' "$PAYLOAD" | jq -r '.session_id // empty' 2>/dev/null)
+# Present only inside a sub-agent, which gets its own dedup state: see
+# memory_recall_context_key in lib/memory-recall-core.sh.
+AGENT_ID=$(printf '%s' "$PAYLOAD" | jq -r '.agent_id // empty' 2>/dev/null)
 
 # No session to key dedup state on → can't honor the accumulation bound, so don't
 # inject. No prompt → nothing to search.
@@ -178,7 +181,7 @@ RESPONSE=$(memory_recall_search "$SERVER_BIN" "$QUERY" "$MODE" "$FETCH" "$TIMEOU
 ROWS=$(memory_recall_rows "$RESPONSE" "$LIMIT" "$TYPES")
 [ -n "$ROWS" ] || exit 0
 
-SEEN_FILE=$(memory_recall_seen_file "$STATE_DIR" "$SESSION_ID") || exit 0
+SEEN_FILE=$(memory_recall_seen_file "$STATE_DIR" "$SESSION_ID" "$AGENT_ID") || exit 0
 memory_recall_bullets "$ROWS" "$SEEN_FILE"
 
 # Nothing new for this session → stay silent (the dedup bound at work).

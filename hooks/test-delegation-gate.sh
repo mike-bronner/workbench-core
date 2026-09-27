@@ -202,7 +202,68 @@ run_case "Bash"              silent tool_name=Bash session_id="$SESSION" agent_i
 run_case "Read"              silent tool_name=Read session_id="$SESSION" agent_id=- agent_type=-
 run_case "missing tool_name" silent tool_name=-    session_id="$SESSION" agent_id=- agent_type=-
 
-echo "(f) errors fail open:"
+echo "(f) the main agent may write scratch files:"
+# A session scratchpad of the real shape, found by session id under
+# /tmp/claude-*/. The gate refuses one with a symlink at any level, so the
+# sibling session's pad, a linked pad, and a link inside a real pad are built
+# beside it to prove each is refused rather than followed.
+SCRATCH_TREE="/tmp/claude-dgate-test-$$"
+SCRATCH_SID="dgate-$$-aaaa"
+PAD="$SCRATCH_TREE/-fake-project/$SCRATCH_SID/scratchpad"
+OTHER_PAD="$SCRATCH_TREE/-fake-project/dgate-$$-bbbb/scratchpad"
+LINK_SID="dgate-$$-link"
+mkdir -p "$PAD/sub" "$OTHER_PAD" "$SANDBOX/outside" "$SCRATCH_TREE/-fake-project/$LINK_SID"
+ln -s "$SANDBOX/outside" "$SCRATCH_TREE/-fake-project/$LINK_SID/scratchpad"
+ln -s "$SANDBOX/outside" "$PAD/escape"
+ln -s "$SANDBOX/outside/target.txt" "$PAD/linked-file.txt"
+trap 'rm -rf "$SANDBOX" "$SCRATCH_TREE"' EXIT
+
+# write_case <description> <expect> <tool> <file_path> [session_id]
+write_case() {
+  local out
+  out=$(jq -nc --arg t "$3" --arg f "$4" --arg s "${5:-$SCRATCH_SID}" \
+    '{hook_event_name: "PreToolUse", tool_name: $t, session_id: $s,
+      tool_input: {file_path: $f}}' | gate)
+  check "$1" "$out" "$2"
+}
+
+write_case "Write a commit message in the session scratchpad" silent Write "$PAD/commit-msg.txt"
+write_case "Edit a file in the session scratchpad"            silent Edit  "$PAD/pr-body.md"
+write_case "Write into a subfolder not made yet"               silent Write "$PAD/new/deeper/x.md"
+if [ /private/tmp -ef /tmp ]; then
+  write_case "the pad by its /private spelling"                silent Write "/private$PAD/msg.txt"
+fi
+# NotebookEdit names its target `notebook_path`, never `file_path`, so only the
+# fallback in the gate's extraction can find it.
+out=$(jq -nc --arg f "$PAD/scratch.ipynb" --arg s "$SCRATCH_SID" \
+  '{hook_event_name: "PreToolUse", tool_name: "NotebookEdit", session_id: $s,
+    tool_input: {notebook_path: $f}}' | gate)
+check "NotebookEdit with only notebook_path in the pad" "$out" silent
+write_case "a project file is still denied"                   deny   Write "$SANDBOX/project/file.txt"
+write_case "the scratchpad folder itself is not a file in it" deny   Write "$PAD"
+write_case "another session's scratchpad"                     deny   Write "$OTHER_PAD/msg.txt"
+write_case "a scratchpad that is a symlink out"               deny   Write "$SCRATCH_TREE/-fake-project/$LINK_SID/scratchpad/x.txt" "$LINK_SID"
+write_case "a symlinked folder inside the pad"                deny   Write "$PAD/escape/x.txt"
+write_case "a symlinked file inside the pad"                  deny   Write "$PAD/linked-file.txt"
+write_case "climbing out with .."                             deny   Write "$PAD/../../../../outside.txt"
+write_case "climbing out of a folder not made yet"            deny   Write "$PAD/never/../../x.txt"
+write_case "a relative path"                                  deny   Write "scratchpad/msg.txt"
+write_case "no file_path at all"                              deny   Write ""
+write_case "a sibling sharing the pad's prefix"               deny   Write "${PAD}-evil/x.txt"
+
+# The login home comes from the password database, so a faked HOME holding a
+# Developer/scratchpad must not count. The suite's gate() already runs with
+# HOME pointed at the sandbox.
+mkdir -p "$FAKE_HOME/Developer/scratchpad"
+write_case "a \$HOME-relative scratchpad does not count"      deny   Write "$FAKE_HOME/Developer/scratchpad/x.txt"
+# The real one is read, never written: the gate only judges the path.
+LOGIN_USER=$(id -un)
+eval "LOGIN_HOME=~$LOGIN_USER"
+if [ -d "$LOGIN_HOME/Developer/scratchpad" ]; then
+  write_case "the login home's Developer/scratchpad"           silent Write "$LOGIN_HOME/Developer/scratchpad/dgate-$$-never-written.txt"
+fi
+
+echo "(g) errors fail open:"
 out=$(printf '%s' 'not json at all {{{' | gate)
 check "malformed JSON" "$out" silent
 out=$(printf '%s' '{"tool_name":"Write","session_id":' | gate)

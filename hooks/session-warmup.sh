@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 #
-# session-warmup: inject identity essentials and handle pending work at session
-# start.
+# session-warmup: inject the memory and scratch rules, and handle pending work
+# at session start.
 #
 # Invoked by the `core` plugin's SessionStart hook. Reads the hook payload from
-# stdin, writes identity + notices to stdout for Claude Code to inject into the
+# stdin, writes the rules + notices to stdout for Claude Code to inject into the
 # assistant's context.
 #
 # Branches on the payload's `source` field:
-#   startup → full warmup: cleanup + identity + notices refresh
-#   resume  → identity refresh (profile as pointer) + notices refresh
-#   clear   → identity refresh + notices refresh
-#   compact → identity refresh only (profile as pointer)
+#   startup → full warmup: cleanup + rules + notices refresh
+#   resume  → rules + notices refresh
+#   clear   → rules + notices refresh
+#   compact → rules only
 #
 # The injected payload is BYTE-STABLE by construction: all volatile housekeeping
 # state goes to ~/.claude-workbench/warmup-notices.md and is surfaced by a
-# constant pointer line. See the append-only invariant at the identity block.
+# constant pointer line. See the append-only invariant at the rules block.
 #
 # Exit code is always 0 — warmup failures must not break the session.
 
@@ -55,7 +55,7 @@ memory_load_env
 # shellcheck source=hooks/lib/summary-dispatch.sh
 . "$HOOKS_DIR/lib/summary-dispatch.sh"
 
-# Config resolution for warmup-only fields (agent_name, identity_files).
+# Config resolution for the warmup-only field, agent_name.
 # Prefer the current data dir; fall back to the pre-rename location so users
 # who customized before the workbench → workbench-core rename keep working.
 CONFIG_FILE="$(memory_resolve_config_file)"
@@ -341,7 +341,7 @@ ensure_memory_routing_stub() {
 }
 
 # Skip guard: the summary-writer spawn from session-log.sh sets this env
-# var on its detached claude process. That process doesn't need identity
+# var on its detached claude process. That process doesn't need session
 # context or pending-summary scanning — it has a single mechanical job
 # assigned in its prompt and should not touch anything other than its job.
 if [ "${WORKBENCH_SKIP_WARMUP:-}" = "1" ]; then
@@ -352,7 +352,7 @@ fi
 # (Watson, Holmes-reviewer, Lestrade, Harvester, and any future agent
 # from any plugin). Those runs carry self-contained system prompts and
 # must not inherit the interactive session context this warmup injects:
-# the soul file, the profile, and the housekeeping notices are written for a
+# the memory rules and the housekeeping notices are written for a
 # human-attended session, and Watson dispatched via cron has no human present.
 # Orchestrator/Dispatch and Mike's own interactive sessions run without
 # --agent, leave this unset, and are unaffected.
@@ -377,7 +377,7 @@ if [ "${CONFIG_BROKEN:-}" = "1" ]; then
   printf '## ⚠ Malformed config.json\n\n'
   printf '`%s` exists but is not valid JSON.\n' "$CONFIG_FILE"
   printf 'All settings are falling back to hardcoded defaults, which may point to wrong directories.\n'
-  printf 'Run `/workbench:setup` to regenerate the config, or fix the JSON manually.\n\n'
+  printf 'Run `/workbench-core:setup` to regenerate the config, or fix the JSON manually.\n\n'
 fi
 
 # ──────────── Memory-routing stub conflict warning ────────────
@@ -386,7 +386,7 @@ if [ -n "${MEMORY_ROUTING_CONFLICT:-}" ]; then
 fi
 
 # ──────────── Retention cleanup (startup only) ────────────
-# Prune stale artifacts on full warmup. Runs before identity injection so it
+# Prune stale artifacts on full warmup. Runs before the rules block so it
 # doesn't add latency to the user-visible part of startup. All find commands
 # are fire-and-forget (-delete exits silently on no matches).
 if [ "$SOURCE" = "startup" ]; then
@@ -461,32 +461,20 @@ if [ "$SOURCE" = "startup" ]; then
   esac
 fi
 
-# ──────────── Identity injection (source-aware) ────────────
+# ──────────── Rules block (every source) ────────────
 # No behavioural rule list is injected here. The rules load once, from the
 # active output style, which is system-prompt tier and survives compaction.
-# references/guardrails.md is the interview rubric for define-soul and
-# define-profile, and is read by those skills only.
-#
-# Soul-hot is re-injected on every source: after context
-# compression (compact) the identity may have been shed; on resume it may have
-# drifted. The full profile (~4KB) only loads when the context is genuinely
-# fresh (startup, clear) — compact and resume get a one-line pointer and
-# re-read on demand. skills-protocol is execution-time guidance that skills
-# re-read when they run, so every source gets a pointer.
-#
-# Paths resolve from config.json identity_files, falling back to hardcoded defaults.
-SOUL_HOT_REL="$(_cfg '.identity_files.soul_hot')"
-SOUL_HOT="$MEMORY_PATH/${SOUL_HOT_REL:-identity/soul-hot.md}"
-PROFILE_REL="$(_cfg '.identity_files.profile')"
-PROFILE="$MEMORY_PATH/${PROFILE_REL:-identity/profile.md}"
-SKILLS_PROTOCOL="$MEMORY_PATH/identity/skills-protocol.md"
+# No persona file is injected either: the shipped persona is that output style,
+# so the soul and profile files this block used to load had no writer left.
+# Skill learnings are not pointed at from here. hooks/skill-learnings.sh hands
+# each skill its own learnings file when the Skill tool runs.
 
 # APPEND-ONLY INVARIANT (cache-prefix stability). Everything printed from the
-# top of this script through the end of the identity payload below must be
-# BYTE-STABLE across invocations: identical config, identical identity files →
-# identical bytes. Anthropic prompt caching matches on an exact request prefix,
-# so a single drifting byte up here invalidates the cache for the entire rest
-# of the prompt — the identity payload, every plugin's contributions, the
+# top of this script through the end of the rules payload below must be
+# BYTE-STABLE across invocations: identical config → identical bytes.
+# Anthropic prompt caching matches on an exact request prefix, so a single
+# drifting byte up here invalidates the cache for the entire rest of the
+# prompt — the rules payload, every plugin's contributions, the
 # skill body, and the tool definitions. Any block whose content varies run to
 # run (a live file count, a wall-clock-triggered flag, a directory listing)
 # therefore APPENDS after this section, never precedes it. See the
@@ -557,49 +545,6 @@ printf '## Destructive commands\n\n'
 printf -- '- `rm`, `rmdir`, `git reset --hard`, `git clean`, and `git stash clear`/`drop` run with no prompt when every path they act on resolves inside the project or a scratch root: the session scratchpad, `~/Developer/scratchpad`, or a `mktemp -d` sandbox. A PreToolUse guard resolves each path and permits the call. `rm` and `rmdir` may also remove a leftover `/tmp/claude-*scratch*` folder you own, the folder itself included. It is not a root, so `git` verbs there are still denied.\n'
 printf -- '- Make new scratch in the session scratchpad or `~/Developer/scratchpad`. Never create it anywhere under `/tmp` outside your session scratchpad. Do not put new scratch in an old `claude-*scratch*` folder there either.\n'
 printf -- '- Outside those roots it DENIES, and so does any target it cannot read: a `$variable`, a glob, `bash -c`, `ssh`, `xargs`, `find -delete`, or a loop body. Spell paths out literally and keep the delete its own command. Never hand the user a `!` command to delete your own scratch. A target outside every root that is not scratch is the user'"'"'s call, and they run it with the `!` prefix.\n\n'
-
-# A soul file is OPTIONAL. An agent with no persona carries its standard in the
-# output style instead, which is system-prompt tier and survives compaction on
-# its own — nothing for this block to re-inject. Three cases, in order:
-#   readable                  → inject it
-#   configured but unreadable → warn, because that is a misconfiguration
-#   not configured at all     → silent, because absence is the deliberate state
-# The default path still resolves above, so a config predating identity_files
-# keeps injecting its soul file exactly as before.
-if [ -r "$SOUL_HOT" ]; then
-  printf '## Identity — soul-hot\n\n'
-  cat "$SOUL_HOT"
-  printf '\n\n'
-elif [ -n "$SOUL_HOT_REL" ]; then
-  printf '_(soul-hot.md not found at %s)_\n\n' "$SOUL_HOT"
-fi
-
-# A profile is OPTIONAL for the same reason a soul file is, and it gets the same
-# three cases. Until this matched the soul branch it warned unconditionally, so a
-# user who deleted profile.md on purpose read "profile.md not found" at the top
-# of every single session, and an agent reading that concluded the install was
-# broken. Absence and misconfiguration are different states and now read
-# differently.
-case "$SOURCE" in
-  startup|clear)
-    if [ -r "$PROFILE" ]; then
-      printf '## User profile\n\n'
-      cat "$PROFILE"
-      printf '\n\n'
-    elif [ -n "$PROFILE_REL" ]; then
-      printf '_(profile.md not found at %s)_\n\n' "$PROFILE"
-    fi
-    ;;
-  *)
-    if [ -r "$PROFILE" ]; then
-      printf -- '- User profile: re-read `%s` when user facts or working preferences matter.\n\n' "$PROFILE"
-    fi
-    ;;
-esac
-
-if [ -r "$SKILLS_PROTOCOL" ]; then
-  printf -- '- Skills protocol: read `%s` before executing workbench skills.\n\n' "$SKILLS_PROTOCOL"
-fi
 
 # ──────────── Pending-summary drain (startup + resume) ────────────
 # THIS BLOCK EMITS NOTHING in production. It runs before the notices section on
@@ -739,7 +684,7 @@ if [ "$SOURCE" = "startup" ]; then
 fi
 
 # ──────────── Pending-summary check (all sources except compact) ────────────
-# On compact we just re-injected identity — don't add summary work on top of
+# On compact we just re-injected the rules — don't add summary work on top of
 # a context that was just shed. On all other sources, check for unprocessed
 # summaries and tell the model to dispatch a background agent.
 if [ "$SOURCE" != "compact" ]; then

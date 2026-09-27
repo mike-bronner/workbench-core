@@ -77,8 +77,8 @@ because `rm -rf /tmp/Claude-503` matched no protected spelling on
 case-insensitive APFS and still reached the live claude-<uid> tree, which
 holds every session's scratchpad.
 
-AND ONE MARKER FILE AT A TIME IN THE MEMORY CACHE. The summary-writer agent,
-log-now and summarize-session each finish by deleting their session's marker
+AND ONE MARKER FILE AT A TIME IN THE MEMORY CACHE. The summary-writer agent
+and log-now each finish by deleting their session's marker
 in <cache>/pending-summaries/, and this guard denied every one of those deletes
 from the day it shipped, so the backlog only grew. So a delete is also
 permitted when its target is a `*.json` name directly in that folder and is
@@ -138,6 +138,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from shell_parse import (  # noqa: E402
     base,
+    shell_cd_args,
     split_statements_grouped,
     strip_noop,
     token_lines_ex,
@@ -452,7 +453,7 @@ def pending_marker(path, markers):
     regular file this account owns.
 
     THIS IS AS NARROW AS THE LEFTOVER-SCRATCH PERMIT, AND ON PURPOSE. The
-    summary-writer, log-now and summarize-session each end by deleting one
+    summary-writer and log-now each end by deleting one
     marker file, and nothing else under the cache is theirs to delete. So the
     directory itself is refused, a subdirectory is refused, a name outside the
     marker shape is refused, and so is a link or a directory that happens to
@@ -951,14 +952,17 @@ def judge(command, cwd, roots, markers=None):
             # among them changes nothing for the statement after.
             piped = len(stages) > 1
             for stage in stages:
+                # Read before strip_prefixes, which also drops `sudo` and `env`:
+                # a `cd` behind either runs in a child and moves nothing.
+                moves = shell_cd_args(stage, KEYWORD_PREFIX)
                 stage = strip_prefixes(stage)
                 if not stage:
                     continue
                 verb = base(stage[0])
 
-                if verb == "cd":
+                if moves is not None:
                     if not piped:
-                        here = cd_target(stage, here)
+                        here = cd_target(["cd"] + moves, here)
                     continue
 
                 # THE GENERAL RULE, AND IT IS THE FIX FOR A WHOLE CLASS RATHER

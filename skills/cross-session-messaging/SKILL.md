@@ -1,6 +1,6 @@
 ---
 name: cross-session-messaging
-description: The protocol for messaging another Claude Code session with SendMessage, and for handling a peer message that arrives. Use when you notice that a session working on related functionality is about to be affected by something you found, when you are deciding whether to reach out at all, when a SendMessage was refused or flagged by the peer message gate, and whenever a message from another session lands in your conversation. Covers when to send, what a message carries, the receive-side rule that keeps a human in the loop, and which sends a sub-agent may make.
+description: How to message another Claude Code session with SendMessage, and how to handle a peer message that arrives. Use when your findings affect a related session, when a SendMessage was refused or flagged, or when a message from another session lands in your conversation.
 ---
 
 # Cross-session messaging

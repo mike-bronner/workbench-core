@@ -148,7 +148,12 @@ if [ "$(printf '%s\n' "$NEEDLES" | grep -c .)" -lt 10 ]; then
   echo "FAIL: extracted fewer than ten rule titles from $STYLE"; exit 1
 fi
 
-for retired in references/behavioral-overrides.md references/guardrails-inline.md; do
+# guardrails.md was the rubric for the define-soul and define-profile interviews.
+# All three were retired together on 2026-09-27: the output style is the only
+# persona, and a second copy of the rules kept drifting from it.
+for retired in references/behavioral-overrides.md references/guardrails-inline.md \
+               references/guardrails.md skills/define-soul skills/define-profile \
+               assets/templates; do
   if [ -e "$ROOT/$retired" ]; then no "$retired is gone" "it still ships"; else ok "$retired is gone"; fi
 done
 

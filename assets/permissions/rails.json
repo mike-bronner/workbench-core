@@ -217,8 +217,8 @@
     "",
     "One file shape is approved as well: a single session-summary marker, a",
     "*.json name directly in <cache>/pending-summaries/ that is absent or a",
-    "regular file this account owns. The summary-writer, log-now and",
-    "summarize-session each end by deleting one. The folder is resolved the way",
+    "regular file this account owns. The summary-writer and log-now each end",
+    "by deleting one. The folder is resolved the way",
     "hooks/session-log.sh resolves it when it writes the marker, from the hook's",
     "own WORKBENCH_MEMORY_CACHE or config.json, never from the command. The",
     "folder and the cache root must be real directories, not links."

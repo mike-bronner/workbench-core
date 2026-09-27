@@ -4,14 +4,13 @@ Core infrastructure plugin for Claude Code. Part of the [`claude-workbench`](htt
 
 ## What this is
 
-The infrastructure layer that turns Claude Code from a stateless coding assistant into a persistent, identity-aware collaborator. It provides:
+The infrastructure layer that turns Claude Code from a stateless coding assistant into a persistent collaborator. It provides:
 
-- **Persistent identity** — persona files (`soul-hot.md`, `profile.md`) injected at session start and re-injected after context compression so the agent never drifts.
+- **One persona** — the shipped output style, installed by setup. It sits in the system prompt, so it survives context compression with no re-injection.
 - **One rule source** — the behavioural rules load once, from the shipped output style. No hook restates them, so they cannot drift apart and they never reach a sub-agent.
-- **Guardrails** — the rubric the interview skills check soul and profile answers against. Guardrails can't be overridden by persona or profile choices.
 - **Session logging** — every session is captured as a rolling JSONL log, then summarized by a background agent into a searchable narrative.
 - **Operational memory** — a shared, lazy-started local MCP server (markdown-vault-mcp) fronts a searchable vault of decisions, projects, insights, and session history, optionally kept in sync across machines over git.
-- **Execution-aware skills** — a behavioral protocol that gives any skill persistent memory via vault-backed learnings files.
+- **Execution-aware skills** — a `PreToolUse(Skill)` hook hands any skill its vault-backed learnings file, so each run starts from what past runs learned.
 - **Retention management** — automatic cleanup of raw logs (28 days) and checkpoints (7 days); summaries and decisions persist indefinitely.
 
 ## Installation
@@ -104,7 +103,7 @@ The managed `~/.claude/CLAUDE.md` block now carries facts only: the gates, what 
 
 ### Configure (required on first install)
 
-The memory MCP server ships unconfigured. Run `/workbench:setup` on first install to set your paths:
+The memory MCP server ships unconfigured. Run `/workbench-core:setup` on first install to set your paths:
 
 | Setting | Description | Default |
 |---------|-------------|---------|
@@ -120,63 +119,31 @@ Setup also installs **permission safety rails** into `~/.claude/settings.json` �
 
 Configuration is stored in `~/.claude/plugins/data/workbench-core-claude-workbench/config.json` and survives plugin updates. The hooks resolve env from this file at launch (via `hooks/lib/memory-env.sh`), so a plugin version bump never clobbers your settings. Per-session stdio needs no port or bearer token in `settings.json` — those are provisioned by `/workbench-core:setup` only if you re-enable the optional shared HTTP server (see [Memory server transport](#memory-server-transport)).
 
-### Set up identity files
+### Install the output style
 
-There are three ways to get identity files in place — pick one:
-
-**Fastest — install the shipped persona.** The plugin ships one ready-made persona under `assets/personas/<name>/`. `/workbench-core:setup` offers to install it (Step 2f), and every later run of setup re-syncs it:
+The plugin ships one persona under `assets/personas/<name>/`: an output style. `/workbench-core:setup` offers to install it (Step 2f), and every later run of setup re-syncs it:
 
 ```
 /workbench-core:setup
 ```
 
-It propagates whatever that persona directory contains — an output style to `~/.claude/output-styles/` plus the `outputStyle` setting, and soul files to your vault if it ships any. It is non-destructive: existing hand-edited files are diffed and confirmed before any overwrite. This is the quickest path to a durable voice, because the output style sits in the system prompt (which outranks context).
+It copies the style to `~/.claude/output-styles/` and sets `outputStyle` in `~/.claude/settings.json`. The output style sits in the system prompt, which outranks context and survives compaction, so nothing has to re-inject it.
 
 The warmup does not write the output style, so a plugin update can leave the live copy behind the shipped one. When it does, the warmup notices report `⚠ Output style out of date`, and a re-run of setup brings it current. The persona used to have its own `/workbench-core:install` command, and nothing prompted a re-run of it: the live style once ran 8 days stale.
 
-The persona shipped today is `clear`: an output style only, with no soul files. It defines a writing standard rather than a character, so nothing lands in `identity/`. A persona directory may ship `soul-hot.md` and `soul-core.md` as well — both are optional, and each installs only when present.
-
-**Guided — build from scratch via interview.** Use `/workbench-core:define-soul` (below).
-
-**Manual — copy templates.** The plugin expects identity files in your memory directory:
-
-```
-{memory_path}/identity/
-├── soul-hot.md            — hard rules, voice constraints, drift test (loaded every session)
-├── soul-core.md           — deep character, values, tensions (loaded on request)
-├── profile.md             — user profile, preferences, working style (loaded every session)
-└── skills-protocol.md     — execution-aware skills protocol (loaded every session)
-```
-
-Templates are provided in `assets/templates/`. Copy them to your memory directory and customize:
-
-```bash
-cp assets/templates/soul-hot.template.md ~/Documents/Claude/Memory/identity/soul-hot.md
-cp assets/templates/soul-core.template.md ~/Documents/Claude/Memory/identity/soul-core.md
-cp assets/templates/profile.template.md ~/Documents/Claude/Memory/identity/profile.md
-cp assets/templates/skills-protocol.template.md ~/Documents/Claude/Memory/identity/skills-protocol.md
-```
-
-Replace `{{agent_name}}` placeholders with your agent's name, then edit to taste.
-
-Alternatively, use the interactive skills to build these files through a guided interview:
-
-- `/workbench:define-soul` — walks through agent identity, voice, hard rules, and failure modes
-- `/workbench:define-profile` — walks through user role, working style, technical stack, privacy preferences, and session quality
-
-These are the recommended approach — `/workbench:setup` will offer to launch them automatically on first install.
+The persona shipped today is `clear`. It defines a writing standard rather than a character. Soul and profile files, the `define-soul` and `define-profile` interviews, and their `guardrails.md` rubric were retired on 2026-09-27: the output style was the only persona in use, and a second copy of its rules kept drifting from it. `docs/setup-design-notes.md` records the retirement.
 
 ### Execution-aware skills
 
-Any skill execution reads a persistent learnings file before running. If the run produces a correction, an unexpected failure, or a confirmed non-obvious pattern, an entry is appended for next time. Files live at `{memory_path}/skills/{skill-name}.learnings.md`.
+Any skill can carry a persistent learnings file at `{memory_path}/skills/{skill-name}.learnings.md`: corrections, failures and confirmed approaches from past runs. When the Skill tool is about to run, `hooks/skill-learnings.sh` looks for that file. If it exists, the hook hands its text to the model as `additionalContext`, with the rule for adding to it. If it does not, the hook stays silent and costs nothing.
 
-The protocol applies to **any** skill — workbench skills, third-party plugin skills, your own personal skills. No per-skill configuration needed.
+It applies to **any** skill — workbench skills, third-party plugin skills, your own personal skills — keyed by the bare skill name, so `workbench-core:memory-lint` and `memory-lint` share one file. A file too large for one hook message is pointed at rather than truncated, and the model reads it whole through the memory MCP. Delete a specific learnings file to reset that skill's accumulated state.
 
-The protocol is driven by `{memory_path}/identity/skills-protocol.md`, installed by `/workbench:setup` and loaded every session by the SessionStart hook (load order: soul-hot → profile → skills-protocol). Remove the file if you want to disable the behavior; delete a specific `skills/{skill-name}.learnings.md` to reset one skill's accumulated state without touching the rest.
+This used to be prose: the warmup told every session to read `identity/skills-protocol.md`, and nine skills restated it in their first line. The one limit it stated, 30 entries, was checked by nobody, and one learnings file reached 86 entries and 68 KB.
 
 #### Compaction
 
-When a learnings file exceeds **30 entries**, the protocol flags it for compaction. `/workbench-core:compact-learnings` recommends a verdict for every entry and asks about them in batches through `AskUserQuestion`. `scripts/find-workbench-skill.sh` decides which kind of skill it is, by reading `~/.claude/plugins/installed_plugins.json`:
+When a learnings file passes **30 entries**, the hook adds a warning that names the compaction skill. `/workbench-core:compact-learnings` recommends a verdict for every entry and asks about them in batches through `AskUserQuestion`. `scripts/find-workbench-skill.sh` decides which kind of skill it is, by reading `~/.claude/plugins/installed_plugins.json`:
 
 - **Workbench plugin skills** — learnings can be integrated into the SKILL.md (improving the skill definition) or kept/dropped. Integration is handed to Dr. Watson as a brief against the plugin's source clone, so it goes through the development flow and the commit gate; the installed copy is never edited
 - **All other skills** — learnings are compacted (kept, rewritten, or dropped) without touching the SKILL.md
@@ -187,11 +154,10 @@ The `references/` directory contains single-source-of-truth documents shared acr
 
 | File | Used by | Purpose |
 |------|---------|---------|
-| `guardrails.md` | define-soul, define-profile | The rubric the interview skills check every answer against. No hook loads it into a session |
-| `summary-format.md` | summary-writer, log-now, summarize-session | Required frontmatter, body structure, JSONL parsing guidance |
-| `decision-promotion.md` | summary-writer, log-now, summarize-session | Promotion criteria, when NOT to promote, decision file template |
-| `vault-conventions.md` | summary-writer, log-now, summarize-session | Vault paths, required frontmatter, write vs edit rules |
-| `linking-synthesis.md` | summary-writer, log-now, summarize-session, memory-lint | Link syntax, related-document linking, topic-page synthesis, vault index contract |
+| `summary-format.md` | summary-writer, log-now | Required frontmatter, body structure, JSONL parsing guidance |
+| `decision-promotion.md` | summary-writer, log-now | Promotion criteria, when NOT to promote, decision file template |
+| `vault-conventions.md` | summary-writer, log-now | Vault paths, required frontmatter, write vs edit rules |
+| `linking-synthesis.md` | summary-writer, log-now, memory-lint | Link syntax, related-document linking, topic-page synthesis, vault index contract |
 
 References are loaded at execution time via `${CLAUDE_PLUGIN_ROOT}/references/`. The one the warmup reads is `memory-routing-stub.md`, which it copies into the project's `MEMORY.md` router. No rule reference reaches a session: the behavioural rules load from the output style alone (see [Where the behavioural rules load](#where-the-behavioural-rules-load)).
 
@@ -204,13 +170,13 @@ core/
 ├── agents/
 │   └── summary-writer.md       — background narrative agent definition
 ├── assets/
-│   ├── personas/              — the shipped persona (output style, plus soul files if any)
-│   ├── prompt-templates/      — scheduled-task prompt bodies (decision-quality nightly)
-│   └── templates/              — identity + protocol templates
+│   ├── personas/              — the shipped persona (an output style)
+│   └── prompt-templates/      — scheduled-task prompt bodies (decision-quality nightly)
 ├── hooks/
 │   ├── hooks.json              — hook → script bindings
 │   ├── session-log.sh          — raw log capture + summary-writer dispatch (not at SessionEnd)
-│   ├── session-warmup.sh       — identity injection + retention cleanup + summary drain
+│   ├── session-warmup.sh       — memory and scratch rules + retention cleanup + summary drain
+│   ├── skill-learnings.sh      — PreToolUse(Skill): hand a skill its vault learnings file, warn past 30 entries
 │   ├── mcp-memory.sh           — stdio launcher, retained but unwired (see Memory server transport)
 │   ├── memory-server-up.sh     — shared-HTTP SessionStart kicker (disabled; retained for re-enable)
 │   ├── memory-server-spawn.sh  — shared-HTTP detached supervisor (disabled; retained)
@@ -236,9 +202,9 @@ core/
 │   └── fixtures/               — test fixtures (fake-server stub, no real server)
 ├── docs/
 │   ├── session-warmup-contributions.md — how plugins contribute warmup text
+│   ├── setup-design-notes.md   — why setup's steps are shaped as they are, and what was retired
 │   └── mcp-output-capping.md   — per-server MCP output-limit standard
 ├── references/
-│   ├── guardrails.md           — interview rubric for define-soul and define-profile (not loaded into sessions)
 │   ├── decision-promotion.md   — when and how to promote decisions
 │   ├── linking-synthesis.md    — link syntax, topic pages, vault index contract
 │   ├── summary-format.md       — summary frontmatter + body template
@@ -248,17 +214,14 @@ core/
 │   ├── setup/                  — configure agent name, paths, MCP settings
 │   ├── evaluate-decisions/     — grade recorded decisions/memories → learnings report (REPS gear 2)
 │   ├── propose-upgrades/       — learnings → reviewed proposals → apply on sign-off (REPS gears 3+4)
-│   ├── define-profile/         — interactive user profile interview
-│   ├── define-soul/            — interactive agent identity onboarding
 │   ├── log-now/                — dump + narrate the current session inline
 │   ├── memory-lint/            — monthly vault health-and-repair pass
 │   ├── cross-session-messaging/ — the protocol for messaging another session, and for receiving one
 │   ├── orchestrator/           — per-session on/off toggle for the delegation gate
-│   ├── process-pending-summaries/ — dispatch background agents for pending markers
-│   └── summarize-session/      — manually summarize a specific session
+│   └── process-pending-summaries/ — dispatch background agents for pending markers, or for one session by ID
 ├── scripts/
 │   ├── install-chat-skills.sh  — package + install skills into Claude Chat
-│   ├── install.sh              — propagate the shipped persona to live locations
+│   ├── install.sh              — install the shipped output style
 │   ├── permissions.sh          — merge the shipped permission rails into settings.json
 │   └── memory-status.sh        — report the shared memory server's facts
 └── README.md
@@ -272,10 +235,10 @@ These hooks fire across the session lifecycle and on each turn:
 
 | Hook | Script | Purpose |
 |------|--------|---------|
-| `SessionStart` | `hooks/session-warmup.sh` | Identity injection, retention cleanup, pending-summary drain, housekeeping notices (written to a file, not injected) |
+| `SessionStart` | `hooks/session-warmup.sh` | Memory and scratch rules, retention cleanup, pending-summary drain, housekeeping notices (written to a file, not injected) |
 | `PostToolUse` | `hooks/memory-scan-recall.sh` | Mid-turn recall — search the vault with a repo scan's own query and inject hits beside the scan's results (matcher `Grep\|Bash`), **once per session** per memory, sharing that bound with `memory-recall.sh` |
 | `PreCompact` | `hooks/session-log.sh` | Dump raw log checkpoint, spawn summary-writer |
-| `PostCompact` | `hooks/session-warmup.sh` | Re-inject identity after context compression |
+| `PostCompact` | `hooks/session-warmup.sh` | Re-inject the memory and scratch rules after context compression |
 | `SessionEnd` | `hooks/session-log.sh` | Dump final log segment and write the pending-summary marker — **no writer is spawned here** (see [Why SessionEnd does not spawn](#why-sessionend-does-not-spawn)) |
 | `Stop` | `hooks/memory-capture-stop.sh` | Early in a session, then rarely, block the stop and have the live session write its durable findings to the vault — see [Pre-shed capture](#pre-shed-capture) |
 | `UserPromptSubmit` | `hooks/memory-recall.sh` | Proactive recall — search the vault with the prompt and inject relevant memories, **once per session** per memory (memory **reads**) |
@@ -321,7 +284,7 @@ Two `PreToolUse` hooks still exit 2 and are not gates in this sense: `hooks/outb
 
 ### Delegation gate
 
-**The main agent orchestrates. It does not write whole files.** Guardrail 10, "delegate work to sub-agents by default", has said so in prose since it shipped, and prose drifts: the main conversation builds one file to "just get it done", and the context it was supposed to stay lean for is gone. `hooks/delegation-gate.sh` makes it structural. `Write` and `NotebookEdit` from the main agent return `permissionDecision: "deny"`. Per [How a gate speaks](#how-a-gate-speaks), the human reads `🛑 Blocked: writing a whole file from the main agent. New files go to a sub-agent.`, and the destination and the escape hatch go to the model in `additionalContext`. The deny is not overridable by permission mode: `bypassPermissions` does not get through it.
+**The main agent orchestrates. It does not write whole files.** A written "delegate work to sub-agents by default" rule said so in prose for months, and prose drifts: the main conversation builds one file to "just get it done", and the context it was supposed to stay lean for is gone. `hooks/delegation-gate.sh` makes it structural. `Write` and `NotebookEdit` from the main agent return `permissionDecision: "deny"`. Per [How a gate speaks](#how-a-gate-speaks), the human reads `🛑 Blocked: writing a whole file from the main agent. New files go to a sub-agent.`, and the destination and the escape hatch go to the model in `additionalContext`. The deny is not overridable by permission mode: `bypassPermissions` does not get through it.
 
 **`Edit` is allowed, since 2026-09-27.** The gates audit that day measured a delegated one-line edit at tens of thousands of tokens, against about 200 for the same `Edit` inline. The deny also pushed the model toward `sed -i` and heredocs through `Bash`, which reach the same file past every guard anyway. A whole-file `Write` is where main-session context actually grows, so that half of the gate stays. The matcher is `Write|NotebookEdit`, and branch (e) below lets an `Edit` through if anything else ever routes one here.
 
@@ -345,11 +308,11 @@ That third row is why `agent_type` alone has to allow: a scheduled `claude -p --
 
 **Fail-open, and what that costs you.** Every error path exits 0 and allows the call: a malformed payload, a missing `jq`, an unreadable state directory, or a session id the toggle cannot address. This matches `hooks/credential-guard.sh`, because a guard that errors must never brick a session. Be clear about the trade. **If this script breaks, enforcement stops silently and there is no layer behind it.** Nothing announces that the gate is down; the main agent simply starts writing whole files again. It is a discipline aid, not a security boundary, and should never be relied on as one.
 
-**`Bash` is not gated, so the gate is trivially sidesteppable.** The matcher covers two tools, and `printf 'x' > file` writes a file without touching any of them. This is deliberate: gating `Bash` would break `git`, the test runners, and every read-only command the orchestrator still needs. It also means a main agent that treats the deny as an obstacle can route around it in one call. The rule the gate backs is prose, in guardrail 10 and in the identity block, and both say a deny is the system working rather than something to defeat. Enforcement that a determined agent cannot evade is not on offer here.
+**`Bash` is not gated, so the gate is trivially sidesteppable.** The matcher covers two tools, and `printf 'x' > file` writes a file without touching any of them. This is deliberate: gating `Bash` would break `git`, the test runners, and every read-only command the orchestrator still needs. It also means a main agent that treats the deny as an obstacle can route around it in one call. The rule the gate backs is prose, in the identity block the warmup writes into `~/.claude/CLAUDE.md`, and it says a deny is the system working rather than something to defeat. Enforcement that a determined agent cannot evade is not on offer here.
 
 A session id holding anything outside `[A-Za-z0-9._-]` is refused rather than resolved, which keeps a `../` from walking out of the state directory. Refusal means fail-open here: a session that cannot address its own toggle has no honest escape hatch, so the gate stands down rather than trapping the user.
 
-Tests: `hooks/test-delegation-gate.sh` (77 cases: every allow branch independently, the deny path, `Edit` allowed from the main agent, byte-exact deny JSON, the conditional dev-team enrichment, `hooks.json` wiring, and agreement with both the toggle skill and guardrail 10, including that its inline case is a read-only Bash and never a file-writing one).
+Tests: `hooks/test-delegation-gate.sh` (71 cases: every allow branch independently, the deny path, `Edit` allowed from the main agent, byte-exact deny JSON, the conditional dev-team enrichment, `hooks.json` wiring, and agreement with the toggle skill).
 
 ### Agent dispatch gate
 
@@ -680,7 +643,6 @@ hooks/session-warmup.sh
             ├── Read the rolling log
             ├── Write narrative .summary.md to vault
             ├── Promote decisions (if bar is met)
-            ├── Update profile.md (if preferences shifted)
             └── Delete the marker
 ```
 
@@ -734,24 +696,24 @@ Five things switch it off, and each closes a real failure:
 
 **A hard quit is not covered, and cannot be.** `SessionEnd` runs after the model can no longer act — the same reason it cannot dispatch a summary-writer. Those sessions still get the background summary; they just do not get the curated pass.
 
-### Identity injection
+### What the warmup injects
 
-Identity files are injected on **every** warmup source:
+The warmup injects the memory-routing and destructive-command rules on **every** source:
 
 | Source | When | What happens |
 |--------|------|--------------|
-| `startup` | Fresh session | Full warmup: retention cleanup + identity + pending-summary drain + notices refresh |
-| `resume` | Reconnecting | Identity refresh + pending-summary drain + notices refresh |
-| `clear` | After `/clear` | Identity refresh + notices refresh |
-| `compact` | After compression | Identity refresh only (via PostCompact hook) |
+| `startup` | Fresh session | Full warmup: retention cleanup + rules + pending-summary drain + notices refresh |
+| `resume` | Reconnecting | Rules + pending-summary drain + notices refresh |
+| `clear` | After `/clear` | Rules + notices refresh |
+| `compact` | After compression | Rules only (via PostCompact hook) |
 
-This ensures the agent never loses its voice or behavioral constraints, even in long sessions with multiple context compressions.
+It injects no persona file and no behavioural rule. The persona is the output style, which is system-prompt tier and survives compaction on its own.
 
 ### Housekeeping notices — pulled, not pushed
 
 Warmup output has to be **byte-stable**. Anthropic prompt caching matches on an
 exact request prefix, so a single byte that drifts between otherwise identical
-sessions invalidates the cache for the whole prompt downstream of it — identity,
+sessions invalidates the cache for the whole prompt downstream of it — the rules,
 plugin contributions, skill bodies, tool definitions. An unattended scheduled
 task that fires every 20 minutes pays that penalty on every tick.
 
@@ -788,47 +750,15 @@ Claude Code caps MCP tool output itself. A response past `MAX_MCP_OUTPUT_TOKENS`
 
 The setting is a **backstop, not a substitute** for servers capping their own output: it can only persist whatever was returned, where a server knows to return its 10 best results with snippets. See `docs/mcp-output-capping.md` for the per-server standard.
 
-### Guardrails
+### Question delivery is prose, not a hook
 
-Identity files are customizable — users define their agent's persona via `/workbench:define-soul` and their own profile via `/workbench:define-profile`. But some rules should hold regardless of what persona is configured. That's the problem guardrails solve.
-
-**The problem:** Without guardrails, the interview skills can produce identity files that encode bad habits — sycophantic openers, hedged opinions, unverified assertions. These are anti-patterns that degrade output quality no matter what character the agent plays. A user might accidentally request them ("soften critiques with a compliment first") without realizing they're undermining the agent's usefulness.
-
-**The solution:** `references/guardrails.md` ships with the plugin as a set of absolute behavioral rules. They:
-
-1. **Are not loaded into sessions.** The session standard is the output style. The guardrails are the rubric the interview skills check answers against.
-2. **Are enforced during interviews** — both `/workbench:define-soul` and `/workbench:define-profile` check every answer against the guardrails. If an answer contradicts a guardrail, the skill stops, names the conflict, and recommends an alternative. It never suggests modifying the guardrails.
-3. **Ship with the plugin, not the vault** — guardrails are not user-configurable paths. They're plugin infrastructure, like the hook scripts.
-
-The authority hierarchy for behavioral rules:
-
-```
-guardrails.md (absolute — ships with plugin)
-    ↓ overrides
-soul-hot.md (character-specific — user-defined)
-    ↓ informs
-profile.md (user context — user-defined)
-```
-
-**Why question delivery is guardrail 11.** Rule 1 has always required three options and a recommendation before a change, and until rule 11 shipped it said nothing about *where the user reads them*. That silence had a measurable cost: options and questions landed in the middle of a long reply, scrolled away under the output that followed, and the work sat stalled on an answer nobody knew was wanted. Rule 11 names the channel. Anything that blocks or forks the work is asked with `AskUserQuestion`, which renders as a prompt rather than as prose — and in an unattended session it *pauses the run and waits* instead of fabricating an answer, the same property `/workbench-core:propose-upgrades` relies on for its nightly sign-off triage. A question with no multiple-choice shape, or a context where the tool is unavailable, falls back to a `## ❓ Open questions` block placed last in the response, after the verdict. Last is the whole point: anything printed below a question is what buries it.
-
-**Why finding verdicts are guardrail 12.** Rule 1 binds at action boundaries, and scopes itself that way in its own ✅ example. Rule 11 binds on open questions. A finding that proposes no action and asks no question triggers neither of them, so it reaches the user as a bare fact. Closing a release, that produced two real findings reported as "neither is urgent": no verdict on whether either was a problem, no options, and no recommendation. The user had to ask what to do with them, which is the work that should already have been done. Rule 12 binds the moment you notice rather than the moment you act. Report what it is, whether it is a problem, how bad, the options, and which one you recommend. Severity is not a verdict, because "not urgent" answers when and never whether, and "unknown" answers neither. "No action needed" is a valid verdict and gets stated rather than dropped.
-
-**Why question contents are guardrail 13.** Rule 11 named the channel and said nothing about what travels down it, so a bare numbered list of questions satisfied every rule then written. Three separable failures shipped that way. The agent stated a fact whose next step depended on an answer, and never turned it into a question. It framed a fork as a problem, which sends the reader hunting for a defect that is not there. And it printed questions with no situation attached, leaving the reader to reconstruct what each one was about before answering any of them. Rule 1 already carried the shape — three options and a recommendation — but scopes itself to "before making changes", so a question about anything else inherited no shape requirement at all. Rule 12 does not cover the gap either: its report order is problem-shaped ("whether it is a problem, how bad"), which leaves a neutral fork no honest form to be reported in. Rule 13 binds all three halves — recognize, frame, shape — in whichever channel rule 11 selects. It appends rather than extending rule 11 in place, because rule 11 already carries four concerns and a fifth is easier to apply halfway.
-
-**Why option layout is guardrail 14.** Rules 1, 12 and 13 each require three options and a recommendation, and none of them said what that looks like on the page. So the layout was invented fresh every reply, and the last drift produced a form the user reported as hard to read against one that used to be clean: a different medal glyph on each option, titles shortened to fragments, and the recommendation folded into the option it picked, where it has to be hunted for. Rule 14 pins the shape. Each option is its own markdown heading rather than bold text inside a paragraph, because a heading is rendered in color and that color is what the eye finds first. The heading carries the marker 🔹, the word "Option" with a spelled-out letter, and a short descriptive title. Under it go that option's pros and its cons, both every time. After all three, a separate paragraph names the recommendation and gives its reason.
-
-The marker is one glyph repeated, not a set, and that is the half with a measurement behind it. An earlier draft used 🅰️ 🅱️ 🅲 and it renders three different ways: 🅰️ and 🅱️ are U+1F170 and U+1F171 with a variation selector and come out red as blood-type emoji, while 🅲 is U+1F172, has no emoji presentation form at all, and falls back to gray text. The first two also put a variation selector over an East-Asian-Width-Ambiguous base, which is the exact class Terminal.app miscounts the width of. 🔹 is U+1F539: natively Wide, no variation selector, identical on every option. The letter carries the sequence, so a per-option glyph set cannot come back the moment someone needs a fourth option. Rule 14 also sets the tiebreak the recommendation uses, which no rule stated before: correctness outranks speed of implementation, so the recommendation is the architecturally correct option and says plainly when that one is also the slower one. It appends rather than extending rule 1 in place, for the reason rule 13 appended rather than extending rule 11: rule 1 already carries five concerns, and layout is referenced by rules 12 and 13 as well, so it needs to be somewhere all three can point at.
-
-**Rule 9 grew a clause in the same pass**, for the mirror-image failure. "Lead with what is wrong or risky" is an ordering instruction, and nothing said it was *only* an ordering instruction. Three sub-agent findings were relayed as three costs when one of them was an improvement and one was a fix, so three commits of good work read as a list of concessions. Order by risk, label by fact: those are two operations, and a cost is specifically something the reader is worse off for. A behaviour change, a stricter check landing somewhere more reliable, and a correctness fix that widens what is accepted are none of them costs.
-
-**The rules the session runs on live in one file, and this is not it.** The main session's standard is the output style (see [Where the behavioural rules load](#where-the-behavioural-rules-load)). `references/guardrails.md` restates several of the same rules in rubric form, for the interview skills, which do not load the output style. No hook loads it into a session, so it cannot contradict the output style at runtime. Whether the interview skills stay, and this file with them, is not yet decided.
+The output style carries the question-delivery rules: a blocking question goes through `AskUserQuestion`, or into a `## ❓ Open questions` block placed last. `docs/rule-history.md` records why each of those rules was added.
 
 **It is prose rather than a hook, deliberately.** Detecting an unanswered question in free text is a semantic judgement, and every enforcement gate in this plugin matches on something mechanical instead — a tool name, a command prefix, a file path, a slot header, a literal character. The one time semantic heuristics were built and measured here, for the [agent dispatch gate](#agent-dispatch-gate), the three variants traded 83% precision at 26% recall against 34% precision at 84% recall, and the wrong answers were not tunable away. A classifier on question delivery fails the same way in both directions: a false positive blocks a finished reply, and a false negative teaches the agent the rule is optional. The written rule is the enforcement that is actually available, and `hooks/test-rule-source.sh` guards that it is written once.
 
 ### Permission safety rails
 
-Guardrails are prose in the model's context. Permission rails are enforcement in the harness. They solve the same problem at different layers, and the second one holds when the first is gone.
+The output style's rules are prose in the model's context. Permission rails are enforcement in the harness. They solve the same problem at different layers, and the second one holds when the first is gone.
 
 **The problem:** From August 14, 2026, `auto` is the default permission mode on Pro, Max, and Team plans — a classifier reviews actions instead of prompting you. Anthropic's own documentation is blunt that this *does not guarantee safety*. Worse for an agent with a long-running session: a boundary you state in conversation ("don't force-push") is re-read from the transcript on every classifier check, so **context compaction can erase it**.
 
@@ -853,7 +783,7 @@ The merge is **additive**: entries are added when absent, and existing rules kee
 
 **That exception cannot be layered on top of an ask entry, which is why the entries have to leave rather than be narrowed.** Rules are evaluated deny → ask → allow with **first match winning**, specificity does not reorder them, and Bash rules support no negation operator, so `Bash(rm -rf /tmp/:*)` in `allow` is dead text the ask rule beats every time. Nor does a hook rescue it: Anthropic's permissions documentation states that hook decisions do not bypass permission rules, and that a matching ask rule still prompts **even when a `PreToolUse` hook returned `"allow"`** — the sandboxing documentation says the same for sandboxed commands. A content-scoped ask entry is therefore overridden by nothing.
 
-**`hooks/destructive-scope-guard.sh` is what answers in their place.** It permits a destructive command when **every path it acts on** resolves inside the project or a scratch root, and denies it otherwise. Four roots: the project from `CLAUDE_PROJECT_DIR`, the login home's `Developer/scratchpad`, this session's scratchpad matched by session id, and — on Darwin — this account's per-user temporary directory, which is where `mktemp -d` writes and so where an agent's sandbox teardown happens. Off Darwin that fourth root is not approved at all: `mktemp -d` falls back to `/tmp` there and every account on the machine shares it. One folder family in `/tmp` is approved as well, and it is not a root: a leftover agent-scratch folder directly in `/tmp`, named `claude-*scratch*` (such as `claude-scratch-<id>` or `claude-summary-scratch`), that is a real directory owned by this account. Agents once made those by hand, and the guard refused to let them clean up. A delete may remove the folder itself as well as anything in it. The name is read from the directory listing, never from the spelling the caller typed: on case-insensitive APFS `/tmp/Claude-503` is the live `claude-<uid>` session tree, so a spelling test would judge a name no file carries. No other `/tmp` name qualifies, and neither does anything reached through a symlink out of `/tmp`. One file shape is approved too: a single session-summary marker, a `*.json` name directly in `<cache>/pending-summaries/` that is absent or a regular file this account owns. The summary-writer, `log-now` and `summarize-session` each end by deleting one, and before this permit every one of those deletes was denied. The folder is resolved the way `hooks/session-log.sh` resolves it when it writes the marker, from the hook's own `WORKBENCH_MEMORY_CACHE` or `config.json`, never from the command. The folder and the cache root above it must be real directories rather than links. A delete must land **strictly beneath** a root, because each root holds live state that is not the session's to destroy; a git verb may act **on** one, because it destroys uncommitted state inside a worktree without removing it. It also reaches what no rule can: `rm -r` without `-f`, plain `rm`, and `rmdir` match no entry in `rails.json` at all, and a verb behind `cd x &&`, `sudo`, or a pipeline sits where a prefix rule cannot read it.
+**`hooks/destructive-scope-guard.sh` is what answers in their place.** It permits a destructive command when **every path it acts on** resolves inside the project or a scratch root, and denies it otherwise. Four roots: the project from `CLAUDE_PROJECT_DIR`, the login home's `Developer/scratchpad`, this session's scratchpad matched by session id, and — on Darwin — this account's per-user temporary directory, which is where `mktemp -d` writes and so where an agent's sandbox teardown happens. Off Darwin that fourth root is not approved at all: `mktemp -d` falls back to `/tmp` there and every account on the machine shares it. One folder family in `/tmp` is approved as well, and it is not a root: a leftover agent-scratch folder directly in `/tmp`, named `claude-*scratch*` (such as `claude-scratch-<id>` or `claude-summary-scratch`), that is a real directory owned by this account. Agents once made those by hand, and the guard refused to let them clean up. A delete may remove the folder itself as well as anything in it. The name is read from the directory listing, never from the spelling the caller typed: on case-insensitive APFS `/tmp/Claude-503` is the live `claude-<uid>` session tree, so a spelling test would judge a name no file carries. No other `/tmp` name qualifies, and neither does anything reached through a symlink out of `/tmp`. One file shape is approved too: a single session-summary marker, a `*.json` name directly in `<cache>/pending-summaries/` that is absent or a regular file this account owns. The summary-writer and `log-now` each end by deleting one, and before this permit every one of those deletes was denied. The folder is resolved the way `hooks/session-log.sh` resolves it when it writes the marker, from the hook's own `WORKBENCH_MEMORY_CACHE` or `config.json`, never from the command. The folder and the cache root above it must be real directories rather than links. A delete must land **strictly beneath** a root, because each root holds live state that is not the session's to destroy; a git verb may act **on** one, because it destroys uncommitted state inside a worktree without removing it. It also reaches what no rule can: `rm -r` without `-f`, plain `rm`, and `rmdir` match no entry in `rails.json` at all, and a verb behind `cd x &&`, `sudo`, or a pipeline sits where a prefix rule cannot read it.
 
 **No root is decided by an environment variable the caller can set.** A root the caller chooses is not a root: point `$HOME` at a directory holding a `Developer/scratchpad` symlink and every other defence still passes while the wrong tree is deleted, which was reproduced against the guard's predecessor. So the login home comes from the password database through `getpwuid(3)`, which no variable and no `PATH` can redirect; `$TMPDIR` is the same hole under a new name and gets the same answer, with the temporary root read from `getconf DARWIN_USER_TEMP_DIR`, which answers from the account rather than the environment; and `CLAUDE_PROJECT_DIR` is trustworthy for the opposite reason — Claude Code sets it for hook commands and it is absent from the Bash tool environment entirely, so `CLAUDE_PROJECT_DIR=/ rm -rf x` sets it for the command being judged and never for the judge. Every path is resolved **physically** before comparison, because a string prefix accepts `<root>/link/x` where `link` points at a repository, and `<root>/../../etc`.
 
@@ -909,7 +839,6 @@ Vault structure:
 
 ```
 {memory_path}/
-├── identity/          — soul-hot, soul-core, profile, skills-protocol
 ├── decisions/         — architectural and process decisions
 ├── topics/            — topical synthesis pages (current state per theme)
 ├── projects/          — project context and system designs
@@ -919,7 +848,7 @@ Vault structure:
 ├── skills/            — per-skill learnings files
 ├── infrastructure/    — systems and tools documentation
 ├── maintenance/       — memory-lint audit reports
-├── README.md           — catalog of the curated layer (topics, decisions, identity, reference)
+├── README.md           — catalog of the curated layer (topics, decisions, reference)
 └── CLAUDE.md          — vault map (metadata only)
 ```
 
@@ -998,7 +927,7 @@ Configure via `config.json` (or the matching `WORKBENCH_*` override):
 
 Four things to get right:
 
-1. **Use a private repository.** The vault holds identity, profile, and operational memory.
+1. **Use a private repository.** The vault holds personal and operational memory.
 2. **Put the token in `~/.claude/settings.json` `.env`**, beside `WORKBENCH_MEMORY_TOKEN`. The env override is read first for exactly this reason; `config.json` is plain-text plugin data and the worse place for a credential.
 3. **`.gitignore` the raw transcripts.** `sessions/**/*.log.md` are excluded from indexing and reaped at 7 days — committing them and then committing their deletion a week later is pure churn.
 4. **The pull interval is 120s, not the server's own 600s default.** This is interactive shared memory between two machines the same person is using; ten minutes of staleness is long enough to re-derive a decision the other machine already recorded.
@@ -1030,9 +959,9 @@ The routing block is prose, and prose asks the agent to remember. `hooks/memory-
 
 #### Wiki layer and vault index
 
-Session summaries are chronological sediment; left alone they accumulate as unlinked orphans. Every ingest path (the summary-writer agent, `/workbench:log-now`, `/workbench:summarize-session`) therefore follows `references/linking-synthesis.md`: search the vault for related decisions, topics, and prior summaries; add a `## Related` section of root-absolute markdown links (`[display text](/folder/file-stem.md)` — the form markdown-vault-mcp resolves immediately); maintain at most one topical synthesis page in `topics/` per session; and cross-link promoted decisions to their summaries and topics. Linking is deliberately conservative — only high-confidence connections, capped per ingest, because an orphan beats a forced link.
+Session summaries are chronological sediment; left alone they accumulate as unlinked orphans. Every ingest path (the summary-writer agent, and `/workbench-core:log-now`) therefore follows `references/linking-synthesis.md`: search the vault for related decisions, topics, and prior summaries; add a `## Related` section of root-absolute markdown links (`[display text](/folder/file-stem.md)` — the form markdown-vault-mcp resolves immediately); maintain at most one topical synthesis page in `topics/` per session; and cross-link promoted decisions to their summaries and topics. Linking is deliberately conservative — only high-confidence connections, capped per ingest, because an orphan beats a forced link.
 
-`README.md` at the vault root is the catalog of the curated layer — one markdown link + one-line hook per topic, decision, identity, and reference document (never sessions). It's the orientation entry point: agents read it **on demand** to get the lay of the vault before searching — it is **not** auto-loaded into context. The summary writers keep it current as they create topics and promote decisions; the lint ritual repairs drift.
+`README.md` at the vault root is the catalog of the curated layer — one markdown link + one-line hook per topic, decision, and reference document (never sessions). It's the orientation entry point: agents read it **on demand** to get the lay of the vault before searching — it is **not** auto-loaded into context. The summary writers keep it current as they create topics and promote decisions; the lint ritual repairs drift.
 
 #### Lint ritual
 
@@ -1057,19 +986,16 @@ Runs on every `startup` warmup:
 | Checkpoint files | 7 days | Sessions don't resume after that |
 | Legacy summary-writer logs | Immediate cleanup | No longer generated; remnants deleted on startup |
 | Summary `.summary.md` files | Forever | Searchable session history |
-| Decisions, identity, projects | Forever | Core operational memory |
+| Decisions, projects | Forever | Core operational memory |
 
 ## Skills
 
 | Skill | Description |
 |-------|-------------|
-| `/workbench:setup` | Configure agent name, paths, summary model, identity files, and the shipped persona (output style + soul files); re-run after an update to re-sync the style |
-| `/workbench:define-soul` | Interactive onboarding/refinement for agent identity (soul-hot, soul-core) |
-| `/workbench:define-profile` | Interactive interview to build/refine the user's profile.md (role, working style, stack, privacy, session quality) |
-| `/workbench:log-now` | Dump the current session log and write a narrative summary inline |
-| `/workbench:summarize-session` | Manually summarize a specific session (or pick from unsummarized) |
-| `/workbench:process-pending-summaries` | Dispatch background agents to clear pending summary markers |
-| `/workbench:compact-learnings` | Review and compact accumulated skill learnings; integrate into SKILL.md for workbench skills |
+| `/workbench-core:setup` | Configure agent name, paths, summary model, permission rails, and the shipped output style; re-run after an update to re-sync the style |
+| `/workbench-core:log-now` | Dump the current session log and write a narrative summary inline |
+| `/workbench-core:process-pending-summaries` | Dispatch background agents to clear pending summary markers, or one agent for a session ID given as the argument |
+| `/workbench-core:compact-learnings` | Review and compact accumulated skill learnings; integrate into SKILL.md for workbench skills |
 | `/workbench-core:evaluate-decisions` | Grade recorded decisions & memories for decision quality (correctness, accuracy/efficiency/speed, consistency/recurrence, gaps) → learnings report. Decision-quality loop, gear 2 |
 | `/workbench-core:propose-upgrades` | Turn an evaluation into concrete corrections & new process recordings, walk human sign-off, apply only what's approved. Decision-quality loop, gears 3+4 |
 | `/workbench-core:memory-lint` | Monthly health-and-repair pass over the memory vault — frontmatter rescue, broken-link repair, conservative orphan linking, vault-index drift repair, duplicate flagging, audit report |
@@ -1078,7 +1004,7 @@ Runs on every `startup` warmup:
 | `/workbench-core:orchestrator` | Turn the [delegation gate](#delegation-gate) off or on for this session, or report its state. `off` allows whole-file writes, `on` restores the gate, no argument reports. `Edit` is never gated |
 | `/workbench-core:cross-session-messaging` | The protocol for messaging another Claude Code session — when to reach out, what a message carries, the receive-side rule that keeps a human in the loop, and which sends a sub-agent may make. Paired with the [peer message gate](#peer-message-gate) |
 
-All skills are **execution-aware** — they check for a `skills/{name}.learnings.md` file in the vault before running and apply any accumulated learnings from prior executions.
+Every skill is **execution-aware** without saying so: `hooks/skill-learnings.sh` hands it its `skills/{name}.learnings.md` file from the vault when it runs (see [Execution-aware skills](#execution-aware-skills)).
 
 ### Cross-surface skill installation
 
@@ -1149,6 +1075,6 @@ All config values can be overridden via environment variables for testing:
 
 ## Design philosophy
 
-The plugin is **infrastructure first, persona optional**. Your agent's personality comes from the identity files *you* customize — the framework imposes none. Templates in `assets/templates/` use `{{agent_name}}` placeholders if you'd rather start from blank ones. The plugin also ships one ready-made persona under `assets/personas/<name>/` (soul files + output style) as an optional starting point: you opt in through `/workbench-core:setup`, which copies it to *your* editable locations — it's never enforced, and nothing stops you from editing it into something else entirely once it's yours. The one thing that isn't optional is `references/guardrails.md` — universal quality constraints (no sycophancy, no hedging, verify before asserting), not personality.
+The plugin is **infrastructure first, persona optional**. The framework imposes no personality. It ships one output style under `assets/personas/<name>/` as an optional starting point: you opt in through `/workbench-core:setup`, which copies it to *your* editable location. It is never enforced, and nothing stops you from editing it into something else entirely once it is yours.
 
 Memory files live **outside any git repo**, at a user-configured path. Memory is personal state; the plugin is code. They are intentionally separate.

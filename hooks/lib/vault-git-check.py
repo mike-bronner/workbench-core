@@ -133,6 +133,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from shell_parse import (  # noqa: E402
     base,
     extract_heredocs,
+    shell_cd_args,
     split_statements,
     strip_noop,
     token_lines,
@@ -326,9 +327,11 @@ def scan(command, cwd, vault, depth=0):
         # line — it is half of the shapes this guard has to cover.
         here = cwd
         for stages in split_statements(tokens):
-            lead = strip_noop(stages[0]) if stages and stages[0] else []
-            if lead and base(lead[0]) == "cd" and len(lead) > 1:
-                destination = os.path.expanduser(lead[1])
+            # Only a `cd` bash runs as its builtin moves the shell. `CD` and
+            # `/usr/bin/cd` run in a child and leave it where it was.
+            moves = shell_cd_args(stages[0]) if stages and stages[0] else None
+            if moves:
+                destination = os.path.expanduser(moves[0])
                 if os.path.isabs(destination):
                     # An absolute cd needs no base, so it settles the target
                     # even when the payload carried no cwd at all. Without this

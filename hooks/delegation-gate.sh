@@ -4,7 +4,7 @@
 # writes made by the MAIN agent, so the main conversation stays an orchestrator
 # and new files are built in sub-agents.
 #
-# The rule already existed in prose — guardrail 10, "delegate by default" — and
+# The rule once lived only in prose, as a "delegate by default" guardrail, and
 # drifted anyway, twice. This hook is the harness-level backstop. It is
 # deliberately agnostic: every install has built-in sub-agents (general-purpose,
 # Explore, Plan) reachable through the Agent tool, so the gate always has

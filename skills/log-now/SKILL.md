@@ -2,29 +2,33 @@
 description: Log the current session segment right now — dump the raw log and write the narrative summary + any decision promotions inline. Use this when you want to snapshot mid-conversation, or when you want a richer summary than the auto-generated one.
 ---
 
-This is an execution-aware skill — check `skills/log-now.learnings.md` in the vault before proceeding. If it exists, apply accumulated learnings.
-
 The user has invoked `/log-now`. Log the current session segment immediately and write the narrative pieces inline.
 
 Unlike the hook-driven logs — which can only do the mechanical half because hooks can't reach MCPs — `/log-now` runs in an active model turn. You do both halves: run the shell script, then write the narrative.
 
 ## Step 1 — Dump the raw log
 
-Run the session-log shell script in manual mode:
+Run the session-log shell script in manual mode, for THIS session. Claude Code exports the session's ID to Bash as `$CLAUDE_CODE_SESSION_ID`, and the transcript is the `.jsonl` file of that name. Never pick the newest transcript instead: with sessions running in parallel, the newest one is often another session's, and its log would be summarized under this one's name.
+
+Run it as one Bash call, because shell variables do not survive between calls:
 
 ```bash
-TRANSCRIPT="$(find ~/.claude/projects -name '*.jsonl' -print0 2>/dev/null | xargs -0 ls -t 2>/dev/null | head -1)"
-SESSION_ID="$(basename "$TRANSCRIPT" .jsonl)"
-WORKBENCH_LOG_MODE=manual bash "${CLAUDE_PLUGIN_ROOT}/hooks/session-log.sh" <<EOF
+SESSION_ID="$CLAUDE_CODE_SESSION_ID"
+TRANSCRIPT="$(find ~/.claude/projects -name "$SESSION_ID.jsonl" 2>/dev/null | head -1)"
+if [ -z "$SESSION_ID" ] || [ -z "$TRANSCRIPT" ]; then
+  echo "NO TRANSCRIPT for session '${SESSION_ID}'"
+else
+  WORKBENCH_LOG_MODE=manual bash "${CLAUDE_PLUGIN_ROOT}/hooks/session-log.sh" <<EOF
 {
   "session_id": "$SESSION_ID",
   "transcript_path": "$TRANSCRIPT",
   "hook_event_name": "ManualLogNow"
 }
 EOF
+fi
 ```
 
-If the heuristic fails, ask the user for the transcript path.
+If it prints `NO TRANSCRIPT`, stop and ask the user for the transcript path. Do not guess.
 
 After the script runs, read `~/.claude-memory-cache/pending-summaries/<session_id>.json` to find the log path.
 
@@ -46,11 +50,7 @@ Read `${CLAUDE_PLUGIN_ROOT}/references/decision-promotion.md` for criteria. Cros
 
 Follow linking-synthesis Steps C–E for the session's central theme only: update (or, with ≥2 related docs, create) its `topics/` page, and keep the matching `README.md` line current in the same pass. One topic page per session maximum; skipping is common.
 
-## Step 5 — Update profile if shifted
-
-Read `${CLAUDE_PLUGIN_ROOT}/references/vault-conventions.md` for conventions.
-
-## Step 6 — Clean up and confirm
+## Step 5 — Clean up and confirm
 
 Delete the pending-summary marker:
 

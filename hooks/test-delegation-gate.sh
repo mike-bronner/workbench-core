@@ -377,30 +377,6 @@ assert_grep "skill keys the file by \$CLAUDE_CODE_SESSION_ID" 'CLAUDE_CODE_SESSI
 assert_grep "gate keys the lookup by .session_id"             '.session_id'            "$GATE"
 assert_grep "skill prunes state files after 7 days"           '-mtime +7'              "$SKILL"
 
-echo "guardrail 10 agrees with the gate:"
-# guardrails.md is the rubric the interview skills write identity files against,
-# so a guardrail that contradicts an enforced hook is worse than no guardrail:
-# the files it shapes lead the agent into a deny. Guardrail 10 used to end with
-# "a single Edit to a known string — do it inline", which the gate refused until
-# 2026-09-27. Edit is allowed again, and Write is the call the gate refuses, so
-# the guardrail has to say both.
-GUARDRAILS="$HOOKS_DIR/../references/guardrails.md"
-assert_grep "guardrail 10 names the enforcing hook" 'hooks/delegation-gate.sh' "$GUARDRAILS"
-assert_grep "guardrail 10 allows an inline Edit" '✅ A single `Edit` to a known string' "$GUARDRAILS"
-assert_grep "guardrail 10 sends a whole-file Write to a sub-agent" \
-  '❌ A new file, or a whole file rewritten' "$GUARDRAILS"
-# The gate covers three tools and leaves Bash open, so a Bash command that
-# writes a file sidesteps it. Guardrail 10 once offered "a single scripted Bash"
-# as the inline case right under the denied Edit, which read as licence for
-# exactly that sidestep. The inline case is read-only, and the file-writing
-# Bash is named as the wrong route.
-assert_missing "guardrail 10 no longer offers a scripted Bash as the inline case" \
-  "$(cat "$GUARDRAILS")" '✅ A single scripted `Bash`'
-assert_grep "guardrail 10 keeps its inline Bash case read-only" \
-  '✅ A single read-only `Bash`' "$GUARDRAILS"
-assert_grep "guardrail 10 names a file-writing Bash as the wrong route" \
-  '❌ A `Bash` command that writes a file' "$GUARDRAILS"
-
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

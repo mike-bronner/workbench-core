@@ -1,8 +1,8 @@
 #!/bin/bash
-# Tests for session-warmup.sh identity injection. Run directly: ./test-session-warmup.sh
+# Tests for session-warmup.sh. Run directly: ./test-session-warmup.sh
 # Each case invokes the hook with a synthetic SessionStart payload inside a
-# sandbox (fake HOME + memory path) and asserts which identity pieces are
-# injected for that source: full files, one-line pointers, or nothing.
+# sandbox (fake HOME + memory path) and asserts what is injected for that
+# source, and what housekeeping it does.
 
 set -u
 WARMUP="$(cd "$(dirname "$0")" && pwd)/session-warmup.sh"
@@ -20,7 +20,9 @@ SANDBOX=$(mktemp -d)
 trap 'rm -rf "$SANDBOX"' EXIT
 
 # Sandbox layout: fake HOME so the script's persistent-file management never
-# touches the real ~/.claude; fixture identity files carry canary strings.
+# touches the real ~/.claude. The three canary files are the persona and protocol
+# files the warmup used to inject. They stay on disk, as they may in a real vault,
+# so every "not injected" assertion below is made with the file present.
 mkdir -p "$SANDBOX/home" "$SANDBOX/memory/identity" "$SANDBOX/cache"
 printf 'SOULHOT-CANARY soul rules\n' > "$SANDBOX/memory/identity/soul-hot.md"
 printf 'PROFILE-CANARY user facts\n' > "$SANDBOX/memory/identity/profile.md"
@@ -97,18 +99,26 @@ assert_block() {
 NOTICES_FILE="$SANDBOX/home/.claude-workbench/warmup-notices.md"
 notices() { cat "$NOTICES_FILE" 2>/dev/null; }
 
-echo "startup — fresh context gets full identity:"
+# The retired persona files and the skills-protocol pointer, asserted absent on
+# every source. The output style is the only persona, and hooks/skill-learnings.sh
+# hands each skill its own learnings, so none of the three has a reader left.
+assert_no_persona() {  # assert_no_persona <source-label> <output>
+  assert_missing "$1: no soul file injected"        "$2" "SOULHOT-CANARY"
+  assert_missing "$1: no profile injected"          "$2" "PROFILE-CANARY"
+  assert_missing "$1: no profile pointer"           "$2" "User profile"
+  assert_missing "$1: no skills-protocol text"      "$2" "SKILLSPROTO-CANARY"
+  assert_missing "$1: no skills-protocol pointer"   "$2" "Skills protocol"
+}
+
+echo "startup — the rules, and no persona file:"
 OUT=$(run_warmup startup)
-assert_contains "soul-hot injected in full"        "$OUT" "SOULHOT-CANARY"
-assert_contains "profile injected in full"         "$OUT" "PROFILE-CANARY"
+assert_no_persona startup "$OUT"
 # The behavioural rules load from the output style alone. hooks/test-rule-source.sh
 # proves no rule text reaches stdout; this pins the heading that used to carry it.
 assert_missing  "no guardrails payload injected"   "$OUT" "## Guardrails"
 # Memory capture is standing authorization. The guardrails payload used to carry
 # that exemption, so the routing block now states it on its own.
 assert_contains "memory capture needs no confirmation" "$OUT" "a memory-capture write needs no options round and no confirmation"
-assert_missing  "skills-protocol not inlined"      "$OUT" "SKILLSPROTO-CANARY"
-assert_contains "skills-protocol pointer present"  "$OUT" "Skills protocol: read \`$SANDBOX/memory/identity/skills-protocol.md\`"
 # The recall-ORDERING rule has no hook that can carry it in full — memory-recall.sh
 # only ever sees the main session's prompts, and memory-scan-recall.sh only fires
 # on a file search that carries an extractable query — so the injected routing
@@ -184,24 +194,12 @@ assert_contains "stub says what to query"              "$STUB_TEXT" "**Query the
 assert_contains "stub query rule carries its reason"   "$STUB_TEXT" "asking the better question"
 assert_contains "stub still routes recall to the vault" "$STUB_TEXT" "search the vault (\`mcp__plugin_workbench-core_memory__search\`)"
 
-echo "clear — wiped context gets full identity:"
-OUT=$(run_warmup clear)
-assert_contains "soul-hot injected in full"        "$OUT" "SOULHOT-CANARY"
-assert_contains "profile injected in full"         "$OUT" "PROFILE-CANARY"
-
-echo "compact — recurring refresh gets pointers:"
-OUT=$(run_warmup compact)
-assert_contains "soul-hot still injected in full"  "$OUT" "SOULHOT-CANARY"
-assert_missing  "profile not inlined"              "$OUT" "PROFILE-CANARY"
-assert_contains "profile pointer present"          "$OUT" "User profile: re-read \`$SANDBOX/memory/identity/profile.md\`"
-assert_missing  "skills-protocol not inlined"      "$OUT" "SKILLSPROTO-CANARY"
-assert_contains "memory routing still injected"    "$OUT" "## Memory routing"
-
-echo "resume — same trim as compact:"
-OUT=$(run_warmup resume)
-assert_missing  "profile not inlined"              "$OUT" "PROFILE-CANARY"
-assert_contains "profile pointer present"          "$OUT" "User profile: re-read"
-assert_contains "soul-hot injected in full"        "$OUT" "SOULHOT-CANARY"
+echo "clear, compact and resume — the rules again, and still no persona file:"
+for source in clear compact resume; do
+  OUT=$(run_warmup "$source")
+  assert_no_persona "$source" "$OUT"
+  assert_contains "$source: memory routing injected" "$OUT" "## Memory routing"
+done
 
 echo "agent dispatch — CLAUDE_CODE_AGENT set skips the entire warmup:"
 # Seed pending-summary markers so we can prove even the summary-dispatch
@@ -218,11 +216,9 @@ fi
 assert_missing "no warmup header"                  "$OUT" "session warmup"
 assert_missing "no destructive-commands block"     "$OUT" "## Destructive commands"
 assert_missing "no memory-routing block"           "$OUT" "## Memory routing"
-assert_missing "no soul-hot"                        "$OUT" "SOULHOT-CANARY"
-assert_missing "no profile"                         "$OUT" "PROFILE-CANARY"
 assert_missing "no pending-summary housekeeping"   "$OUT" "Pending session summaries"
 OUT=$(run_warmup resume "some-plugin:some-agent")
-assert_missing "skip is source-independent (resume)" "$OUT" "SOULHOT-CANARY"
+assert_missing "skip is source-independent (resume)" "$OUT" "## Memory routing"
 if printf '{"source":"startup"}' | ( export CLAUDE_CODE_AGENT="workbench-dev-team:holmes"; \
     HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
     WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
@@ -444,20 +440,13 @@ fi
 assert_missing "the notice stops once the file is gone" \
   "$(cat "$RT_NOTICES" 2>/dev/null)" "Retired system-overrides file"
 
-echo "missing files degrade gracefully:"
-rm "$SANDBOX/memory/identity/profile.md" "$SANDBOX/memory/identity/skills-protocol.md"
-OUT=$(run_warmup compact)
-assert_missing  "no profile pointer when file absent"  "$OUT" "User profile: re-read"
-assert_missing  "no skills pointer when file absent"   "$OUT" "Skills protocol: read"
+echo "an empty identity folder changes nothing:"
+mkdir -p "$SANDBOX/aside"
+mv "$SANDBOX/memory/identity" "$SANDBOX/aside/identity"
 OUT=$(run_warmup startup)
-# This sandbox writes no config.json, so identity_files is unset and an absent
-# profile is the deliberate state rather than a mistake. Startup says nothing
-# about it. The configured-but-unreadable case still warns, and the block below
-# pins both directions.
-assert_missing  "startup is silent on an unconfigured profile" "$OUT" "profile.md not found"
+assert_missing  "no not-found notice"                  "$OUT" "not found"
 assert_contains "the rest of startup still runs"       "$OUT" "## Memory routing"
-printf 'PROFILE-CANARY user facts\n' > "$SANDBOX/memory/identity/profile.md"
-printf 'SKILLSPROTO-CANARY skill learnings\n' > "$SANDBOX/memory/identity/skills-protocol.md"
+mv "$SANDBOX/aside/identity" "$SANDBOX/memory/identity"
 
 echo "stray-summary detector — startup flags project-dir summaries:"
 STRAY_PROJ="$SANDBOX/proj"
@@ -603,8 +592,7 @@ OUT=$(printf '{"hook_event_name":"PostCompact","trigger":"auto"}' | \
   HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
   WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
   CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" 2>/dev/null)
-assert_missing  "profile not inlined on PostCompact"  "$OUT" "PROFILE-CANARY"
-assert_contains "profile pointer present"             "$OUT" "User profile: re-read"
+assert_contains "the header names the compact source" "$OUT" "session warmup (compact)"
 assert_missing  "no pending block on PostCompact"     "$(notices)" "Pending session summaries"
 rm -f "$SANDBOX/cache/pending-summaries"/sid-*.json
 
@@ -811,93 +799,36 @@ OUT=$(run_drain startup "WORKBENCH_DRAIN_BATCH=1")
 assert_contains "stale lock is broken"             "$OUT" "DISPATCH sid=lock-probe"
 reset_drain
 
-echo "soul file is optional — absent-and-unconfigured is silent, misconfigured warns:"
-# An agent with no persona carries its standard in the output style, which is
-# system-prompt tier and needs no re-injection. The block must then print
-# nothing at all — not a "not found" notice on every single session start.
-# A CONFIGURED path that does not resolve is a different thing: that is a
-# mistake in config.json, and staying quiet about it would hide it.
-SOUL_MEM="$SANDBOX/soulless-memory"
-SOUL_HOME="$SANDBOX/soulless-home"
-SOUL_CFG_DIR="$SOUL_HOME/.claude/plugins/data/workbench-core-claude-workbench"
-mkdir -p "$SOUL_MEM/identity" "$SOUL_CFG_DIR"
-printf 'PROFILE-CANARY user facts\n' > "$SOUL_MEM/identity/profile.md"
-
-run_soul_warmup() {
+echo "a config that still carries identity_files is ignored:"
+# setup no longer writes identity_files, and the warmup no longer reads it. A
+# config written before the retirement may still hold the keys, pointing at a
+# file that exists or at a typo. Neither may produce a heading or a warning:
+# either one would tell the agent about a persona layer that is gone.
+OLD_MEM="$SANDBOX/old-config-memory"
+OLD_HOME="$SANDBOX/old-config-home"
+OLD_CFG_DIR="$OLD_HOME/.claude/plugins/data/workbench-core-claude-workbench"
+mkdir -p "$OLD_MEM/identity" "$OLD_CFG_DIR"
+printf 'SOULLESS-CANARY legacy soul\n' > "$OLD_MEM/identity/soul-hot.md"
+printf '{"memory_path":"%s","identity_files":{"soul_hot":"identity/soul-hot.md","profile":"identity/typo-profile.md"}}\n' \
+  "$OLD_MEM" > "$OLD_CFG_DIR/config.json"
+run_old_warmup() {
   printf '{"source":"startup"}' | \
-    HOME="$SOUL_HOME" WORKBENCH_MEMORY_PATH="$SOUL_MEM" \
+    HOME="$OLD_HOME" WORKBENCH_MEMORY_PATH="$OLD_MEM" \
     WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
     WORKBENCH_MEMORY_PORT="$PROBE_PORT" \
     CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" 2>/dev/null
 }
-
-# Case 1 — no soul_hot key, no soul file on disk: total silence.
-printf '{"memory_path":"%s"}\n' "$SOUL_MEM" > "$SOUL_CFG_DIR/config.json"
-OUT=$(run_soul_warmup)
-assert_missing "unconfigured + absent prints no heading" "$OUT" "## Identity — soul-hot"
-assert_missing "unconfigured + absent prints no warning" "$OUT" "not found at"
-assert_contains "the rest of the warmup still runs"      "$OUT" "PROFILE-CANARY"
-
-# Case 2 — soul_hot points somewhere that does not exist: warn loudly.
-printf '{"memory_path":"%s","identity_files":{"soul_hot":"identity/typo-soul.md"}}\n' \
-  "$SOUL_MEM" > "$SOUL_CFG_DIR/config.json"
-OUT=$(run_soul_warmup)
-assert_contains "configured + absent warns"              "$OUT" "not found at"
-assert_contains "the warning names the resolved path"    "$OUT" "identity/typo-soul.md"
-
-# Case 3 — no soul_hot key but the DEFAULT file exists: still injected. This is
-# the backward-compatibility guarantee for a config written before the key
-# existed; skipping on "unset" alone would silently drop their soul file.
-printf 'SOULLESS-CANARY legacy default\n' > "$SOUL_MEM/identity/soul-hot.md"
-printf '{"memory_path":"%s"}\n' "$SOUL_MEM" > "$SOUL_CFG_DIR/config.json"
-OUT=$(run_soul_warmup)
-assert_contains "unconfigured + default present injects" "$OUT" "SOULLESS-CANARY"
-rm -f "$SOUL_MEM/identity/soul-hot.md"
-
-echo "profile is optional too, with the same three cases as the soul file:"
-# The profile branch never got this treatment: it warned on startup and clear
-# with no check on whether a path was configured at all. A user who removed
-# profile.md deliberately read "profile.md not found" at the top of every
-# session, and that line is worse than noise, because an agent reading it
-# concludes the install is broken. These three cases are the soul block's, run
-# against the profile path.
-rm -f "$SOUL_MEM/identity/profile.md"
-
-# Case 1: no profile key and no file on disk, so total silence.
-printf '{"memory_path":"%s"}\n' "$SOUL_MEM" > "$SOUL_CFG_DIR/config.json"
-OUT=$(run_soul_warmup)
-assert_missing "unconfigured + absent prints no heading" "$OUT" "## User profile"
-assert_missing "unconfigured + absent prints no warning" "$OUT" "profile.md not found"
+OUT=$(run_old_warmup)
+assert_missing  "a configured soul file is not injected" "$OUT" "SOULLESS-CANARY"
+assert_missing  "a configured typo draws no warning"     "$OUT" "not found"
 assert_contains "the rest of the warmup still runs"      "$OUT" "## Memory routing"
 
-# Case 2: profile points somewhere that does not exist, so warn. A typo in a
-# configured path is a real misconfiguration, and silencing it would trade a
-# noise problem for a silent one.
-printf '{"memory_path":"%s","identity_files":{"profile":"identity/typo-profile.md"}}\n' \
-  "$SOUL_MEM" > "$SOUL_CFG_DIR/config.json"
-OUT=$(run_soul_warmup)
-assert_contains "configured + absent warns"              "$OUT" "profile.md not found"
-assert_contains "the warning names the resolved path"    "$OUT" "identity/typo-profile.md"
-
-# Case 3: no profile key but the DEFAULT file exists, so still injected. The same
-# backward-compatibility guarantee the soul file gets.
-printf 'PROFILELESS-CANARY legacy default\n' > "$SOUL_MEM/identity/profile.md"
-printf '{"memory_path":"%s"}\n' "$SOUL_MEM" > "$SOUL_CFG_DIR/config.json"
-OUT=$(run_soul_warmup)
-assert_contains "unconfigured + default present injects" "$OUT" "PROFILELESS-CANARY"
-
-# The identity block must be byte-identical across runs for identical config and
-# identical files: prompt caching matches an exact request prefix, so one
-# drifting byte here invalidates the cache for everything after it.
-#
-# The notice-state check above proves the stronger version of this property, and
-# it proves it only for a sandbox carrying both a soul file and a profile. This
-# one is narrower and covers what that one cannot reach: the same invariant in
-# the configuration the three cases above introduced, which is also the shipped
-# clear persona's own shape of no soul file and no profile.
-A=$(run_soul_warmup); B=$(run_soul_warmup)
+# The rules block must be byte-identical across runs for identical config:
+# prompt caching matches an exact request prefix, so one drifting byte here
+# invalidates the cache for everything after it.
+A=$(run_old_warmup); B=$(run_old_warmup)
 if [ "$A" = "$B" ]; then
-  PASS=$((PASS + 1)); echo "  ✅ identical config and files produce identical bytes"
+  PASS=$((PASS + 1)); echo "  ✅ identical config produces identical bytes"
 else
   FAIL=$((FAIL + 1)); echo "  ❌ warmup output drifted between two identical runs"
 fi

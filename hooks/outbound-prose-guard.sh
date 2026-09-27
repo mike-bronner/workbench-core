@@ -10,8 +10,8 @@
 # twelve em dashes, and nineteen sentences past the twenty-word limit.
 #
 # This guard closes that gap for the artifacts other people read: `gh` pull
-# request, issue, and release prose, plus the same text posted through a project
-# board MCP. It checks only the em dash and the semicolon (hooks/lib/prose-check.py).
+# request, issue, and release prose, the same prose sent through `gh api`, and
+# the same text posted through a project board MCP. It checks only the em dash and the semicolon (hooks/lib/prose-check.py).
 # Density, sentence length, and whether a body is a debugging journal are
 # judgement calls the output style states, and a deny on them breeds workarounds.
 #
@@ -38,24 +38,31 @@ command -v python3 >/dev/null 2>&1 || exit 0
 
 # ──────────── Prefilter: only gh prose commands start python ────────────
 # The matcher sends every Bash call here, and nearly none of them post prose.
-# The parser below reads a Bash command only when `gh` is one of its tokens and
-# the subcommand is a pr, issue, or release verb: create, edit, comment, or
-# review. So a Bash command whose text does not name `gh`, one of those three
-# nouns, and one of those four verbs cannot produce anything to check.
-# Quotes and backslashes are deleted before the test, because the parser's
-# shlex joins `g""h` and `g\h` into `gh`. The board-MCP tools skip this test:
-# the matcher already limits them to the four prose-carrying tools.
+# The parser below reads a `gh` stage only when its subcommand is `api`, or a
+# pr, issue, or release verb: create, edit, comment, or review. So a Bash command
+# whose text does not name `gh` and either `api` or one of those nouns and verbs
+# cannot produce anything to check.
+# The text is read the way the parser's tokeniser reads it: backslash-newlines
+# are deleted, then quotes and backslashes, because the parser joins
+# `g\<newline>h`, `g""h` and `g\h` into `gh`, as bash does. Case is folded,
+# because macOS runs `GH` as gh. The board-MCP tools skip this test: the matcher
+# already limits them to the four prose-carrying tools.
 #
 # Fail toward running the check: with no jq to read the tool name, the payload
 # goes to the parser as before.
 if command -v jq >/dev/null 2>&1; then
   TOOL=$(printf '%s' "$PAYLOAD" | jq -r '.tool_name // empty' 2>/dev/null)
   if [ "$TOOL" = "Bash" ]; then
-    WORDS=$(printf '%s' "$PAYLOAD" | jq -r '(.tool_input // {}).command // empty | tostring' 2>/dev/null \
-      | tr -d "\"'\\\\")
+    BSNL=$'\\\n'  # a backslash-newline, quoted below so bash 3.2 reads it literally
+    RAW=$(printf '%s' "$PAYLOAD" | jq -r '(.tool_input // {}).command // empty | tostring' 2>/dev/null)
+    WORDS=$(printf '%s' "${RAW//"$BSNL"/}" | tr -d "\"'\\\\")
+    shopt -s nocasematch
     [[ $WORDS =~ (^|[^[:alnum:]_-])gh([^[:alnum:]_-]|$) ]] || exit 0
-    [[ $WORDS =~ (^|[^[:alnum:]_-])(pr|issue|release)([^[:alnum:]_-]|$) ]] || exit 0
-    [[ $WORDS =~ (^|[^[:alnum:]_-])(create|edit|comment|review)([^[:alnum:]_-]|$) ]] || exit 0
+    if ! [[ $WORDS =~ (^|[^[:alnum:]_-])api([^[:alnum:]_-]|$) ]]; then
+      [[ $WORDS =~ (^|[^[:alnum:]_-])(pr|issue|release)([^[:alnum:]_-]|$) ]] || exit 0
+      [[ $WORDS =~ (^|[^[:alnum:]_-])(create|edit|comment|review)([^[:alnum:]_-]|$) ]] || exit 0
+    fi
+    shopt -u nocasematch
   fi
 fi
 
@@ -64,9 +71,16 @@ CHECKER="$LIB_DIR/prose-check.py"
 [ -f "$CHECKER" ] || exit 0
 
 PROSE=$(printf '%s' "$PAYLOAD" | python3 -c '
-import json, os, shlex, sys
+import json, os, re, sys
 
-# Subcommands whose payload is prose a person reads. `gh pr view`, `gh pr merge`,
+# The parser shared with the other Bash guards, so a `gh` call is found the way
+# bash finds it: after `&&` with no space, inside `( … )`, by absolute path, in
+# another case, and across a backslash-newline. A plain shlex.split kept each of
+# those glued to its neighbour, and the call was never read.
+sys.path.insert(0, sys.argv[1])
+from shell_parse import base, split_statements, strip_noop, token_lines_ex
+
+# Subcommands whose payload is prose a person reads. `gh pr view`, `gh pr diff`,
 # and friends carry no body and never reach the checker.
 PROSE_COMMANDS = {
     ("pr", "create"), ("pr", "edit"), ("pr", "comment"), ("pr", "review"),
@@ -75,6 +89,12 @@ PROSE_COMMANDS = {
 }
 INLINE_FLAGS = {"--body", "-b", "--notes", "-n", "--message", "-m"}
 FILE_FLAGS = {"--body-file", "-F", "--notes-file"}
+# `gh api` posts the same prose as a named field. A field is prose when the last
+# name in its key is one of these, so `body` and `comments[][body]` both count.
+# A GraphQL mutation carries its prose inside the query, so a `query` field that
+# is a mutation counts too. A GET sends nothing, so it is never read.
+API_FIELD_FLAGS = {"-f", "--raw-field", "-F", "--field"}
+API_PROSE_KEYS = {"body", "title"}
 # Identifiers, not prose. Everything else in an MCP payload is checked.
 SKIP_KEYS = {
     "id", "item_id", "issue_id", "pr_id", "node_id", "url", "html_url",
@@ -82,29 +102,95 @@ SKIP_KEYS = {
     "state", "status", "slug", "event", "login", "assignee",
 }
 
-def from_bash(command, cwd):
+class Unreadable(Exception):
+    """A named file could not be read, so the whole call is let through."""
+
+def read_file(value, cwd):
+    path = value if os.path.isabs(value) else os.path.join(cwd, value)
     try:
-        tokens = shlex.split(command)
-    except ValueError:
-        return ""
-    if "gh" not in tokens:
-        return ""
-    tokens = tokens[tokens.index("gh") + 1:]
-    verbs = [t for t in tokens if not t.startswith("-")][:2]
-    if len(verbs) < 2 or (verbs[0], verbs[1]) not in PROSE_COMMANDS:
-        return ""
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+    except OSError:
+        raise Unreadable()
+
+def prose_strings(node):
+    """Every string under a prose key, at any depth of a JSON body."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in API_PROSE_KEYS and isinstance(value, str):
+                yield value
+            else:
+                yield from prose_strings(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from prose_strings(value)
+
+def from_api(args, cwd):
     parts = []
-    for i, token in enumerate(tokens):
-        value = tokens[i + 1] if i + 1 < len(tokens) else ""
+    method = ""
+    index = 0
+    while index < len(args):
+        token = args[index]
+        following = args[index + 1] if index + 1 < len(args) else None
+        if token.startswith("--"):
+            name, eq, inline = token.partition("=")
+            value, step = (inline, 1) if eq else (following, 2)
+        elif token[:2] in ("-f", "-F", "-X") and len(token) > 2:
+            name, value, step = token[:2], token[2:], 1  # a glued value, -fbody=x
+        else:
+            name, value, step = token, following, 2
+        if name in ("-X", "--method"):
+            method = (value or "").upper()
+        elif name in API_FIELD_FLAGS and value is not None:
+            key, _, field = value.partition("=")
+            words = re.findall(r"[A-Za-z_]+", key)
+            leaf = words[-1] if words else ""
+            if name in ("-F", "--field") and field.startswith("@") and field != "@-":
+                field = read_file(field[1:], cwd)
+            if leaf in API_PROSE_KEYS:
+                parts.append(field)
+            elif leaf == "query" and field.lstrip().startswith("mutation"):
+                parts.append(field)
+        elif name == "--input" and value not in (None, "-"):
+            try:
+                parts.extend(prose_strings(json.loads(read_file(value, cwd))))
+            except ValueError:
+                raise Unreadable()
+        else:
+            step = 1
+        index += step
+    return [] if method == "GET" else parts
+
+def from_gh(args, cwd):
+    verbs = [t for t in args if not t.startswith("-")][:2]
+    if verbs[:1] == ["api"]:
+        return from_api(args[args.index("api") + 1:], cwd)
+    if len(verbs) < 2 or (verbs[0], verbs[1]) not in PROSE_COMMANDS:
+        return []
+    parts = []
+    for i, token in enumerate(args):
+        value = args[i + 1] if i + 1 < len(args) else ""
         if token in INLINE_FLAGS and value:
             parts.append(value)
         elif token in FILE_FLAGS and value and value != "-":
-            path = value if os.path.isabs(value) else os.path.join(cwd, value)
-            try:
-                with open(path, encoding="utf-8") as handle:
-                    parts.append(handle.read())
-            except OSError:
-                return ""
+            parts.append(read_file(value, cwd))
+    return parts
+
+def from_bash(command, cwd):
+    lines, _exact, _bodies = token_lines_ex(command)
+    parts = []
+    try:
+        for tokens in lines:
+            for stages in split_statements(tokens):
+                for stage in stages:
+                    stage = strip_noop(stage)
+                    # Anywhere in the stage, not only at its head: a retry that
+                    # merged two lines puts a `gh` call after the first line.
+                    at = next((i for i, t in enumerate(stage) if base(t) == "gh"), None)
+                    if at is not None:
+                        parts.extend(from_gh(stage[at + 1:], cwd))
+    except Unreadable:
+        return ""
     return "\n\n".join(parts)
 
 def from_mcp(tool_input):
@@ -128,7 +214,7 @@ if tool == "Bash":
     sys.stdout.write(from_bash(tool_input.get("command") or "", payload.get("cwd") or "."))
 elif tool.startswith("mcp__"):
     sys.stdout.write(from_mcp(tool_input))
-' 2>/dev/null) || exit 0
+' "$LIB_DIR" 2>/dev/null) || exit 0
 
 # Glob, not "${PROSE//[[:space:]]/}". Pattern-substitution with a character class
 # re-measures the string at every position, which makes it quadratic in payload

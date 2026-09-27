@@ -2,9 +2,7 @@
 description: Review and compact accumulated skill learnings. For workbench plugin skills, optionally integrate proven learnings into the SKILL.md itself. Triggered when a learnings file exceeds 30 entries, or run manually any time.
 ---
 
-This is an execution-aware skill — check `skills/compact-learnings.learnings.md` in the vault before proceeding. If it exists, apply accumulated learnings.
-
-The user has invoked `/workbench-core:compact-learnings`, or the skills protocol flagged a learnings file above the 30-entry threshold.
+The user has invoked `/workbench-core:compact-learnings`, or `hooks/skill-learnings.sh` warned that a skill's learnings file is past the 30-entry threshold.
 
 ## Step 1 — Identify targets
 
@@ -20,7 +18,7 @@ For threshold-triggered runs, process only the file that triggered it.
 
 ## Step 2 — For each learnings file
 
-Read the file. Count entries (`## ` headings = entries).
+Read the file. Count entries the way `hooks/skill-learnings.sh` does: each `## ` heading, and each dated `- **YYYY-MM-DD**` bullet, is one entry.
 
 If under 30 entries and this is an unprompted manual run (no specific skill), ask: "Only {N} entries — compact anyway?"
 

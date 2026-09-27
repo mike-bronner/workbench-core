@@ -2,8 +2,6 @@
 description: Periodic health-and-repair pass over the memory vault — rescue files skipped for missing frontmatter, repair broken links, conservatively connect orphans, repair vault-index drift, flag duplicates for human review, and write an audit report. Run monthly via the scheduled-tasks MCP, or manually any time.
 ---
 
-This is an execution-aware skill — check `skills/memory-lint.learnings.md` in the vault before proceeding. If it exists, apply accumulated learnings.
-
 The user (or a scheduled task) has invoked `/workbench-core:memory-lint`. Perform a lint pass over the markdown memory vault served by the `memory` MCP: gather health signals, apply bounded repairs, write an audit report, and re-verify.
 
 Why this exists: the vault accumulates rot silently. Files written without the required `name`/`type` frontmatter are skipped at index time — they exist on disk but are invisible to `search`. Links break when targets are renamed or deleted. Orphans pile up. This skill is the periodic ritual that finds and repairs that rot, conservatively, with an audit trail.
@@ -12,14 +10,15 @@ Why this exists: the vault accumulates rot silently. Files written without the r
 
 Load the memory MCP tools in one ToolSearch call (query: `"memory"`, generous `max_results`) so the whole toolkit is available: `stats`, `search`, `read`, `write`, `edit`, `list_documents`, `get_broken_links`, `get_orphan_notes`, `get_backlinks`, `reindex` — all on the `mcp__plugin_workbench-core_memory__*` prefix.
 
-Resolve the vault path from config (default shown — see `${CLAUDE_PLUGIN_ROOT}/skills/setup/SKILL.md` for the config contract):
+Resolve the vault path the way every hook does:
 
 ```bash
-CONFIG="$HOME/.claude/plugins/data/workbench-core-claude-workbench/config.json"
-MEMORY_PATH="$(jq -r '.memory_path // empty' "$CONFIG" 2>/dev/null)"
-MEMORY_PATH="${MEMORY_PATH:-$HOME/Documents/Claude/Memory}"
-MEMORY_PATH="${MEMORY_PATH/#\~/$HOME}"
+. "${CLAUDE_PLUGIN_ROOT}/hooks/lib/memory-env.sh" && memory_resolve_memory_path
 ```
+
+Every Bash call starts a fresh shell, so no variable survives from one call to the next. Spell the resolved vault path out in each command below where it reads `$MEMORY_PATH`, or set it again at the top of that call.
+
+Scratch files go in the **session scratchpad**, the directory the harness names at session start. Below it is written `$SCRATCH`: spell that path out too. Never make scratch anywhere else under `/tmp`.
 
 Vault conventions (required frontmatter, write-vs-edit rules, relative paths) are in `${CLAUDE_PLUGIN_ROOT}/references/vault-conventions.md` — read it before the fix pass.
 
@@ -27,7 +26,14 @@ Vault conventions (required frontmatter, write-vs-edit rules, relative paths) ar
 
 ### 1a. Stats — the "before" snapshot
 
-Call `stats`. Record document count, chunk count, `orphan_count`, `link_count`, `broken_link_count`. These are the "before" numbers in the report — capture them verbatim now.
+Call `stats`. Record document count, chunk count, `orphan_count`, `link_count`, `broken_link_count`. These are the "before" numbers in the report — capture them verbatim now. If you reindex in Step 1c, take the "before" numbers again after it, or label which set is pre-reindex.
+
+Then record **external write pressure**: the files other writers changed in the last 30 minutes. Step 4 measures it again, so the report can tell your own edits from theirs.
+
+```bash
+find "$MEMORY_PATH" -type f -name '*.md' ! -name '*.log.md' -mmin -30 \
+  | sed "s|^$MEMORY_PATH/||" | sort > "$SCRATCH/lint-pressure-start.txt"
+```
 
 ### 1b. Link health
 
@@ -40,17 +46,26 @@ The MCP cannot list files it skipped at index time, so diff the filesystem again
 
 ```bash
 find "$MEMORY_PATH" -name "*.md" ! -name "*.log.md" \
-  | sed "s|^$MEMORY_PATH/||" | sort > /tmp/memory-lint-disk.txt
+  | sed "s|^$MEMORY_PATH/||" | sort > "$SCRATCH/lint-disk.txt"
 ```
 
-Call `list_documents` (no folder filter), collect every `path` value, write them sorted to `/tmp/memory-lint-indexed.txt`, then:
+Call `list_documents` with no folder filter and no `pattern` (`**/*.md` drops root-level files). A large result is persisted to a file: read it with `jq`, never into context. Write every `path` value, sorted, to `$SCRATCH/lint-indexed.txt`, then:
 
 ```bash
-comm -23 /tmp/memory-lint-disk.txt /tmp/memory-lint-indexed.txt > /tmp/memory-lint-skipped.txt
-wc -l < /tmp/memory-lint-skipped.txt
+comm -23 "$SCRATCH/lint-disk.txt" "$SCRATCH/lint-indexed.txt" > "$SCRATCH/lint-skipped.txt"
+wc -l < "$SCRATCH/lint-skipped.txt"
 ```
 
 The difference is the set of files skipped for missing or invalid frontmatter — real memories invisible to search. Raw `*.log.md` transcripts are excluded by design (write-only archival); **never lint them**.
+
+**Permanent exclusions.** Three files lack frontmatter on purpose, appear in every skipped diff, and are never rescued:
+
+- `CLAUDE.md` and `MEMORY.md`, which other tools read as plain text.
+- `projects/github-profile-assets/README-pending-review.md`, which is published verbatim to GitHub, where YAML would render as junk.
+
+The general rule behind them: a file something other than the vault consumes may be frontmatter-free by design. Before rescuing an unfamiliar skipped file, `search` its path and stem. A prior decision or insight about it is binding.
+
+**Intersect the skipped files with the broken-link targets** (from 1b) before any repair. Each hit is a link that is already correct, and only its target is unindexed. One rescue closes all of those links with no link edit, so never "resolve" such a link toward a neighbour.
 
 If the disk-vs-index diff looks implausible (indexed files missing from disk, or the index appears stale relative to recent disk changes), call `reindex` once **before** the fix pass and re-run the comparison. Never call `reindex` after `write`/`edit` — those update the index immediately.
 
@@ -85,8 +100,9 @@ entry in `skipped_files`** — the document looks healthy and simply never match
 the search it should. On 2026-08-28 four indexed fields were losing 438, 136, 80,
 and 31 characters this way, and had been for weeks.
 
-Run the scan (it needs PyYAML, which the vault server already depends on; it exits
-0 and skips cleanly if the import fails):
+Run the scan. It needs PyYAML, which the vault server already depends on. Without
+it the scan exits 2 and says the vault was NOT checked: record that in the report
+as a check that did not run, never as a clean result.
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/skills/memory-lint/scripts/check-frontmatter-health.py" "$MEMORY_PATH"
@@ -108,6 +124,18 @@ unsearchable is reported but exits 0 — it costs nothing extra.
 The scan compares **only string values**. Lists, dates, and numbers legitimately
 differ from their source text — an early version of this check flagged all 814
 `tags: [a, b]` lines in the vault before that was corrected.
+
+### 1f. Non-link health — what link and frontmatter metrics cannot see
+
+Two checks, each cheap, each catching a loss that is otherwise invisible:
+
+- **Log-to-summary gap.** For each of the last five days under `sessions/`, count `*.log.md` against `*.summary.md`. Raw logs are pruned at 7 days, so a log with no summary is lost once it ages out. Name every dated folder that reaches the prune age before the next run, with its gap.
+- **Curated files over 100 KB.** List every non-session file over 100 KB with its size. The MCP `read` cap is 256 KB, so a curated page that keeps growing becomes unreadable in one piece. Compare against the sizes the last report recorded. Escalate only when two intervals both show growth while its writer was active. A page that needs splitting is flagged with options, never truncated.
+
+```bash
+find "$MEMORY_PATH" -type f -name '*.md' ! -path "$MEMORY_PATH/sessions/*" -size +100k \
+  -exec ls -l {} + | awk '{print $5, $NF}'
+```
 
 ## Step 2 — Fix pass
 
@@ -197,12 +225,29 @@ marathon — except where the human has explicitly asked for a single sweep.
 
 ### 2b. Broken links
 
-For each entry from `get_broken_links`:
+Bucket the links first, and never walk them one at a time. Drop every link whose target is a skipped file (1c): the rescue fixes it. Then run the **resolution chain** on the rest, in this order, before calling any target absent:
 
-1. Try to locate the intended target: `search` for the `raw_target` filename stem and the `link_text`; check whether the target was renamed (same title, different path).
-2. **Confident unique match** → `read` the source document, then `edit` the link to point at the correct path.
-3. **Target genuinely gone** → `edit` to remove the link markup, keeping the plain text in place. Never delete the sentence, never delete the document.
-4. **Ambiguous** (multiple plausible targets) → leave it and flag it in the report.
+1. **Folder-case drift.** The target matches an indexed path case-insensitively. macOS folds case on disk, and the index does not. Fix the case in the link.
+2. **Bare stem.** `[[slug]]` matches exactly one indexed stem, with or without a date prefix.
+3. **Folder-prefixed slug.** Strip a leading `<word>-`, then two words, and retry.
+4. **Stale migration folder.** The target has a `-tmp-migrate/` or `-migrate/` segment. Confirm every slug exists at the destination, then substitute the folder.
+5. **Name differs from path.** Build a `name → path` map from the persisted `list_documents` output (`.frontmatter.name` and `.path`). Check its row count against `stats.document_count` before trusting it: a short map turns every later lookup into a false absence.
+6. **Word-reordered rename, or a date off by one.** Compare word sets. For dated targets, strip the date on both sides and match the stem.
+
+Passes 5 and 6 are claims about meaning, so read the candidate's frontmatter before every repair. Record the near-misses you rejected, so the next run does not derive them again. Filter every resolution through `grep -v ' [0-9]/'`, so no link resolves into a sync-collision copy.
+
+Then, for each link:
+
+- **Confident unique match** → `read` the source document, then `edit` the link to point at the correct path.
+- **Target genuinely gone** → `edit` to remove the link markup, keeping the plain text in place. Never delete the sentence, never delete the document.
+- **Ambiguous** (multiple plausible targets) → leave it and flag it in the report.
+
+**Never repair these.** Report each class on its own line, outside the fixable count:
+
+- **A markdown link in the wrong frame.** A `[t](path.md)` href with no leading slash resolves against its source's folder, not the vault root. Dropping `.md` fixes nothing. The fix is the root-absolute form, `[t](/path.md)`, made by its writer, so flag it upstream.
+- **A source-code path** (`.php`, `.rs`, `.ts`, `.json`, `.sh`, with or without `:line`). It never resolves. The upstream fix is a code span.
+- **A write-ahead link** (`(if written)`, `once decided`, `(TODO)`). Run the full chain first, since the target may exist under another name. Repoint it if it resolves. Demote it to plain text only when nothing does.
+- **A citation.** Under `maintenance/` or in `skills/*.learnings.md`, a link may be the subject of the sentence. Read the sentence, and leave the illustration as it is.
 
 ### 2c. Conservative linking
 
@@ -225,7 +270,7 @@ Check it in both directions:
 
 **Do not index every document under `decisions/`.** A line-per-document index is actively harmful: it grows without bound, stops being readable at exactly the moment it stops being scannable, duplicates what `search` already does better, and — because every line is a link — converts the entire curated layer into broken-link surface area for this same skill to police. If a run reports a triple-digit "missing entries" backlog, that is the signal this rule has drifted back toward manifest semantics, not that the vault has rotted.
 
-If `README.md` doesn't exist at all, create it per the linking-synthesis contract, populated from the indexed `topics/` and `identity/` documents plus referenced decisions. Sessions are never indexed.
+If `README.md` doesn't exist at all, create it per the linking-synthesis contract, populated from the indexed `topics/` documents plus referenced decisions. Sessions are never indexed.
 
 Each index `edit`/`write` counts against the per-run fix cap.
 
@@ -242,15 +287,22 @@ tags: [maintenance, lint]
 summary: "N frontmatter rescues, N broken links repaired, N links added, N index entries fixed, N flagged, N skipped files remaining."
 ---
 
+## Write pressure
+- External writes during the run: N files (list any that carry a defect this run repairs)
+
 ## Before / after
 
-| Metric | Before | After |
+| Metric | Before | Predicted | After |
 |---|---|---|
-| Documents | … | … |
-| Orphans | … | … |
-| Links | … | … |
-| Broken links | … | … |
-| Skipped files (disk − index) | … | … |
+| Documents | … | … | … |
+| Orphans | … | … | … |
+| Links | … | … | … |
+| Broken links | … | … | … |
+| Skipped files (disk − index) | … | … | … |
+
+## Non-link health
+- Log-to-summary gap, last five days: …
+- Curated files over 100 KB: `path` (bytes, previous bytes)
 
 ## Fixes applied
 
@@ -271,6 +323,7 @@ summary: "N frontmatter rescues, N broken links repaired, N links added, N index
 
 ## Flagged for human review
 - duplicate/contradiction pairs, ambiguous broken links
+- links the chain must never repair, by class (wrong frame, source-code path, write-ahead, citation)
 - collision pairs kept under both names (content differed — a human decides which survives, or whether both should)
 
 ## Remainder
@@ -283,7 +336,18 @@ Then summarize the same numbers in chat, terse.
 
 ## Step 4 — Re-verify
 
-Call `stats` again. The report's "after" column comes **from this call, not from arithmetic** — if the numbers don't move the way the fix log says they should, that discrepancy goes in the report too. Re-run the Step 1c comparison for the after-value of the skipped-file count.
+1. **Predict, then measure.** Before calling `stats`, write down the after-numbers the fix log predicts. Then call `stats`. The report's "after" column comes **from this call, not from arithmetic**. When the two differ, name the cause in the report. Never round it away, and state any overage of the 50-fix cap.
+2. **Re-run the sync-collision scan** from Step 1d. This skill's own rapid edits to one file have forked iCloud copies mid-run. Resolve any new copy per Step 2a′.
+3. **Measure write pressure again**, and subtract the files you edited:
+
+   ```bash
+   find "$MEMORY_PATH" -type f -name '*.md' ! -name '*.log.md' -mmin -30 \
+     | sed "s|^$MEMORY_PATH/||" | sort > "$SCRATCH/lint-pressure-end.txt"
+   comm -23 "$SCRATCH/lint-pressure-end.txt" "$SCRATCH/lint-edited.txt"
+   ```
+
+   `lint-edited.txt` is the sorted list of vault paths this run wrote or edited. Name any external pressure in the report before the numbers, because it moves them. Check the new arrivals for the defect you were repairing: they often carry it.
+4. Re-run the Step 1c comparison for the after-value of the skipped-file count.
 
 ## Scheduling
 
@@ -303,7 +367,7 @@ The schedule is deployed via the scheduled-tasks MCP, mirroring the workbench ho
 }
 ```
 
-Running this skill does not register the schedule by itself — `/workbench-core:setup` Step 4.6 registers it by default (or deploy it manually with the payload above). Manual invocations between scheduled runs are always fine; the cap and the report remainder make runs resumable.
+Running this skill does not register the schedule by itself — `/workbench-core:setup` Step 4 registers it by default (or deploy it manually with the payload above). Manual invocations between scheduled runs are always fine; the cap and the report remainder make runs resumable.
 
 ## Safety rails
 

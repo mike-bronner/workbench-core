@@ -119,6 +119,7 @@ from shell_parse import (  # noqa: E402
     PREFIX_NOOP,
     base,
     extract_heredocs,
+    shell_cd_args,
     skip_flags,
     split_statements,
     strip_noop,
@@ -280,23 +281,49 @@ def has_testing_scope(tokens):
     return False
 
 
+def artisan_verb(typed):
+    """The reset verb a typed Artisan command resolves to, or None.
+
+    Read the way Symfony Console's Application::find() reads it. An exact name
+    wins. Otherwise each `:`-separated segment is a prefix of the command's own
+    segment, compared case-insensitively on its fallback, so `db:w`, `mi:fresh`
+    and `DB:WIPE` all run db:wipe. An abbreviation that could mean a reset and
+    something else too is refused anyway: which one runs depends on the
+    project's other commands, which this guard cannot see. A name with no `:`
+    is left alone, because `db` and `migrate` are commands of their own and win
+    as exact names.
+    """
+    if not typed or ":" not in typed:
+        return None
+    parts = typed.lower().split(":")
+    for verb in sorted(ARTISAN_VERBS):
+        segments = verb.split(":")
+        if len(parts) == len(segments) and all(
+                full.startswith(part) for part, full in zip(parts, segments)):
+            return verb
+    return None
+
+
 def check_artisan(tokens):
     """The verb must sit in the argument slot after `artisan`, which is what
     separates the command from a grep whose pattern happens to contain it."""
     position = None
     for index, token in enumerate(tokens[:3]):
-        if token == "artisan" or token.endswith("/artisan"):
+        # base() folds case: `php ARTISAN` opens the artisan file on macOS.
+        if base(token) == "artisan":
             position = index
             break
     if position is None:
         return None
-    verb = next((t for t in tokens[position + 1:] if not t.startswith("-")), None)
-    if verb not in ARTISAN_VERBS:
+    typed = next((t for t in tokens[position + 1:] if not t.startswith("-")), None)
+    verb = artisan_verb(typed)
+    if verb is None:
         return None
     if has_testing_scope(tokens):
         return None
     return (
-        f"`php artisan {verb}` empties or rebuilds the database it resolves to, "
+        f"`php artisan {typed}` runs {verb}, which empties or rebuilds the "
+        "database it resolves to, "
         "and this command does not scope itself to the testing database. Without "
         "--env=testing or --database=testing it resolves against .env, which is "
         "the development database."
@@ -370,7 +397,8 @@ def check_shell_drop(tokens):
     head = base(tokens[0])
     if head in DROP_COMMANDS:
         return f"`{head}` destroys a database or role outright, with no undo."
-    if head == "mysqladmin" and "drop" in tokens[1:]:
+    # mysqladmin reads its command words case-insensitively.
+    if head == "mysqladmin" and "drop" in (t.lower() for t in tokens[1:]):
         return "`mysqladmin drop` destroys a database outright, with no undo."
     return None
 
@@ -563,10 +591,13 @@ def scan(command, bodies, depth=0, cwd=None):
         # against the session's directory. Track the cd across the line.
         here = cwd
         for stages in split_statements(tokens):
-            lead = strip_noop(stages[0]) if stages and stages[0] else []
-            if lead and base(lead[0]) == "cd" and len(lead) > 1:
+            # Only a `cd` bash runs as its builtin moves the shell. `CD` and
+            # `/usr/bin/cd` run in a child, so a file after them resolves
+            # where the command started.
+            moves = shell_cd_args(stages[0]) if stages and stages[0] else None
+            if moves:
                 if here is not None:
-                    here = os.path.join(here, os.path.expanduser(lead[1]))
+                    here = os.path.join(here, os.path.expanduser(moves[0]))
                 continue
             findings.extend(check_statement(stages, bodies, depth, here))
     return findings

@@ -29,6 +29,10 @@ this writing the importers are:
     hooks/test-vault-git-guard.sh
     hooks/test-provisioning-guard.sh
     hooks/test-destructive-scope-guard.sh
+    hooks/test-credential-guard.sh
+    hooks/test-outbound-prose-guard.sh   (its inline parser imports this file)
+    hooks/test-memory-scan-recall.sh     (hooks/lib/scan-query.py)
+    hooks/test-shell-parse.sh            (this file's own rules, pinned directly)
 
 WHAT BELONGS HERE, AND WHAT DOES NOT:
 Only mechanical parsing — tokenising, splitting a line into statements and
@@ -104,6 +108,22 @@ reader starts from the answers rather than the question:
   retries exist for, so token_lines_ex() reports whether the split was EXACT and
   a fail-closed caller refuses what it could not read exactly.
 
+  FIXED 2026-09-27 — two ways bash reads a command that the tokeniser did not.
+  A backslash-newline is deleted by bash before it reads a word, so
+  `r\\<newline>m` runs rm, and shlex kept the pair inside the token.
+  join_continuations() now deletes it wherever bash does. A command name is
+  resolved case-insensitively on macOS, so `DROPDB` runs dropdb, and every
+  guard compared the name against a lower-case table. base() now folds case.
+  Both only ever make a guard read MORE commands as the verb they spell.
+
+  AND THE FOLD HAD A SECOND EDGE, FOUND IN REVIEW THE SAME DAY. Three guards
+  tracked a working directory with `base(token) == "cd"`, so `CD <root>` read
+  as a move once base() folded case. Bash never runs `CD` as its builtin: on
+  macOS it runs /usr/bin/cd in a child, and the shell stays put. The delete
+  after it resolved against a directory the shell never entered, and a denied
+  command was allowed. `/usr/bin/cd` had the same flaw before the fold. A
+  directory change is now read by shell_cd_args(), from the raw token.
+
   NOT FIXED HERE, AND THE REASON IS A BOUNDARY — strip_noop() drops a wrapper
   such as `env` or `nice` but not that wrapper's own options, so `env -i rm -rf
   /etc/x` leaves `-i` in the verb slot and `nice -n 10 rm` leaves `-n`. Closing
@@ -156,8 +176,99 @@ HEREDOC_START = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 
 
 def base(token):
-    """The bare program name, so /usr/local/bin/psql matches psql."""
-    return os.path.basename(token)
+    """The bare program name, case-folded, so /usr/local/bin/PSQL matches psql.
+
+    Case-folded because macOS resolves a command name on a case-insensitive
+    filesystem: `DROPDB prod` runs dropdb, and `RM -rf x` runs rm. Every guard
+    compared the name against a lower-case table, so the upper-case spelling ran
+    the verb and reached no rule. On a case-sensitive filesystem the folded name
+    can only make a guard refuse a command that would not have run, which costs
+    nothing. Subcommands and flags are left alone: those are read by the
+    program, and most programs read them case-sensitively.
+    """
+    return os.path.basename(token).lower()
+
+
+# What may stand in front of a `cd` while it still runs as the shell's own
+# builtin. An assignment, `command`, `builtin` and the `time` keyword all leave
+# it in this shell. Everything else in PREFIX_NOOP does not: `sudo cd`, `env cd`
+# and `nohup cd` run /usr/bin/cd in a child process, which moves nothing.
+CD_TRANSPARENT = {"command", "builtin", "time"}
+
+
+def shell_cd_args(stage, keywords=()):
+    """The arguments of a `cd` that moves THIS shell, or None when the stage is
+    not one.
+
+    Bash finds a builtin by its exact name, case-sensitively and never by path.
+    So `cd` moves the shell, and `CD`, `Cd` and `/usr/bin/cd` do not: on macOS's
+    case-insensitive disk each of those runs /usr/bin/cd in a child process and
+    exits. base() folds case and strips the path, which is right for a program
+    looked up on disk and wrong here. A guard that tracked `CD <root>` as a
+    move resolved the delete after it against a directory the shell never
+    entered, and let it through. `keywords` are the reserved words a caller
+    also strips, such as `if` and `then`, which leave the shell where it is.
+    """
+    rest = list(stage)
+    while rest and (ASSIGNMENT.match(rest[0]) or rest[0] in CD_TRANSPARENT
+                    or rest[0] in keywords):
+        rest = rest[1:]
+    return rest[1:] if rest and rest[0] == "cd" else None
+
+
+def join_continuations(text):
+    """Delete every backslash-newline the shell would delete, and no other.
+
+    Bash removes a backslash-newline before it reads a word, so `r\\<newline>m`
+    runs rm and `drop\\<newline>db` runs dropdb. shlex keeps the pair, so the
+    verb slot held "r\\nm" and no rule matched it. Bash keeps the pair in three
+    places, and so does this: inside single quotes, after an escaping backslash
+    (`\\\\<newline>` is a literal backslash and then a real newline), and inside
+    a comment. Idempotent, because the output holds no pair it would delete.
+
+    Heredoc bodies are not read here. extract_heredocs() lifts them out first and
+    joins an unquoted body on its own terms, because a body is not shell syntax
+    and its quotes mean nothing.
+    """
+    out = []
+    index = 0
+    quote = None
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if quote == "'":
+            out.append(char)
+            if char == "'":
+                quote = None
+            index += 1
+            continue
+        if char == "\\":
+            if text.startswith("\\\n", index):
+                index += 2
+                continue
+            out.append(text[index:index + 2])
+            index += 2
+            continue
+        if quote == '"':
+            if char == '"':
+                quote = None
+        elif char in "'\"":
+            quote = char
+        elif char == "#" and (not out or out[-1][-1] in " \t\n;&|()"):
+            end = text.find("\n", index)
+            end = length if end < 0 else end
+            out.append(text[index:end])
+            index = end
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def _join_body(body):
+    """An unquoted heredoc body loses its backslash-newlines too, but a body has
+    no quotes or comments, so only the escaping backslash is honoured."""
+    return re.sub(r"\\(\\|\n)", lambda m: "" if m.group(1) == "\n" else m.group(0), body)
 
 
 def split_operators(token):
@@ -239,6 +350,7 @@ def token_lines_ex(text):
     delimiter.
     """
     stripped, bodies = extract_heredocs(text)
+    stripped = join_continuations(stripped)
     lines = [line for line in stripped.split("\n") if line.strip()]
     for parser in (tokenize, tokenize_loose):
         exact = parser is tokenize
@@ -294,9 +406,9 @@ def extract_heredocs(command):
     while i < len(lines):
         line = lines[i]
         kept.append(line)
-        delimiters = [m.group(2) for m in HEREDOC_START.finditer(line)]
+        openers = [(m.group(2), m.group(1)) for m in HEREDOC_START.finditer(line)]
         i += 1
-        for delimiter in delimiters:
+        for delimiter, quoted in openers:
             body = []
             scan = i
             while scan < len(lines) and lines[scan].strip() != delimiter:
@@ -307,7 +419,11 @@ def extract_heredocs(command):
                 # remaining lines to be read as the commands they are.
                 continue
             i = scan + 1  # step over the delimiter line itself
-            bodies.setdefault(delimiter, []).append("\n".join(body))
+            text = "\n".join(body)
+            # An unquoted delimiter makes bash delete the body's
+            # backslash-newlines, so `DROP \\<newline>TABLE` reaches psql as
+            # `DROP TABLE`. A quoted one keeps the body byte for byte.
+            bodies.setdefault(delimiter, []).append(text if quoted else _join_body(text))
     return "\n".join(kept), bodies
 
 

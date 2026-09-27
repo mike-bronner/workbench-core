@@ -323,8 +323,8 @@ check allow "relative to /tmp"                "rm -rf ${LEFT_SCRATCH#/tmp/}" "/t
 check allow "two leftovers at once"           "rmdir $LEFT_SUMMARY $LEFT_SCRATCH/sub"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SESSION-SUMMARY MARKERS. The summary-writer, log-now and summarize-session each
-# end by deleting their marker in <cache>/pending-summaries/, and this guard
+# SESSION-SUMMARY MARKERS. The summary-writer and log-now each end by deleting
+# their marker in <cache>/pending-summaries/, and this guard
 # denied every one of those deletes, so 800 markers piled up. One marker file
 # is approved, and nothing else under the cache is.
 echo "permits a delete of one session-summary marker:"
@@ -1052,10 +1052,27 @@ assert_starts none 'echo "permission" '\''terminal'\'''
 echo "split verbs reach a verdict, not silence:"
 check deny "r''m outside every root"         "r''m -rf $VICTIM/keep.txt"
 check deny "r\\m outside every root"          "r\\m -rf $VICTIM/keep.txt"
-# r\<newline>m is not asserted here. It now reaches the checker (above), but the
-# checker's tokeniser does not join a backslash-newline, so it reaches no
-# verdict. That is a checker gap, tracked for Phase 5, not a prefilter one.
+# Bash deletes a backslash-newline before it reads a word, so r\<newline>m runs
+# rm. The tokeniser now does the same, so the checker reads the verb slot.
+check deny "r\\<newline>m outside every root" $'r\\\nm -rf '"$VICTIM/keep.txt"
+check deny "a continued line carrying rm"     $'cd / && \\\nrm -rf '"$VICTIM/keep.txt"
+# macOS resolves command names on a case-insensitive filesystem, so RM runs rm.
+check deny "RM outside every root"            "RM -rf $VICTIM/keep.txt"
+check deny "/BIN/RM outside every root"       "/BIN/RM -rf $VICTIM/keep.txt"
 check deny "-de\"\"lete outside every root"   "find $VICTIM -de\"\"lete"
+
+echo "only bash's own cd moves the shell:"
+# Bash finds the builtin by its exact name. `CD`, `Cd` and `/usr/bin/cd` run
+# /usr/bin/cd in a child on macOS, and so do `sudo cd` and `env cd`, so the
+# relative delete after them resolves where the command started: outside.
+check allow "a real cd into the project"      "cd $PROJECT && rm -rf sub" "$VICTIM"
+for fake in CD Cd /usr/bin/cd 'sudo cd' 'env cd'; do
+  check deny "$fake into the project moves nothing" "$fake $PROJECT && rm -rf keep.txt" "$VICTIM"
+done
+check allow "command cd still moves the shell" "command cd $PROJECT && rm -rf sub" "$VICTIM"
+# Neutral rather than allow: the guard permits only a command that does nothing
+# else, and this one also runs `if`. What matters is that it is not refused.
+check neutral "a cd behind if still moves it"  "if cd $PROJECT; then rm -rf sub; fi" "$VICTIM"
 assert_survives "the victim survived every split verb" "$VICTIM/keep.txt"
 
 echo

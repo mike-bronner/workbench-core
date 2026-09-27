@@ -90,6 +90,15 @@
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/peer-message-gate.sh\""
           }
         ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/skill-learnings.sh\""
+          }
+        ]
       }
     ],
     "SessionStart": [

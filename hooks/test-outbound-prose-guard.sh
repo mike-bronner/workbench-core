@@ -235,6 +235,8 @@ echo "the emptiness pre-check decides the same thing on every platform:"
 STUB="$SANDBOX/stub"
 mkdir -p "$STUB/lib"
 cp "$GUARD" "$STUB/"
+# The parser imports the shared tokeniser, so the stub tree carries it too.
+cp "$(dirname "$GUARD")/lib/shell_parse.py" "$STUB/lib/"
 printf '%s\n' 'import sys; sys.stdin.read(); print("stub-finding")' > "$STUB/lib/prose-check.py"
 
 run_stub() {  # run_stub <body-file> -> rc (0 allowed, 2 blocked)
@@ -299,6 +301,8 @@ assert_starts "a git log"                  'git log --oneline -3' 0
 assert_starts "gh with no prose noun"      'gh auth status' 0
 assert_starts "a prose noun with no gh"   'echo "open a pr for the release"' 0
 assert_starts "gh with a noun and no prose verb" 'gh pr view 21665 --json body' 0
+assert_starts "gh api reaches the parser"  'gh api repos/o/r/issues/1/comments -f body=' 1
+assert_starts "a backslash-newline gh reaches the parser" "g"$'\\\n'"h pr comment 1 --body ''" 1
 
 echo "prefilter: every spelling the parser accepts still reaches it:"
 EMDASH_BODY="The fix works — mostly."
@@ -307,6 +311,34 @@ assert_blocked "gh split by a backslash"  run_bash "g\\h pr comment 1 --body '$E
 assert_blocked "pr in quotes"             run_bash "gh 'pr' edit 1 --body '$EMDASH_BODY'"
 assert_blocked "after cd &&"              run_bash "cd /x && gh release create v1 --notes '$EMDASH_BODY'"
 assert_blocked "issue comment"            run_bash "gh issue comment 5 --body '$EMDASH_BODY'"
+
+# The parser used to split the command with plain shlex and look for a token
+# spelled exactly `gh`. An operator glued to the name, an absolute path, a
+# backslash-newline, and `gh api` each hid the call from it.
+echo "parser: every spelling of a gh prose call is read:"
+assert_blocked "x&&gh with no spaces"      run_bash "true&&gh pr comment 1 --body '$EMDASH_BODY'"
+assert_blocked "a subshell (gh"            run_bash "(gh pr comment 1 --body '$EMDASH_BODY')"
+assert_blocked "an upper-case GH"          run_bash "GH pr comment 1 --body '$EMDASH_BODY'"
+assert_blocked "an absolute gh path"      run_bash "/opt/homebrew/bin/gh pr comment 1 --body '$EMDASH_BODY'"
+assert_blocked "gh split by a backslash-newline" \
+  run_bash "g"$'\\\n'"h pr comment 1 --body '$EMDASH_BODY'"
+assert_blocked "a second gh call after a clean first" \
+  run_bash "gh pr view 1 && gh pr comment 1 --body '$EMDASH_BODY'"
+assert_blocked "gh api with -f body"       run_bash "gh api repos/o/r/issues/1/comments -f body='$EMDASH_BODY'"
+assert_blocked "gh api with --raw-field"   run_bash "gh api repos/o/r/issues/1/comments --raw-field 'body=$EMDASH_BODY'"
+assert_blocked "gh api with a nested review body" \
+  run_bash "gh api repos/o/r/pulls/1/reviews -f event=COMMENT -f 'comments[][body]=$EMDASH_BODY'"
+printf '%s' "$EMDASH_BODY" > "$SANDBOX/api-body.md"
+assert_blocked "gh api with -F body=@file" run_bash "gh api repos/o/r/issues/1/comments -F body=@api-body.md"
+printf '{"body": "%s"}' "$EMDASH_BODY" > "$SANDBOX/api-input.json"
+assert_blocked "gh api with --input"       run_bash "gh api repos/o/r/issues/1/comments --input api-input.json"
+assert_blocked "gh api graphql mutation"   run_bash "gh api graphql -f query='mutation { addComment(input: {subjectId: \"x\", body: \"$EMDASH_BODY\"}) { clientMutationId } }'"
+assert_allowed "gh api with a clean body"  run_bash "gh api repos/o/r/issues/1/comments -f body='$CLEAN'"
+assert_allowed "gh api GET carries no prose" \
+  run_bash "gh api -X GET repos/o/r/issues -f body='a; b'"
+assert_allowed "gh api graphql query is a read" \
+  run_bash "gh api graphql -f query='query { viewer { login } }; x'"
+assert_allowed "gh api non-prose fields"   run_bash "gh api repos/o/r/pulls/1/reviews -f event=APPROVE -f commit_id='a;b'"
 
 echo
 echo "$PASS passed, $FAIL failed"

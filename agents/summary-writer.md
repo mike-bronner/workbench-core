@@ -51,13 +51,11 @@ Never treat a missing log as terminal while the transcript is on disk. On 2026-0
 
 **Scratch files must be session-unique.** Multiple summary-writers run concurrently and may share a scratchpad directory — any intermediate extract you write MUST embed your `session_id` in the filename (e.g. `{session_id}-extract.jsonl`), never a generic name like `session.jsonl`. A shared scratch name lets a parallel agent overwrite your extract mid-run and cross-contaminate the summary. If your extract ever contains a foreign `sessionId`, stop, re-extract from the source, and verify before writing.
 
-**Scratch files must be session-unique.** Multiple summary-writers run concurrently and may share a scratchpad directory — any intermediate extract you write MUST embed your `session_id` in the filename (e.g. `{session_id}-extract.jsonl`), never a generic name like `session.jsonl`. A shared scratch name lets a parallel agent overwrite your extract mid-run and cross-contaminate the summary. If your extract ever contains a foreign `sessionId`, stop, re-extract from the raw log, and verify before writing.
-
 ### 2.5 Idle-tick check — skip noise sessions
 
 If the log shows a **scheduled dispatch/maintenance tick that found no work** — a dispatch orchestrator or version-check run whose outcome is "0 items dispatched" / "no work found" / "idle", with no other substantive activity (no code changes, no decisions, no user conversation) — do **not** write a summary document. Idle-tick summaries are index pollution: at one point they were 20–45% of the searchable vault (2026-07-08 audit).
 
-Instead: delete the marker the way step 7 does, print `summary-writer: skipped sid={session_id} reason=idle-tick marker=deleted`, and exit. The raw log remains on disk for the 7-day retention window as the only record, which is enough for a session that did nothing.
+Instead: delete the marker the way step 6 does, print `summary-writer: skipped sid={session_id} reason=idle-tick marker=deleted`, and exit. The raw log remains on disk for the 7-day retention window as the only record, which is enough for a session that did nothing.
 
 **The bar is strict**: any dispatched item, any error worth remembering, any human interaction → not an idle tick; write the summary.
 
@@ -88,11 +86,7 @@ Follow `references/linking-synthesis.md` Steps C–E for the session's central t
 
 **`topics/` holds topic pages only.** Before writing to `topics/`, check the `type` you are about to give the document: only `type: topic` belongs there. An `insight`, `decision`, `reference`, or `project` goes in its own folder — `insights/`, `decisions/`, `Reference/`, `projects/` — with the topic page linking to it. One page per discovered fact is a session log with better frontmatter, not a synthesis.
 
-### 6. Update profile.md if preferences shifted
-
-Read `references/vault-conventions.md` for the profile update conventions. Only update on explicit, repeated signal. Common case is skip.
-
-### 7. Delete the marker
+### 6. Delete the marker
 
 ```bash
 rm -f /absolute/path/to/pending-summaries/<session_id>.json
@@ -102,7 +96,7 @@ Write the `marker_path` value out literally, exactly as the dispatch gave it. Ne
 
 Do this LAST. If you delete the marker without writing a summary, the summary is silently lost.
 
-### 8. Print confirmation and exit
+### 7. Print confirmation and exit
 
 ```
 summary-writer: ok sid={session_id} summary={relative/path} decisions={count} links={count} marker=deleted
@@ -117,11 +111,3 @@ Then stop.
 - **Log AND transcript both missing**: Print `summary-writer: error sid={sid} unrecoverable log-missing={log_path} transcript-missing={transcript_path}`, leave marker, exit. This is the only genuinely lost case — both the 7-day cache and the ~30-day source are gone. A marker in this state will never succeed on retry; it is a record that the session went unsummarised, and purging it is a deliberate human call, not the drain's.
 - **Summary write fails** (MCP `write` errors or the memory MCP is unavailable): Print `summary-writer: error sid={sid} summary-write-failed`, leave the marker, and exit. **Never** fall back to a Bash/filesystem write — a missed summary is recovered on the next session's warmup, but a misrouted one is silent corruption.
 - **Short/unfamiliar log**: Write a thin 2-3 line summary. Don't hallucinate. Delete the marker.
-
-## Invariants
-
-1. **Never delete the marker without writing a summary** — except the deliberate idle-tick skip (step 2.5), which is the one sanctioned no-summary marker deletion.
-2. **Never invent content.**
-3. **Never process a mismatched session_id.**
-4. **Exit when done.**
-5. **Write vault files only via the memory MCP, with a vault-relative `sessions/` path.** Never use Bash to write a summary.

@@ -209,6 +209,15 @@ check deny "an absolute path" "$(cwd_json "psql -f $SQLDIR/db/reset.sql" /nowher
 check deny "a cd first"       "$(cwd_json 'cd db && psql -f reset.sql' "$SQLDIR")"
 
 echo "allows files whose contents are not destructive:"
+# Only bash's own builtin `cd` moves the shell, found by its exact name. `CD`,
+# `Cd` and `/usr/bin/cd` run /usr/bin/cd in a child on macOS, and `sudo cd` and
+# `env cd` do the same, so the file still resolves where the command started.
+# Tracking them as a move looked for reset.sql in /tmp and let the DROP through.
+check allow "a real cd away leaves the file behind" "$(cwd_json 'cd /tmp && psql -f db/reset.sql' "$SQLDIR")"
+for fake in CD Cd /usr/bin/cd 'sudo cd' 'env cd'; do
+  check deny "$fake moves nothing" "$(cwd_json "$fake /tmp && psql -f db/reset.sql" "$SQLDIR")"
+done
+check deny "command cd still moves the shell" "$(cwd_json 'command cd db && psql -f reset.sql' "$SQLDIR")"
 check allow "a seed file"      "$(cwd_json 'psql -f db/seed.sql' "$SQLDIR")"
 check allow "a qualified DELETE file" "$(cwd_json 'psql -f db/prune.sql' "$SQLDIR")"
 check allow "a missing file"   "$(cwd_json 'psql -f db/gone.sql' "$SQLDIR")"
@@ -570,6 +579,53 @@ check deny  "db:wipe split by quotes"      '{"tool_name":"Bash","tool_input":{"c
 assert_starts 1 "upper-case DROPDB reaches the checker" 'DROPDB app_dev'
 assert_starts 1 "a command past the read ceiling always reaches the checker" \
   "$(head -c 200001 /dev/zero | tr "\\0" x)"
+
+# The prefilter above let DROPDB through to the checker, and the checker then
+# compared it against lower-case names and allowed it. macOS resolves command
+# names on a case-insensitive filesystem, so `DROPDB prod` runs dropdb. Program
+# names are therefore compared case-folded. The SQL rules were already
+# case-insensitive. Docker and the project tools read their subcommands
+# case-sensitively, as those tools do.
+echo "checker — a program name in another case is the same program on macOS:"
+bash_cmd() { jq -cn --arg c "$1" '{tool_name:"Bash", tool_input:{command:$c}}'; }
+check deny  "DROPDB prod"                          "$(bash_cmd 'DROPDB prod')"
+check deny  "an absolute path to DropUser"         "$(bash_cmd '/usr/local/bin/DropUser app')"
+check deny  "PSQL -c with a DROP"                  "$(bash_cmd 'PSQL -d app -c "DROP DATABASE app"')"
+check deny  "php ARTISAN db:wipe"                  "$(bash_cmd 'php ARTISAN db:wipe --force')"
+
+# Symfony Console's Application::find() also resolves an abbreviation: each
+# `:`-separated segment is a prefix of the command's, case-insensitively on the
+# fallback. So `db:w` runs db:wipe, and the guard reads it the same way.
+echo "checker — an abbreviated Artisan verb is the verb it resolves to:"
+check deny  "db:w"                                 "$(bash_cmd 'php artisan db:w --force')"
+check deny  "migrate:fr"                           "$(bash_cmd 'php artisan migrate:fr --force')"
+check deny  "mi:fresh"                             "$(bash_cmd 'php artisan mi:fresh --force')"
+check deny  "m:refr"                               "$(bash_cmd 'php artisan m:refr')"
+check deny  "MIGRATE:RES in upper case"            "$(bash_cmd 'php artisan MIGRATE:RES')"
+check deny  "an empty segment matches every command" "$(bash_cmd 'php artisan db: --force')"
+check allow "an abbreviation scoped to testing"    "$(bash_cmd 'php artisan mi:fr --env=testing')"
+check allow "db:s is db:seed, not a reset"         "$(bash_cmd 'php artisan db:s')"
+check allow "migrate:st is migrate:status"         "$(bash_cmd 'php artisan migrate:st')"
+check allow "bare migrate is its own command"      "$(bash_cmd 'php artisan migrate --force')"
+check deny  "SUDO in front of dropdb"              "$(bash_cmd 'SUDO dropdb app')"
+check deny  "MySQLAdmin DROP"                      "$(bash_cmd 'MySQLAdmin -u root DROP app')"
+check allow "a grep for the upper-case word"       "$(bash_cmd 'grep -rn DROPDB docs/')"
+check allow "an echo of the upper-case word"       "$(bash_cmd 'echo DROPDB')"
+
+# Bash deletes a backslash-newline before it reads a word, so `drop\<newline>db`
+# runs dropdb. The tokeniser used to keep the pair inside the token, so the
+# verb slot held "drop\ndb" and matched nothing.
+echo "checker — a backslash-newline joins the word it splits:"
+check deny  "dropdb split by a backslash-newline"   "$(bash_cmd $'drop\\\ndb prod')"
+check deny  "db:wipe split by a backslash-newline"  "$(bash_cmd $'php artisan db:\\\nwipe --force')"
+check deny  "a continued line carrying dropdb"      "$(bash_cmd $'cd /srv && \\\ndropdb prod')"
+check deny  "SQL in an unquoted heredoc split by a continuation" \
+  "$(bash_cmd $'psql -d app <<SQL\nDROP \\\nTABLE users;\nSQL')"
+check allow "a continuation inside a comment joins nothing" \
+  "$(bash_cmd $'ls # drop\\\ndb')"
+# A comment ends at its newline even after a backslash, so the next line runs.
+check deny  "a backslash ending a comment does not hide the next line" \
+  "$(bash_cmd $'ls # note \\\ndropdb app')"
 
 echo
 echo "$PASS passed, $FAIL failed"

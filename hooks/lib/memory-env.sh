@@ -51,6 +51,20 @@ memory_resolve_cache_path() {
   printf '%s' "${cache:-$HOME/.claude-memory-cache}"
 }
 
+# memory_resolve_memory_path: echo the vault root (override → config.json →
+# default), the same precedence memory_load_env applies to MEMORY_PATH. For a
+# caller that needs the vault location alone and none of the server env —
+# hooks/skill-learnings.sh reads a skill's learnings file from it.
+memory_resolve_memory_path() {
+  local config_file vault
+  config_file="$(memory_resolve_config_file)"
+  vault="${WORKBENCH_MEMORY_PATH:-}"
+  if [ -z "$vault" ] && [ -f "$config_file" ] && command -v jq >/dev/null 2>&1; then
+    vault="$(jq -r '.memory_path // empty' "$config_file" 2>/dev/null)"
+  fi
+  printf '%s' "${vault:-$HOME/Documents/Claude/Memory}"
+}
+
 # memory_load_env: resolve config and export the full memory server env.
 #
 # Sets these shell variables (override → config.json → default), so callers can
@@ -78,8 +92,7 @@ memory_load_env() {
       && jq -r "$1 // empty" "$config_file" 2>/dev/null
   }
 
-  MEMORY_PATH="${WORKBENCH_MEMORY_PATH:-$(_cfg '.memory_path')}"
-  MEMORY_PATH="${MEMORY_PATH:-$HOME/Documents/Claude/Memory}"
+  MEMORY_PATH="$(memory_resolve_memory_path)"
   CACHE_PATH="$(memory_resolve_cache_path)"
   MCP_NAME="${WORKBENCH_MCP_SERVER_NAME:-$(_cfg '.memory_mcp_server_name')}"
   MCP_NAME="${MCP_NAME:-workbench-memory}"

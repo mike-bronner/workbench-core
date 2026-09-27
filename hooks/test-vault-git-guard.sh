@@ -401,6 +401,74 @@ assert_jq "no if condition narrows it" "$HOOKS_JSON" \
 # and no permission rule can ever see it. That is structural and needs nothing.
 # What DOES need asserting is that the reference document explains the rule, so
 # an agent reading conventions learns it before a hook has to enforce it.
+# ── The prefilter wakes Python only for a git WRITE verb ────────────────────
+# It used to match `git` as a substring, so every git call, every `.git` path
+# and every `digit` started Python. It now also needs a write verb as a whole
+# word. Every deny above is the proof that no refused shape is skipped: each one
+# still has to reach the checker to be refused.
+echo "prefilter — a read-only git call starts no python, every write verb does:"
+mkdir -p "$SANDBOX/py-shim"
+printf '#!/bin/bash\necho started >> "%s/py-shim/starts"\nexec "%s" "$@"\n' \
+  "$SANDBOX" "$(command -v python3)" > "$SANDBOX/py-shim/python3"
+chmod +x "$SANDBOX/py-shim/python3"
+python_starts() {  # python_starts <command> -> how many python3 starts it cost
+  : > "$SANDBOX/py-shim/starts"
+  bash_json "$1" | PATH="$SANDBOX/py-shim:$PATH" run_guard >/dev/null 2>&1
+  wc -l < "$SANDBOX/py-shim/starts" | tr -d ' '
+}
+assert_starts() {  # assert_starts <none|some> <command>
+  local got
+  got=$(python_starts "$2")
+  if { [ "$1" = none ] && [ "$got" = 0 ]; } || { [ "$1" = some ] && [ "$got" -gt 0 ]; }; then
+    PASS=$((PASS + 1)); echo "  ✅ $1: $2"
+  else
+    FAIL=$((FAIL + 1)); echo "  ❌ $1: $2 — got $got python start(s)"
+  fi
+}
+# Literal paths here, not $VAULT: mktemp on Darwin lands under
+# /var/folders/<xx>/, and a two-letter folder such as `gc` is a write verb
+# as a whole word, which would wake Python for a reason unrelated to the case.
+assert_starts none 'git -C ~/Documents/Claude/Memory status'
+assert_starts none 'git -C ~/Documents/Claude/Memory log --oneline -5'
+assert_starts none 'git diff HEAD~1 -- ~/Documents/Claude/Memory/insights'
+assert_starts none 'ls ~/Documents/Claude/Memory/.git'
+assert_starts none 'cat ~/.gitconfig'
+assert_starts none 'git --git-dir=.git log'
+assert_starts none 'echo digit'
+assert_starts some 'GIT -C ~/Documents/Claude/Memory rm x.md'
+assert_starts some 'git -C ~/Documents/Claude/Memory "r"m x.md'
+assert_starts some 'git -C ~/Documents/Claude/Memory r\m x.md'
+assert_starts some 'git -C ~/Documents/Claude/Memory r'$'\\\n''m x.md'
+# Every write verb the checker knows, read out of its own table, so a verb added
+# there and forgotten in the prefilter fails here instead of going unguarded.
+CHECKER_FILE="$HOOKS_DIR/lib/vault-git-check.py"
+WRITE_WORDS=$(sed -n '/^WRITE_VERBS = {/,/^}/p' "$CHECKER_FILE" | grep -oE '"[a-z-]+"' | tr -d '"')
+if [ "$(printf '%s\n' "$WRITE_WORDS" | grep -c .)" -ge 25 ]; then
+  PASS=$((PASS + 1)); echo "  ✅ read $(printf '%s\n' "$WRITE_WORDS" | grep -c .) write verbs out of the checker"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ read too few write verbs out of the checker — did WRITE_VERBS move?"
+fi
+for verb in $WRITE_WORDS; do
+  assert_starts some "git -C $VAULT $verb x"
+done
+
+echo "checker — case and line continuations:"
+# macOS resolves command names on a case-insensitive filesystem, so GIT runs git.
+check deny "GIT -C <vault> rm" "$(bash_json "GIT -C $VAULT rm insights/a.md")"
+# Bash deletes a backslash-newline before it reads a word.
+check deny "git r\\<newline>m in the vault" \
+  "$(bash_json "git -C $VAULT r"$'\\\n'"m insights/a.md")"
+
+echo "checker — only bash's own cd moves the shell:"
+# `CD`, `Cd`, `/usr/bin/cd`, `sudo cd` and `env cd` run in a child process and
+# leave the shell in the vault, so the git write after them lands there.
+check allow "a real cd out of the vault" "$(cwd_json "cd $PROJECT && git rm insights/a.md" "$VAULT")"
+for fake in CD Cd /usr/bin/cd 'sudo cd' 'env cd'; do
+  check deny "$fake leaves the shell in the vault" \
+    "$(cwd_json "$fake $PROJECT && git rm insights/a.md" "$VAULT")"
+done
+check deny "command cd into the vault moves" "$(cwd_json "command cd $VAULT && git rm x" "$PROJECT")"
+
 echo "vault-conventions.md documents the rule and cites the incident:"
 CONVENTIONS="$(cd "$HOOKS_DIR/.." && pwd)/references/vault-conventions.md"
 CONV="$(cat "$CONVENTIONS" 2>/dev/null)"

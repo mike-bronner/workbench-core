@@ -102,6 +102,8 @@ COMMAND=$(printf '%s' "$PAYLOAD" | jq -r '
 # when its text names one of the programs or verbs the checker acts on. The list
 # is the checker's own, read from hooks/lib/destructive-db-check.py:
 #   ARTISAN_VERBS          db:wipe, migrate:fresh, migrate:reset, migrate:refresh
+#                          and `artisan` itself, because Symfony resolves an
+#                          abbreviation such as `db:w`, which names no verb here
 #   DROP_COMMANDS          dropdb, dropuser
 #   check_shell_drop       mysqladmin
 #   SQL_CLIENTS            psql, mysql, mariadb, mysqlsh, sqlite3, sqlite, usql
@@ -115,17 +117,19 @@ COMMAND=$(printf '%s' "$PAYLOAD" | jq -r '
 # checker and fails when one of them is missing here.
 #
 # Substring, not whole word, so `/usr/local/bin/psql`, `sail artisan`, and
-# `migrate:fresh` inside `bash -c "..."` all still match. Quotes and
-# backslashes are deleted first, because the checker's tokeniser joins `drop''db`
-# and `drop\db` into `dropdb`. Case is folded, because macOS runs `DROPDB` as
-# `dropdb` on its case-insensitive disk.
+# `migrate:fresh` inside `bash -c "..."` all still match. Backslash-newlines are
+# deleted first, then quotes and backslashes, because the checker's tokeniser
+# joins `drop\<newline>db`, `drop''db` and `drop\db` into `dropdb`, as bash
+# does. Case is folded, because macOS runs `DROPDB` as `dropdb` on its
+# case-insensitive disk.
 #
 # A command past the checker's read ceiling (MAX_INPUT, 200000 characters) goes
 # to the checker whatever it says. The ceiling is a refusal, and a prefilter
 # that read only part of the text must not be the thing that skips it.
 if [ "${#COMMAND}" -le 200000 ]; then
-  DB_WORDS='db:wipe|migrate:(fresh|reset|refresh)|dropdb|dropuser|mysql|psql|mariadb|sqlite|usql|docker|podman|sail|lando|ddev|wp-env'
-  printf '%s' "$COMMAND" | tr -d "\"'\\\\" | grep -Eiq "$DB_WORDS" || exit 0
+  DB_WORDS='artisan|db:wipe|migrate:(fresh|reset|refresh)|dropdb|dropuser|mysql|psql|mariadb|sqlite|usql|docker|podman|sail|lando|ddev|wp-env'
+  BSNL=$'\\\n'  # a backslash-newline, quoted below so bash 3.2 reads it literally
+  printf '%s' "${COMMAND//"$BSNL"/}" | tr -d "\"'\\\\" | grep -Eiq "$DB_WORDS" || exit 0
 fi
 
 # The call's working directory, which is what a relative path in the command

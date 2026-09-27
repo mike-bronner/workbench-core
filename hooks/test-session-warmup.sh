@@ -101,24 +101,12 @@ echo "startup — fresh context gets full identity:"
 OUT=$(run_warmup startup)
 assert_contains "soul-hot injected in full"        "$OUT" "SOULHOT-CANARY"
 assert_contains "profile injected in full"         "$OUT" "PROFILE-CANARY"
-assert_contains "guardrails injected"              "$OUT" "Guardrails — absolute rules"
-assert_contains "guardrails exempt memory vault"   "$OUT" "personal memory vault is exempt"
-# Rule 11 is about where a question reaches the user, so the copy that reaches
-# the SESSION is the one that has to carry it. hooks/test-guardrail-mirrors.sh
-# checks the four source files agree; only this assertion proves the injected
-# text still contains the rule at runtime.
-assert_contains "guardrails carry the question channel" "$OUT" "AskUserQuestion"
-assert_contains "guardrails place questions last"       "$OUT" "END of the response"
-# Rule 13 says what is inside the question rule 11 delivers, and it fails in the
-# session rather than in the repo, so the injected text is where it has to land.
-assert_contains "guardrails carry the question contents" "$OUT" "state it as a question"
-assert_contains "guardrails separate a fork from a defect" "$OUT" "a choice is not a problem"
-# Rule 14 says how the options rules 1, 12 and 13 demand are laid out. It is a
-# render-time rule, so the injected copy is the only one that can reach the
-# reply being written. Two assertions, because the marker and the placement of
-# the recommendation were the two things that drifted.
-assert_contains "guardrails carry the option marker" "$OUT" "🔹"
-assert_contains "guardrails separate the recommendation" "$OUT" "separate paragraph"
+# The behavioural rules load from the output style alone. hooks/test-rule-source.sh
+# proves no rule text reaches stdout; this pins the heading that used to carry it.
+assert_missing  "no guardrails payload injected"   "$OUT" "## Guardrails"
+# Memory capture is standing authorization. The guardrails payload used to carry
+# that exemption, so the routing block now states it on its own.
+assert_contains "memory capture needs no confirmation" "$OUT" "a memory-capture write needs no options round and no confirmation"
 assert_missing  "skills-protocol not inlined"      "$OUT" "SKILLSPROTO-CANARY"
 assert_contains "skills-protocol pointer present"  "$OUT" "Skills protocol: read \`$SANDBOX/memory/identity/skills-protocol.md\`"
 # The recall-ORDERING rule has no hook that can carry it in full — memory-recall.sh
@@ -196,7 +184,7 @@ assert_contains "soul-hot still injected in full"  "$OUT" "SOULHOT-CANARY"
 assert_missing  "profile not inlined"              "$OUT" "PROFILE-CANARY"
 assert_contains "profile pointer present"          "$OUT" "User profile: re-read \`$SANDBOX/memory/identity/profile.md\`"
 assert_missing  "skills-protocol not inlined"      "$OUT" "SKILLSPROTO-CANARY"
-assert_contains "guardrails still injected"        "$OUT" "Guardrails — absolute rules"
+assert_contains "memory routing still injected"    "$OUT" "## Memory routing"
 
 echo "resume — same trim as compact:"
 OUT=$(run_warmup resume)
@@ -217,7 +205,7 @@ else
   FAIL=$((FAIL + 1)); echo "  ❌ expected empty output, got: $OUT"
 fi
 assert_missing "no warmup header"                  "$OUT" "session warmup"
-assert_missing "no guardrails"                     "$OUT" "Guardrails — absolute rules"
+assert_missing "no destructive-commands block"     "$OUT" "## Destructive commands"
 assert_missing "no memory-routing block"           "$OUT" "## Memory routing"
 assert_missing "no soul-hot"                        "$OUT" "SOULHOT-CANARY"
 assert_missing "no profile"                         "$OUT" "PROFILE-CANARY"
@@ -264,125 +252,72 @@ if [ -f "$UNSET_HOME/.claude/CLAUDE.md" ]; then
 else
   FAIL=$((FAIL + 1)); echo "  ❌ did not write ~/.claude/CLAUDE.md when unset"
 fi
-if [ -f "$UNSET_HOME/.claude/system-overrides.md" ]; then
-  PASS=$((PASS + 1)); echo "  ✅ writes ~/.claude/system-overrides.md as before"
+# system-overrides.md is retired. An absent file stays absent, so a user who
+# removed the alias and deleted the file is never handed it back.
+if [ ! -e "$UNSET_HOME/.claude/system-overrides.md" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ does not create ~/.claude/system-overrides.md"
 else
-  FAIL=$((FAIL + 1)); echo "  ❌ did not write ~/.claude/system-overrides.md when unset"
+  FAIL=$((FAIL + 1)); echo "  ❌ created ~/.claude/system-overrides.md from nothing"
 fi
 
-echo "behavioral overrides — one shipped source, fully inlined into BOTH layers:"
-# Layer 1 (~/.claude/system-overrides.md, system-prompt tier) and layer 2 (the
-# managed CLAUDE.md block, user-message tier) are separate authority tiers that
-# must each carry the rules verbatim — a pointer in either destination would
-# break its tier. What they share is the SOURCE the hook renders from.
-OVERRIDES_SRC="$REPO_ROOT/references/behavioral-overrides.md"
+echo "managed CLAUDE.md block — facts only, and every fact is true:"
+# ~/.claude/CLAUDE.md reaches every sub-agent, so the managed block carries
+# facts and no behavioural rule. hooks/test-rule-source.sh proves no rule text
+# lands here. This section proves the facts are present and match the plugin.
 OV_HOME="$SANDBOX/overrides-home"
-OV_CONFIG_DIR="$OV_HOME/.claude/plugins/data/workbench-core-claude-workbench"
-mkdir -p "$OV_CONFIG_DIR"
-printf '{"agent_name":"OverrideCanary"}\n' > "$OV_CONFIG_DIR/config.json"
+mkdir -p "$OV_HOME/.claude"
+printf '## My own notes\n\nUSER-PROSE-CANARY\n' > "$OV_HOME/.claude/CLAUDE.md"
 printf '{"source":"startup"}' | \
   HOME="$OV_HOME" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
   WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
   CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" >/dev/null 2>&1
-OV_SYSTEM="$(cat "$OV_HOME/.claude/system-overrides.md" 2>/dev/null)"
 OV_CLAUDE="$(cat "$OV_HOME/.claude/CLAUDE.md" 2>/dev/null)"
-
-# The shipped source is the union of what the two heredocs used to carry
-# separately: layer 2's numbered structure PLUS layer 1's anti-examples. Pin the
-# anti-examples on the source itself — if they are stripped there, both layers
-# "converge" on weaker content and the verbatim checks below would still pass.
-OV_SRC_TEXT="$(cat "$OVERRIDES_SRC" 2>/dev/null)"
-assert_contains "source keeps the emoji-override anti-example"   "$OV_SRC_TEXT" 'no emojis unless asked.'
-assert_contains "source keeps the sycophancy anti-examples"      "$OV_SRC_TEXT" 'No "Great question!"'
-assert_contains "source keeps the hedging anti-example"          "$OV_SRC_TEXT" '"that said"'
-assert_contains "source keeps the corporate-speak ban list"      "$OV_SRC_TEXT" 'circle back'
-assert_contains "source keeps the no-preambles rule"             "$OV_SRC_TEXT" 'No preambles.'
-assert_contains "source parameterizes the agent name"            "$OV_SRC_TEXT" 'AGENT_NAME_PLACEHOLDER'
-
-# The lexical rules earn their place here because they are the ones that actually
-# break. Measured on two real sessions: em dash in 62 of 116 replies, sentences
-# past 30 words 18 times, semicolons 4 times. Every rule that held was stated in
-# this block. Every rule that broke was stated only in the output style. Drop
-# either rule from the source and both layers lose it silently.
-assert_contains "source keeps the em-dash replacement rule"      "$OV_SRC_TEXT" 'Never an em dash'
-assert_contains "source keeps the semicolon ban"                 "$OV_SRC_TEXT" 'never a semicolon'
-assert_contains "source keeps the sentence-length cap"           "$OV_SRC_TEXT" '20 words maximum'
-
-# Question delivery earns its place here for the same reason: it governs an
-# outbound artifact (the reply itself), and both rendered layers lose it
-# silently if the source drops it.
-assert_contains "source keeps the question-delivery channel"     "$OV_SRC_TEXT" 'AskUserQuestion'
-assert_contains "source keeps the questions-last placement"      "$OV_SRC_TEXT" 'last thing in the response'
-
-# Question contents ride along for the same reason. A question delivered to the
-# right place with no situation, no options and no recommendation is the failure
-# rule 13 exists for, and both rendered layers lose the rule if the source drops it.
-assert_contains "source keeps the recognize half"                "$OV_SRC_TEXT" 'state it as a question'
-assert_contains "source keeps the situation-first half"          "$OV_SRC_TEXT" 'Open with the situation'
-assert_contains "source keeps the fork-is-not-a-problem half"    "$OV_SRC_TEXT" 'A choice is not a problem'
-assert_contains "source keeps the options-and-reason half"       "$OV_SRC_TEXT" 'a recommendation with its reason'
-
-# Both destinations must contain the rendered block VERBATIM and CONTIGUOUS —
-# this is the convergence guarantee. Drift either heredoc away from the source
-# (or leave one layer on its old, thinner wording) and this goes red.
-EXPECTED_OVERRIDES="${OV_SRC_TEXT//AGENT_NAME_PLACEHOLDER/OverrideCanary}"
-assert_block "layer 1 inlines the shipped block verbatim" "$OV_SYSTEM" "$EXPECTED_OVERRIDES"
-assert_block "layer 2 inlines the shipped block verbatim" "$OV_CLAUDE" "$EXPECTED_OVERRIDES"
-
-# Inlined, not pointed at: neither destination may defer to the plugin path,
-# which is version-pinned and read long after this hook exits.
-assert_missing "layer 1 carries no pointer to the source" "$OV_SYSTEM" "references/behavioral-overrides.md"
-assert_missing "layer 2 carries no pointer to the source" "$OV_CLAUDE" "references/behavioral-overrides.md"
-assert_missing "layer 1 leaves no unsubstituted token"    "$OV_SYSTEM" "PLACEHOLDER"
-assert_missing "layer 2 leaves no unsubstituted token"    "$OV_CLAUDE" "PLACEHOLDER"
-assert_contains "layer 1 substitutes the agent name"      "$OV_SYSTEM" "OverrideCanary"
-assert_contains "layer 2 substitutes the agent name"      "$OV_CLAUDE" "OverrideCanary"
-
-# Per-destination chrome survives the convergence — each tier keeps its own
-# wrapper around the shared body.
-assert_contains "layer 1 keeps its load-instruction banner" "$OV_SYSTEM" "--append-system-prompt-file"
-assert_contains "layer 2 keeps its start marker"            "$OV_CLAUDE" "<!-- workbench-identity:start -->"
-assert_contains "layer 2 keeps its end marker"              "$OV_CLAUDE" "<!-- workbench-identity:end -->"
-assert_contains "layer 2 keeps the identity-files section"  "$OV_CLAUDE" "## Identity files (loaded by SessionStart hook)"
-assert_contains "layer 2 keeps the authority sentence"      "$OV_CLAUDE" "the identity files win."
-# The delegation gate is announced here and nowhere else. Core is excluded from
-# collect_session_warmup_contributions by design, so there is no root
-# session-warmup.md to carry it, and the gate must not go unannounced: a hook
-# that denies an edit with no prior notice reads as a malfunction.
-assert_contains "layer 2 announces the delegation gate"     "$OV_CLAUDE" "## Delegation gate (PreToolUse hook, on by default)"
-assert_contains "layer 2 names what the gate denies"        "$OV_CLAUDE" "\`NotebookEdit\` are denied in the main conversation"
-assert_contains "layer 2 names the gate's escape hatch"     "$OV_CLAUDE" "/workbench-core:orchestrator off"
-# Tier discipline: layer 1 is the CLI system prompt and carries the behavioural
-# standard only. Harness mechanics belong in CLAUDE.md, not there.
-assert_missing "layer 1 carries no harness mechanics"       "$OV_SYSTEM" "## Delegation gate"
-
-echo "the destructive-command scope rule rides in the managed block:"
-# This block is the ONLY channel that reaches a sub-agent. A freshly spawned one
-# starts with ~/.claude/CLAUDE.md in context and without this hook's stdout, so
-# the stdout copy of the rule reaches the main session and nothing else. Drop it
-# from here and every sub-agent on the machine writes `rm -rf "$VAR/x"` by
-# reflex and is hard-denied, with nothing else going red — the guard denies what
-# it cannot resolve and there is no permission rule under it to prompt instead.
-#
 # Scoped to the managed block, never to the whole file: ~/.claude/CLAUDE.md also
 # carries the warmup block and the user's own prose below it, and either could
-# name a scratchpad root and satisfy a whole-file grep while the managed block
-# had lost the rule entirely.
+# satisfy a whole-file grep while the managed block had lost the fact.
 OV_ID_BLOCK=$(awk '
   $0 == "<!-- workbench-identity:start -->" { inblock=1 }
   inblock { print }
   $0 == "<!-- workbench-identity:end -->"   { inblock=0 }
 ' "$OV_HOME/.claude/CLAUDE.md" 2>/dev/null)
-assert_contains "block heads the scope rule" "$OV_ID_BLOCK" \
-  "## Destructive commands are scoped, not asked"
-# The half an agent acts on. "It runs unprompted inside scope" changes nothing
-# about what gets typed; "it DENIES what it cannot read" is what makes an agent
-# write the literal path the first time, so that half is pinned explicitly.
-assert_contains "block says an unreadable target is denied" "$OV_ID_BLOCK" \
-  "cannot read"
-assert_contains "block names the shapes it cannot read" "$OV_ID_BLOCK" \
-  '`$variable`'
-assert_contains "block names the way through"  "$OV_ID_BLOCK" "\`!\` prefix"
+assert_contains "block keeps its start marker"         "$OV_CLAUDE" "<!-- workbench-identity:start -->"
+assert_contains "block keeps its end marker"           "$OV_CLAUDE" "<!-- workbench-identity:end -->"
+assert_contains "user prose below the block survives"  "$OV_CLAUDE" "USER-PROSE-CANARY"
+assert_missing  "block no longer lists identity files" "$OV_ID_BLOCK" "## Identity files"
+# The delegation gate is announced here and nowhere else. Core is excluded from
+# collect_session_warmup_contributions by design, so there is no root
+# session-warmup.md to carry it, and a hook that denies an edit with no prior
+# notice reads as a malfunction.
+assert_contains "block announces the delegation gate"  "$OV_ID_BLOCK" "| Delegation gate |"
+assert_contains "block names what that gate denies"    "$OV_ID_BLOCK" "\`NotebookEdit\` outside the scratchpads"
+assert_contains "block names the gate's escape hatch"  "$OV_ID_BLOCK" "/workbench-core:orchestrator off"
+# Every gate the block names must be a hook this plugin ships AND registers. The
+# list is read from the block, so a renamed or retired hook turns the row red
+# instead of leaving the block telling every sub-agent about a gate that is gone.
+GATE_ROWS=$(printf '%s\n' "$OV_ID_BLOCK" | sed -nE 's/^\| ([A-Z][a-z]* [a-z ]*(gate|guard)) \|.*/\1/p')
+if [ "$(printf '%s\n' "$GATE_ROWS" | grep -c .)" -lt 5 ]; then
+  FAIL=$((FAIL + 1)); echo "  ❌ block names fewer than five gates: $(printf '%s' "$GATE_ROWS" | tr '\n' ',')"
+fi
+while IFS= read -r gate; do
+  [ -n "$gate" ] || continue
+  hook="$(printf '%s' "$gate" | tr '[:upper:] ' '[:lower:]-').sh"
+  registered=$(jq -r --arg h "$hook" '[.hooks.PreToolUse[].hooks[]
+    | select(.command | endswith("/" + $h + "\""))] | length' "$REPO_ROOT/hooks/hooks.json" 2>/dev/null)
+  if [ -f "$REPO_ROOT/hooks/$hook" ] && [ "${registered:-0}" -ge 1 ]; then
+    PASS=$((PASS + 1)); echo "  ✅ $gate is shipped and registered ($hook)"
+  else
+    FAIL=$((FAIL + 1)); echo "  ❌ block names $gate, but $hook is not shipped and registered"
+  fi
+done <<< "$GATE_ROWS"
+
+echo "the destructive scope guard and its roots ride in the managed block:"
+# This block is the ONLY channel that reaches a sub-agent. A freshly spawned one
+# starts with ~/.claude/CLAUDE.md in context and without this hook's stdout, so
+# the stdout copy reaches the main session and nothing else. The block names the
+# guard and the scratch roots. How to satisfy the guard is the deny's job: its
+# reason text names the unreadable shapes and the way through.
+assert_contains "block names the destructive scope guard" "$OV_ID_BLOCK" \
+  "| Destructive scope guard |"
 
 # Pin the instruction against the layer that ENFORCES it, not against a second
 # copy of itself. The block promises these commands run unprompted inside scope,
@@ -441,58 +376,61 @@ assert_contains "stdout copy says where new scratch goes" \
 assert_contains "block says where new scratch goes" \
   "$OV_ID_BLOCK" "$SCRATCH_WHERE"
 # The refusal once routed an agent's own scratch cleanup to the human as a
-# `! rm -rf`. Both copies now say that is not the route.
+# `! rm -rf`. The stdout copy says that is not the route. The block leaves it to
+# the guard's deny, which carries the same sentence as its recovery text.
 assert_contains "stdout copy keeps scratch cleanup off the user" \
   "$SCRATCH_STDOUT" "Never hand the user a \`!\` command to delete your own scratch."
-assert_contains "block keeps scratch cleanup off the user" \
-  "$OV_ID_BLOCK" "Never hand the user a \`!\` command to delete your own scratch."
 
-echo "behavioral overrides — an unreadable source fails CLOSED, never blanks a layer:"
-# A missing shipped source must leave both destinations exactly as they were.
-# Stale-but-good content beats a truncated or emptied identity block.
-FC_HOME="$SANDBOX/failclosed-home"
-FC_ROOT="$SANDBOX/failclosed-root"
-mkdir -p "$FC_HOME/.claude" "$FC_ROOT/references"
-# A plugin root that is otherwise intact — the hook still sources its libs from
-# here — but ships no behavioral-overrides.md. Isolating the one missing file is
-# the point: a wholesale-bogus root would die in the library source instead.
-ln -sfn "$REPO_ROOT/hooks" "$FC_ROOT/hooks"
-printf 'SENTINEL-SYSTEM previously rendered overrides\n'  > "$FC_HOME/.claude/system-overrides.md"
-printf 'SENTINEL-CLAUDE previously rendered identity\n'   > "$FC_HOME/.claude/CLAUDE.md"
-cp "$FC_HOME/.claude/system-overrides.md" "$SANDBOX/fc-system.before"
-cp "$FC_HOME/.claude/CLAUDE.md" "$SANDBOX/fc-claude.before"
-if printf '{"source":"startup"}' | \
-  HOME="$FC_HOME" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
-  WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
-  CLAUDE_PLUGIN_ROOT="$FC_ROOT" bash "$WARMUP" >/dev/null 2>&1; then
-  PASS=$((PASS + 1)); echo "  ✅ still exits 0 with the source missing"
+echo "retired system-overrides.md — a rule-free stub while the alias still names it:"
+# The user's shell alias passes this file to `claude --append-system-prompt-file`,
+# and the CLI refuses to start when the file is missing (measured: "Append
+# system prompt file not found", exit 1). So the warmup never deletes it. It
+# rewrites an existing file to a stub that carries no rule, and it never creates
+# one, so the user can finish the retirement by hand.
+RT_HOME="$SANDBOX/retire-home"
+mkdir -p "$RT_HOME/.claude"
+printf '# Agent identity\n\n1. **Lead with the answer.**\n' > "$RT_HOME/.claude/system-overrides.md"
+run_retire() {
+  printf '{"source":"%s"}' "$1" | \
+    HOME="$RT_HOME" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
+    WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" WORKBENCH_MEMORY_PORT="$PROBE_PORT" \
+    CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" >/dev/null 2>&1
+}
+RT_NOTICES="$RT_HOME/.claude-workbench/warmup-notices.md"
+# compact is not startup: the file is left as it was until a real start.
+run_retire compact
+assert_contains "compact leaves the file alone" \
+  "$(cat "$RT_HOME/.claude/system-overrides.md")" "Lead with the answer."
+run_retire startup
+RT_TEXT="$(cat "$RT_HOME/.claude/system-overrides.md" 2>/dev/null)"
+if [ -s "$RT_HOME/.claude/system-overrides.md" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ startup keeps the file, non-empty, so the alias still starts"
 else
-  FAIL=$((FAIL + 1)); echo "  ❌ exited non-zero with the source missing"
+  FAIL=$((FAIL + 1)); echo "  ❌ startup removed or emptied the file the alias names"
 fi
-if cmp -s "$SANDBOX/fc-system.before" "$FC_HOME/.claude/system-overrides.md"; then
-  PASS=$((PASS + 1)); echo "  ✅ system-overrides.md left byte-for-byte untouched"
+assert_missing  "the old rules are gone from it"   "$RT_TEXT" "Lead with the answer."
+assert_contains "the stub says why it exists"      "$RT_TEXT" "--append-system-prompt-file"
+if [ "$(printf '%s\n' "$RT_TEXT" | grep -c .)" -eq 1 ]; then
+  PASS=$((PASS + 1)); echo "  ✅ the stub is one line"
 else
-  FAIL=$((FAIL + 1)); echo "  ❌ system-overrides.md was rewritten without a source"
+  FAIL=$((FAIL + 1)); echo "  ❌ the stub grew past one line"
 fi
-if cmp -s "$SANDBOX/fc-claude.before" "$FC_HOME/.claude/CLAUDE.md"; then
-  PASS=$((PASS + 1)); echo "  ✅ CLAUDE.md left byte-for-byte untouched"
+# Tell the user to finish it, alias first. Deleting the file first is the order
+# that stops the CLI from starting, so the order is pinned.
+assert_contains "a notice asks the user to finish the retirement" \
+  "$(cat "$RT_NOTICES" 2>/dev/null)" "Retired system-overrides file"
+assert_contains "the notice puts the alias before the file" \
+  "$(cat "$RT_NOTICES" 2>/dev/null)" "Remove any such alias from your shell profile, open a new shell, then delete the file."
+# Once the user deletes it, it stays deleted and the notice stops.
+rm "$RT_HOME/.claude/system-overrides.md"
+run_retire startup
+if [ ! -e "$RT_HOME/.claude/system-overrides.md" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ a deleted file is not recreated"
 else
-  FAIL=$((FAIL + 1)); echo "  ❌ CLAUDE.md was rewritten without a source"
+  FAIL=$((FAIL + 1)); echo "  ❌ the warmup recreated a file the user deleted"
 fi
-
-# Same for an EMPTY source — a zero-byte file is a broken install, not a licence
-# to render an identity block with no rules in it.
-printf '' > "$FC_ROOT/references/behavioral-overrides.md"
-printf '{"source":"startup"}' | \
-  HOME="$FC_HOME" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
-  WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
-  CLAUDE_PLUGIN_ROOT="$FC_ROOT" bash "$WARMUP" >/dev/null 2>&1
-if cmp -s "$SANDBOX/fc-system.before" "$FC_HOME/.claude/system-overrides.md" && \
-   cmp -s "$SANDBOX/fc-claude.before" "$FC_HOME/.claude/CLAUDE.md"; then
-  PASS=$((PASS + 1)); echo "  ✅ empty source also leaves both layers untouched"
-else
-  FAIL=$((FAIL + 1)); echo "  ❌ empty source rewrote a layer"
-fi
+assert_missing "the notice stops once the file is gone" \
+  "$(cat "$RT_NOTICES" 2>/dev/null)" "Retired system-overrides file"
 
 echo "missing files degrade gracefully:"
 rm "$SANDBOX/memory/identity/profile.md" "$SANDBOX/memory/identity/skills-protocol.md"
@@ -505,7 +443,7 @@ OUT=$(run_warmup startup)
 # about it. The configured-but-unreadable case still warns, and the block below
 # pins both directions.
 assert_missing  "startup is silent on an unconfigured profile" "$OUT" "profile.md not found"
-assert_contains "the rest of startup still runs"       "$OUT" "Guardrails — absolute rules"
+assert_contains "the rest of startup still runs"       "$OUT" "## Memory routing"
 printf 'PROFILE-CANARY user facts\n' > "$SANDBOX/memory/identity/profile.md"
 printf 'SKILLSPROTO-CANARY skill learnings\n' > "$SANDBOX/memory/identity/skills-protocol.md"
 
@@ -918,7 +856,7 @@ printf '{"memory_path":"%s"}\n' "$SOUL_MEM" > "$SOUL_CFG_DIR/config.json"
 OUT=$(run_soul_warmup)
 assert_missing "unconfigured + absent prints no heading" "$OUT" "## User profile"
 assert_missing "unconfigured + absent prints no warning" "$OUT" "profile.md not found"
-assert_contains "the rest of the warmup still runs"      "$OUT" "Guardrails — absolute rules"
+assert_contains "the rest of the warmup still runs"      "$OUT" "## Memory routing"
 
 # Case 2: profile points somewhere that does not exist, so warn. A typo in a
 # configured path is a real misconfiguration, and silencing it would trade a

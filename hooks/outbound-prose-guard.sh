@@ -11,8 +11,9 @@
 #
 # This guard closes that gap for the artifacts other people read: `gh` pull
 # request, issue, and release prose, plus the same text posted through a project
-# board MCP. It checks only the mechanical rules (hooks/lib/prose-check.py).
-# Whether a body is a debugging journal stays a human judgement.
+# board MCP. It checks only the em dash and the semicolon (hooks/lib/prose-check.py).
+# Density, sentence length, and whether a body is a debugging journal are
+# judgement calls the output style states, and a deny on them breeds workarounds.
 #
 # Scope: outbound artifacts only. Terminal replies are NOT checked, and cannot
 # usefully be. A Stop hook fires after the reply has already been displayed, so
@@ -137,7 +138,7 @@ FINDINGS=$(printf '%s' "$PROSE" | python3 "$CHECKER" 2>/dev/null)
   echo "$FINDINGS"
   echo
   echo "Rewrite the body, then send it again. The rules are in your output style:"
-  echo "verdict first, reasons next, emoji as structure, one idea per sentence."
+  echo "verdict first, reasons next, short plain paragraphs a tired reader follows."
   echo "Re-read the WHOLE document after editing. Length is a property of the"
   echo "finished text, not of the paragraph you just appended."
 } >&2

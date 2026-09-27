@@ -71,7 +71,7 @@ Present each field to the user one at a time. Show the current value (from exist
   - `profile`: leave blank to use `identity/profile.md`
 - **Note:** Blank means unset, not missing. The warmup resolves the default path either way, so a file sitting at the default path is loaded whether or not the key exists. Set a key only to point at a **non-default** path.
 - **Note:** Never stamp these keys with their own defaults. `hooks/session-warmup.sh` treats a configured path that does not resolve as a misconfiguration and warns about it at every session start, and it stays silent when no key is set and no file exists, because that absence is deliberate. Stamping the defaults made the silent branch unreachable for everyone who ran setup, so users who had deleted a soul file or a profile on purpose read a "not found" line at the top of every session and concluded the install was broken.
-- **Note:** These are loaded by the session-warmup hook at startup. Load order: soul-hot → profile → skills-protocol → guardrails. Guardrails ship with the plugin (not user-configurable) and load last as absolute rules that override all other identity files.
+- **Note:** These are loaded by the session-warmup hook at startup. Load order: soul-hot → profile → skills-protocol. The behavioural rules are not an identity file: they load from the output style alone. `references/guardrails.md` ships with the plugin as the interview rubric and is not loaded into sessions.
 
 ## Step 0 — Migrate legacy config (if present)
 

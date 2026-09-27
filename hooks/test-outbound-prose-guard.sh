@@ -17,8 +17,7 @@ SANDBOX=$(mktemp -d)
 trap 'rm -rf "$SANDBOX"' EXIT
 STDERR="$SANDBOX/stderr"
 
-# Prose that satisfies every mechanical rule: emoji present, no em dash, no
-# semicolon, every sentence under twenty words, no paragraph past six sentences.
+# Prose that satisfies both mechanical rules: no em dash and no semicolon.
 CLEAN='🐛 Fixed the list loader.
 
 The form now reads stored values on edit. Saving keeps them.'
@@ -89,17 +88,18 @@ assert_blocked "semicolon in prose" \
   run_bash 'gh pr comment 1 --body "🐛 The list was safe; the form never asked."'
 assert_names   "the block names the semicolon rule" "semicolon"
 
-assert_blocked "a sentence past twenty words" \
+echo
+echo "judgement calls are the output style's, never a deny:"
+# Emoji, sentence length, and paragraph length were checked here once. A deny on
+# a judgement call breeds workarounds: the writer pads in an emoji or chops a
+# sentence to pass the count, and the text gets no easier to read. Each fixture
+# below used to block, so each goes red if its check comes back.
+assert_allowed "a sentence past twenty words" \
   run_bash 'gh pr comment 1 --body "🐛 Editing a list in the List Manager showed an empty textarea whether the list was created new or upgraded from a rule."'
-assert_names   "the block names the sentence-length rule" "long-sent"
-
-assert_blocked "forty words of prose with no emoji" \
+assert_allowed "forty words of prose with no emoji" \
   run_bash 'gh pr comment 1 --body "The list itself was never lost. It sat on S3 the whole time. The form did not ask for it. Editing showed a blank box. Saving then failed on validation. No list could be edited at all. Retyping every value was the only path."'
-assert_names   "the block names the emoji rule" "no-emoji"
-
-assert_blocked "a paragraph past six sentences" \
+assert_allowed "a paragraph past six sentences" \
   run_bash 'gh pr comment 1 --body "🐛 One broke. Two broke. Three broke. Four broke. Five broke. Six broke. Seven broke."'
-assert_names   "the block names the paragraph rule" "long-para"
 
 echo
 echo "every surface that carries a body is covered:"
@@ -133,11 +133,11 @@ printf '🐛 Run `$a = 1;` first.\n' > "$SANDBOX/inline.md"
 assert_allowed "a semicolon inside an inline code span" \
   run_bash "gh pr create --title t --body-file $SANDBOX/inline.md"
 
-# Verbatim from decisioncloud's .github/PULL_REQUEST_TEMPLATE.md. Its second
-# sentence runs 25 words and carries a semicolon-free but comma-spliced clause,
-# so this fixture goes red the moment the checklist exemption stops working.
-printf '🐛 Fixed it.\n\n- [ ] I have addressed all GitHub linter comments. Each linter comment must have a resolution description in order to resolve, unless the concern has been addressed, and the comment is marked as "outdated".\n' > "$SANDBOX/checklist.md"
-assert_allowed "a long sentence inside a template checklist line" \
+# Adapted from decisioncloud's .github/PULL_REQUEST_TEMPLATE.md, with a semicolon
+# added. Template checklist text is not the author's, so this fixture goes red
+# the moment the checklist exemption stops working.
+printf '🐛 Fixed it.\n\n- [ ] I have addressed all GitHub linter comments. Each linter comment must have a resolution description; it resolves only then, unless the concern has been addressed, and the comment is marked as "outdated".\n' > "$SANDBOX/checklist.md"
+assert_allowed "a semicolon inside a template checklist line" \
   run_bash "gh pr create --title t --body-file $SANDBOX/checklist.md"
 
 printf '🐛 Fixed it.\n\n<!-- This is an auto-generated comment: release notes by coderabbit.ai -->\n\n## Summary by CodeRabbit\n\nImproved list editing — preserves saved values.\n\n<!-- end of auto-generated comment: release notes by coderabbit.ai -->\n' > "$SANDBOX/bot.md"
@@ -161,7 +161,6 @@ printf 'Editing a list in List Manager showed an empty textarea, whether the lis
 assert_blocked "the body from decisioncloud#21665" \
   run_bash "gh pr edit 21665 --body-file $BAD"
 assert_names   "it reports the em dash"        "em-dash"
-assert_names   "it reports the long sentence"  "long-sent"
 
 echo
 echo "a realistically large body is judged quickly:"
@@ -175,7 +174,7 @@ echo "a realistically large body is judged quickly:"
 BIG="$SANDBOX/big-body.md"
 : > "$BIG"
 while [ "$(wc -c < "$BIG")" -lt 12000 ]; do
-  printf '%s\n\n' 'Editing a list in the List Manager showed an empty textarea whether the list was created new or upgraded from a rule.' >> "$BIG"
+  printf '%s\n\n' 'Editing a list in the List Manager showed an empty textarea — whether the list was new or upgraded.' >> "$BIG"
 done
 BIG_SIZE=$(wc -c < "$BIG" | tr -d ' ')
 START=$(date +%s)

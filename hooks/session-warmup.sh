@@ -15,7 +15,7 @@
 #
 # The injected payload is BYTE-STABLE by construction: all volatile housekeeping
 # state goes to ~/.claude-workbench/warmup-notices.md and is surfaced by a
-# constant pointer line. See the append-only invariant at the guardrails block.
+# constant pointer line. See the append-only invariant at the identity block.
 #
 # Exit code is always 0 — warmup failures must not break the session.
 
@@ -95,53 +95,29 @@ fi
 # These functions manage files that persist on disk across sessions. Defined
 # here, called conditionally below.
 
-# Single source for the behavioral-overrides text. Layer 1
-# (~/.claude/system-overrides.md, system-prompt tier, CLI only) and layer 2
-# (the managed block in ~/.claude/CLAUDE.md, user-message tier, everywhere)
-# are separate authority tiers by design — see the README layer table — so each
-# still ends up with the rules FULLY INLINED, never a pointer: both files are
-# read later, by the CLI and the model, against a version-pinned plugin path
-# that may no longer be live. What converges is only the hook's source for what
-# it writes. Reading it here is safe precisely because the hook runs fresh at
-# every session start, when CLAUDE_PLUGIN_ROOT is current.
+# The behavioural rules load from ONE place: the active output style
+# (assets/personas/clear/output-style.md), which is system-prompt tier and
+# survives compaction on its own. This hook used to render the same rules into
+# ~/.claude/system-overrides.md and the managed ~/.claude/CLAUDE.md block, and
+# inject a third copy on stdout. The copies drifted and contradicted each other,
+# and the CLAUDE.md copy reached every sub-agent. None of them is written now.
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-BEHAVIORAL_OVERRIDES_SRC="$PLUGIN_ROOT/references/behavioral-overrides.md"
+SYSTEM_OVERRIDES="$HOME/.claude/system-overrides.md"
 
-render_behavioral_overrides() {
-  # Print the shared overrides block with the agent name substituted.
-  # FAILS CLOSED: returns non-zero when the shipped source is unreadable or
-  # empty, so callers leave their destination file exactly as it is. Stale
-  # good content beats a truncated or blanked identity block.
-  [ -r "$BEHAVIORAL_OVERRIDES_SRC" ] || return 1
-  local body
-  body="$(cat "$BEHAVIORAL_OVERRIDES_SRC")" || return 1
-  [ -n "$body" ] || return 1
-  printf '%s' "${body//AGENT_NAME_PLACEHOLDER/$AGENT_NAME}"
-}
+# The retired system-overrides.md stays on disk as a rule-free stub, because the
+# user's shell alias still passes it to `claude --append-system-prompt-file`,
+# and the CLI refuses to start when that file is missing. The stub is written
+# only over a file that already exists, so once the user removes the alias and
+# deletes the file, it stays gone. A startup notice tells them to do exactly
+# that, in that order.
+SYSTEM_OVERRIDES_STUB='<!-- workbench-core retired this file. It exists only so a `claude --append-system-prompt-file ~/.claude/system-overrides.md` alias still starts. The behavioural rules load from the output style. -->'
 
-ensure_system_overrides() {
-  local target="$HOME/.claude/system-overrides.md"
-  local overrides
-  overrides="$(render_behavioral_overrides)" || return 1
-
-  local block=""
-  read -r -d '' block <<'SYSEOF' || true
-# Agent identity
-# Loaded via: claude --append-system-prompt-file ~/.claude/system-overrides.md
-
-BEHAVIORAL_OVERRIDES_PLACEHOLDER
-SYSEOF
-  block="${block//BEHAVIORAL_OVERRIDES_PLACEHOLDER/$overrides}"
-
-  mkdir -p "$HOME/.claude"
+retire_system_overrides() {
+  [ -f "$SYSTEM_OVERRIDES" ] || return 0
+  [ "$(cat "$SYSTEM_OVERRIDES" 2>/dev/null)" = "$SYSTEM_OVERRIDES_STUB" ] && return 0
   local tmp
-  tmp=$(mktemp)
-  printf '%s\n' "$block" > "$tmp"
-  if [ -f "$target" ] && cmp -s "$tmp" "$target"; then
-    rm -f "$tmp"
-    return 0
-  fi
-  mv "$tmp" "$target"
+  tmp=$(mktemp) || return 1
+  printf '%s\n' "$SYSTEM_OVERRIDES_STUB" > "$tmp" && mv "$tmp" "$SYSTEM_OVERRIDES"
 }
 
 detect_chat_skill_changes() {
@@ -246,65 +222,47 @@ ensure_claude_md_enforcement() {
   local id_end="<!-- workbench-identity:end -->"
   local warmup_start="<!-- workbench-warmup:start -->"
   local warmup_end="<!-- workbench-warmup:end -->"
-  local overrides
-  overrides="$(render_behavioral_overrides)" || return 1
-
-  # The destructive-command section at the end of this block is here rather than in
-  # the SessionStart stdout below, and both carry it for different readers. A
-  # sub-agent starts with ~/.claude/CLAUDE.md in context and WITHOUT this hook's
-  # stdout — measured by asking a freshly spawned one to introspect before its
-  # first tool call — so the stdout copy reaches the main session only, and an
-  # agent that never saw it reaches for `rm -rf` by reflex and prompts the user.
-  # This is the channel that reaches every agent type at once, including
-  # general-purpose, Explore, Plan, and any agent added later; per-agent
-  # definitions would each have to be edited and would still miss those.
+  # This block carries FACTS ONLY: which gates exist, what each protects, and
+  # where scratch goes. It holds no behavioural rule, because ~/.claude/CLAUDE.md
+  # reaches every sub-agent, and the persona rules belong to the main session's
+  # output style. A rule written here lands in agents that lack the tools it
+  # names (AskUserQuestion) and the human it assumes.
+  #
+  # The scratch roots are here as well as in the SessionStart stdout below, for
+  # different readers. A sub-agent starts with ~/.claude/CLAUDE.md in context and
+  # WITHOUT this hook's stdout (measured by asking a freshly spawned one to
+  # introspect before its first tool call), so the stdout copy reaches the main
+  # session only. This is the channel that reaches every agent type at once,
+  # including general-purpose, Explore, Plan, and any agent added later. Each
+  # gate's deny carries its own recovery text, so the block names the gate and
+  # what it protects, and leaves the way through to the deny.
   local identity_block=""
   read -r -d '' identity_block <<'CMDEOF' || true
 <!-- workbench-identity:start -->
-# Agent Identity
+# Workbench gates and scratch roots
 
-BEHAVIORAL_OVERRIDES_PLACEHOLDER
+These PreToolUse hooks guard every session. Each deny explains its own way
+through, so read the deny and follow it.
 
-## Identity files (loaded by SessionStart hook)
+| Gate | What it protects |
+|---|---|
+| Delegation gate | The main agent does not edit files. It is denied `Edit`, `Write`, and `NotebookEdit` outside the scratchpads. Sub-agents are exempt. Only the user lifts it, with `/workbench-core:orchestrator off`. |
+| Agent dispatch gate | A main-agent `Agent` dispatch must carry the five-slot brief. |
+| Destructive scope guard | `rm`, `rmdir`, `git reset --hard`, `git clean`, and `git stash clear`/`drop` run only when every target resolves inside the project or a scratch root. |
+| Destructive database guard | Database resets, drops, and destructive SQL are refused. |
+| Provisioning guard | Agents do not create worktrees or databases, and do not destroy a worktree they did not create. |
+| Vault git guard | Git writes aimed at the memory vault are refused. |
+| Credential guard | Reads of `~/.ssh`, `~/.aws`, `~/.gnupg`, and `.env` files are refused. |
+| Outbound prose guard | `gh` and board-MCP prose must pass the output style's mechanical checks. |
+| Peer message gate | A sub-agent messages only its orchestrator or the agents it spawned. |
 
-- `profile.md` — user facts, working preferences
-- `skills-protocol.md` — execution-aware skill learnings
-- `guardrails.md` — absolute rules across every agent and context
+A deny is the system working. Report it, and do not route around it.
 
-When these conflict with default Claude behavior, the identity files win.
-
-## Delegation gate (PreToolUse hook, on by default)
-
-The main agent orchestrates and does not edit files. `Edit`, `Write`, and
-`NotebookEdit` are denied in the main conversation. Dispatch a sub-agent with
-the Agent tool instead. Reads and Bash stay open, and sub-agents are exempt.
-Scratch files are exempt too: the main agent may write in the session
-scratchpad and `~/Developer/scratchpad`, such as a `git commit -F` message.
-A deny is the system working, so report it and delegate. Never route around it.
-Only the user lifts the gate, with `/workbench-core:orchestrator off`.
-
-## Destructive commands are scoped, not asked
-
-`rm`, `rmdir`, `git reset --hard`, `git clean`, and `git stash clear`/`drop` run
-unprompted when every path they act on resolves inside the project or a
-scratch root:
-the session scratchpad, `~/Developer/scratchpad`, or a `mktemp -d` sandbox.
-A PreToolUse guard resolves each path and permits the call.
-`rm` and `rmdir` may also remove a leftover `/tmp/claude-*scratch*` folder you own, the folder itself included. It is not a root, so `git` verbs there are still denied.
-
+A scratch root is the session scratchpad, `~/Developer/scratchpad`, or a `mktemp -d` sandbox.
 Make new scratch in the session scratchpad or `~/Developer/scratchpad`.
 Never create it anywhere under `/tmp` outside your session scratchpad.
-Do not put new scratch in an old `claude-*scratch*` folder there either.
-
-Outside those roots it denies, and it also denies any target it cannot read:
-a `$variable`, a glob, `bash -c`, `ssh`, `xargs`, `find -delete`, or a loop
-body. So spell paths out literally, and keep the delete its own command.
-Never hand the user a `!` command to delete your own scratch.
-A target outside every root that is not scratch is the user's call, and they
-run it with the `!` prefix.
 <!-- workbench-identity:end -->
 CMDEOF
-  identity_block="${identity_block//BEHAVIORAL_OVERRIDES_PLACEHOLDER/$overrides}"
 
   local warmup_body=""
   local warmup_block=""
@@ -391,24 +349,23 @@ if [ "${WORKBENCH_SKIP_WARMUP:-}" = "1" ]; then
 fi
 
 # Skip guard: Claude Code sets this env var on every sub-agent dispatch
-# (Watson, Holmes-reviewer, Lestrade, Harvester — and any future agent
+# (Watson, Holmes-reviewer, Lestrade, Harvester, and any future agent
 # from any plugin). Those runs carry self-contained system prompts and
-# must not inherit the interactive identity this warmup injects:
-# its guardrail #1 ("present options before making changes") directly
-# conflicts with autonomous, unattended pipeline work — Watson dispatched
-# via cron has no human present to answer it. Orchestrator/Dispatch and
-# Mike's own interactive sessions run without --agent, leave this unset,
-# and are unaffected.
+# must not inherit the interactive session context this warmup injects:
+# the soul file, the profile, and the housekeeping notices are written for a
+# human-attended session, and Watson dispatched via cron has no human present.
+# Orchestrator/Dispatch and Mike's own interactive sessions run without
+# --agent, leave this unset, and are unaffected.
 if [ -n "${CLAUDE_CODE_AGENT:-}" ]; then
   exit 0
 fi
 
-# ──────────── CLAUDE.md + system-overrides enforcement (startup only) ────────────
-# These files persist on disk — no need to regenerate on compact/resume.
-# Note: system-overrides.md takes effect on the *next* session (must exist before
-# Claude Code starts). CLAUDE.md and hook output cover the current session.
+# ──────────── CLAUDE.md + retired system-overrides (startup only) ────────────
+# These files persist on disk, so there is no need to regenerate on
+# compact/resume. The system-overrides stub is read by the CLI before the
+# session starts, so a rewrite takes effect on the *next* session.
 if [ "$SOURCE" = "startup" ]; then
-  ensure_system_overrides || true
+  retire_system_overrides || true
   ensure_claude_md_enforcement || true
   ensure_memory_routing_stub || true
 fi
@@ -505,7 +462,12 @@ if [ "$SOURCE" = "startup" ]; then
 fi
 
 # ──────────── Identity injection (source-aware) ────────────
-# Guardrails and soul-hot are re-injected on every source: after context
+# No behavioural rule list is injected here. The rules load once, from the
+# active output style, which is system-prompt tier and survives compaction.
+# references/guardrails.md is the interview rubric for define-soul and
+# define-profile, and is read by those skills only.
+#
+# Soul-hot is re-injected on every source: after context
 # compression (compact) the identity may have been shed; on resume it may have
 # drifted. The full profile (~4KB) only loads when the context is genuinely
 # fresh (startup, clear) — compact and resume get a one-line pointer and
@@ -518,13 +480,7 @@ SOUL_HOT="$MEMORY_PATH/${SOUL_HOT_REL:-identity/soul-hot.md}"
 PROFILE_REL="$(_cfg '.identity_files.profile')"
 PROFILE="$MEMORY_PATH/${PROFILE_REL:-identity/profile.md}"
 SKILLS_PROTOCOL="$MEMORY_PATH/identity/skills-protocol.md"
-GUARDRAILS_INLINE="${CLAUDE_PLUGIN_ROOT}/references/guardrails-inline.md"
 
-# Guardrails first — absolute rules must always sit in the inline preview
-# window, even when the rest of the warmup output overflows to a persisted
-# file. Sourced from the condensed -inline copy; full text with examples
-# stays at references/guardrails.md for re-read on demand.
-#
 # APPEND-ONLY INVARIANT (cache-prefix stability). Everything printed from the
 # top of this script through the end of the identity payload below must be
 # BYTE-STABLE across invocations: identical config, identical identity files →
@@ -536,11 +492,6 @@ GUARDRAILS_INLINE="${CLAUDE_PLUGIN_ROOT}/references/guardrails-inline.md"
 # therefore APPENDS after this section, never precedes it. See the
 # stray-summary, recall-liveness, pending-summary, and chat-skills blocks
 # below for the pattern.
-if [ -r "$GUARDRAILS_INLINE" ]; then
-  printf '## Guardrails — absolute rules\n\n'
-  cat "$GUARDRAILS_INLINE"
-  printf '\n\n'
-fi
 
 # Memory routing — countermand the harness's per-project memory instructions.
 # Re-injected on every source so the rule survives compaction. This is the
@@ -575,7 +526,7 @@ fi
 printf '## Memory routing\n\n'
 printf -- '- The workbench memory vault is the CANONICAL durable memory store, served by the `memory` MCP (`mcp__plugin_workbench-core_memory__search` / `write` / etc.).\n'
 printf -- '- When the harness'\''s memory instructions prompt a save, write to the VAULT instead: MCP `write` with frontmatter `name` + `type` (decision | insight | project | feedback | reference) plus tags/summary/date per vault conventions.\n'
-printf -- '- Proactively CAPTURE durable knowledge without asking: a decision (+ rationale), a troubleshooting root-cause, a design choice and the options weighed, a non-obvious insight or gotcha, a project/plan outcome, or feedback on how to work — `write` it to the vault immediately with the correct `type`, then note the save in one line. This is standing authorization; memory-capture writes are EXEMPT from the "present options / confirm before changes" rule. Do NOT ask first.\n'
+printf -- '- Proactively CAPTURE durable knowledge without asking: a decision (+ rationale), a troubleshooting root-cause, a design choice and the options weighed, a non-obvious insight or gotcha, a project/plan outcome, or feedback on how to work — `write` it to the vault immediately with the correct `type`, then note the save in one line. This is standing authorization: a memory-capture write needs no options round and no confirmation. Do NOT ask first.\n'
 printf -- '- Before saving, `search` for an existing memory to UPDATE rather than duplicate. Skip the trivial: routine code edits, facts already in the repo or git, ephemeral chatter. Capture what would otherwise be a "by the way, should I remember this?".\n'
 printf -- '- The per-project memory directory and its MEMORY.md are a router only — never create memory files there.\n'
 printf -- '- Recall = vault `search` (mode hybrid), not directory reads.\n'
@@ -821,8 +772,20 @@ NOTICE
   fi
 fi
 
+# ──────────── Retired system-overrides alias (every source) ────────────
+# retire_system_overrides keeps the file as a rule-free stub, because a shell
+# alias passing it to --append-system-prompt-file stops the CLI when it is
+# missing. The shell profile is the user's file, so the hook never edits it.
+# This notice asks them to finish the retirement, alias first, file second.
+# It stops on its own once the file is gone.
+if [ -f "$SYSTEM_OVERRIDES" ]; then
+  printf '## ℹ Retired system-overrides file\n\n'
+  printf '`%s` no longer carries rules. It exists only so an `--append-system-prompt-file` alias still starts `claude`.\n\n' "$SYSTEM_OVERRIDES"
+  printf '**Remove any such alias from your shell profile, open a new shell, then delete the file.** Deleting the file first stops `claude` from starting through the alias.\n\n'
+fi
+
 # ──────────── Output-style drift check (every source) ────────────
-# The warmup re-renders system-overrides.md and the CLAUDE.md block itself, but
+# The warmup re-renders the CLAUDE.md block itself, but
 # the output style is written only by /workbench-core:setup, so after a plugin
 # update the live copy can lag the shipped one with nothing to say so. It once
 # ran 8 days stale and still told the model to run an options round before a

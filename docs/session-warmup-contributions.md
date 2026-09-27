@@ -26,7 +26,7 @@ which have already happened at least once:
    Core can only guarantee the invariant for text it controls.
 3. **Ordering is undefined.** Independent hooks on the same event have no
    guaranteed order relative to core's identity payload, so your block may land
-   before the guardrails.
+   before core's payload.
 
 One aggregated hook fixes all three at once, for every plugin.
 
@@ -107,17 +107,16 @@ Reference points:
 
 | | Size |
 |---|---|
-| Core's guardrails-inline block | ~2.7 KB |
-| Core's full startup payload (identity + routing + pointers) | ~4.9 KB |
+| Core's managed `~/.claude/CLAUDE.md` block (gates and scratch roots) | ~1.6 KB |
+| Core's full startup payload (routing + pointers, no soul or profile) | ~3.8 KB |
 | A real observed Dispatch tick's total SessionStart hook output | ~20.9 KB |
 | The 2026-07-08 bloat incident | **57 KB** |
 
-The first two are measured, not estimated, and they move whenever a guardrail
-does. One rule added and one clause extended took the inline block from 2,096 to
-2,710 bytes, which is 396 bytes for the new rule and 218 for the clause.
-Re-measure rather than re-estimate: `wc -c references/guardrails-inline.md`
-gives the first figure, and running `hooks/session-warmup.sh` against a sandbox
-`HOME` with no soul file and no profile gives the second.
+The first two are measured, not estimated: 1,625 and 3,804 bytes on
+2026-09-27, the day core stopped injecting a guardrails payload (4,776 bytes on
+its own). Re-measure rather than re-estimate: run `hooks/session-warmup.sh`
+against a sandbox `HOME` with no soul file, no profile, and a healthy memory
+probe, then `wc -c` its stdout and the managed block it writes.
 
 That 57 KB came from one block enumerating every pending-summary marker instead
 of a capped summary. It overflowed the harness's inline preview window and

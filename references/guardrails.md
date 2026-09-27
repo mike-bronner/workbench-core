@@ -158,7 +158,11 @@ the reverse.
     - ✅ A single known-path `Read` — do it inline
     - ❌ A single `Edit` to a known string — the gate denies it, so dispatch a
       sub-agent (or ask the user for `/workbench-core:orchestrator off`)
-    - ✅ A single scripted `Bash` whose output shape you can predict — do it inline
+    - ✅ A single read-only `Bash` (a `grep`, a `git log`) whose output shape you
+      can predict — do it inline
+    - ❌ A `Bash` command that writes a file (`sed -i`, a redirect, a heredoc)
+      as the inline stand-in for a denied `Edit` — it is the same edit by
+      another route, so dispatch a sub-agent
     - ✅ Multi-file refactor across the codebase → one agent per file, in parallel
     - ✅ Open-ended research ("how does X work?") → delegate to a research agent
 

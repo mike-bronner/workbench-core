@@ -7,7 +7,8 @@ Core infrastructure plugin for Claude Code. Part of the [`claude-workbench`](htt
 The infrastructure layer that turns Claude Code from a stateless coding assistant into a persistent, identity-aware collaborator. It provides:
 
 - **Persistent identity** — persona files (`soul-hot.md`, `profile.md`) injected at session start and re-injected after context compression so the agent never drifts.
-- **Guardrails** — absolute behavioral rules that ship with the plugin, load last (highest authority), and are enforced by the interview skills. Guardrails can't be overridden by persona or profile choices.
+- **One rule source** — the behavioural rules load once, from the shipped output style. No hook restates them, so they cannot drift apart and they never reach a sub-agent.
+- **Guardrails** — the rubric the interview skills check soul and profile answers against. Guardrails can't be overridden by persona or profile choices.
 - **Session logging** — every session is captured as a rolling JSONL log, then summarized by a background agent into a searchable narrative.
 - **Operational memory** — a shared, lazy-started local MCP server (markdown-vault-mcp) fronts a searchable vault of decisions, projects, insights, and session history, optionally kept in sync across machines over git.
 - **Execution-aware skills** — a behavioral protocol that gives any skill persistent memory via vault-backed learnings files.
@@ -87,31 +88,19 @@ markdown-vault-mcp --version
 /plugin install workbench-core@claude-workbench
 ```
 
-### Optional: CLI system-prompt enforcement
+### Where the behavioural rules load
 
-**Background:** Claude Code's default system prompt includes rules like "no emojis unless asked" and specific tone/style directives. If your agent persona contradicts these (e.g., "use emojis liberally"), the system prompt wins — it's architecturally higher authority than `CLAUDE.md` or hook output, which are both delivered as user messages.
+The rules load from one place: the output style `/workbench-core:setup` installs from `assets/personas/clear/output-style.md`. An output style is system-prompt tier, so it outranks the base prompt's defaults (such as "no emojis unless asked") without any shell alias, and it survives compaction on its own. It also reaches the main session only, which is where the rules belong.
 
-The plugin addresses this at three layers:
+No hook restates them. Earlier versions loaded the same rules four times per main session: the output style, a `~/.claude/system-overrides.md` file passed by a shell alias, the managed `~/.claude/CLAUDE.md` block, and a guardrails payload on the warmup's stdout. The copies drifted and contradicted each other. The `CLAUDE.md` copy also reached every sub-agent, which put "present options" and `AskUserQuestion` into agents that have neither a human nor the tool. `hooks/test-rule-source.sh` pins the new shape: eleven rules and three habits of shape in the output style, the style obeying its own register, and no rule text in anything the warmup writes or prints.
 
-| Layer | File | Authority | Works in |
-|-------|------|-----------|----------|
-| 1 | `~/.claude/system-overrides.md` | System prompt (highest) | CLI only |
-| 2 | `~/.claude/CLAUDE.md` managed block | User message | Everywhere |
-| 3 | SessionStart hook output | Tool result | Everywhere |
+The managed `~/.claude/CLAUDE.md` block now carries facts only: the gates, what each protects, and the scratch roots. Sub-agents need those facts, and each gate's deny carries its own recovery text.
 
-Layers 2 and 3 are automatic — the plugin generates and maintains them on every startup. Layer 1 requires a one-line shell alias because `--append-system-prompt-file` is CLI-only (no settings.json equivalent exists).
+**Retiring the old alias.** If your shell profile has `alias claude='claude --append-system-prompt-file ~/.claude/system-overrides.md'`, the CLI refuses to start when that file is missing. So the warmup never deletes it. It rewrites an existing file to a one-line stub with no rules, never creates one, and posts a startup notice until the file is gone. Finish the retirement in this order:
 
-Layers 1 and 2 carry the behavioral overrides **fully inlined** — never a pointer. Each file is read later, by the CLI and by the model, against a version-pinned plugin path that may no longer be live, so a "see `references/…`" line would break its authority tier. What the two layers share is their *source*: the warmup hook renders both from `references/behavioral-overrides.md` at session start, when `CLAUDE_PLUGIN_ROOT` is guaranteed current. Edit the rules there — the two destinations converge on the next startup. If that file is missing or empty, the hook fails closed and leaves both destinations untouched rather than writing a hollow identity block.
-
-To activate Layer 1, add this to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.):
-
-```bash
-alias claude='claude --append-system-prompt-file ~/.claude/system-overrides.md'
-```
-
-**Who needs this:** Anyone using the Claude Code CLI whose agent persona overrides default system prompt behaviors (emoji usage, tone, sycophancy rules). If your persona doesn't contradict the defaults, Layers 2 and 3 are sufficient.
-
-**Who doesn't need this:** Desktop app, web app (claude.ai/code), and IDE extension users — these don't go through the shell. For those environments, the plugin relies on Layers 2 and 3 as reinforcement. These work everywhere but can't architecturally override the system prompt.
+1. Remove the alias from your shell profile.
+2. Open a new shell, so no running shell still carries the alias.
+3. Delete `~/.claude/system-overrides.md`.
 
 ### Configure (required on first install)
 
@@ -183,7 +172,7 @@ Any skill execution reads a persistent learnings file before running. If the run
 
 The protocol applies to **any** skill — workbench skills, third-party plugin skills, your own personal skills. No per-skill configuration needed.
 
-The protocol is driven by `{memory_path}/identity/skills-protocol.md`, installed by `/workbench:setup` and loaded every session by the SessionStart hook (load order: soul-hot → profile → skills-protocol → guardrails). Remove the file if you want to disable the behavior; delete a specific `skills/{skill-name}.learnings.md` to reset one skill's accumulated state without touching the rest.
+The protocol is driven by `{memory_path}/identity/skills-protocol.md`, installed by `/workbench:setup` and loaded every session by the SessionStart hook (load order: soul-hot → profile → skills-protocol). Remove the file if you want to disable the behavior; delete a specific `skills/{skill-name}.learnings.md` to reset one skill's accumulated state without touching the rest.
 
 #### Compaction
 
@@ -198,14 +187,13 @@ The `references/` directory contains single-source-of-truth documents shared acr
 
 | File | Used by | Purpose |
 |------|---------|---------|
-| `guardrails.md` | session-warmup, define-soul, define-profile | Absolute behavioral rules — injected last at session start, enforced during interviews |
-| `behavioral-overrides.md` | session-warmup | The persona's behavioral overrides — single source rendered, fully inlined, into both `~/.claude/system-overrides.md` (Layer 1) and the managed `~/.claude/CLAUDE.md` block (Layer 2) |
+| `guardrails.md` | define-soul, define-profile | The rubric the interview skills check every answer against. No hook loads it into a session |
 | `summary-format.md` | summary-writer, log-now, summarize-session | Required frontmatter, body structure, JSONL parsing guidance |
 | `decision-promotion.md` | summary-writer, log-now, summarize-session | Promotion criteria, when NOT to promote, decision file template |
 | `vault-conventions.md` | summary-writer, log-now, summarize-session | Vault paths, required frontmatter, write vs edit rules |
 | `linking-synthesis.md` | summary-writer, log-now, summarize-session, memory-lint | Link syntax, related-document linking, topic-page synthesis, vault index contract |
 
-Most references are loaded at execution time via `${CLAUDE_PLUGIN_ROOT}/references/`. The exceptions are the two the warmup hook reads at every session start: `guardrails.md`, injected into context, and `behavioral-overrides.md`, rendered onto disk into the Layer 1 and Layer 2 files above.
+References are loaded at execution time via `${CLAUDE_PLUGIN_ROOT}/references/`. The one the warmup reads is `memory-routing-stub.md`, which it copies into the project's `MEMORY.md` router. No rule reference reaches a session: the behavioural rules load from the output style alone (see [Where the behavioural rules load](#where-the-behavioural-rules-load)).
 
 ## Plugin layout
 
@@ -253,8 +241,7 @@ core/
 │   ├── session-warmup-contributions.md — how plugins contribute warmup text
 │   └── mcp-output-capping.md   — per-server MCP output-limit standard
 ├── references/
-│   ├── guardrails.md           — absolute behavioral rules (injected at session start)
-│   ├── behavioral-overrides.md — persona overrides, rendered into layers 1 + 2 at startup
+│   ├── guardrails.md           — interview rubric for define-soul and define-profile (not loaded into sessions)
 │   ├── decision-promotion.md   — when and how to promote decisions
 │   ├── linking-synthesis.md    — link syntax, topic pages, vault index contract
 │   ├── summary-format.md       — summary frontmatter + body template
@@ -366,7 +353,7 @@ That third row is why `agent_type` alone has to allow: a scheduled `claude -p --
 
 A session id holding anything outside `[A-Za-z0-9._-]` is refused rather than resolved, which keeps a `../` from walking out of the state directory. Refusal means fail-open here: a session that cannot address its own toggle has no honest escape hatch, so the gate stands down rather than trapping the user.
 
-Tests: `hooks/test-delegation-gate.sh` (53 cases: every allow branch independently, the deny path, byte-exact deny JSON, the conditional dev-team enrichment, `hooks.json` wiring, and agreement with both the toggle skill and guardrail 10).
+Tests: `hooks/test-delegation-gate.sh` (74 cases: every allow branch independently, the deny path, byte-exact deny JSON, the conditional dev-team enrichment, `hooks.json` wiring, and agreement with both the toggle skill and guardrail 10, including that its inline case is a read-only Bash and never a file-writing one).
 
 ### Agent dispatch gate
 
@@ -476,17 +463,14 @@ That is not hypothetical. `insight-llc/decisioncloud#21665` shipped a 1,855-word
 
 `hooks/outbound-prose-guard.sh` closes the gap for artifacts other people read: `gh pr create|edit|comment|review`, `gh issue create|edit|comment`, `gh release create|edit`, and the same prose posted through a project board MCP (`add_comment`, `submit_review`, `create_issue`, `set_acceptance_criteria`). It exits 2 on a violation, and stderr on a blocking `PreToolUse` hook reaches the model, so the findings become the revision brief.
 
-`hooks/lib/prose-check.py` holds the five checks, each traceable to one line of the shipped output style:
+`hooks/lib/prose-check.py` holds two checks, both from rule 8 of the shipped output style:
 
 | Finding | Rule |
 |---------|------|
 | `em-dash` | Join ideas with a colon, a parenthesis, or a full stop |
-| `semicolon` | A semicolon means you have two sentences |
-| `no-emoji` | Emoji are structure, at the same density everywhere |
-| `long-para` | One idea per bullet, one topic per paragraph (limit 6 sentences) |
-| `long-sent` | 20 words maximum, a single idea |
+| `semicolon` | Never a semicolon |
 
-**What it does not check.** Whether a body leads with the answer, and whether it is a debugging journal rather than a review aid, are judgement calls no regex settles. Those stay in the output style where a reader applies them.
+**What it does not check.** Whether a body leads with the answer, whether it is dense, how long its sentences and paragraphs run, and whether it carries emoji. Earlier versions denied on emoji, sentence length, and paragraph length. Those checks were removed because a deny on a judgement call breeds workarounds: the writer pads in an emoji or chops a sentence to pass the count, and the text gets no easier to read. Density is rule 11 of the output style, applied by the writer.
 
 **What it exempts,** because the author does not control it: fenced and inline code (a semicolon there belongs to the language), HTML comments, bot-authored regions such as CodeRabbit's release notes, `- [ ]` checklist lines from a repository pull request template, and URLs inside markdown links. A bare `PULL_REQUEST_TEMPLATE.md` passes clean, which is the calibration that matters. A gate that blocks the template blocks every pull request.
 
@@ -772,8 +756,8 @@ plugin contributions, skill bodies, tool definitions. An unattended scheduled
 task that fires every 20 minutes pays that penalty on every tick.
 
 So no volatile state is injected into the warmup payload. Pending session
-summaries, misrouted project summaries, recall-hook liveness, and new
-Chat-installable skills are all written to:
+summaries, misrouted project summaries, recall-hook liveness, new
+Chat-installable skills, a stale output style, and a retired `system-overrides.md` still on disk are all written to:
 
 ```
 ~/.claude-workbench/warmup-notices.md
@@ -872,7 +856,7 @@ Identity files are customizable — users define their agent's persona via `/wor
 
 **The solution:** `references/guardrails.md` ships with the plugin as a set of absolute behavioral rules. They:
 
-1. **Load last** in the identity chain (after soul-hot, profile, skills-protocol) — giving them highest authority in context.
+1. **Are not loaded into sessions.** The session standard is the output style. The guardrails are the rubric the interview skills check answers against.
 2. **Are enforced during interviews** — both `/workbench:define-soul` and `/workbench:define-profile` check every answer against the guardrails. If an answer contradicts a guardrail, the skill stops, names the conflict, and recommends an alternative. It never suggests modifying the guardrails.
 3. **Ship with the plugin, not the vault** — guardrails are not user-configurable paths. They're plugin infrastructure, like the hook scripts.
 
@@ -890,26 +874,17 @@ profile.md (user context — user-defined)
 
 **Why finding verdicts are guardrail 12.** Rule 1 binds at action boundaries, and scopes itself that way in its own ✅ example. Rule 11 binds on open questions. A finding that proposes no action and asks no question triggers neither of them, so it reaches the user as a bare fact. Closing a release, that produced two real findings reported as "neither is urgent": no verdict on whether either was a problem, no options, and no recommendation. The user had to ask what to do with them, which is the work that should already have been done. Rule 12 binds the moment you notice rather than the moment you act. Report what it is, whether it is a problem, how bad, the options, and which one you recommend. Severity is not a verdict, because "not urgent" answers when and never whether, and "unknown" answers neither. "No action needed" is a valid verdict and gets stated rather than dropped.
 
-**Why question contents are guardrail 13.** Rule 11 named the channel and said nothing about what travels down it, so a bare numbered list of questions satisfied every rule then written. Three separable failures shipped that way. The agent stated a fact whose next step depended on an answer, and never turned it into a question. It framed a fork as a problem, which sends the reader hunting for a defect that is not there. And it printed questions with no situation attached, leaving the reader to reconstruct what each one was about before answering any of them. Rule 1 already carried the shape — three options and a recommendation — but scopes itself to "before making changes", so a question about anything else inherited no shape requirement at all. Rule 12 does not cover the gap either: its report order is problem-shaped ("whether it is a problem, how bad"), which leaves a neutral fork no honest form to be reported in. Rule 13 binds all three halves — recognize, frame, shape — in whichever channel rule 11 selects. It appends rather than extending rule 11 in place, because rule 11 already carries four concerns and a fifth is easier to apply halfway. `hooks/test-guardrail-mirrors.sh` gives it four checks per mirror rather than three: the framing half fails in two independent ways, and a mirror keeping only one of them still reproduces one of the original complaints.
+**Why question contents are guardrail 13.** Rule 11 named the channel and said nothing about what travels down it, so a bare numbered list of questions satisfied every rule then written. Three separable failures shipped that way. The agent stated a fact whose next step depended on an answer, and never turned it into a question. It framed a fork as a problem, which sends the reader hunting for a defect that is not there. And it printed questions with no situation attached, leaving the reader to reconstruct what each one was about before answering any of them. Rule 1 already carried the shape — three options and a recommendation — but scopes itself to "before making changes", so a question about anything else inherited no shape requirement at all. Rule 12 does not cover the gap either: its report order is problem-shaped ("whether it is a problem, how bad"), which leaves a neutral fork no honest form to be reported in. Rule 13 binds all three halves — recognize, frame, shape — in whichever channel rule 11 selects. It appends rather than extending rule 11 in place, because rule 11 already carries four concerns and a fifth is easier to apply halfway.
 
 **Why option layout is guardrail 14.** Rules 1, 12 and 13 each require three options and a recommendation, and none of them said what that looks like on the page. So the layout was invented fresh every reply, and the last drift produced a form the user reported as hard to read against one that used to be clean: a different medal glyph on each option, titles shortened to fragments, and the recommendation folded into the option it picked, where it has to be hunted for. Rule 14 pins the shape. Each option is its own markdown heading rather than bold text inside a paragraph, because a heading is rendered in color and that color is what the eye finds first. The heading carries the marker 🔹, the word "Option" with a spelled-out letter, and a short descriptive title. Under it go that option's pros and its cons, both every time. After all three, a separate paragraph names the recommendation and gives its reason.
 
-The marker is one glyph repeated, not a set, and that is the half with a measurement behind it. An earlier draft used 🅰️ 🅱️ 🅲 and it renders three different ways: 🅰️ and 🅱️ are U+1F170 and U+1F171 with a variation selector and come out red as blood-type emoji, while 🅲 is U+1F172, has no emoji presentation form at all, and falls back to gray text. The first two also put a variation selector over an East-Asian-Width-Ambiguous base, which is the exact class Terminal.app miscounts the width of. 🔹 is U+1F539: natively Wide, no variation selector, identical on every option. The letter carries the sequence, so a per-option glyph set cannot come back the moment someone needs a fourth option. Rule 14 also sets the tiebreak the recommendation uses, which no rule stated before: correctness outranks speed of implementation, so the recommendation is the architecturally correct option and says plainly when that one is also the slower one. It appends rather than extending rule 1 in place, for the reason rule 13 appended rather than extending rule 11: rule 1 already carries five concerns, and layout is referenced by rules 12 and 13 as well, so it needs to be somewhere all three can point at. `hooks/test-guardrail-mirrors.sh` gives it six checks per mirror, counting the marker and its invariance separately, because a mirror can name 🔹 and still permit a different glyph per option, which is the inconsistency that started this.
+The marker is one glyph repeated, not a set, and that is the half with a measurement behind it. An earlier draft used 🅰️ 🅱️ 🅲 and it renders three different ways: 🅰️ and 🅱️ are U+1F170 and U+1F171 with a variation selector and come out red as blood-type emoji, while 🅲 is U+1F172, has no emoji presentation form at all, and falls back to gray text. The first two also put a variation selector over an East-Asian-Width-Ambiguous base, which is the exact class Terminal.app miscounts the width of. 🔹 is U+1F539: natively Wide, no variation selector, identical on every option. The letter carries the sequence, so a per-option glyph set cannot come back the moment someone needs a fourth option. Rule 14 also sets the tiebreak the recommendation uses, which no rule stated before: correctness outranks speed of implementation, so the recommendation is the architecturally correct option and says plainly when that one is also the slower one. It appends rather than extending rule 1 in place, for the reason rule 13 appended rather than extending rule 11: rule 1 already carries five concerns, and layout is referenced by rules 12 and 13 as well, so it needs to be somewhere all three can point at.
 
 **Rule 9 grew a clause in the same pass**, for the mirror-image failure. "Lead with what is wrong or risky" is an ordering instruction, and nothing said it was *only* an ordering instruction. Three sub-agent findings were relayed as three costs when one of them was an improvement and one was a fix, so three commits of good work read as a list of concessions. Order by risk, label by fact: those are two operations, and a cost is specifically something the reader is worse off for. A behaviour change, a stricter check landing somewhere more reliable, and a correctness fix that widens what is accepted are none of them costs.
 
-**One rule, four copies, and they are not duplicates.** The guardrail set is mirrored across files that each reach the model by a different route, so a rule added to one and missed in the others is present in the repo and absent from the session that needed it:
+**The rules the session runs on live in one file, and this is not it.** The main session's standard is the output style (see [Where the behavioural rules load](#where-the-behavioural-rules-load)). `references/guardrails.md` restates several of the same rules in rubric form, for the interview skills, which do not load the output style. No hook loads it into a session, so it cannot contradict the output style at runtime. Whether the interview skills stay, and this file with them, is not yet decided.
 
-| File | Register | How it reaches the model |
-|---|---|---|
-| `references/guardrails.md` | Full text, with ❌/✅ examples | Read on demand; loaded by the interview skills |
-| `references/guardrails-inline.md` | One line per rule | Injected into context by the warmup hook, every session source |
-| `references/behavioral-overrides.md` | Terse overrides of base-prompt defaults | Rendered onto disk into `~/.claude/system-overrides.md` (Layer 1) and the managed `~/.claude/CLAUDE.md` block (Layer 2) |
-| `assets/personas/clear/output-style.md` | The persona's own voice, plus its drift test | Installed as the active output style by `/workbench-core:setup` (Step 2f) |
-
-`hooks/test-guardrail-mirrors.sh` pins the rule in all four and fails when one of them drops it. `hooks/test-session-warmup.sh` additionally proves the injected copies carry it at runtime, which is the property the mirror check cannot see.
-
-**It is prose rather than a hook, deliberately.** Detecting an unanswered question in free text is a semantic judgement, and every enforcement gate in this plugin matches on something mechanical instead — a tool name, a command prefix, a file path, a slot header, a literal character. The one time semantic heuristics were built and measured here, for the [agent dispatch gate](#agent-dispatch-gate), the three variants traded 83% precision at 26% recall against 34% precision at 84% recall, and the wrong answers were not tunable away. A classifier on question delivery fails the same way in both directions: a false positive blocks a finished reply, and a false negative teaches the agent the rule is optional. The mirrors are the enforcement mechanism that is actually available, so the tests guard the mirrors.
+**It is prose rather than a hook, deliberately.** Detecting an unanswered question in free text is a semantic judgement, and every enforcement gate in this plugin matches on something mechanical instead — a tool name, a command prefix, a file path, a slot header, a literal character. The one time semantic heuristics were built and measured here, for the [agent dispatch gate](#agent-dispatch-gate), the three variants traded 83% precision at 26% recall against 34% precision at 84% recall, and the wrong answers were not tunable away. A classifier on question delivery fails the same way in both directions: a false positive blocks a finished reply, and a false negative teaches the agent the rule is optional. The written rule is the enforcement that is actually available, and `hooks/test-rule-source.sh` guards that it is written once.
 
 ### Permission safety rails
 
@@ -948,7 +923,7 @@ The merge is **additive**: entries are added when absent, and existing rules kee
 
 **The fail-closed rule binds the verdict, not the deployment.** A command the guard reads and cannot resolve is denied. A guard that cannot *run* is a broken install rather than an undetermined command, and denying every Bash call because `jq` is missing takes the machine down instead of protecting it — so the payload-reading preconditions exit 0. Everything after the cheap prefilter does not: by then the command is known to name a destructive verb, so a missing `python3` or a missing checker is a destructive command nobody judged, and that denies.
 
-**The instruction half, and why it ships on two channels.** A guard that denies what it cannot read only works well if agents write paths it can read, so `hooks/session-warmup.sh` carries the rule — *twice, because the two channels reach different readers.* A two-line instruction goes to the hook's SessionStart stdout, and a short section goes into the managed identity block the same hook writes into `~/.claude/CLAUDE.md`. Only the second reaches a *sub-agent*: a freshly spawned one starts with that file in its context and with the hook's stdout absent, which was measured by asking one to introspect before its first tool call — and a sub-agent is where a dev-team agent actually runs. Copying the rule into each agent definition instead was rejected: that misses `general-purpose`, `Explore`, `Plan`, and every agent added later, where one managed block reaches all of them at once. `hooks/test-session-warmup.sh` pins the two copies against each other on a string *derived* from one of them, and pins both against the guard's registration in `hooks.json` — retire the guard and the promise the machine makes every sub-agent at startup becomes a lie, which reddens.
+**The instruction half, and why it ships on two channels.** A guard that denies what it cannot read only works well if agents write paths it can read, so `hooks/session-warmup.sh` carries the rule — *twice, because the two channels reach different readers.* A three-line instruction goes to the hook's SessionStart stdout. The managed block the same hook writes into `~/.claude/CLAUDE.md` carries a row naming the guard and a line naming the scratch roots, and leaves the shape rule to the guard's own deny text. Only the second reaches a *sub-agent*: a freshly spawned one starts with that file in its context and with the hook's stdout absent, which was measured by asking one to introspect before its first tool call — and a sub-agent is where a dev-team agent actually runs. Copying the rule into each agent definition instead was rejected: that misses `general-purpose`, `Explore`, `Plan`, and every agent added later, where one managed block reaches all of them at once. `hooks/test-session-warmup.sh` pins the two copies against each other on a string *derived* from one of them, and pins both against the guard's registration in `hooks.json` — retire the guard and the promise the machine makes every sub-agent at startup becomes a lie, which reddens.
 
 **The five are gone from `rails.json`, and that is the whole point rather than a loose end.** Leaving them listed would not have been a safety net: the merge is one-way — `permissions.sh` only ever adds — so an entry kept here is an entry restored into `~/.claude/settings.json` at whatever moment somebody next runs setup, silently undoing a deliberate removal. An undo nobody schedules is a hazard, not a protection.
 

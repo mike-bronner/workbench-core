@@ -150,21 +150,29 @@ COMMAND=$(printf '%s' "$PAYLOAD" | jq -r '
 # everything below costs a python start — measured at ~70ms against ~11ms for
 # this early exit.
 #
-# THESE FIVE SUBSTRINGS ARE THE CHECKER'S VERB SET, AND THEY MUST STAY THAT WAY.
+# THESE SIX WORDS ARE THE CHECKER'S VERB SET, AND THEY MUST STAY THAT WAY.
 # A destructive verb the checker knows and this list does not is a command that
 # never reaches the checker at all, which is the fail-open hole this guard
 # exists to close — and nothing would report it. As of this writing:
-#   rm      `rm` and `rmdir`, in every spelling
-#   reset   `git reset --hard`
-#   clean   `git clean`
-#   stash   `git stash clear` and `git stash drop`
-#   delete  `find -delete`, which spells its destruction in a flag, not a verb
+#   rm, rmdir  `rm` and `rmdir`, in every spelling
+#   reset      `git reset --hard`
+#   clean      `git clean`
+#   stash      `git stash clear` and `git stash drop`
+#   delete     `find -delete`, which spells its destruction in a flag, not a verb
 # The git verbs are keyed on the SUBCOMMAND rather than on "git", because `git`
 # alone matches every ordinary git call and made all of them pay the python
 # start for nothing. A wrapper hiding one of these — `bash -c "git clean -fd"`,
 # `ssh host "rm -rf /"` — carries the word in its argument text, so it matches
-# here too. Substring rather than word match on purpose: `sudo rm`, `/bin/rm`,
-# and `cd x && rm -rf y` all have to reach the checker.
+# here too.
+#
+# WHOLE WORDS, where a word ends at anything that is not a letter or a digit.
+# This was a substring test until 2026-09-27, and `--format`, `permission`, and
+# `terminal` each woke python for nothing, because each contains `rm`. The
+# checker reads a verb SLOT, so it only ever acts on a verb that stands as its
+# own word: `rm`, `\rm`, `/bin/rm`, `sudo rm`, `cd x && rm -rf y`, `$(rm x)`,
+# `-delete`, and `${RM}` all still match, because `\`, `/`, a space, `(`, `-`,
+# and `{` all end a word. An underscore ends one too, so `${RM_BIN}` matches,
+# which is wider than the checker needs and costs nothing.
 #
 # Every verb above is covered end-to-end by hooks/test-destructive-scope-guard.sh,
 # which drives the whole guard rather than the checker alone — so a verb added
@@ -177,17 +185,34 @@ COMMAND=$(printf '%s' "$PAYLOAD" | jq -r '
 # the checker's verdict about computed verb slots never ran. The bracket classes
 # are what make this case-insensitive without a fork — bash 3.2 ships on macOS
 # and has no ${var,,}, and `tr` or `grep -i` would each cost the fork this check
-# exists to avoid. Same idiom as hooks/provisioning-guard.sh.
+# exists to avoid. Same idiom as hooks/provisioning-guard.sh. The letters are
+# listed rather than ranged, because a range follows the locale's collation.
 #
 # THE FLOOR, STATED RATHER THAN IMPLIED: a verb held in a variable whose name
 # gives no hint — `${TOOL} -rf /etc/x`, with TOOL set to rm in an earlier,
 # separate call — matches nothing here and is not reachable by any text-based
 # guard. That is the limit of this mechanism, not an oversight in it.
-case "$COMMAND" in
-  *[rR][mM]* | *[rR][eE][sS][eE][tT]* | *[cC][lL][eE][aA][nN]* \
-  | *[sS][tT][aA][sS][hH]* | *[dD][eE][lL][eE][tT][eE]*) ;;
-  *) exit 0 ;;
-esac
+SCOPE_VERBS='[rR][mM]|[rR][mM][dD][iI][rR]|[rR][eE][sS][eE][tT]|[cC][lL][eE][aA][nN]|[sS][tT][aA][sS][hH]|[dD][eE][lL][eE][tT][eE]'
+SCOPE_WORDS="(^|[^[:alnum:]])($SCOPE_VERBS)([^[:alnum:]]|$)"
+# SPLIT VERBS. The checker's tokeniser, like bash, rejoins a word that quotes,
+# backslashes, or a backslash-newline split: `r''m`, `r\m`, `r\<newline>m` and
+# `-de""lete` all run as the verb they spell. On the raw text none of them is a
+# whole word, so a command whose raw text misses is matched a second time with
+# backslash-newlines joined and every quote and backslash deleted. That costs a
+# fork, so it runs only when the text holds a quote or a backslash; an ordinary
+# command keeps the no-fork path. The database and prose guards strip the same
+# characters for the same reason.
+if ! [[ $COMMAND =~ $SCOPE_WORDS ]]; then
+  case "$COMMAND" in
+    *[\'\"\\]*)
+      JOINED=$(printf '%s' "$COMMAND" \
+        | awk '{ if (sub(/\\$/, "")) printf "%s", $0; else print }' \
+        | tr -d "'\"\\\\")
+      [[ $JOINED =~ $SCOPE_WORDS ]] || exit 0
+      ;;
+    *) exit 0 ;;
+  esac
+fi
 
 # Past this line the command is known to name a destructive verb, so the
 # fail-closed rule applies to the tooling as well: a checker that cannot run is

@@ -143,11 +143,20 @@ assert_empty "git log --grep is not a repo scan" \
 assert_empty "a search word inside a string literal is data" \
   "$(run_hook Bash 'echo "run rg memory recall dedup later" >> notes.md' s-slot2 "$CACHE" "$FAKE")"
 
-echo "The search is found in a later pipeline stage, and behind a no-op prefix:"
+echo "A search that reads stdin filters output, so it is not a repo scan:"
 STATE="$SANDBOX/s-stage"
-assert_contains "grep after a pipe fires" \
-  "$(run_hook Bash 'cat notes.md | grep -i "memory recall dedup"' s-stage1 "$CACHE" "$FAKE")" \
+assert_empty "grep after a pipe is skipped" \
+  "$(run_hook Bash 'cat notes.md | grep -i "memory recall dedup"' s-stage1 "$CACHE" "$FAKE")"
+assert_empty "a pipeline filter's alternation is not mined" \
+  "$(run_hook Bash 'git diff | grep -E "real|allow|deny"' s-stdin2 "$CACHE" "$FAKE")"
+assert_empty "a here-string search is skipped" \
+  "$(run_hook Bash 'grep -c "memory recall dedup" <<< "$notes"' s-stdin3 "$CACHE" "$FAKE")"
+STATE="$SANDBOX/s-stdin4"
+assert_contains "the file-reading search before the pipe still fires" \
+  "$(run_hook Bash 'grep -rn "memory recall dedup" hooks | grep -v test' s-stdin4 "$CACHE" "$FAKE")" \
   "Canned recall hit one"
+
+echo "The search is found behind a no-op prefix, and in git grep:"
 STATE="$SANDBOX/s-stage2"
 assert_contains "sudo-prefixed grep fires" \
   "$(run_hook Bash 'sudo grep -rn "memory recall dedup" /etc' s-stage2 "$CACHE" "$FAKE")" \
@@ -163,8 +172,51 @@ assert_empty "pattern below MIN_CHARS"   "$(run_hook Bash "rg 'it'" s-thin1 "$CA
 assert_empty "purely numeric pattern"    "$(run_hook Bash 'grep -rn "0123456789" .' s-thin2 "$CACHE" "$FAKE")"
 STATE="$SANDBOX/s-thin3"
 assert_contains "MIN_CHARS=2 lets the short one through" \
-  "$(run_hook Bash "rg 'it'" s-thin3 "$CACHE" "$FAKE" WORKBENCH_MEMORY_SCAN_RECALL_MIN_CHARS=2)" \
+  "$(run_hook Bash "rg 'it is'" s-thin3 "$CACHE" "$FAKE" WORKBENCH_MEMORY_SCAN_RECALL_MIN_CHARS=2)" \
   "Canned recall hit one"
+
+echo "One plain word is not a topic, but a camelCase identifier is:"
+STATE="$SANDBOX/s-word"
+assert_empty "single lower-case word"  "$(run_hook Bash 'grep -rn scheduled hooks' s-word1 "$CACHE" "$FAKE")"
+assert_empty "single word with digits" "$(run_hook Bash 'rg python3 hooks' s-word2 "$CACHE" "$FAKE")"
+assert_empty "single upper-case word"  "$(run_hook Grep 'PERMISSION' s-word3 "$CACHE" "$FAKE")"
+STATE="$SANDBOX/s-word4"
+assert_contains "camelCase identifier fires" \
+  "$(run_hook Grep 'summaryWriter' s-word4 "$CACHE" "$FAKE")" "Canned recall hit one"
+
+echo "Relevance gate: a hit only one retriever ranked is not injected:"
+AGREE_SCAN='rg -n "memory recall dedup" hooks'
+STATE="$SANDBOX/s-agree"
+assert_empty "semantic-only hits are dropped" \
+  "$(run_hook Bash "$AGREE_SCAN" s-agree1 "$CACHE" "$FAKE" FAKE_SEARCH_TYPE=semantic)"
+assert_empty "keyword-only hits are dropped" \
+  "$(run_hook Bash "$AGREE_SCAN" s-agree2 "$CACHE" "$FAKE" FAKE_SEARCH_TYPE=keyword)"
+STATE="$SANDBOX/s-agree3"
+assert_contains "a hit both retrievers ranked is injected" \
+  "$(run_hook Bash "$AGREE_SCAN" s-agree3 "$CACHE" "$FAKE" FAKE_SEARCH_TYPE=hybrid)" "Canned recall hit one"
+# A single-retriever mode labels every hit with that retriever, so the gate must
+# stand down there, or it drops every hit.
+for m in keyword semantic; do
+  STATE="$SANDBOX/s-mode-$m"
+  assert_contains "$m mode injects its $m-labelled hits" \
+    "$(run_hook Bash "$AGREE_SCAN" "s-mode-$m" "$CACHE" "$FAKE" FAKE_SEARCH_TYPE="$m" WORKBENCH_MEMORY_SCAN_RECALL_MODE="$m")" \
+    "Canned recall hit one"
+done
+
+echo "A Bash call that names no searcher never starts python:"
+PYLOG="$SANDBOX/python-starts.log"
+mkdir -p "$SANDBOX/shim"
+printf '#!/bin/bash\necho started >> "%s"\nexec "%s" "$@"\n' "$PYLOG" "$(command -v python3)" > "$SANDBOX/shim/python3"
+chmod +x "$SANDBOX/shim/python3"
+STATE="$SANDBOX/s-py"
+: > "$PYLOG"
+run_hook Bash 'ls -la hooks && npm test -- --format=tap' s-py1 "$CACHE" "$FAKE" PATH="$SANDBOX/shim:$PATH" >/dev/null
+assert_ok "no python for a command with no searcher" "$([ ! -s "$PYLOG" ] && echo 1 || echo 0)"
+for c in 'grep -rn "memory recall" .' 'egrep x y' 'rg foo' '/usr/bin/rg foo' 'ag foo' 'ack foo' 'git grep foo'; do
+  : > "$PYLOG"
+  run_hook Bash "$c" s-py2 "$CACHE" "$FAKE" PATH="$SANDBOX/shim:$PATH" >/dev/null
+  assert_ok "python runs for: $c" "$([ -s "$PYLOG" ] && echo 1 || echo 0)"
+done
 
 # ── The accumulation bound ──────────────────────────────────────────────────
 echo "Per-session dedup — a second scan injects only the memory not yet seen:"

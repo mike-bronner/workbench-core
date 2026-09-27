@@ -246,7 +246,7 @@ through, so read the deny and follow it.
 
 | Gate | What it protects |
 |---|---|
-| Delegation gate | The main agent does not edit files. It is denied `Edit`, `Write`, and `NotebookEdit` outside the scratchpads. Sub-agents are exempt. Only the user lifts it, with `/workbench-core:orchestrator off`. |
+| Delegation gate | The main agent does not write whole files. It is denied `Write` and `NotebookEdit` outside the scratchpads, and may use `Edit`. Sub-agents are exempt. Only the user lifts it, with `/workbench-core:orchestrator off`. |
 | Agent dispatch gate | A main-agent `Agent` dispatch must carry the five-slot brief. |
 | Destructive scope guard | `rm`, `rmdir`, `git reset --hard`, `git clean`, and `git stash clear`/`drop` run only when every target resolves inside the project or a scratch root. |
 | Destructive database guard | Database resets, drops, and destructive SQL are refused. |
@@ -495,19 +495,23 @@ SKILLS_PROTOCOL="$MEMORY_PATH/identity/skills-protocol.md"
 
 # Memory routing — countermand the harness's per-project memory instructions.
 # Re-injected on every source so the rule survives compaction. This is the
-# always-on FLOOR for the capture rule; hooks/memory-capture-nudge.sh
-# (UserPromptSubmit) reinforces it per-turn when a turn looks capture-worthy,
-# so the rule keeps its salience deep into a long session.
+# always-on FLOOR for the capture rule. hooks/memory-capture-stop.sh (Stop) is
+# its backstop. A per-turn UserPromptSubmit capture nudge used to sit between
+# the two. It was retired on 2026-09-27, because it also fired on sub-agent
+# hand-backs and task notifications and restated this block at a measured
+# ~180k tokens in three days.
 #
 # It is also the floor for the two recall rules — WHEN to search and WHAT to
-# search for. hooks/memory-recall.sh searches the USER'S PROMPT at turn start and
-# nothing else, and that is not only a coverage gap. The throttles it needs for
-# context cost (prompt-only input, turn-start only, 2 hits, per-session dedup, a
-# substance gate) mean a topic a scan uncovers mid-task never reaches it.
-# hooks/memory-scan-recall.sh (PostToolUse) now catches PART of that — the scans
-# that carry an extractable query — but only those, so the floor below still has
-# to carry the rule in full. And
-# even on the opening prompt, the prompt's own wording is a WEAKER query than the
+# search for. hooks/memory-recall.sh searches each substantive PROMPT of the main
+# session, and nothing else, and that is not only a coverage gap. The throttles
+# it needs for context cost (prompt-only input, turn-start only, 2 hits,
+# per-session dedup, a substance gate) mean a topic a scan uncovers mid-task
+# never reaches it. hooks/memory-scan-recall.sh (PostToolUse) catches PART of
+# that — the file searches that carry an extractable query — but only those, so
+# the floor below still has to carry the rule in full. (Until 2026-09-27 the
+# bullet below claimed auto-recall saw only the OPENING prompt. That was never
+# true: memory-recall.sh runs on every prompt that passes its substance gate.)
+# And even on a prompt, the prompt's own wording is a WEAKER query than the
 # one the agent can form from the task. Measured: "go ahead and push and create a
 # release" left skills/release.learnings.md — which carries the release-title
 # rule — outside the top 8, while "release title naming convention", the query
@@ -519,19 +523,22 @@ SKILLS_PROTOCOL="$MEMORY_PATH/identity/skills-protocol.md"
 # here (hooks/agent-dispatch-gate.sh) the variants traded 83% precision at 26%
 # recall against 34% precision at 84% recall.
 #
-# hooks/memory-recall-nudge.sh reinforces these two bullets per turn, the way
-# memory-capture-nudge.sh reinforces the capture rule. It is a REMINDER, never a
-# classifier: it decides whether to restate the rule, never whether a recall
-# happens, so it cannot skip a search the way the rejected conditional would.
+# A per-turn recall nudge used to restate these two bullets. It was retired with
+# the capture nudge, for the same cost, and because it repeated the false
+# opening-prompt claim on every turn.
+#
+# The recall bullet does not name a search mode. The server's default is "auto":
+# hybrid when the vault has embeddings, keyword when it does not. Telling the
+# agent to pass `hybrid` broke that fallback on a vault with no embeddings.
 printf '## Memory routing\n\n'
 printf -- '- The workbench memory vault is the CANONICAL durable memory store, served by the `memory` MCP (`mcp__plugin_workbench-core_memory__search` / `write` / etc.).\n'
 printf -- '- When the harness'\''s memory instructions prompt a save, write to the VAULT instead: MCP `write` with frontmatter `name` + `type` (decision | insight | project | feedback | reference) plus tags/summary/date per vault conventions.\n'
 printf -- '- Proactively CAPTURE durable knowledge without asking: a decision (+ rationale), a troubleshooting root-cause, a design choice and the options weighed, a non-obvious insight or gotcha, a project/plan outcome, or feedback on how to work — `write` it to the vault immediately with the correct `type`, then note the save in one line. This is standing authorization: a memory-capture write needs no options round and no confirmation. Do NOT ask first.\n'
 printf -- '- Before saving, `search` for an existing memory to UPDATE rather than duplicate. Skip the trivial: routine code edits, facts already in the repo or git, ephemeral chatter. Capture what would otherwise be a "by the way, should I remember this?".\n'
 printf -- '- The per-project memory directory and its MEMORY.md are a router only — never create memory files there.\n'
-printf -- '- Recall = vault `search` (mode hybrid), not directory reads.\n'
-printf -- '- Recall comes FIRST: the moment a task turns up a topic — an error, a tool, a design choice, a repo or file you have worked before — `search` the vault BEFORE you scan the repo for the answer. Auto-recall only ever sees the user'\''s opening prompt, so anything a scan surfaces mid-task has had NO memory searched against it unless you search it yourself.\n'
-printf -- '- Build the recall QUERY from the TASK, not from the prompt: name the thing you are about to produce or decide — the convention, the format, the procedure, the tool, the error — in the words a note about it would use, and search THAT. Auto-recall can only ever run the user'\''s own wording, so your advantage over it is asking the better question; a recorded rule filed under another phrase is one query away and will not arrive on its own.\n\n'
+printf -- '- Recall = vault `search`, not directory reads. Omit `mode`: the server picks hybrid when the vault has embeddings and keyword when it does not.\n'
+printf -- '- Recall comes FIRST: the moment a task turns up a topic — an error, a tool, a design choice, a repo or file you have worked before — `search` the vault BEFORE you scan the repo for the answer. Auto-recall searches only the wording of each prompt and the patterns of your file searches, so a topic that reaches you any other way has had NO memory searched against it unless you search it yourself.\n'
+printf -- '- Build the recall QUERY from the TASK, not from the prompt: name the thing you are about to produce or decide — the convention, the format, the procedure, the tool, the error — in the words a note about it would use, and search THAT. Auto-recall can only ever run wording that was already typed, so your advantage over it is asking the better question; a recorded rule filed under another phrase is one query away and will not arrive on its own.\n\n'
 
 # Destructive commands — scoped by hooks/destructive-scope-guard.sh rather than
 # asked about by a permission rule. What an agent has to know is not a command

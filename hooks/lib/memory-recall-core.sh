@@ -215,7 +215,7 @@ memory_recall_context_key() {
 # state on the way. Returns 1 when the dir or the file cannot be created. The
 # file is keyed by memory_recall_context_key, so a sub-agent gets its own.
 #
-# Retention: 3 days, mirroring capture-nudge and the warmup sweep.
+# Retention: 3 days, mirroring memory-capture-stop.sh and the warmup sweep.
 memory_recall_seen_file() {
   local state_dir="$1" session_id="$2" agent_id="${3:-}" seen_file
   mkdir -p "$state_dir" 2>/dev/null || return 1

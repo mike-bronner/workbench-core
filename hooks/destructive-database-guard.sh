@@ -96,6 +96,38 @@ COMMAND=$(printf '%s' "$PAYLOAD" | jq -r '
   ' 2>/dev/null)
 [ -n "$COMMAND" ] || exit 0
 
+# ──────────── Prefilter: no database word, no python ────────────
+# This guard runs on every Bash call, and almost none of them touch a database.
+# Starting python for each one cost ~50 ms. A command reaches the checker only
+# when its text names one of the programs or verbs the checker acts on. The list
+# is the checker's own, read from hooks/lib/destructive-db-check.py:
+#   ARTISAN_VERBS          db:wipe, migrate:fresh, migrate:reset, migrate:refresh
+#   DROP_COMMANDS          dropdb, dropuser
+#   check_shell_drop       mysqladmin
+#   SQL_CLIENTS            psql, mysql, mariadb, mysqlsh, sqlite3, sqlite, usql
+#   DOCKER_BINARIES        docker, podman
+#   COMPOSE_BINARIES       docker-compose, podman-compose
+#   CONTAINER_SHIMS        sail, lando, ddev, wp-env (also PROJECT_TOOL_VERBS)
+# A finding can only come from a stage whose program is on that list, or from
+# SQL handed to one of those clients. So a command that names none of them
+# cannot be refused, and skipping the checker changes no verdict.
+# hooks/test-destructive-database-guard.sh reads the constants back out of the
+# checker and fails when one of them is missing here.
+#
+# Substring, not whole word, so `/usr/local/bin/psql`, `sail artisan`, and
+# `migrate:fresh` inside `bash -c "..."` all still match. Quotes and
+# backslashes are deleted first, because the checker's tokeniser joins `drop''db`
+# and `drop\db` into `dropdb`. Case is folded, because macOS runs `DROPDB` as
+# `dropdb` on its case-insensitive disk.
+#
+# A command past the checker's read ceiling (MAX_INPUT, 200000 characters) goes
+# to the checker whatever it says. The ceiling is a refusal, and a prefilter
+# that read only part of the text must not be the thing that skips it.
+if [ "${#COMMAND}" -le 200000 ]; then
+  DB_WORDS='db:wipe|migrate:(fresh|reset|refresh)|dropdb|dropuser|mysql|psql|mariadb|sqlite|usql|docker|podman|sail|lando|ddev|wp-env'
+  printf '%s' "$COMMAND" | tr -d "\"'\\\\" | grep -Eiq "$DB_WORDS" || exit 0
+fi
+
 # The call's working directory, which is what a relative path in the command
 # resolves against. `psql -f db/reset.sql` names a file the checker reads, and
 # reading the wrong one is how a guard produces a false block. Absent, the

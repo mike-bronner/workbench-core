@@ -77,6 +77,9 @@ OUT=$(run_dispatch "WORKBENCH_AUTO_SUMMARIZE=1" "PreCompact" "sid-precompact")
 assert_contains "runs from the vault dir"              "$OUT" "DISPATCH cwd=$SANDBOX/memory"
 assert_contains "child inherits WORKBENCH_MEMORY_PATH" "$OUT" "WORKBENCH_MEMORY_PATH=$SANDBOX/memory"
 assert_contains "child is flagged for the Bash guard"  "$OUT" "WORKBENCH_SUMMARY_WRITER=1"
+assert_contains "child loads no CLAUDE.md"            "$OUT" "DISPATCH env CLAUDE_CODE_DISABLE_CLAUDE_MDS=1"
+assert_contains "agent file omits CLAUDE.md as a sub-agent" \
+  "$(sed -n '/^---$/,/^---$/p' "$(dirname "$0")/../agents/summary-writer.md")" "omitClaudeMd: true"
 assert_contains "grants the vault via --add-dir"       "$OUT" "--add-dir $SANDBOX/memory"
 assert_contains "defaults to the sonnet model"         "$OUT" "DISPATCH model=sonnet"
 assert_contains "carries the session id"               "$OUT" "DISPATCH sid=sid-precompact"

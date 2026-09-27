@@ -41,7 +41,7 @@ SESSION="b94bbff5-0f68-4c1c-b3ec-3a899d30bc05"
 # short line naming the action. `additionalContext` arrives in its own block that
 # only the model reads, and it survives the deny, so every instruction an agent
 # acts on lives there. Both were measured on Claude Code 2.1.274.
-EXPECTED_DENY='{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"🛑 Blocked: editing a file from the main agent. File work goes to a sub-agent.","additionalContext":"Delegation gate (workbench-core). The main conversation orchestrates and does not edit files, which is what keeps its context lean. Dispatch a sub-agent with the Agent tool to make this change. Report the deny rather than routing around it. Only the human lifts the gate, by asking for /workbench-core:orchestrator off."}}'
+EXPECTED_DENY='{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"🛑 Blocked: writing a whole file from the main agent. New files go to a sub-agent.","additionalContext":"Delegation gate (workbench-core). The main conversation orchestrates and does not write whole files, which is what keeps its context lean. To change part of an existing file, use Edit, which the main agent may call. To create or rewrite a file, dispatch a sub-agent with the Agent tool. Report the deny rather than routing around it. Only the human lifts the gate, by asking for /workbench-core:orchestrator off."}}'
 DEVTEAM_LINE='For development work, dispatch Dr. Watson in Direct mode per /workbench-dev-team:orchestrate.'
 
 # Builds a payload from key=value pairs. A value of - omits the key entirely,
@@ -123,8 +123,14 @@ assert_grep() {
 
 echo "the deny path (main agent, gate on):"
 run_case "main agent Write"        deny tool_name=Write        session_id="$SESSION" agent_id=- agent_type=-
-run_case "main agent Edit"         deny tool_name=Edit         session_id="$SESSION" agent_id=- agent_type=-
 run_case "main agent NotebookEdit" deny tool_name=NotebookEdit session_id="$SESSION" agent_id=- agent_type=-
+
+echo "Edit is allowed from the main agent (a one-line change costs ~200 tokens inline):"
+run_case "main agent Edit"         silent tool_name=Edit       session_id="$SESSION" agent_id=- agent_type=-
+out=$(jq -cn --arg s "$SESSION" \
+  '{hook_event_name: "PreToolUse", tool_name: "Edit", session_id: $s,
+    tool_input: {file_path: "/etc/hosts"}}' | gate)
+check "main agent Edit outside every scratch root" "$out" silent
 
 echo "(a) sub-agent calls are allowed:"
 run_case "Task sub-agent (agent_id + agent_type)" silent \
@@ -302,7 +308,7 @@ fi
 # in the other channel is the regression this split exists to prevent.
 DENY_REASON=$(printf '%s' "$DENY_OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason')
 DENY_CONTEXT=$(printf '%s' "$DENY_OUT" | jq -r '.hookSpecificOutput.additionalContext')
-assert_contains "the human line names the action" "$DENY_REASON" "🛑 Blocked: editing a file from the main agent."
+assert_contains "the human line names the action" "$DENY_REASON" "🛑 Blocked: writing a whole file from the main agent."
 if [ "$(printf '%s' "$DENY_REASON" | wc -l | tr -d ' ')" = "0" ] && [ "${#DENY_REASON}" -le 120 ]; then
   PASS=$((PASS + 1)); echo "  ✅ the human line is one line and stays short (${#DENY_REASON} chars)"
 else
@@ -313,8 +319,9 @@ fi
 assert_missing "the human line carries no Markdown emphasis" "$DENY_REASON" "**"
 # These three are instructions only an agent acts on, so they belong in the
 # model's channel and must not reappear in the person's.
-assert_contains "context names the behaviour" "$DENY_CONTEXT" "orchestrates and does not edit files"
-assert_contains "context names the destination" "$DENY_CONTEXT" "Dispatch a sub-agent with the Agent tool"
+assert_contains "context names the behaviour" "$DENY_CONTEXT" "orchestrates and does not write whole files"
+assert_contains "context names Edit as the inline route" "$DENY_CONTEXT" "use Edit, which the main agent may call"
+assert_contains "context names the destination" "$DENY_CONTEXT" "dispatch a sub-agent with the Agent tool"
 assert_contains "context names the toggle" "$DENY_CONTEXT" "/workbench-core:orchestrator off"
 assert_missing "the human line does not repeat the destination" "$DENY_REASON" "Agent tool"
 assert_missing "the human line does not repeat the toggle" "$DENY_REASON" "/workbench-core:orchestrator off"
@@ -332,9 +339,9 @@ assert_missing "stays generic when the plugin cache is absent" "$DENY_OUT" "$DEV
 
 # Registration is part of the behaviour: a gate nothing calls gates nothing.
 echo "the hook is registered in hooks.json:"
-assert_jq "matcher covers exactly the three file-writing tools" "$HOOKS_JSON" \
+assert_jq "matcher covers exactly the two whole-file tools, not Edit" "$HOOKS_JSON" \
   '[.hooks.PreToolUse[] | select(.hooks[].command | test("delegation-gate.sh")) | .matcher] | join(",")' \
-  "Edit|Write|NotebookEdit"
+  "Write|NotebookEdit"
 assert_jq "registered exactly once" "$HOOKS_JSON" \
   '[.hooks.PreToolUse[].hooks[] | select(.command | test("delegation-gate.sh"))] | length' "1"
 assert_jq "no if condition narrows it" "$HOOKS_JSON" \
@@ -374,12 +381,14 @@ echo "guardrail 10 agrees with the gate:"
 # guardrails.md is the rubric the interview skills write identity files against,
 # so a guardrail that contradicts an enforced hook is worse than no guardrail:
 # the files it shapes lead the agent into a deny. Guardrail 10 used to end with
-# "a single Edit to a known string — do it inline", which is exactly the call the
-# gate now refuses.
+# "a single Edit to a known string — do it inline", which the gate refused until
+# 2026-09-27. Edit is allowed again, and Write is the call the gate refuses, so
+# the guardrail has to say both.
 GUARDRAILS="$HOOKS_DIR/../references/guardrails.md"
 assert_grep "guardrail 10 names the enforcing hook" 'hooks/delegation-gate.sh' "$GUARDRAILS"
-assert_missing "guardrail 10 no longer allows an inline Edit" \
-  "$(cat "$GUARDRAILS")" '✅ A single `Edit`'
+assert_grep "guardrail 10 allows an inline Edit" '✅ A single `Edit` to a known string' "$GUARDRAILS"
+assert_grep "guardrail 10 sends a whole-file Write to a sub-agent" \
+  '❌ A new file, or a whole file rewritten' "$GUARDRAILS"
 # The gate covers three tools and leaves Bash open, so a Bash command that
 # writes a file sidesteps it. Guardrail 10 once offered "a single scripted Bash"
 # as the inline case right under the denied Edit, which read as licence for

@@ -269,6 +269,45 @@ else
   FAIL=$((FAIL + 1)); echo "  ❌ ASCII whitespace reached the checker, so the fast path is gone"
 fi
 
+# ── The prefilter ────────────────────────────────────────────────────────────
+# The guard skips its parser when a Bash command cannot be a gh prose command.
+# These cases prove the skip happens for ordinary calls, and that no spelling
+# the parser accepts is skipped.
+printf '#!/bin/bash\necho started >> "%s/starts"\nexec "%s" "$@"\n' \
+  "$SANDBOX" "$(command -v python3)" > "$SANDBOX/python3"
+chmod +x "$SANDBOX/python3"
+python_starts() {  # python_starts <command> → how many python3 starts it cost
+  : > "$SANDBOX/starts"
+  jq -cn --arg c "$1" --arg d "$SANDBOX" '{tool_name:"Bash", cwd:$d, tool_input:{command:$c}}' \
+    | PATH="$SANDBOX:$PATH" bash "$GUARD" >/dev/null 2>&1
+  wc -l < "$SANDBOX/starts" | tr -d ' '
+}
+assert_starts() {  # assert_starts <description> <command> <expected>
+  local got
+  got=$(python_starts "$2")
+  if [ "$got" = "$3" ]; then
+    PASS=$((PASS + 1)); echo "  ✅ $1"
+  else
+    FAIL=$((FAIL + 1)); echo "  ❌ $1 (expected $3 python start(s), got $got)"
+  fi
+}
+
+echo "prefilter: a Bash call that is not a gh prose command starts no python:"
+assert_starts "ls"                         'ls -la' 0
+assert_starts "a grep that mentions gh"    'grep -rn "ghost" .' 0
+assert_starts "a git log"                  'git log --oneline -3' 0
+assert_starts "gh with no prose noun"      'gh auth status' 0
+assert_starts "a prose noun with no gh"   'echo "open a pr for the release"' 0
+assert_starts "gh with a noun and no prose verb" 'gh pr view 21665 --json body' 0
+
+echo "prefilter: every spelling the parser accepts still reaches it:"
+EMDASH_BODY="The fix works — mostly."
+assert_blocked "gh split by empty quotes" run_bash "g\"\"h pr create --title t --body '$EMDASH_BODY'"
+assert_blocked "gh split by a backslash"  run_bash "g\\h pr comment 1 --body '$EMDASH_BODY'"
+assert_blocked "pr in quotes"             run_bash "gh 'pr' edit 1 --body '$EMDASH_BODY'"
+assert_blocked "after cd &&"              run_bash "cd /x && gh release create v1 --notes '$EMDASH_BODY'"
+assert_blocked "issue comment"            run_bash "gh issue comment 5 --body '$EMDASH_BODY'"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

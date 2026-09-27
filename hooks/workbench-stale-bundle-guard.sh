@@ -220,12 +220,18 @@ fi
 
 msg="STALE-BUNDLE GUARD - ${plugin}. This desktop session was served version ${bundle_ver:-UNKNOWN} from its frozen rpm/ bundle, but the authoritative installed version is ${version}. Any command or skill body injected into this turn may be stale. Before acting: read the current body from ${target} and execute THAT, ignoring the injected text where they differ. State in one line which version you executed. Do not edit anything under ~/.claude/plugins/cache - it is a read-only reference."
 
-# Each event takes its own envelope: UserPromptSubmit injects context, PreToolUse
-# allows the call and attaches the warning as a systemMessage. Never deny — the
-# skill should still run, just against the body this message names.
+# Both events carry the warning as additionalContext, the one channel measured
+# to reach the model (see the note in hooks/delegation-gate.sh). It used to ride
+# on systemMessage in the PreToolUse path, which never reached this user's
+# client, so the model never saw the warning it was meant to act on.
+#
+# No permissionDecision. This hook only warns: the skill still runs, against the
+# body this message names. An "allow" here used to auto-approve every drifted
+# Skill call, a permission this guard has no business granting. Without a
+# decision the normal permission flow applies.
 if [ "$event" = "PreToolUse" ]; then
   jq -n --arg c "$msg" \
-    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"allow"},systemMessage:$c}'
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$c}}'
 else
   jq -n --arg c "$msg" \
     '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:$c}}'

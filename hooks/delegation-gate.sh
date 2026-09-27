@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
 #
-# delegation-gate: PreToolUse gate on Edit|Write|NotebookEdit that denies file
-# edits made by the MAIN agent, so the main conversation stays an orchestrator
-# and the file work happens in sub-agents.
+# delegation-gate: PreToolUse gate on Write|NotebookEdit that denies whole-file
+# writes made by the MAIN agent, so the main conversation stays an orchestrator
+# and new files are built in sub-agents.
 #
 # The rule already existed in prose — guardrail 10, "delegate by default" — and
 # drifted anyway, twice. This hook is the harness-level backstop. It is
 # deliberately agnostic: every install has built-in sub-agents (general-purpose,
 # Explore, Plan) reachable through the Agent tool, so the gate always has
 # somewhere to send the work, with or without a dev-team plugin present.
+#
+# EDIT IS NOT GATED, since 2026-09-27. The gates audit that day measured a
+# delegated one-line edit at tens of thousands of tokens, against about 200 for
+# the same Edit inline. The deny also pushed the model toward `sed -i` and
+# heredocs through Bash, which reach the same file past this gate anyway. A
+# whole-file Write is where the main context actually grows, so that half of
+# the gate stays. The hooks.json matcher no longer sends Edit here, and branch
+# (e) below lets it through if anything else does.
 #
 # The main-vs-sub-agent signal is the payload itself, verified empirically
 # against a logging-only hook on Claude Code 2.1.260:
@@ -109,9 +117,10 @@ case "$SESSION_ID" in
   *) [ -e "$STATE_DIR/$SESSION_ID" ] && exit 0 ;;
 esac
 
-# (e) Defensive: the hooks.json matcher should already scope this.
+# (e) Only a whole-file write is gated. Edit is allowed from the main agent (see
+#     the header). The hooks.json matcher should already scope this.
 case "$TOOL_NAME" in
-  Edit | Write | NotebookEdit) ;;
+  Write | NotebookEdit) ;;
   *) exit 0 ;;
 esac
 
@@ -192,9 +201,9 @@ fi
 # so they go to the model's channel. A dev-team plugin gets named there when one
 # is installed — a runtime directory probe, never a build-time dependency, so
 # core stays agnostic either way.
-REASON='🛑 Blocked: editing a file from the main agent. File work goes to a sub-agent.'
+REASON='🛑 Blocked: writing a whole file from the main agent. New files go to a sub-agent.'
 
-CONTEXT='Delegation gate (workbench-core). The main conversation orchestrates and does not edit files, which is what keeps its context lean. Dispatch a sub-agent with the Agent tool to make this change.'
+CONTEXT='Delegation gate (workbench-core). The main conversation orchestrates and does not write whole files, which is what keeps its context lean. To change part of an existing file, use Edit, which the main agent may call. To create or rewrite a file, dispatch a sub-agent with the Agent tool.'
 for candidate in "${HOME:-}"/.claude/plugins/cache/*/workbench-dev-team; do
   [ -d "$candidate" ] || continue
   CONTEXT="$CONTEXT For development work, dispatch Dr. Watson in Direct mode per /workbench-dev-team:orchestrate."

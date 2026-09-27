@@ -614,6 +614,38 @@ jq --arg p "<name>" --arg s "<StyleName>" '.persona = $p | .output_style = $s' "
 
 The output style takes effect on the next session. Step 7's restart covers it.
 
+## Step 2g — Cap MCP tool output (default-on)
+
+Claude Code persists an MCP response larger than `MAX_MCP_OUTPUT_TOKENS` to a file and hands
+the model a pointer to it instead of the text. Its default is 25,000 tokens. Setup lowers that to
+**15,000**, so a response past about 60 KB stays out of the context. This replaced
+`hooks/mcp-output-cap.sh`, which truncated MCP output in `PostToolUse`: the harness already
+persists an oversized response before any `PostToolUse` hook sees it, so the hook only ever
+covered the band between its own 60 KB cap and the harness limit.
+
+Set it only when the key is absent. A value already there is the user's own choice, so a re-run
+leaves it alone:
+
+```bash
+SETTINGS="${WORKBENCH_SETTINGS_FILE:-$HOME/.claude/settings.json}"
+mkdir -p "$(dirname "$SETTINGS")"
+[ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
+if jq -e 'type == "object"' "$SETTINGS" >/dev/null 2>&1; then
+  tmp="$(mktemp)"
+  jq '.env = (.env // {}) | .env.MAX_MCP_OUTPUT_TOKENS = (.env.MAX_MCP_OUTPUT_TOKENS // "15000")' \
+    "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
+  chmod 600 "$SETTINGS"
+else
+  echo "settings.json is not a JSON object; left it alone. Set env.MAX_MCP_OUTPUT_TOKENS by hand."
+fi
+```
+
+- **Idempotent:** the merge is a no-op when the key exists, whatever its value.
+- **Restart required:** `settings.json` `.env` is read at launch, like the token in Step 2b.
+- **The memory vault is covered too.** Its `read` tool returns notes up to 262,144 bytes whole, on
+  purpose. A read past the limit reaches the model as a pointer to the persisted response, which
+  it reads from there. Nothing is truncated, so no exemption is needed.
+
 ## Step 3 — Re-templatize identity files (if `agent_name` changed)
 
 If `agent_name` changed from its previous value (or this is a first-time setup):
@@ -651,6 +683,7 @@ Tell the user:
 - Config saved to `{CONFIG_FILE}`
 - MCP env vars will be re-read from config.json on next Claude Code restart
 - The memory server's bearer token was provisioned (and the port, if non-default) into `~/.claude/settings.json`
+- Whether `MAX_MCP_OUTPUT_TOKENS` was set to 15,000, or an existing value was kept (Step 2g)
 - The permission mode that is now set, and how many deny/ask rails were added (the script reports both)
 - Whether git sync was enabled, and if so the remote and the measured synced size (Step 2e)
 - Whether the persona was installed, re-synced, already current, or declined (Step 2f)
@@ -739,7 +772,7 @@ The profile is completed first intentionally — define-soul benefits from knowi
 
 ## Step 7 — Restart reminder
 
-After both interviews complete (or are skipped), remind the user to **fully restart Claude Code — quit and relaunch, not just `/clear` or a new session.** Permission rules and `defaultMode` from Step 2c would be satisfied by a new session, but the bearer token from Step 2b reaches the MCP client only through `settings.json` `.env`, which Claude Code reads **at launch**. A new session in the same process re-reads neither, and the memory MCP fails identically. Say this plainly: a new session is not enough.
+After both interviews complete (or are skipped), remind the user to **fully restart Claude Code — quit and relaunch, not just `/clear` or a new session.** Permission rules and `defaultMode` from Step 2c would be satisfied by a new session, but the bearer token from Step 2b and the MCP output limit from Step 2g reach Claude Code only through `settings.json` `.env`, which it reads **at launch**. A new session in the same process re-reads neither, and the memory MCP fails identically. Say this plainly: a new session is not enough.
 
 ## Notes
 

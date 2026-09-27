@@ -148,12 +148,14 @@ out=$(guard "$(skillp workbench-core:memory-lint)")
 if printf '%s' "$out" | jq empty 2>/dev/null; then ok "emits valid JSON on drift"; else bad "emits valid JSON on drift" "${out:-EMPTY}"; fi
 check "uses the PreToolUse event name" \
   "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.hookEventName')" "PreToolUse"
-check "allows the call rather than denying it" \
-  "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision')" "allow"
-check "carries the warning as a systemMessage" \
-  "$(printf '%s' "$out" | jq -r 'if .systemMessage then "present" else "MISSING" end')" "present"
+check "grants no permission: the normal flow still decides" \
+  "$(printf '%s' "$out" | jq -r '.hookSpecificOutput | has("permissionDecision")')" "false"
+check "carries no systemMessage, a channel the model never sees" \
+  "$(printf '%s' "$out" | jq -r 'has("systemMessage")')" "false"
+check "carries the warning as additionalContext" \
+  "$(printf '%s' "$out" | jq -r 'if .hookSpecificOutput.additionalContext then "present" else "MISSING" end')" "present"
 check "names both versions in the message" \
-  "$(printf '%s' "$out" | jq -r '.systemMessage | if test("0.13.2") and test("0.18.0") then "both" else "incomplete" end')" "both"
+  "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext | if test("0.13.2") and test("0.18.0") then "both" else "incomplete" end')" "both"
 
 # --- scope: must not fire on anything else ------------------------------
 out=$(guard '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"skill":"workbench-core:memory-lint"}}')
@@ -216,7 +218,7 @@ check "prose still silent on UserPromptSubmit — that is why PreToolUse exists"
 #
 # jq builds the payload so a prompt can carry a raw CR, tab, or NBSP.
 #
-# NOTHING BIG GOES THROUGH ARGV. This is the rule test-mcp-output-cap.sh opens
+# NOTHING BIG GOES THROUGH ARGV. This is the rule the retired test-mcp-output-cap.sh opened
 # with, and this file broke it. Linux caps one argv entry at MAX_ARG_STRLEN
 # (32 pages = 131,072 bytes), so `jq -cn --arg p "$1"` on a 256 KB prompt died
 # with "Argument list too long". A scaffold that dies hands the guard an empty
@@ -316,7 +318,7 @@ check "the hook declares a spec alphabet" \
 
 skill_cmd_of() {  # the command name the guard resolved out of a Skill spec
   local msg after
-  msg=$(guard "$(skillp "$1")" | jq -r '.systemMessage // empty')
+  msg=$(guard "$(skillp "$1")" | jq -r '.hookSpecificOutput.additionalContext // empty')
   case $msg in
     *"/commands/"*) after=${msg#*/commands/}; printf '%s' "${after%%.md (command)*}" ;;
     "")             printf 'SILENT' ;;

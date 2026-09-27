@@ -1000,6 +1000,64 @@ assert_jq "no Bash allow entry names the helper" \
   "$ROOT_DIR/assets/permissions/rails.json" \
   '[(.allow // [])[] | select(.rule | test("scratch-rm"))] | length' "0"
 
+# ── The prefilter reads whole words ─────────────────────────────────────────
+# A word that merely CONTAINS a verb (`--format`, `permission`, `terminal`) is
+# not a verb, so it must not start python. Every spelling of a real verb must.
+echo "prefilter — a verb inside a longer word starts no python, a real verb does:"
+mkdir -p "$SANDBOX/py-shim"
+printf '#!/bin/bash\necho started >> "%s/py-shim/starts"\nexec "%s" "$@"\n' \
+  "$SANDBOX" "$(command -v python3)" > "$SANDBOX/py-shim/python3"
+chmod +x "$SANDBOX/py-shim/python3"
+python_starts() {  # python_starts <command> → how many python3 starts it cost
+  : > "$SANDBOX/py-shim/starts"
+  payload "$1" "$PROJECT" | PATH="$SANDBOX/py-shim:$PATH" run_guard >/dev/null 2>&1
+  wc -l < "$SANDBOX/py-shim/starts" | tr -d ' '
+}
+assert_starts() {  # assert_starts <none|some> <command>
+  local got
+  got=$(python_starts "$2")
+  if { [ "$1" = none ] && [ "$got" = 0 ]; } || { [ "$1" = some ] && [ "$got" -gt 0 ]; }; then
+    PASS=$((PASS + 1)); echo "  ✅ $1: $2"
+  else
+    FAIL=$((FAIL + 1)); echo "  ❌ $1: $2 — got $got python start(s)"
+  fi
+}
+assert_starts none 'git log --format=%H -3'
+assert_starts none 'echo permission terminal'
+assert_starts none 'ls ./cleanup ./resetting ./stashed ./deleted ./rmx'
+assert_starts some 'rm x'
+assert_starts some '\rm x'
+assert_starts some '/bin/rm x'
+assert_starts some 'cd sub && rm -rf y'
+assert_starts some 'echo $(rm x)'
+assert_starts some '${RM} -rf x'
+assert_starts some '${RM_BIN} -rf x'
+assert_starts some 'RMDIR x'
+assert_starts some 'rmdir x'
+assert_starts some 'find . -name x -delete'
+assert_starts some 'git -C sub reset --hard'
+assert_starts some 'git clean -fd'
+assert_starts some 'git stash drop'
+assert_starts some 'bash -c "git stash clear"'
+# Split verbs. The checker's tokeniser and bash both rejoin quotes, backslashes
+# and backslash-newlines, so each of these runs the verb it spells, and each
+# must reach the checker.
+assert_starts some "r''m -rf /etc/x"
+assert_starts some 'r\m -rf /etc/x'
+assert_starts some $'r\\\nm -rf /etc/x'
+assert_starts some 'find /etc -de""lete'
+# A quote alone does not wake it: the joined text still has to hold a verb.
+assert_starts none 'echo "permission" '\''terminal'\'''
+
+echo "split verbs reach a verdict, not silence:"
+check deny "r''m outside every root"         "r''m -rf $VICTIM/keep.txt"
+check deny "r\\m outside every root"          "r\\m -rf $VICTIM/keep.txt"
+# r\<newline>m is not asserted here. It now reaches the checker (above), but the
+# checker's tokeniser does not join a backslash-newline, so it reaches no
+# verdict. That is a checker gap, tracked for Phase 5, not a prefilter one.
+check deny "-de\"\"lete outside every root"   "find $VICTIM -de\"\"lete"
+assert_survives "the victim survived every split verb" "$VICTIM/keep.txt"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

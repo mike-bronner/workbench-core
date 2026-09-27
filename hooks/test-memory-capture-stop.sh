@@ -8,7 +8,6 @@
 set -u
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 STOP="$HOOKS_DIR/memory-capture-stop.sh"
-NUDGE="$HOOKS_DIR/memory-capture-nudge.sh"
 PASS=0
 FAIL=0
 
@@ -129,26 +128,61 @@ assert_empty "agent_id present emits nothing when otherwise due" "$OUT"
 OUT=$(run sub)
 assert_contains "same session fires on the main thread" "$OUT" "$CAPTURE_CANARY"
 
-# (f) Scheduled-task guard: the nudge records the verdict, this hook reads it.
-echo "scheduled-task guard — a tick marked by the nudge never blocks:"
+# (f) Scheduled-task guard: the verdict is read from the transcript's first user
+#     record, because a Stop payload carries no prompt.
+echo "scheduled-task guard — a scheduled tick never blocks:"
 SCHEDULED_PROMPT='<scheduled-task name="workbench-dev-team-dispatch" file="/x/SKILL.md">
 This is an automated run of a scheduled task.'
-printf '{"prompt":%s,"session_id":"sched-stop"}' \
-  "$(printf '%s' "$SCHEDULED_PROMPT" | jq -Rs .)" | \
-  env HOME="$SANDBOX/home" WORKBENCH_MEMORY_NUDGE_STATE="$SANDBOX/state" \
-    bash "$NUDGE" >/dev/null 2>&1
-if [ -f "$SANDBOX/state/sched-stop.scheduled" ]; then
-  PASS=$((PASS + 1)); echo "  ✅ the nudge recorded the scheduled verdict for Stop"
+mk_transcript() {  # <file> <first-user-content-json>
+  { printf '{"type":"system","content":"hook output"}\n'
+    printf '{"type":"user","message":{"role":"user","content":%s}}\n' "$2"
+    printf '{"type":"user","message":{"role":"user","content":"a later human line"}}\n'
+  } > "$1"
+}
+mk_transcript "$SANDBOX/sched-string.jsonl" "$(printf '%s' "$SCHEDULED_PROMPT" | jq -Rs .)"
+mk_transcript "$SANDBOX/sched-array.jsonl" \
+  "$(printf '%s' "$SCHEDULED_PROMPT" | jq -cRs '[{type:"text",text:.}]')"
+mk_transcript "$SANDBOX/human.jsonl" '"please fix the scope guard"'
+run_t() {  # <session_id> <transcript_path>
+  printf '{"session_id":"%s","hook_event_name":"Stop","stop_hook_active":false,"transcript_path":"%s"}' "$1" "$2" | \
+    env HOME="$SANDBOX/home" WORKBENCH_MEMORY_NUDGE_STATE="$SANDBOX/state" \
+      WORKBENCH_CAPTURE_STOP_FIRST="$FIRST" WORKBENCH_CAPTURE_STOP_INTERVAL="$REPEAT" \
+      bash "$STOP" 2>/dev/null
+}
+wind_up sched-str
+OUT=$(run_t sched-str "$SANDBOX/sched-string.jsonl")
+assert_empty "scheduled prompt as a string emits nothing when otherwise due" "$OUT"
+wind_up sched-arr
+OUT=$(run_t sched-arr "$SANDBOX/sched-array.jsonl")
+assert_empty "scheduled prompt as a text block emits nothing when otherwise due" "$OUT"
+# The verdict is recorded, so a scheduled session reads its transcript once and
+# never again. Without the record every turn from the threshold on re-read it.
+# A grep shim logs every read of this transcript.
+mkdir -p "$SANDBOX/grep-shim"
+printf '#!/bin/bash\nfor a in "$@"; do [ "$a" = "%s" ] && echo read >> "%s"; done\nexec "%s" "$@"\n' \
+  "$SANDBOX/sched-once.jsonl" "$SANDBOX/grep-shim/reads" "$(command -v grep)" > "$SANDBOX/grep-shim/grep"
+chmod +x "$SANDBOX/grep-shim/grep"
+cp "$SANDBOX/sched-string.jsonl" "$SANDBOX/sched-once.jsonl"
+: > "$SANDBOX/grep-shim/reads"
+wind_up sched-once
+ONCE_OUT=""
+for _ in 1 2 3 4 5 6 7 8; do
+  ONCE_OUT="$ONCE_OUT$(PATH="$SANDBOX/grep-shim:$PATH" run_t sched-once "$SANDBOX/sched-once.jsonl")"
+done
+assert_empty "a scheduled session stays silent for 8 turns past the threshold" "$ONCE_OUT"
+READS=$(grep -c . "$SANDBOX/grep-shim/reads" 2>/dev/null)
+if [ "$READS" = "1" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ the transcript was read once across those 8 turns"
 else
-  FAIL=$((FAIL + 1)); echo "  ❌ the nudge left no scheduled marker"
+  FAIL=$((FAIL + 1)); echo "  ❌ the transcript was read $READS times across 8 turns, expected 1"
 fi
-wind_up sched-stop
-OUT=$(run sched-stop)
-assert_empty "marked scheduled session emits nothing when otherwise due" "$OUT"
-# Negative control: an unmarked session at the same counter does fire.
+# Negative controls: a human transcript, and one that cannot be read, both fire.
 wind_up sched-neg
-OUT=$(run sched-neg)
-assert_contains "unmarked session at the same point fires" "$OUT" "$CAPTURE_CANARY"
+OUT=$(run_t sched-neg "$SANDBOX/human.jsonl")
+assert_contains "human transcript at the same point fires" "$OUT" "$CAPTURE_CANARY"
+wind_up sched-missing
+OUT=$(run_t sched-missing "$SANDBOX/does-not-exist.jsonl")
+assert_contains "unreadable transcript fails open and fires" "$OUT" "$CAPTURE_CANARY"
 
 # (g) The summary-writer child is never told to capture findings of its own.
 echo "summary-writer guard — the background child never blocks:"

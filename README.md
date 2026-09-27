@@ -215,12 +215,9 @@ core/
 │   ├── memory-server-up.sh     — shared-HTTP SessionStart kicker (disabled; retained for re-enable)
 │   ├── memory-server-spawn.sh  — shared-HTTP detached supervisor (disabled; retained)
 │   ├── memory-server-down.sh   — shared-HTTP manual stop (disabled; retained)
-│   ├── memory-capture-nudge.sh — UserPromptSubmit: nudge proactive memory WRITES
 │   ├── memory-capture-stop.sh  — Stop: make the live session write its findings before context is shed
-│   ├── memory-recall-nudge.sh  — UserPromptSubmit: nudge agent-initiated memory READS (what to query)
 │   ├── memory-recall.sh        — UserPromptSubmit: inject relevant memory READS (recall)
 │   ├── memory-scan-recall.sh   — PostToolUse: recall mid-turn, using a repo scan's own query
-│   ├── mcp-output-cap.sh       — PostToolUse: cap oversized MCP tool responses
 │   ├── outbound-prose-guard.sh — PreToolUse: check gh + board-MCP prose against the output style
 │   ├── credential-guard.sh     — PreToolUse: block reads of ~/.ssh, ~/.aws, ~/.gnupg, and .env files
 │   ├── destructive-database-guard.sh — PreToolUse: block Artisan resets, dropdb, and destructive SQL
@@ -228,7 +225,7 @@ core/
 │   ├── destructive-scope-guard.sh — PreToolUse: permit a destructive command inside the project or a
 │   │                             scratch root, deny it outside — and deny what it cannot resolve
 │   ├── provisioning-guard.sh   — PreToolUse: block worktree and database creation, on all four surfaces
-│   ├── delegation-gate.sh      — PreToolUse: deny main-agent Edit/Write/NotebookEdit, redirect to sub-agents
+│   ├── delegation-gate.sh      — PreToolUse: deny main-agent Write/NotebookEdit, redirect to sub-agents
 │   ├── agent-dispatch-gate.sh  — PreToolUse: deny a main-agent Agent dispatch that skips the five-slot brief
 │   ├── peer-message-gate.sh    — PreToolUse: deny a sub-agent SendMessage to anything but main or its own children
 │   ├── lib/brief-template.sh   — the ONE definition of the five-slot brief (gate + deny message read it)
@@ -276,17 +273,14 @@ These hooks fire across the session lifecycle and on each turn:
 | Hook | Script | Purpose |
 |------|--------|---------|
 | `SessionStart` | `hooks/session-warmup.sh` | Identity injection, retention cleanup, pending-summary drain, housekeeping notices (written to a file, not injected) |
-| `PostToolUse` | `hooks/mcp-output-cap.sh` | Cap oversized MCP tool responses (matcher `^mcp__`) — see [MCP output capping](#mcp-output-capping) |
 | `PostToolUse` | `hooks/memory-scan-recall.sh` | Mid-turn recall — search the vault with a repo scan's own query and inject hits beside the scan's results (matcher `Grep\|Bash`), **once per session** per memory, sharing that bound with `memory-recall.sh` |
 | `PreCompact` | `hooks/session-log.sh` | Dump raw log checkpoint, spawn summary-writer |
 | `PostCompact` | `hooks/session-warmup.sh` | Re-inject identity after context compression |
 | `SessionEnd` | `hooks/session-log.sh` | Dump final log segment and write the pending-summary marker — **no writer is spawned here** (see [Why SessionEnd does not spawn](#why-sessionend-does-not-spawn)) |
 | `Stop` | `hooks/memory-capture-stop.sh` | Early in a session, then rarely, block the stop and have the live session write its durable findings to the vault — see [Pre-shed capture](#pre-shed-capture) |
-| `UserPromptSubmit` | `hooks/memory-capture-nudge.sh` | Sparse nudge to capture durable knowledge to the vault (memory **writes**) |
-| `UserPromptSubmit` | `hooks/memory-recall-nudge.sh` | Sparse nudge to search the vault *before* scanning the repo, with a query built from the task rather than the prompt — a reminder only, it never decides whether a recall happens |
 | `UserPromptSubmit` | `hooks/memory-recall.sh` | Proactive recall — search the vault with the prompt and inject relevant memories, **once per session** per memory (memory **reads**) |
 | `PreToolUse` | `hooks/outbound-prose-guard.sh` | Check prose leaving the machine against the output style's mechanical rules — see [Outbound prose guard](#outbound-prose-guard) |
-| `PreToolUse` | `hooks/delegation-gate.sh` | Deny `Edit`/`Write`/`NotebookEdit` from the main agent so file work goes to sub-agents — see [Delegation gate](#delegation-gate) |
+| `PreToolUse` | `hooks/delegation-gate.sh` | Deny `Write`/`NotebookEdit` from the main agent so whole-file work goes to sub-agents. `Edit` is allowed — see [Delegation gate](#delegation-gate) |
 | `PreToolUse` | `hooks/agent-dispatch-gate.sh` | Deny an `Agent` dispatch from the main agent unless its prompt uses the five-slot brief — see [Agent dispatch gate](#agent-dispatch-gate) |
 | `PreToolUse` | `hooks/peer-message-gate.sh` | Deny a `SendMessage` from a sub-agent to anything but its own orchestrator or its own children — see [Peer message gate](#peer-message-gate) |
 
@@ -327,7 +321,9 @@ Two `PreToolUse` hooks still exit 2 and are not gates in this sense: `hooks/outb
 
 ### Delegation gate
 
-**The main agent orchestrates. It does not edit files.** Guardrail 10, "delegate work to sub-agents by default", has said so in prose since it shipped, and prose drifts: the main conversation edits one file to "just fix it quickly", and the context it was supposed to stay lean for is gone. `hooks/delegation-gate.sh` makes it structural. `Edit`, `Write`, and `NotebookEdit` from the main agent return `permissionDecision: "deny"`. Per [How a gate speaks](#how-a-gate-speaks), the human reads `🛑 Blocked: editing a file from the main agent. File work goes to a sub-agent.`, and the destination and the escape hatch go to the model in `additionalContext`. The deny is not overridable by permission mode: `bypassPermissions` does not get through it.
+**The main agent orchestrates. It does not write whole files.** Guardrail 10, "delegate work to sub-agents by default", has said so in prose since it shipped, and prose drifts: the main conversation builds one file to "just get it done", and the context it was supposed to stay lean for is gone. `hooks/delegation-gate.sh` makes it structural. `Write` and `NotebookEdit` from the main agent return `permissionDecision: "deny"`. Per [How a gate speaks](#how-a-gate-speaks), the human reads `🛑 Blocked: writing a whole file from the main agent. New files go to a sub-agent.`, and the destination and the escape hatch go to the model in `additionalContext`. The deny is not overridable by permission mode: `bypassPermissions` does not get through it.
+
+**`Edit` is allowed, since 2026-09-27.** The gates audit that day measured a delegated one-line edit at tens of thousands of tokens, against about 200 for the same `Edit` inline. The deny also pushed the model toward `sed -i` and heredocs through `Bash`, which reach the same file past every guard anyway. A whole-file `Write` is where main-session context actually grows, so that half of the gate stays. The matcher is `Write|NotebookEdit`, and branch (e) below lets an `Edit` through if anything else ever routes one here.
 
 It is deliberately plugin-agnostic. Every install ships built-in sub-agents (general-purpose, Explore, Plan) reachable through the `Agent` tool, so the gate always has somewhere to send the work. When a dev-team plugin *is* installed, the `additionalContext` names it too, via a runtime directory probe of `~/.claude/plugins/cache/*/workbench-dev-team`. That is a runtime read, never a build-time dependency: core stays ignorant of any plugin, and a plugin opts into core's contract rather than the other way round.
 
@@ -341,19 +337,19 @@ It is deliberately plugin-agnostic. Every install ships built-in sub-agents (gen
 
 That third row is why `agent_type` alone has to allow: a scheduled `claude -p --agent <name>` run is top-level in its own session and carries no `agent_id`, so gating on `agent_id` alone would kill every scheduled run at its first file write. `CLAUDE_CODE_CHILD_SESSION` is **not** a usable signal, because it was `1` in all three cases, including a plain main session.
 
-**Allow branches, in order.** Any one of these lets the call through: (a) `agent_id` is set, so the call is a sub-agent, which is the destination this gate redirects to; (b) `agent_type` is set, a top-level `--agent` dispatch; (c) `WORKBENCH_ORCHESTRATOR=0` in the environment, which is how an automated harness opts its own run out; (d) the session toggle is off; (e) the tool is not one of the three, which the matcher should already have handled; (f) the target is a file in a scratchpad: this session's, matched by session id with no symlink at any level, or the login home's `Developer/scratchpad`, with the home read from the password database rather than `$HOME`. The target is compared physically and may not itself be a symlink. The main session writes a `git commit -F` message or a PR body there, as the identity block and the commit gate tell it to, and every such write used to be denied; (g) anything went wrong.
+**Allow branches, in order.** Any one of these lets the call through: (a) `agent_id` is set, so the call is a sub-agent, which is the destination this gate redirects to; (b) `agent_type` is set, a top-level `--agent` dispatch; (c) `WORKBENCH_ORCHESTRATOR=0` in the environment, which is how an automated harness opts its own run out; (d) the session toggle is off; (e) the tool is not `Write` or `NotebookEdit`, which the matcher should already have handled; (f) the target is a file in a scratchpad: this session's, matched by session id with no symlink at any level, or the login home's `Developer/scratchpad`, with the home read from the password database rather than `$HOME`. The target is compared physically and may not itself be a symlink. The main session writes a `git commit -F` message or a PR body there, as the identity block and the commit gate tell it to, and every such write used to be denied; (g) anything went wrong.
 
 **Turning it off for a session.** `/workbench-core:orchestrator off` writes an empty file named for the current session under `$WORKBENCH_ORCHESTRATOR_STATE_DIR` (default `~/.claude-workbench/orchestrator-mode/`). The gate stands down while that file exists. `on` removes it, and no argument reports the state. The gate is **ON by default**, so an absent file means enforcement: every new session starts gated and nothing leaks between sessions. The file is keyed by `$CLAUDE_CODE_SESSION_ID`, which equals the `.session_id` the hook reads from its payload (verified live), so the skill and the hook agree on the key without passing anything between them. Each invocation prunes state files older than 7 days, so the directory does not accumulate one file per session forever.
 
 **The gate announces itself** in the identity block `hooks/session-warmup.sh` writes into `~/.claude/CLAUDE.md`. Core is excluded from `collect_session_warmup_contributions` by design (see [docs/session-warmup-contributions.md](docs/session-warmup-contributions.md)), so there is no root `session-warmup.md` to carry the notice, and an unannounced deny reads as a malfunction rather than as a rule.
 
-**Fail-open, and what that costs you.** Every error path exits 0 and allows the call: a malformed payload, a missing `jq`, an unreadable state directory, or a session id the toggle cannot address. This matches `hooks/credential-guard.sh`, because a guard that errors must never brick a session. Be clear about the trade. **If this script breaks, enforcement stops silently and there is no layer behind it.** Nothing announces that the gate is down; the main agent simply starts editing files again. It is a discipline aid, not a security boundary, and should never be relied on as one.
+**Fail-open, and what that costs you.** Every error path exits 0 and allows the call: a malformed payload, a missing `jq`, an unreadable state directory, or a session id the toggle cannot address. This matches `hooks/credential-guard.sh`, because a guard that errors must never brick a session. Be clear about the trade. **If this script breaks, enforcement stops silently and there is no layer behind it.** Nothing announces that the gate is down; the main agent simply starts writing whole files again. It is a discipline aid, not a security boundary, and should never be relied on as one.
 
-**`Bash` is not gated, so the gate is trivially sidesteppable.** The matcher covers three tools, and `printf 'x' > file` writes a file without touching any of them. This is deliberate: gating `Bash` would break `git`, the test runners, and every read-only command the orchestrator still needs. It also means a main agent that treats the deny as an obstacle can route around it in one call. The rule the gate backs is prose, in guardrail 10 and in the identity block, and both say a deny is the system working rather than something to defeat. Enforcement that a determined agent cannot evade is not on offer here.
+**`Bash` is not gated, so the gate is trivially sidesteppable.** The matcher covers two tools, and `printf 'x' > file` writes a file without touching any of them. This is deliberate: gating `Bash` would break `git`, the test runners, and every read-only command the orchestrator still needs. It also means a main agent that treats the deny as an obstacle can route around it in one call. The rule the gate backs is prose, in guardrail 10 and in the identity block, and both say a deny is the system working rather than something to defeat. Enforcement that a determined agent cannot evade is not on offer here.
 
 A session id holding anything outside `[A-Za-z0-9._-]` is refused rather than resolved, which keeps a `../` from walking out of the state directory. Refusal means fail-open here: a session that cannot address its own toggle has no honest escape hatch, so the gate stands down rather than trapping the user.
 
-Tests: `hooks/test-delegation-gate.sh` (74 cases: every allow branch independently, the deny path, byte-exact deny JSON, the conditional dev-team enrichment, `hooks.json` wiring, and agreement with both the toggle skill and guardrail 10, including that its inline case is a read-only Bash and never a file-writing one).
+Tests: `hooks/test-delegation-gate.sh` (77 cases: every allow branch independently, the deny path, `Edit` allowed from the main agent, byte-exact deny JSON, the conditional dev-team enrichment, `hooks.json` wiring, and agreement with both the toggle skill and guardrail 10, including that its inline case is a read-only Bash and never a file-writing one).
 
 ### Agent dispatch gate
 
@@ -476,6 +472,8 @@ That is not hypothetical. `insight-llc/decisioncloud#21665` shipped a 1,855-word
 
 **It fails open.** A heredoc, a command substitution such as `--body "$(cat notes.md)"`, or an unreadable path exits 0 rather than blocking. This is a style gate, not a security boundary, so a false block costs more than a missed check. `hooks/credential-guard.sh` makes the same trade for the same reason.
 
+**It costs an ordinary Bash call no Python.** The matcher sends every `Bash` call here, and the parser only ever reads a command in which `gh` is a token and the subcommand is a `pr`, `issue`, or `release` verb. So a bash test runs first: with quotes and backslashes deleted, the command has to name `gh`, one of those three nouns, and one of `create`, `edit`, `comment`, or `review`, each as a whole word, or the guard exits before Python starts. Deleting the quotes matters because the parser's `shlex` joins `g""h` into `gh`. The board-MCP tools skip that test, because the matcher already limits them to the four prose-carrying tools.
+
 **Terminal replies are out of scope,** and cannot usefully be brought in. A `Stop` hook fires after the reply has already been displayed, so blocking there appends a correction instead of preventing the text. Replies are governed by the behavioral overrides, which sit at system-prompt tier.
 
 ### Destructive database guard
@@ -537,7 +535,9 @@ psql <<- SQL     tokenises as ['<<', '-',  'SQL']
 
 The second is the one a single `lstrip("-")` still misses. Each half of the fix has its own fixture, and dropping either one alone reddens the suite. The gap was found while building [the provisioning guard](#provisioning-guard), which shares the tokeniser and had inherited it.
 
-Tests: `hooks/test-destructive-database-guard.sh` (185 cases). The suite is weighted towards the *allow* side on purpose. A guard that blocks every destructive command and also blocks `grep -rn "drop table"` has made ordinary work impossible, which is a worse failure than the one it prevents.
+**It pays almost nothing on an ordinary Bash call.** A finding can only come from a stage whose program is one the checker knows, or from SQL handed to one of its clients. So the guard first asks, in bash, whether the command names any of them: the Artisan reset verbs, `dropdb`, `dropuser`, `mysqladmin`, the SQL clients, `docker`, `podman`, `sail`, `lando`, `ddev`, or `wp-env`. A command that names none of them exits before Python starts. The match folds case and ignores quotes and backslashes, because the checker's tokeniser joins `drop''db` into `dropdb`. A command past the 200,000-byte read ceiling always goes to the checker, which refuses it. The suite reads the names back out of the checker's own constants, so a program added there and forgotten here turns a test red.
+
+Tests: `hooks/test-destructive-database-guard.sh` (221 cases). The suite is weighted towards the *allow* side on purpose. A guard that blocks every destructive command and also blocks `grep -rn "drop table"` has made ordinary work impossible, which is a worse failure than the one it prevents.
 
 ### Vault git guard
 
@@ -708,7 +708,7 @@ The logging pipeline above always produces a narrative summary, and that summary
 
 `hooks/memory-capture-stop.sh` asks. At a turn end it returns `decision: block` with the capture instruction as the reason, which refuses the stop and hands the instruction to the model as its next move. The instruction explicitly permits writing nothing: a forced turn with no escape manufactures a memory to justify itself, which is worse than no memory at all.
 
-**It is a backstop against the per-turn nudge being ignored, not a periodic reminder**, and that is what sets its timing. A backstop has to fire at least once per session to be one at all, so the **first** fire matters far more than the repeat. It lands on turn 5 (`WORKBENCH_CAPTURE_STOP_FIRST`) and then settles onto a sparse 40 (`WORKBENCH_CAPTURE_STOP_INTERVAL`), which exists only to catch findings that crystallize late in a long session. Measured over 467 transcripts of this project:
+**It is the backstop behind the warmup's capture rule, not a periodic reminder**, and that is what sets its timing. A per-turn `UserPromptSubmit` capture nudge used to sit in front of it. That nudge was retired on 2026-09-27: it fired on sub-agent hand-backs and task notifications as well as typed prompts, and restated warmup text at a measured ~180k tokens in three days. A backstop has to fire at least once per session to be one at all, so the **first** fire matters far more than the repeat. It lands on turn 5 (`WORKBENCH_CAPTURE_STOP_FIRST`) and then settles onto a sparse 40 (`WORKBENCH_CAPTURE_STOP_INTERVAL`), which exists only to catch findings that crystallize late in a long session. Measured over 467 transcripts of this project:
 
 | First fire | Sessions reached |
 |---|---|
@@ -728,7 +728,7 @@ Five things switch it off, and each closes a real failure:
 | `agent_id` is present | A sub-agent's findings belong to the session that dispatched it, which gets its own turn ends. |
 | `WORKBENCH_SUMMARY_WRITER=1` | The background writer's whole job is one summary from a log it was handed. |
 | `WORKBENCH_DEV_TEAM_PIPELINE=1` | An unattended dev-team agent. In `claude -p` a blocked stop makes the capture reply the run's final output, which is what the dispatcher logs as the agent's report. |
-| The nudge recorded a scheduled tick | A Stop payload carries no prompt, so `memory-capture-nudge.sh` leaves a marker beside its own state when it matches `<scheduled-task …>`. An unattended tick writing memories about its own routing is the noise the vault does not want. |
+| The session is a scheduled tick | A Stop payload carries no prompt, so the hook reads the transcript's first user record and looks for the `<scheduled-task …>` wrapper (`hooks/lib/scheduled-origin.sh`, shared with `memory-scan-recall.sh`). It reads it only on a turn that would fire. An unattended tick writing memories about its own routing is the noise the vault does not want. |
 
 **Why `Stop`, and not `PreCompact`.** Only two events can make a live model act: `UserPromptSubmit` (via `additionalContext` on the next human turn) and `Stop` (via `decision: block`). `PreCompact` is not one of them — measured against the shipped CLI (2.1.277), its executor reads each hook's stdout and its blocked/succeeded state and nothing else, and no model turn is open there to run a tool in. A PreCompact hook can block compaction or say nothing, and neither writes a memory. Stop is the right event anyway: compaction happens between turns, so the last Stop before one is the last moment the session still holds everything it is about to shed.
 
@@ -782,71 +782,11 @@ type at once.
 
 ### MCP output capping
 
-A `PostToolUse` hook (`hooks/mcp-output-cap.sh`, matcher `^mcp__`) is a
-context-cost backstop for **every** MCP tool call in the session — including
-vendored third-party servers whose code no workbench plugin controls. It uses
-the harness's `updatedToolOutput` field ("Replaces the tool output before it is
-sent to the model"), so the replacement happens in place with no re-execution.
+Claude Code caps MCP tool output itself. A response past `MAX_MCP_OUTPUT_TOKENS` is persisted to a file, and the model gets a pointer to it instead of the text. `/workbench-core:setup` sets that variable to `15000` in the `env` block of `~/.claude/settings.json`, and leaves any value already there alone. The harness default is 25,000 tokens.
 
-Claude Code already enforces `MAX_MCP_OUTPUT_TOKENS`, persisting overflow to a
-file and swapping in a pointer. Its real behavior (read out of the 2.1.219
-binary) is worth knowing, because it sets the ceiling this hook works under:
+**This replaced a hook.** `hooks/mcp-output-cap.sh` used to truncate MCP responses in `PostToolUse`. The harness already persisted anything past its own limit before a `PostToolUse` hook ever saw the response, so the hook only governed the band between its 60 KB cap and that limit, roughly 60 to 100 KB. It also had to carry an exemption list, so it would not cut a memory note the server had chosen to return whole. Lowering the harness limit covers the same band with no hook, no copy on disk, and no exemption list. It was removed on 2026-09-27.
 
-| | |
-|---|---|
-| Limit | 25,000 tokens |
-| Size estimate | `round(chars / 4)`, plus 1,600 tokens per image |
-| Cheap fast-path | estimate ≤ 50% of limit → returned untouched |
-| ⇒ never properly measured below | ~50,000 chars |
-| ⇒ persistence effectively begins around | ~100,000 chars |
-
-That handling happens *during the MCP tool call*, before `PostToolUse` hooks see
-`tool_response` — so a genuinely huge result arrives here already replaced by the
-harness's pointer. **The band this hook governs is roughly 0–100 KB.**
-
-The 60,000-byte default lands at ~15,000 estimated tokens — above the 10,000-token
-point where Claude Code itself starts warning *"Large MCP response (~N tokens),
-this can fill up context quickly"*, and below its 25,000-token persistence limit.
-It was chosen empirically: across 2,762 recorded MCP calls in the dev-team
-pipeline the largest response was 40,986 bytes (median 53), so 60,000 clears all
-observed real traffic with headroom while still cutting the unbounded dumps this
-hook exists for.
-
-At that size the two layers can begin to meet — 60,000 chars is past the harness's
-50,000-char fast path, and dense JSON tokenizes nearer 2 chars/token than 4. If
-the harness persists first, this hook sees the resulting pointer and passes it
-through. Both layers do the same thing, so the overlap is harmless.
-
-**Deliberate caps are exempt.** Some servers set a large ceiling *on purpose* and
-raise rather than truncate — the correct design, and the one
-`docs/mcp-output-capping.md` argues for. markdown-vault-mcp, behind this plugin's
-own memory MCP, allows `.md` reads up to 262,144 bytes. Session logs and
-synthesis notes routinely sit in the 60 KB–256 KB range, and byte-truncating one
-would destroy a document the server deliberately chose to return whole. Tool
-names matching `WORKBENCH_MCP_OUTPUT_EXEMPT` are therefore skipped outright.
-
-This does not reintroduce per-plugin opt-in: the list lives in core, and an
-unknown third-party server — the case this hook exists for — is still capped by
-default without anyone doing anything.
-
-Nothing is ever lost. The full response is written to
-`~/.claude-workbench/mcp-output/<tool_use_id>.txt` **before** truncation, and the
-replacement points at it. If that write fails or comes up short, the hook emits
-nothing and the original passes through — truncating without a recoverable copy
-would be data loss. Responses it doesn't recognise (a content array holding an
-image or resource block, an unfamiliar object shape) also pass through untouched.
-
-| Variable | Default | Effect |
-|---|---|---|
-| `WORKBENCH_MCP_OUTPUT_CAP` | unset | `0` disables the hook entirely |
-| `WORKBENCH_MCP_OUTPUT_MAX_BYTES` | `60000` | Cap in bytes (~15k tokens). Values under 1024 are rejected as a footgun |
-| `WORKBENCH_MCP_OUTPUT_EXEMPT` | `^mcp__plugin_workbench-core_memory__read$` | Regex of tool names never capped. Set empty to exempt nothing |
-| `WORKBENCH_MCP_OUTPUT_DIR` | `~/.claude-workbench/mcp-output` | Where full responses are persisted (swept after 3 days) |
-
-This hook is a **backstop, not a substitute** for servers capping their own
-output: it can only truncate bytes, where a server knows to return its 10 best
-results with snippets. See `docs/mcp-output-capping.md` for the per-server
-standard.
+The setting is a **backstop, not a substitute** for servers capping their own output: it can only persist whatever was returned, where a server knows to return its 10 best results with snippets. See `docs/mcp-output-capping.md` for the per-server standard.
 
 ### Guardrails
 
@@ -1067,24 +1007,26 @@ The default pull interval is deliberately tighter than upstream's, and `git_lfs`
 
 #### Canonical store & routing
 
-The vault is the **canonical durable memory store**. Claude Code's harness also injects per-project memory instructions every session (save to `~/.claude/projects/<encoded-cwd>/memory/` + a `MEMORY.md` index) — left alone, sessions scatter memory files there that the vault can't search. The session warmup neutralizes that channel into a router: it injects a `## Memory routing` rule at every session start (saves go to the vault via the memory MCP `write` tool with vault frontmatter; recall is vault hybrid `search`, not directory reads, it runs *before* a repo scan rather than after, and its query is built from the task rather than from the prompt's wording), and on startup it writes a self-healing router stub to the current project's `MEMORY.md` (canonical template: `references/memory-routing-stub.md`). A `MEMORY.md` without the router marker is never overwritten — the warmup flags it for human migration instead. Keep the store singular: don't install competing memory MCP servers alongside the vault.
+The vault is the **canonical durable memory store**. Claude Code's harness also injects per-project memory instructions every session (save to `~/.claude/projects/<encoded-cwd>/memory/` + a `MEMORY.md` index) — left alone, sessions scatter memory files there that the vault can't search. The session warmup neutralizes that channel into a router: it injects a `## Memory routing` rule at every session start (saves go to the vault via the memory MCP `write` tool with vault frontmatter; recall is vault `search`, not directory reads, with the mode left to the server, it runs *before* a repo scan rather than after, and its query is built from the task rather than from the prompt's wording), and on startup it writes a self-healing router stub to the current project's `MEMORY.md` (canonical template: `references/memory-routing-stub.md`). A `MEMORY.md` without the router marker is never overwritten — the warmup flags it for human migration instead. Keep the store singular: don't install competing memory MCP servers alongside the vault.
 
-**Why the routing block states when recall happens and what to search for, not just where.** `memory-recall.sh` can only ever search the user's prompt, because that is the only text a `UserPromptSubmit` hook receives. Two rules follow, and the routing block (plus its router-stub twin) is the floor for both:
+**Why the routing block states when recall happens and what to search for, not just where.** `memory-recall.sh` can only ever search the prompt, because that is the only text a `UserPromptSubmit` hook receives. It runs on every prompt that passes its substance gate, not only the opening one. The routing text claimed "only the opening prompt" until 2026-09-27, and that was never true. Two rules follow, and the routing block (plus its router-stub twin) is the floor for both:
 
 - **When.** Search the vault *before* scanning the repo, and again whenever the task turns up something the prompt never named. `memory-scan-recall.sh` now covers part of that second case automatically (below), but only where a scan carries an extractable query — the rule remains the floor.
 - **What.** Build the query from the *task* — the convention, format, procedure, tool, or error you are about to produce or decide — not from the prompt's wording. This is the half with the measurement behind it: replaying "go ahead and push and create a release" against the live vault left `skills/release.learnings.md` — the note carrying the release-title rule — outside the top 8, while "release title naming convention", the query the task implies, put it in the top 5 (5th when first measured, 3rd on re-measure 2026-09-14 — ranks drift as the vault grows, the gap between the two queries does not). The agent's advantage over auto-recall is asking the better question, and a rule that says only *when* leaves that on the table.
 
-`memory-recall-nudge.sh` re-states both per turn, the way `memory-capture-nudge.sh` re-states the capture rule, because a `SessionStart`-only rule decays in a long session. **It is a reminder, never a classifier**: it decides whether to restate the rule, never whether a recall happens, and its fire policy is signal **OR** a heartbeat, so signal detection can only ever add a nudge and never remove one. The rejected alternative was a conditional that *skips* recall when the vault looks unlikely to help — that is a classifier over "is this turn worth a search", the shape the [agent dispatch gate](#agent-dispatch-gate) measured at 83% precision / 26% recall against 34% / 84%, where the wrong answers were not tunable away. A wrong skip also teaches the agent the rule is optional.
+**No per-turn reminder restates them any more.** `memory-recall-nudge.sh` and `memory-capture-nudge.sh` used to, on `UserPromptSubmit`. Both were removed on 2026-09-27. They fired on sub-agent hand-backs and task notifications as well as typed prompts, restated warmup text at a measured ~180k tokens in three days, and repeated the false opening-prompt claim. The routing block is re-injected after every compaction, and `memory-capture-stop.sh` stays as the capture backstop.
+
+**The routing block names no search mode.** The server's default is `auto`: hybrid when the vault has embeddings, keyword when it does not. `hooks/memory-search-mode.sh` used to force `hybrid` onto every agent search, on the premise that the server defaulted to keyword. That premise went stale, and forcing hybrid broke the keyword fallback on a vault with no embeddings, so the hook was removed on 2026-09-27.
 
 #### Mid-turn recall, on a scan's own query
 
-The routing block and the nudge are both prose, and prose asks the agent to remember. `hooks/memory-scan-recall.sh` is the mechanism: a `PostToolUse` hook that reads the query out of a content search the agent is **already running**, searches the vault with it, and injects any fresh hits beside that scan's results, in the same turn. A topic the opening prompt never named surfaces its memory at the moment the agent goes looking for it.
+The routing block is prose, and prose asks the agent to remember. `hooks/memory-scan-recall.sh` is the mechanism: a `PostToolUse` hook that reads the query out of a content search the agent is **already running**, searches the vault with it, and injects any fresh hits beside that scan's results, in the same turn. A topic the opening prompt never named surfaces its memory at the moment the agent goes looking for it.
 
 **It is not a classifier, and that is the whole safety argument.** It never judges whether a search is worthwhile — it piggybacks on a scan already happening and reuses that scan's own query, so there is no precision-and-recall figure to degrade. What the matcher and `lib/scan-query.py` decide is narrower and purely structural: does this tool call *carry* a query. No query means "there is none here", never "this one is not worth it". `memory-recall.sh` stays the unconditional floor on every prompt, so a scan this hook misses costs one missed extra and never removes the mechanism — the safe shape, not the gating one.
 
 **Why the matcher is `Grep|Bash` and not `Grep|Glob`.** `Grep`'s `pattern` is the scan's query verbatim, which is the strongest extraction available. `Bash` is not a fallback: `Grep` and `Glob` are not granted to every agent, and in the session that commissioned this hook the agent had neither, so every repo scan it ran went through `Bash` and a `Grep`-only matcher would have fired zero times. Under `Bash`, only content searchers are read (`rg`, `grep`, `git grep`, `ag`, `ack`), by argument **slot** rather than substring via the shared `lib/shell_parse.py` tokeniser — so `git log --grep=` and `npm test` carry no query and nothing fires. `Glob` is deliberately **out**: its pattern is a path expression, so it names a filename shape rather than a topic (`**/*.test.ts` carries nothing; `src/**/*.ts` carries two words of noise). `find -name` and `fd` are out under `Bash` for the same reason.
 
-**Cost is what shapes every lever.** Measured 2026-09-14: each `PostToolUse` fire persists **two** transcript records (`hook_success` + `hook_additional_context`), nothing evicts them, and a realistic vault-hit payload implies ~500–600 bytes persisted **per fire**. That is the same accumulation property `UserPromptSubmit` has, and a per-turn nudge was removed from this codebase once already for exactly it. A tool call is far more frequent than a turn, so four levers bound it: per-session dedup on the **memory path**, sharing one seen-file with `memory-recall.sh` so the bound is the number of distinct relevant memories *across both hooks*; per-session dedup on the **query**, so a repeated scan costs no subprocess; a top-K of **1**, against `memory-recall.sh`'s 2; and a scheduled-task guard, since an unattended tick has no human to serve and its fresh-per-tick `session_id` defeats both dedup levers. The shared levers live in `lib/memory-recall-core.sh` — one copy, two callers, because each was tuned against an incident and a second implementation would drift from that tuning invisibly.
+**Cost is what shapes every lever.** Measured 2026-09-14: each `PostToolUse` fire persists **two** transcript records (`hook_success` + `hook_additional_context`), nothing evicts them, and a realistic vault-hit payload implies ~500–600 bytes persisted **per fire**. That is the same accumulation property `UserPromptSubmit` has, and a per-turn nudge was removed from this codebase once already for exactly it. A tool call is far more frequent than a turn, so four levers bound it, and three filters keep a fire from being noise: per-session dedup on the **memory path**, sharing one seen-file with `memory-recall.sh` so the bound is the number of distinct relevant memories *across both hooks*; per-session dedup on the **query**, so a repeated scan costs no subprocess; a top-K of **1**, against `memory-recall.sh`'s 2; and a scheduled-task guard, since an unattended tick has no human to serve and its fresh-per-tick `session_id` defeats both dedup levers. The filters were added on 2026-09-27, when most hits turned out to be noise at about 1.6 s a query. A search that reads **stdin** is skipped, because `git diff | grep -E "real|allow|deny"` filters output rather than researching a topic. A **single plain word** is skipped, because `grep -rn scheduled` names no topic; a camelCase identifier still counts. And a hit has to be **ranked by both retrievers** (`search_type` of `hybrid`): the CLI's `score` is a rank-fusion value that does not separate a good query from a junk one, and every hit for the junk queries measured that day was semantic-only. A `Bash` call that names no content searcher also exits before Python starts. The shared levers live in `lib/memory-recall-core.sh` — one copy, two callers, because each was tuned against an incident and a second implementation would drift from that tuning invisibly.
 
 #### Wiki layer and vault index
 
@@ -1133,7 +1075,7 @@ Runs on every `startup` warmup:
 | `/workbench-core:memory-lint` | Monthly health-and-repair pass over the memory vault — frontmatter rescue, broken-link repair, conservative orphan linking, vault-index drift repair, duplicate flagging, audit report |
 | `/workbench-core:memory-status` | Report the shared memory server's facts — vault/cache, server-binary presence, index & last-VACUUM |
 | `/workbench-core:install-chat-skills` | Discover skills in `@claude-workbench` plugins and install them into the Claude Mac app's Chat surface via `.skill` packaging |
-| `/workbench-core:orchestrator` | Turn the [delegation gate](#delegation-gate) off or on for this session, or report its state. `off` allows inline edits, `on` restores the gate, no argument reports |
+| `/workbench-core:orchestrator` | Turn the [delegation gate](#delegation-gate) off or on for this session, or report its state. `off` allows whole-file writes, `on` restores the gate, no argument reports. `Edit` is never gated |
 | `/workbench-core:cross-session-messaging` | The protocol for messaging another Claude Code session — when to reach out, what a message carries, the receive-side rule that keeps a human in the loop, and which sends a sub-agent may make. Paired with the [peer message gate](#peer-message-gate) |
 
 All skills are **execution-aware** — they check for a `skills/{name}.learnings.md` file in the vault before running and apply any accumulated learnings from prior executions.
@@ -1182,11 +1124,9 @@ All config values can be overridden via environment variables for testing:
 | `WORKBENCH_MEMORY_SCAN_RECALL_MIN_CHARS` | Min length of an extracted query, spaces not counted, before the vault is searched (default `6`) |
 | `WORKBENCH_MEMORY_SCAN_RECALL_TYPES` | Eligible frontmatter types for that hook (same default and same rule as `WORKBENCH_MEMORY_RECALL_TYPES`) |
 | `WORKBENCH_MEMORY_RECALL_TYPES` | Comma-separated frontmatter types eligible for injection (default `decision,insight,topic,feedback,reference,project,skill-learnings,recurring-issue`; empty disables the filter). A type belongs when a note of that type asserts something still true that should change what the agent does next — which is why `session` summaries and the dated `learnings` evaluation snapshots are excluded |
-| `WORKBENCH_MEMORY_RECALL_NUDGE` | Set to `0` to disable the recall reminder (`memory-recall-nudge.sh`). Independent of `WORKBENCH_MEMORY_RECALL`: with automatic recall off, an agent-initiated search is the only recall left |
-| `WORKBENCH_MEMORY_RECALL_NUDGE_INTERVAL` | Heartbeat interval for that reminder — one nudge per N low-signal turns (default `8`) |
-| `WORKBENCH_CAPTURE_STOP` | Set to `0` to disable [pre-shed capture](#pre-shed-capture) (`memory-capture-stop.sh`). `WORKBENCH_MEMORY_NUDGE=0` also disables it — that one is the family kill switch for every capture reminder |
+| `WORKBENCH_CAPTURE_STOP` | Set to `0` to disable [pre-shed capture](#pre-shed-capture) (`memory-capture-stop.sh`). `WORKBENCH_MEMORY_NUDGE=0` also disables it — the older family kill switch, still honoured |
 | `WORKBENCH_CAPTURE_STOP_FIRST` | Turn end of the **first** capture block (default `5`). The number that decides whether the backstop fires at all: at 5 it reaches 88% of this project's sessions, at 21 it reaches 16% |
-| `WORKBENCH_CAPTURE_STOP_INTERVAL` | Turn ends between **later** capture blocks (default `40`). Sparse on purpose: a block buys a whole extra model turn, where a nudge costs a line of context. Independent of `_FIRST` so either can be retuned alone |
+| `WORKBENCH_CAPTURE_STOP_INTERVAL` | Turn ends between **later** capture blocks (default `40`). Sparse on purpose: a block buys a whole extra model turn. Independent of `_FIRST` so either can be retuned alone |
 | `WORKBENCH_SETTINGS_FILE` | `~/.claude/settings.json` path (used by `install.sh` and `permissions.sh` for testing) |
 | `WORKBENCH_OUTPUT_STYLES_DIR` | `~/.claude/output-styles` path (used by `install.sh` for testing) |
 | `WORKBENCH_MEMORY_GIT_REPO_URL` | Vault git remote; unset disables cross-machine sync entirely |

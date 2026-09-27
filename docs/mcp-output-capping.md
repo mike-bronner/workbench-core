@@ -16,39 +16,37 @@ number, that server is where it came from.
 
 | Layer | Covers | Can it shape the result? |
 |---|---|---|
-| `hooks/mcp-output-cap.sh` (workbench-core, `PostToolUse`) | **Every** MCP tool in the session, including vendored third-party servers | ❌ No — byte truncation only |
+| Claude Code's `MAX_MCP_OUTPUT_TOKENS` | **Every** MCP tool in the session, including vendored third-party servers | ❌ No — it persists the whole response to a file and hands the model a pointer |
 | **This standard** (per server) | Only servers whose authors opt in | ✅ Yes — the server knows what matters |
 
-The hook is a **backstop**. It can cut a 200 KB JSON blob down, but it cannot
-know that a search response should keep the ten best hits with snippets rather
-than the first N bytes. Only your server knows that. Do not treat the hook's
-existence as permission to return unbounded output.
+The harness limit is a **backstop**. It keeps a 200 KB JSON blob out of the
+context, but it cannot know that a search response should keep the ten best
+hits with snippets. Only your server knows that. Do not treat the limit as
+permission to return unbounded output.
 
-Claude Code itself is a third layer, above both. Its real numbers, read out of
-the 2.1.219 binary:
+The harness numbers, read out of the 2.1.219 binary:
 
 | | |
 |---|---|
-| `MAX_MCP_OUTPUT_TOKENS` | 25,000 tokens |
+| `MAX_MCP_OUTPUT_TOKENS` default | 25,000 tokens |
+| Set by `/workbench-core:setup` | 15,000 tokens, in the `env` block of `~/.claude/settings.json` |
 | Size estimate | `round(chars / 4)`, plus 1,600 tokens per image |
 | Cheap fast-path | estimate ≤ 50% of limit → returned untouched |
-| ⇒ persistence effectively begins around | ~100,000 chars |
+| ⇒ persistence begins around | ~60,000 chars at 15,000 tokens |
 
-Three layers, then — but the outer two are damage control, and both truncate
-blindly. This one is design.
+workbench-core used to ship a third layer, `hooks/mcp-output-cap.sh`, which
+truncated responses in `PostToolUse`. The harness persists an oversized
+response before any `PostToolUse` hook sees it, so the hook only ever governed
+the band between its own cap and the harness limit. Lowering the limit covers
+that band with no hook, and the hook was removed on 2026-09-27.
 
 ### If your cap is deliberate, say so
 
 A server that sets a large ceiling **on purpose** and raises rather than
-truncates is doing the right thing, and core's hook must not undo it.
-markdown-vault-mcp allows `.md` reads up to 262,144 bytes for exactly this
-reason. Tool names matching `WORKBENCH_MCP_OUTPUT_EXEMPT` are skipped by the
-hook; its default exempts the memory vault's `read`.
-
-If your server has a comparably deliberate ceiling, add its tool to that regex
-rather than lowering your own limit to dodge the backstop. The discriminator has
-to be the tool name — the harness's own "server declared its result size" signal
-lives on the tool definition and is not visible in the `PostToolUse` payload.
+truncates is doing the right thing. markdown-vault-mcp allows `.md` reads up to
+262,144 bytes for exactly this reason. A read that size passes the harness
+limit, so the model receives a pointer to the persisted response and reads it
+from there. Nothing is cut, which is why no exemption list is needed any more.
 
 ---
 
@@ -166,7 +164,7 @@ document why.
 - **Truncation with no `truncated` flag.** Same failure, quieter.
 - **Non-deterministic ordering.** Breaks caching for everything downstream, and
   makes truncation arbitrary.
-- **"The core hook will catch it."** It caps bytes; it cannot preserve meaning.
+- **"The harness limit will catch it."** It moves bytes to a file; it cannot preserve meaning.
 
 ---
 

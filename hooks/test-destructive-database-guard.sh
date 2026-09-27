@@ -510,6 +510,67 @@ assert_jq "no artisan rule in deny" "$RAILS" \
 assert_jq "no artisan rule in ask"  "$RAILS" \
   '[.ask[]  | select(.rule | test("artisan"))] | length' "0"
 
+# ── The prefilter: benign commands never start python ───────────────────────
+# The guard skips its checker when the command names nothing the checker acts
+# on. These cases prove the skip happens, and that it can never outrun the
+# checker: every program name the checker knows has to reach it.
+# Under SQLDIR, so the suite's one EXIT trap removes it.
+PY_LOG="$SQLDIR/python-shim"
+mkdir -p "$PY_LOG"
+printf '#!/bin/bash\necho started >> "%s/starts"\nexec "%s" "$@"\n' \
+  "$PY_LOG" "$(command -v python3)" > "$PY_LOG/python3"
+chmod +x "$PY_LOG/python3"
+python_starts() {  # python_starts <command> → how many python3 starts it cost
+  : > "$PY_LOG/starts"
+  printf "%s" "$1" | jq -Rsc '{tool_name:"Bash",tool_input:{command:.},cwd:"/tmp"}' \
+    | PATH="$PY_LOG:$PATH" bash "$GUARD" >/dev/null 2>&1
+  wc -l < "$PY_LOG/starts" | tr -d ' '
+}
+assert_starts() {  # assert_starts <expected-count> <description> <command>
+  local got
+  got=$(python_starts "$3")
+  if [ "$got" = "$1" ]; then
+    PASS=$((PASS + 1)); echo "  ✅ $2"
+  else
+    FAIL=$((FAIL + 1)); echo "  ❌ $2 — expected $1 python start(s), got $got"
+  fi
+}
+
+echo "prefilter — a command that names no database program starts no python:"
+assert_starts 0 "ls"                          'ls -la'
+assert_starts 0 "a test run"                  'npm test -- --format=tap'
+assert_starts 0 "a grep of this repo"         'grep -rn "permission terminal" hooks'
+assert_starts 0 "a git log"                   'git log --oneline -5'
+
+echo "prefilter — every program and verb the checker knows reaches the checker:"
+CHECKER="$HOOKS_DIR/lib/destructive-db-check.py"
+# Read the names back out of the checker's own constants, so a name added there
+# and forgotten in the guard's prefilter fails here instead of going unguarded.
+CHECKER_WORDS=$(
+  for set in ARTISAN_VERBS DROP_COMMANDS SQL_CLIENTS CONTAINER_SHIMS \
+             DOCKER_BINARIES COMPOSE_BINARIES COMPOSE_SHIMS; do
+    grep -E "^$set = " "$CHECKER" | grep -oE '"[^"]+"' | tr -d '"'
+  done
+  sed -n '/^PROJECT_TOOL_VERBS = {/,/^}/p' "$CHECKER" | grep -oE '^ *"[^"]+":' | tr -d ' ":'
+  sed -n '/^def check_shell_drop/,/^def /p' "$CHECKER" | grep -oE 'head == "[a-z]+"' | grep -oE '"[^"]+"' | tr -d '"'
+)
+if [ "$(printf '%s\n' "$CHECKER_WORDS" | grep -c .)" -ge 20 ]; then
+  PASS=$((PASS + 1)); echo "  ✅ read $(printf '%s\n' "$CHECKER_WORDS" | grep -c .) names out of the checker"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ read too few names out of the checker — did its constants move?"
+fi
+for word in $CHECKER_WORDS; do
+  assert_starts 1 "the checker runs for \`$word\`" "cd /srv && $word x"
+done
+
+echo "prefilter — spellings the checker's tokeniser joins still reach it:"
+check deny  "dropdb split by empty quotes" '{"tool_name":"Bash","tool_input":{"command":"drop'"''"'db app_dev"}}'
+check deny  "dropdb split by a backslash"  '{"tool_name":"Bash","tool_input":{"command":"drop\\db app_dev"}}'
+check deny  "db:wipe split by quotes"      '{"tool_name":"Bash","tool_input":{"command":"php artisan db:\"wipe\" --force"}}'
+assert_starts 1 "upper-case DROPDB reaches the checker" 'DROPDB app_dev'
+assert_starts 1 "a command past the read ceiling always reaches the checker" \
+  "$(head -c 200001 /dev/zero | tr "\\0" x)"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

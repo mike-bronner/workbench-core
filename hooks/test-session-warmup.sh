@@ -110,8 +110,9 @@ assert_contains "memory capture needs no confirmation" "$OUT" "a memory-capture 
 assert_missing  "skills-protocol not inlined"      "$OUT" "SKILLSPROTO-CANARY"
 assert_contains "skills-protocol pointer present"  "$OUT" "Skills protocol: read \`$SANDBOX/memory/identity/skills-protocol.md\`"
 # The recall-ORDERING rule has no hook that can carry it in full — memory-recall.sh
-# only ever sees the opening prompt, and memory-scan-recall.sh only fires on a scan
-# that carries an extractable query — so the injected routing block is the only
+# only ever sees the main session's prompts, and memory-scan-recall.sh only fires
+# on a file search that carries an extractable query — so the injected routing
+# block is the only
 # thing that carries the whole rule, and these are the only assertions that prove
 # it is still there.
 # The where-rule is asserted alongside it because the two answer different
@@ -119,8 +120,15 @@ assert_contains "skills-protocol pointer present"  "$OUT" "Skills protocol: read
 # to "where", which is the older of the two.
 assert_contains "routing block orders recall first"     "$OUT" "Recall comes FIRST"
 assert_contains "recall precedes the repo scan"         "$OUT" "BEFORE you scan the repo"
-assert_contains "the ordering rule carries its reason"  "$OUT" "Auto-recall only ever sees the user's opening prompt"
-assert_contains "recall still routes to the vault"      "$OUT" "Recall = vault \`search\` (mode hybrid), not directory reads."
+assert_contains "the ordering rule carries its reason"  "$OUT" "Auto-recall searches only the wording of each prompt and the patterns of your file searches"
+# memory-recall.sh runs on every substantive prompt, so a claim that auto-recall
+# saw only the opening prompt is false. It shipped in this block until 2026-09-27.
+assert_missing  "no claim that recall saw only the opening prompt" "$OUT" "opening prompt"
+assert_contains "recall still routes to the vault"      "$OUT" "Recall = vault \`search\`, not directory reads."
+# The server's default mode is "auto", which falls back to keyword on a vault
+# with no embeddings. Naming hybrid here broke that fallback.
+assert_contains "recall leaves the mode to the server"  "$OUT" "Omit \`mode\`: the server picks hybrid when the vault has embeddings"
+assert_missing  "recall does not force hybrid"          "$OUT" "(mode hybrid)"
 # WHEN to search and WHAT to search for are different rules, and the block is
 # the only floor for both. The ordering bullet alone leaves the agent running
 # the prompt's own wording, which is the weaker query and the measured failure:
@@ -166,7 +174,10 @@ STUB_FILE="$SANDBOX/home/.claude/projects/${PWD//\//-}/memory/MEMORY.md"
 STUB_TEXT=$(cat "$STUB_FILE" 2>/dev/null)
 assert_contains "stub written on startup"              "$STUB_TEXT" "<!-- workbench-memory-router -->"
 assert_contains "stub orders recall first"             "$STUB_TEXT" "**Recall first**"
-assert_contains "stub ordering carries its reason"     "$STUB_TEXT" "Automatic recall only ever sees that opening prompt"
+assert_contains "stub ordering carries its reason"     "$STUB_TEXT" "Automatic recall searches only the main session's prompts and the patterns of file searches"
+assert_missing  "stub makes no opening-prompt claim"   "$STUB_TEXT" "opening prompt"
+assert_missing  "stub names no retired search-mode hook" "$STUB_TEXT" "memory-search-mode"
+assert_contains "stub leaves the mode to the server"   "$STUB_TEXT" "the server picks hybrid when the vault has embeddings and keyword when it does not"
 # The stub carries BOTH recall rules or the two homes have drifted apart, and a
 # sub-agent — which never runs this warmup — only ever reads the stub.
 assert_contains "stub says what to query"              "$STUB_TEXT" "**Query the task, not the prompt**"
@@ -289,7 +300,8 @@ assert_missing  "block no longer lists identity files" "$OV_ID_BLOCK" "## Identi
 # session-warmup.md to carry it, and a hook that denies an edit with no prior
 # notice reads as a malfunction.
 assert_contains "block announces the delegation gate"  "$OV_ID_BLOCK" "| Delegation gate |"
-assert_contains "block names what that gate denies"    "$OV_ID_BLOCK" "\`NotebookEdit\` outside the scratchpads"
+assert_contains "block names what that gate denies"    "$OV_ID_BLOCK" "denied \`Write\` and \`NotebookEdit\` outside the scratchpads"
+assert_contains "block says Edit is allowed"           "$OV_ID_BLOCK" "and may use \`Edit\`"
 assert_contains "block names the gate's escape hatch"  "$OV_ID_BLOCK" "/workbench-core:orchestrator off"
 # Every gate the block names must be a hook this plugin ships AND registers. The
 # list is read from the block, so a renamed or retired hook turns the row red

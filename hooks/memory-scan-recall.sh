@@ -6,7 +6,7 @@
 # memory-recall.sh searches the vault with the user's PROMPT, because a
 # UserPromptSubmit hook receives the prompt and nothing else. So a topic the
 # agent uncovers after the turn starts — while scanning the repo, following a
-# trail the opening prompt never named — is never searched at all. This hook
+# trail no prompt named — is never searched at all. This hook
 # closes that: it rides along on a scan the agent is ALREADY running, searches
 # the vault with that scan's own query, and injects any fresh hits as
 # PostToolUse `additionalContext`, in the same turn, beside the scan's results.
@@ -22,6 +22,13 @@
 # not worth running". And memory-recall.sh stays the unconditional floor on every
 # prompt, so a scan this hook misses costs one missed extra and never removes the
 # mechanism.
+#
+# THREE FILTERS NOW DROP A FIRE, AND THAT ARGUMENT IS WHY THEY ARE SAFE. Added
+# 2026-09-27, when most hits turned out to be noise at ~1.6 s a query: a search
+# that reads stdin is not a scan (lib/scan-query.py), one plain word is not a
+# topic, and a hit only one retriever ranked is not injected. Each one can only
+# withhold an extra from this hook. None of them touches memory-recall.sh or the
+# agent's own `search`, so none can remove recall from a turn.
 #
 # WHAT IT ATTACHES TO, AND WHY THAT IS Grep AND Bash BUT NOT Glob:
 #   Grep   — the tool built for content search. Its `pattern` is the scan's query
@@ -52,7 +59,7 @@
 #      and SHARED with memory-recall.sh through one seen-file. Without it the
 #      cost scales with the number of scans, which is unbounded. With it the
 #      bound is the number of DISTINCT relevant memories, across both hooks: a
-#      memory the opening prompt already surfaced is never repeated here.
+#      memory a prompt already surfaced is never repeated here.
 #   2. Per-session dedup on the QUERY — the same scan repeated costs no
 #      subprocess and no bytes. Path dedup alone would already suppress the
 #      output, but only after paying ~1s of CLI time on every repeat, on the
@@ -79,9 +86,7 @@
 #                                               empty to disable the filter).
 #
 # Also honors WORKBENCH_MEMORY_RECALL=0, which means "no automatic vault
-# injection". Unlike memory-recall-nudge.sh, which is only ever a reminder and so
-# stays independent, this hook DOES inject, so the global off switch has to reach
-# it.
+# injection". This hook DOES inject, so the global off switch has to reach it.
 #
 # Never fails a tool call. Always exits 0 — missing jq or python3, an
 # unresolvable binary, a malformed payload, an unparseable command, or a
@@ -136,6 +141,20 @@ case "$TOOL" in
 esac
 [ -n "$RAW" ] || exit 0
 
+# A Bash command that names no content searcher carries no query, so it never
+# pays the python start below. The extractor reads the searcher by its program
+# name, and every name it knows contains `grep` (grep, egrep, fgrep, ugrep,
+# ack-grep, git grep) or is one of rg, ripgrep, ag, and ack as a whole word.
+# This runs on every Bash call, and most of them search nothing.
+if [ "$TOOL" = "Bash" ]; then
+  case "$RAW" in
+    *grep*) ;;
+    *)
+      [[ $RAW =~ (^|[^[:alnum:]_-])(rg|ripgrep|ag|ack)([^[:alnum:]_-]|$) ]] || exit 0
+      ;;
+  esac
+fi
+
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXTRACTOR="$HOOK_DIR/lib/scan-query.py"
 [ -f "$EXTRACTOR" ] || exit 0
@@ -155,10 +174,22 @@ _dense=$(printf '%s' "$QUERY" | tr -d ' ')
 [ "${#_dense}" -ge "$MIN_CHARS" ] || exit 0
 printf '%s' "$QUERY" | grep -q '[A-Za-z]' 2>/dev/null || exit 0
 
+# One plain word is not a topic. `grep -rn scheduled`, `rg python3`, and
+# `grep permission` each matched a vault note that had nothing to do with the
+# scan, at about 1.6 s a query. A camelCase or PascalCase identifier is the one
+# single word that does name something specific (`summaryWriter`,
+# `SubagentHandback`), so it is kept. The extractor already split every other
+# identifier shape (snake_case, kebab-case, dotted) into several words.
+case "$QUERY" in
+  *' '*) ;;
+  *[[:lower:]][[:upper:]]*) ;;
+  *) exit 0 ;;
+esac
+
 # ──────────── Per-session state ────────────
 # The same dir and the same seen-file memory-recall.sh writes — that sharing IS
 # the accumulation bound, not a convenience. Retention is 3 days, mirroring
-# capture-nudge and the warmup sweep. The session id is sanitized before it
+# memory-capture-stop.sh and the warmup sweep. The session id is sanitized before it
 # becomes a filename: ids are normally hex/UUID, but an external value never
 # belongs in a path unfiltered.
 #
@@ -177,11 +208,10 @@ SAFE_SID=$(printf '%s' "$SESSION_ID" | tr -c 'A-Za-z0-9._-' '_')
 # same hits re-inject on every tick, forever.
 #
 # A PostToolUse payload has NO prompt, so the `<scheduled-task name="..."
-# file="...">` wrapper the harness puts around a scheduled prompt — the only
-# signal that exists, per the matching guard in memory-recall.sh — has to be read
-# out of the transcript's first user record instead. That read is done ONCE per
-# session and cached here, because it is the one part of this hook whose cost
-# would otherwise scale with tool calls.
+# file="...">` wrapper the harness puts around a scheduled prompt has to be read
+# out of the transcript's first user record instead (lib/scheduled-origin.sh).
+# That read is done ONCE per session and cached here, because it is the one part
+# of this hook whose cost would otherwise scale with tool calls.
 #
 # The verdict is cached only when the transcript actually yielded text. Caching
 # an empty read would freeze a wrong "human" answer for the whole session if the
@@ -190,25 +220,10 @@ ORIGIN_FILE="$STATE_DIR/${SAFE_SID}.origin"
 if [ -f "$ORIGIN_FILE" ]; then
   ORIGIN=$(cat "$ORIGIN_FILE" 2>/dev/null)
 else
-  ORIGIN="human"
-  TRANSCRIPT=$(printf '%s' "$PAYLOAD" | jq -r '.transcript_path // empty' 2>/dev/null)
-  FIRST_PROMPT=""
-  if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
-    # `grep -m1` stops at the first user record, so this reads a prefix of the
-    # transcript rather than the whole file. Content is a bare string on a typed
-    # prompt and an array of blocks when the harness attaches anything.
-    FIRST_PROMPT=$(grep -m1 '"type":"user"' "$TRANSCRIPT" 2>/dev/null | jq -r '
-      .message.content
-      | if type == "array" then (map(select(.type == "text") | .text // "") | join(" "))
-        elif type == "string" then .
-        else "" end' 2>/dev/null)
-  fi
-  if [ -n "$FIRST_PROMPT" ]; then
-    case "$(printf '%s' "$FIRST_PROMPT" | tr '\n' ' ' | sed 's/^ *//')" in
-      '<scheduled-task '*) ORIGIN="scheduled" ;;
-    esac
-    printf '%s' "$ORIGIN" > "$ORIGIN_FILE" 2>/dev/null || true
-  fi
+  # shellcheck source=hooks/lib/scheduled-origin.sh
+  . "$HOOK_DIR/lib/scheduled-origin.sh" 2>/dev/null || exit 0
+  ORIGIN=$(scheduled_origin "$(printf '%s' "$PAYLOAD" | jq -r '.transcript_path // empty' 2>/dev/null)")
+  [ -n "$ORIGIN" ] && { printf '%s' "$ORIGIN" > "$ORIGIN_FILE" 2>/dev/null || true; }
 fi
 [ "$ORIGIN" = "scheduled" ] && exit 0
 
@@ -246,6 +261,29 @@ FETCH=$((LIMIT * 4))
 
 # ──────────── Search, filter, dedup ────────────
 RESPONSE=$(memory_recall_search "$SERVER_BIN" "$QUERY" "$MODE" "$FETCH" "$TIMEOUT") || exit 0
+
+# ──────────── Relevance gate: both retrievers must agree ────────────
+# The CLI's `score` is a reciprocal-rank fusion value. It measures a hit's RANK
+# in each list, not how well it matches, so the top hit of a junk query scores
+# about as high as the top hit of a good one. Measured 2026-09-27: "def MAX
+# INPUT" returned four unrelated notes at 0.023 to 0.025, and "memory scan
+# recall dedup" returned relevant ones at 0.026 to 0.032. No cut-off separates
+# those.
+#
+# `search_type` does. It reads "hybrid" only when the keyword index AND the
+# embeddings both ranked the note. A semantic-only hit is a note that sits near
+# the query's words in embedding space without containing them. That was every
+# hit for the junk query above. So a scan-recall hit has to be "hybrid". The
+# prompt hook (memory-recall.sh) does not apply this gate: it fires once a turn,
+# on a question the human asked, not on every scan.
+#
+# The gate applies only in hybrid mode. In keyword or semantic mode only one
+# retriever runs, and the server labels every hit with that retriever's name, so
+# no hit could ever read "hybrid" and the gate would drop them all. A user who
+# picks a single-retriever mode has chosen that retriever's judgement.
+if [ "$MODE" = "hybrid" ]; then
+  RESPONSE=$(printf '%s' "$RESPONSE" | jq -c '[.[] | select(.search_type == "hybrid")]' 2>/dev/null) || exit 0
+fi
 ROWS=$(memory_recall_rows "$RESPONSE" "$LIMIT" "$TYPES")
 [ -n "$ROWS" ] || exit 0
 

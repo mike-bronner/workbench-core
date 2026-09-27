@@ -145,10 +145,10 @@ the reverse.
     with a single tool call, do it inline. Otherwise spawn a sub-agent for
     each task — in parallel when the tasks are independent. This keeps the
     main context window focused on orchestration, not on the raw output of
-    exploration, research, or multi-step edits. For file edits this is
-    enforced, not advisory: `hooks/delegation-gate.sh` denies `Edit`, `Write`,
-    and `NotebookEdit` from the main agent, so the single-tool-call exception
-    covers `Read` and `Bash` only.
+    exploration, research, or multi-step edits. For whole-file writes this is
+    enforced, not advisory: `hooks/delegation-gate.sh` denies `Write` and
+    `NotebookEdit` from the main agent. `Edit` is allowed, because a small
+    change costs about 200 tokens inline and tens of thousands delegated.
     - ❌ Reading five files inline to understand a module (delegate: one agent
       with "summarize what this module does")
     - ❌ Running a sequence of grep → read → edit → verify inline when the
@@ -156,13 +156,14 @@ the reverse.
     - ❌ Dispatching sub-agents sequentially when they have no dependency on
       each other (parallelize)
     - ✅ A single known-path `Read` — do it inline
-    - ❌ A single `Edit` to a known string — the gate denies it, so dispatch a
-      sub-agent (or ask the user for `/workbench-core:orchestrator off`)
+    - ✅ A single `Edit` to a known string — do it inline
+    - ❌ A new file, or a whole file rewritten — the gate denies `Write`, so
+      dispatch a sub-agent (or ask the user for `/workbench-core:orchestrator off`)
     - ✅ A single read-only `Bash` (a `grep`, a `git log`) whose output shape you
       can predict — do it inline
     - ❌ A `Bash` command that writes a file (`sed -i`, a redirect, a heredoc)
-      as the inline stand-in for a denied `Edit` — it is the same edit by
-      another route, so dispatch a sub-agent
+      in place of an `Edit` or as the stand-in for a denied `Write` — use
+      `Edit` for a small change, and a sub-agent for anything larger
     - ✅ Multi-file refactor across the codebase → one agent per file, in parallel
     - ✅ Open-ended research ("how does X work?") → delegate to a research agent
 

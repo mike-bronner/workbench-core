@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 #
-# memory-recall: PROACTIVE recall — the mirror of memory-capture-nudge.
+# memory-recall: PROACTIVE recall — the read half of the memory loop.
 #
-# capture-nudge reminds the agent to WRITE durable knowledge. This hook does the
-# opposite half of the compounding loop: on prompt submit it SEARCHES the vault
+# The warmup's routing block and memory-capture-stop.sh ask the agent to WRITE
+# durable knowledge. This hook does the opposite half of the compounding loop: on prompt submit it SEARCHES the vault
 # with the user's prompt and injects the top matches as `additionalContext`, so
 # a past lesson surfaces WITHOUT the agent having to decide to search for it.
 # That "recall fires when you don't know to ask" is the whole point — reactive
 # search (agent-initiated) misses exactly the turns where the agent is about to
 # repeat a known mistake.
 #
-# Invoked by the `core` plugin's UserPromptSubmit hook, alongside
-# memory-capture-nudge.sh. Reads the hook payload from stdin; when the prompt is
+# Invoked by the `core` plugin's UserPromptSubmit hook, on every prompt of the
+# main session. Reads the hook payload from stdin; when the prompt is
 # substantive AND the vault returns fresh hits, prints one short recall block.
 #
 # THE PROMPT IS ALL THIS HOOK EVER SEES. A UserPromptSubmit hook receives the
 # prompt and nothing else, so a topic the agent uncovers mid-task — while
-# scanning the repo, reading a file, following a trail the opening prompt never
+# scanning the repo, reading a file, following a trail no prompt ever
 # named — is never searched here. memory-scan-recall.sh (PostToolUse) closes
 # that: it piggybacks on a scan the agent is already running and searches with
 # that scan's own query. The two share every lever below through

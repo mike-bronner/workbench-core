@@ -36,6 +36,29 @@ fi
 [ -n "$PAYLOAD" ] || exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
 
+# ──────────── Prefilter: only gh prose commands start python ────────────
+# The matcher sends every Bash call here, and nearly none of them post prose.
+# The parser below reads a Bash command only when `gh` is one of its tokens and
+# the subcommand is a pr, issue, or release verb: create, edit, comment, or
+# review. So a Bash command whose text does not name `gh`, one of those three
+# nouns, and one of those four verbs cannot produce anything to check.
+# Quotes and backslashes are deleted before the test, because the parser's
+# shlex joins `g""h` and `g\h` into `gh`. The board-MCP tools skip this test:
+# the matcher already limits them to the four prose-carrying tools.
+#
+# Fail toward running the check: with no jq to read the tool name, the payload
+# goes to the parser as before.
+if command -v jq >/dev/null 2>&1; then
+  TOOL=$(printf '%s' "$PAYLOAD" | jq -r '.tool_name // empty' 2>/dev/null)
+  if [ "$TOOL" = "Bash" ]; then
+    WORDS=$(printf '%s' "$PAYLOAD" | jq -r '(.tool_input // {}).command // empty | tostring' 2>/dev/null \
+      | tr -d "\"'\\\\")
+    [[ $WORDS =~ (^|[^[:alnum:]_-])gh([^[:alnum:]_-]|$) ]] || exit 0
+    [[ $WORDS =~ (^|[^[:alnum:]_-])(pr|issue|release)([^[:alnum:]_-]|$) ]] || exit 0
+    [[ $WORDS =~ (^|[^[:alnum:]_-])(create|edit|comment|review)([^[:alnum:]_-]|$) ]] || exit 0
+  fi
+fi
+
 LIB_DIR="$(cd "$(dirname "$0")" && pwd)/lib"
 CHECKER="$LIB_DIR/prose-check.py"
 [ -f "$CHECKER" ] || exit 0

@@ -155,7 +155,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-capture-stop.sh\""
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-capture-stop.sh\"",
+            "asyncRewake": true,
+            "rewakeSummary": "💾 Memory capture checkpoint (automatic, not from the user).",
+            "rewakeMessage": "Memory capture checkpoint from the workbench-core Stop hook:"
           }
         ]
       }

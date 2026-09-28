@@ -668,7 +668,11 @@ A marker with both sources gone is logged as `undrainable` and left alone. **Pur
 
 The logging pipeline above always produces a narrative summary, and that summary is always a **reconstruction**. The summary-writer reads a raw JSONL transcript with no lived context, and its own definition forbids it from padding a thin reconstruction into a confident one. The curated output — a decision with the alternatives it rejected, a root cause, a correction to how the agent works — exists only inside the session that formed it, and until now nothing asked that session for it unless the human did.
 
-`hooks/memory-capture-stop.sh` asks. At a turn end it returns `decision: block` with the capture instruction as the reason, which refuses the stop and hands the instruction to the model as its next move. The instruction explicitly permits writing nothing: a forced turn with no escape manufactures a memory to justify itself, which is worse than no memory at all.
+`hooks/memory-capture-stop.sh` asks. When it fires, it exits 2 with the capture instruction on stderr, and Claude Code wakes the model with that instruction as a new turn, after the reply the user has already seen. The instruction explicitly permits writing nothing: a forced turn with no escape manufactures a memory to justify itself, which is worse than no memory at all.
+
+The hook is registered with `asyncRewake`, and that is what keeps the checkpoint to one line for the user. A synchronous `decision: block` would show the user the whole reason as "Stop hook feedback", because a synchronous `Stop` hook has no field that only the model reads. With `asyncRewake`, the model gets `rewakeMessage` plus stderr, and the user sees only `rewakeSummary`: "💾 Memory capture checkpoint (automatic, not from the user)." These three fields are marked internal in the CLI's hook schema and are not documented. They were read from the 2.1.284 CLI and not measured live, so check the checkpoint still fires after a Claude Code upgrade.
+
+The instruction itself is the header line plus one line. That line points at the warmup's Memory routing capture rule for the detail. On its own, it still gives the model permission to write nothing, a one-line reply, and "Do not ask first".
 
 **It is the backstop behind the warmup's capture rule, not a periodic reminder**, and that is what sets its timing. A per-turn `UserPromptSubmit` capture nudge used to sit in front of it. That nudge was retired on 2026-09-27: it fired on sub-agent hand-backs and task notifications as well as typed prompts, and restated warmup text at a measured ~180k tokens in three days. A backstop has to fire at least once per session to be one at all, so the **first** fire matters far more than the repeat. It lands on turn 5 (`WORKBENCH_CAPTURE_STOP_FIRST`) and then settles onto a sparse 40 (`WORKBENCH_CAPTURE_STOP_INTERVAL`), which exists only to catch findings that crystallize late in a long session. Measured over 467 transcripts of this project:
 
@@ -682,17 +686,18 @@ A flat interval of 20 would therefore have captured nothing in 84% of sessions. 
 
 **It is not tuned to beat compaction.** Exactly one of those 467 sessions ever compacted. The real context-loss events here are quit and `/clear`, and neither gives any warning a hook can read — the `Stop` payload carries no context-pressure field, so "fire when the shed is near" is unavailable at any price.
 
-Five things switch it off, and each closes a real failure:
+Six things switch it off, and each closes a real failure:
 
 | Condition | Why |
 |---|---|
-| `stop_hook_active` is true | That flag means our own block is already being served. Blocking inside it is an infinite loop. Anything but a definite `false` counts as active. |
+| `stop_hook_active` is true | That flag means our own wake is already being served. Firing inside it is an infinite loop. Anything but a definite `false` counts as active. |
+| It is the first turn end after a fire | That turn is the one our own wake caused. This guard holds at any interval, even if the CLI does not set `stop_hook_active` on the wake. |
 | `agent_id` is present | A sub-agent's findings belong to the session that dispatched it, which gets its own turn ends. |
 | `WORKBENCH_SUMMARY_WRITER=1` | The background writer's whole job is one summary from a log it was handed. |
-| `WORKBENCH_DEV_TEAM_PIPELINE=1` | An unattended dev-team agent. In `claude -p` a blocked stop makes the capture reply the run's final output, which is what the dispatcher logs as the agent's report. |
+| `WORKBENCH_DEV_TEAM_PIPELINE=1` | An unattended dev-team agent. In `claude -p` a fired checkpoint makes the capture reply the run's final output, which is what the dispatcher logs as the agent's report. |
 | The session is a scheduled tick | A Stop payload carries no prompt, so the hook reads the transcript's first user record and looks for the `<scheduled-task …>` wrapper (`hooks/lib/scheduled-origin.sh`, shared with `memory-scan-recall.sh`). It reads it only on a turn that would fire. An unattended tick writing memories about its own routing is the noise the vault does not want. |
 
-**Why `Stop`, and not `PreCompact`.** Only two events can make a live model act: `UserPromptSubmit` (via `additionalContext` on the next human turn) and `Stop` (via `decision: block`). `PreCompact` is not one of them — measured against the shipped CLI (2.1.277), its executor reads each hook's stdout and its blocked/succeeded state and nothing else, and no model turn is open there to run a tool in. A PreCompact hook can block compaction or say nothing, and neither writes a memory. Stop is the right event anyway: compaction happens between turns, so the last Stop before one is the last moment the session still holds everything it is about to shed.
+**Why `Stop`, and not `PreCompact`.** Only two events can make a live model act: `UserPromptSubmit` (via `additionalContext` on the next human turn) and `Stop` (via `decision: block`, or an `asyncRewake` wake). `PreCompact` is not one of them — measured against the shipped CLI (2.1.277), its executor reads each hook's stdout and its blocked/succeeded state and nothing else, and no model turn is open there to run a tool in. A PreCompact hook can block compaction or say nothing, and neither writes a memory. Stop is the right event anyway: compaction happens between turns, so the last Stop before one is the last moment the session still holds everything it is about to shed.
 
 **A hard quit is not covered, and cannot be.** `SessionEnd` runs after the model can no longer act — the same reason it cannot dispatch a summary-writer. Those sessions still get the background summary; they just do not get the curated pass.
 

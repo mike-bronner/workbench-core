@@ -13,8 +13,9 @@
 #
 # Why Stop, and why not PreCompact. Only two hook events can make a live model
 # act: UserPromptSubmit (additionalContext on the next human turn) and Stop
-# (`decision: block` + `reason`, which refuses the stop and hands the model the
-# reason as its next instruction). PreCompact is NOT one of them — measured
+# (a blocked stop, or an `asyncRewake` hook that wakes the model with a new
+# turn — this hook uses the second, see "How it fires" below). PreCompact is
+# NOT one of them — measured
 # against the shipped CLI (2.1.277), its executor collects each hook's stdout
 # and its blocked/succeeded state and nothing else; there is no additionalContext
 # path, and no model turn is open at that point to run a tool in. A PreCompact
@@ -47,12 +48,15 @@
 #   - Then every REPEAT turn ends (default 40) → sparse, and only to catch
 #     findings that crystallize late in a long session.
 #   - Otherwise: emit NOTHING (exit 0) — the cost lever.
-#   - Never when stop_hook_active is true: that IS our own block, and blocking
+#   - Never when stop_hook_active is true: that IS our own wake, and firing
 #     again is an infinite loop.
+#   - Never on the first turn end after a fire, whatever the thresholds say.
+#     That turn is the one our own wake caused, so this is the loop guard that
+#     does not depend on the CLI setting stop_hook_active.
 #   - Never inside a sub-agent, a summary-writer child, an unattended dev-team
 #     agent, or a scheduled task.
 #
-# Blocking a stop is expensive: it buys a whole extra model turn. Hence the sparse
+# A fire is expensive: it buys a whole extra model turn. Hence the sparse
 # repeat, and an instruction that explicitly permits a no-op. The early first
 # fire makes that permission MORE important, not less: at turn 5 a session
 # often genuinely has nothing worth recording.
@@ -68,7 +72,8 @@
 #                                        history and need retuning separately.
 #   WORKBENCH_MEMORY_NUDGE_STATE=DIR   → state dir override (tests use this).
 #
-# Never fails the session. Always exits 0 — bad input, missing jq, or a
+# Never fails the session. It exits 2 only to fire, with the instruction on
+# stderr. Every other path exits 0 with no output — bad input, missing jq, or a
 # malformed payload all degrade to a silent no-op.
 
 set -u
@@ -90,7 +95,7 @@ fi
 
 # The dev-team pipeline's scheduled agents are the other headless children on
 # this machine (bin/dispatch-agent.sh exports this onto every one it spawns).
-# They run unattended under a budget cap, and in `claude -p` a blocked stop
+# They run unattended under a budget cap, and in `claude -p` a fired checkpoint
 # turns the capture reply into the run's final output — which is the text the
 # dispatcher logs as the agent's report. Same reasoning as the scheduled-task
 # guard below: nobody is present to judge what got written.
@@ -127,9 +132,11 @@ fi
 
 # ──────────── Loop guard ────────────
 # stop_hook_active is true when the model is already continuing because a Stop
-# hook blocked it. Blocking again from inside that continuation is an infinite
-# loop, which is why the CLI ships a block cap at all. Fail closed: anything
-# other than a definite "false" is treated as active.
+# hook blocked it or woke it. The 2.1.284 CLI queues an asyncRewake wake with
+# stopHookActive set (read in its code, not measured live). Firing again from
+# inside that continuation is an infinite loop. Fail closed: anything other
+# than a definite "false" is treated as active. The fire decision below carries
+# a second guard that holds even if the flag is not set.
 if [ "$STOP_ACTIVE" != "false" ]; then
   exit 0
 fi
@@ -218,7 +225,10 @@ else
   THRESHOLD="$FIRST"
 fi
 
-if [ "$COUNT" -lt "$THRESHOLD" ]; then
+# The first turn end after a fire is the turn our own wake caused. It never
+# fires, even at WORKBENCH_CAPTURE_STOP_INTERVAL=1, so the loop is closed here
+# whether or not the CLI marks that turn stop_hook_active.
+if [ "$COUNT" -lt "$THRESHOLD" ] || { [ -f "$FIRED_FILE" ] && [ "$COUNT" -eq 1 ]; }; then
   # No fire — bank this turn end and stay silent.
   printf '%s' "$COUNT" > "$STATE_FILE" 2>/dev/null || true
   exit 0
@@ -248,34 +258,36 @@ fi
 printf '0' > "$STATE_FILE" 2>/dev/null || true
 : > "$FIRED_FILE" 2>/dev/null || true
 
-# The instruction. Three things it must do, in this order of importance:
-#   1. Say plainly that nothing is required when nothing qualifies. Without
-#      that, a forced turn manufactures a memory to justify itself, and the
-#      vault fills with restatements of the obvious.
-#   2. Name what only THIS session can supply — the curated shape a background
-#      summarizer reading raw JSONL cannot reconstruct.
-#   3. Say it is automatic, so the model does not answer the human with it.
-read -r -d '' CAPTURE_INSTRUCTION <<'EOF' || true
-💾 Memory capture checkpoint (automatic, not from the user).
+# How it fires. A synchronous `decision: block` would hand the model this text,
+# but Claude Code also prints the whole `reason` to the user as "Stop hook
+# feedback", and a synchronous Stop hook has no field the model reads and the
+# user does not. So hooks/hooks.json registers this hook with `asyncRewake`:
+# it runs in the background after the turn ends, and exit 2 wakes the model
+# with a new turn. Read from the shipped CLI (2.1.284), not measured live:
+#   - the model gets `rewakeMessage` plus this script's stderr;
+#   - the user sees only `rewakeSummary`, the header line;
+#   - `rewakeSummary` set in hooks.json is not gated by plugin source (the same
+#     field in a hook's JSON output is honored only for official-marketplace
+#     plugins, so it must stay in hooks.json);
+#   - the wake is queued with stopHookActive set.
+# The fields are marked @internal in the CLI's hook schema. A CLI update can
+# change or drop them without any error from this hook, so re-check that the
+# checkpoint still fires, and still shows one line, after an upgrade.
+#
+# The text is the header plus ONE line. The long form of the rule (what counts
+# as durable, search before saving, skip the trivial) is the warmup's Memory
+# routing block, which is re-injected after every compaction. The line points
+# at it, and still carries on its own the three things a backstop cannot leave
+# to a rule that has lost salience:
+#   1. Permission to write nothing, and to answer in one line. Without it, a
+#      forced turn manufactures a memory to justify itself.
+#   2. "Do not ask first". The ask-before-saving drift recurred three times
+#      while the authorization lived only in standing context.
+#   3. The header says it is automatic, so the model does not answer the human
+#      with it.
+CAPTURE_HEADER='💾 Memory capture checkpoint (automatic, not from the user).'
+CAPTURE_INSTRUCTION="$CAPTURE_HEADER
+Write anything durable from this session that the vault lacks with mcp__plugin_workbench-core_memory__write, per the Memory routing capture rule. Do not ask first. If nothing qualifies, write nothing: say so in one line and stop. A manufactured memory is worse than none."
 
-Before this turn ends: if this session has produced anything durable that is
-not in the vault yet, write it now with
-mcp__plugin_workbench-core_memory__write, under the right type — a decision
-with its rationale and the alternatives rejected, a root cause, a correction
-the user made to how you work, or a procedure worth reusing.
-
-Write it now because you are the only one who can. The background summarizer
-reads a raw transcript with no lived context, and it is forbidden from padding
-a thin reconstruction into a confident one — a finding you do not record here
-is not recoverable later in this form.
-
-If nothing in this session qualifies, or it is already recorded, write nothing.
-Say so in one short line and stop. A manufactured memory is worse than none.
-
-Standing authorization — do not ask first. Do not report this checkpoint to the
-user beyond that one line.
-EOF
-
-jq -cn --arg reason "$CAPTURE_INSTRUCTION" \
-  '{decision: "block", reason: $reason}' 2>/dev/null || true
-exit 0
+printf '%s\n' "$CAPTURE_INSTRUCTION" >&2
+exit 2

@@ -11,7 +11,7 @@
         ]
       },
       {
-        "matcher": "Edit|Write|NotebookEdit",
+        "matcher": "Write|NotebookEdit",
         "hooks": [
           {
             "type": "command",
@@ -74,15 +74,6 @@
         ]
       },
       {
-        "matcher": "mcp__.*memory__search",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-search-mode.sh\""
-          }
-        ]
-      },
-      {
         "matcher": "Bash|mcp__.*__(add_comment|submit_review|create_issue|set_acceptance_criteria)",
         "hooks": [
           {
@@ -97,6 +88,15 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/peer-message-gate.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/skill-learnings.sh\""
           }
         ]
       }
@@ -117,15 +117,6 @@
       }
     ],
     "PostToolUse": [
-      {
-        "matcher": "^mcp__",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/mcp-output-cap.sh\""
-          }
-        ]
-      },
       {
         "matcher": "Grep|Bash",
         "hooks": [
@@ -188,14 +179,6 @@
       {
         "matcher": "",
         "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-capture-nudge.sh\""
-          },
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-recall-nudge.sh\""
-          },
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-recall.sh\""

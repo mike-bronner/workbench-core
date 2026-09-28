@@ -115,6 +115,28 @@ echo "not a folder" > "$LEFT_FILE"
 # expects it proves nothing, so the cases run only where the fact holds.
 PRIVATE_TMP=no; [ /private/tmp -ef /tmp ] && PRIVATE_TMP=yes
 CASE_FOLDING=no; [ -d "/tmp/CLAUDE-SCRATCH-DSCOPE-$$" ] && CASE_FOLDING=yes
+# A sandbox memory cache, standing in for ~/.claude-memory-cache. Its
+# pending-summaries folder holds real marker files plus every shape the marker
+# permit must refuse. LINKED_CACHE's pending-summaries is a link to the victim,
+# and LINKED_ROOT is itself a link to CACHE, so each link level is refused.
+CACHE="$SANDBOX/cache"
+PENDING="$CACHE/pending-summaries"
+LINKED_CACHE="$SANDBOX/linked-cache"
+LINKED_ROOT="$SANDBOX/linked-root"
+mkdir -p "$PENDING/nested" "$PENDING/dir-marker.json" "$LINKED_CACHE"
+echo '{}' > "$PENDING/sid-aaaa-1111.json"
+echo '{}' > "$PENDING/sid-bbbb-2222.json"
+echo '{}' > "$PENDING/nested/sid-cccc.json"
+echo 'not a marker' > "$PENDING/notes.txt"
+echo '{}' > "$VICTIM/victim.json"
+ln -s "$VICTIM/victim.json" "$PENDING/link-marker.json"
+ln -s "$VICTIM" "$LINKED_CACHE/pending-summaries"
+ln -s "$CACHE" "$LINKED_ROOT"
+# A real folder shaped like a cache, approved for nobody: only the hook's own
+# environment names the cache, so the command naming this one must not count.
+ROGUE_CACHE="$SANDBOX/rogue-cache"
+mkdir -p "$ROGUE_CACHE/pending-summaries"
+echo '{}' > "$ROGUE_CACHE/pending-summaries/sid-rogue.json"
 # The live session tree, by its real name. It holds every session's scratchpad,
 # and the guard only ever reads it here.
 SESSION_TREE="/tmp/claude-$(id -u)"
@@ -142,9 +164,12 @@ git -C "$OUT_REPO" init -q . 2>/dev/null
 # run_guard — stdin is the payload. The session id reaches the guard through the
 # PAYLOAD, so CLAUDE_CODE_SESSION_ID is unset here: any case that passes is
 # passing on the payload's id alone. $1 overrides the project root, so the
-# no-project case can be exercised.
+# no-project case can be exercised. The memory cache is always a sandbox one,
+# so no case reads this machine's config or its real pending-summaries folder;
+# GUARD_CACHE swaps in a different sandbox cache for the link cases.
 run_guard() {
   (unset CLAUDE_CODE_SESSION_ID
+   WORKBENCH_MEMORY_CACHE="${GUARD_CACHE:-$CACHE}" \
    CLAUDE_PROJECT_DIR="${1-$PROJECT}" bash "$GUARD")
 }
 
@@ -296,6 +321,62 @@ check allow "a symlink inside it, not its target" "rm -rf $LEFT_SCRATCH/escape"
 check allow "scratch after a middle word"     "rm -rf $LEFT_SUMMARY"
 check allow "relative to /tmp"                "rm -rf ${LEFT_SCRATCH#/tmp/}" "/tmp"
 check allow "two leftovers at once"           "rmdir $LEFT_SUMMARY $LEFT_SCRATCH/sub"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SESSION-SUMMARY MARKERS. The summary-writer and log-now each end by deleting
+# their marker in <cache>/pending-summaries/, and this guard
+# denied every one of those deletes, so 800 markers piled up. One marker file
+# is approved, and nothing else under the cache is.
+echo "permits a delete of one session-summary marker:"
+check allow "the summary-writer's rm"         "rm $PENDING/sid-aaaa-1111.json"
+check allow "rm -f of a marker"               "rm -f $PENDING/sid-aaaa-1111.json"
+check allow "the path double-quoted"          "rm -f \"$PENDING/sid-aaaa-1111.json\""
+check allow "a marker already gone"           "rm -f $PENDING/sid-never-made.json"
+check allow "two markers at once"             "rm -f $PENDING/sid-aaaa-1111.json $PENDING/sid-bbbb-2222.json"
+check allow "relative to the folder"          "rm -f sid-aaaa-1111.json" "$PENDING"
+
+echo "refuses everything else under the memory cache:"
+check deny "the pending-summaries folder"     "rm -rf $PENDING"
+check deny "the folder with a trailing slash" "rm -rf $PENDING/"
+check deny "the cache root"                   "rm -rf $CACHE"
+check deny "a file that is not a marker"      "rm -f $PENDING/notes.txt"
+check deny "a marker in a subfolder"          "rm -f $PENDING/nested/sid-cccc.json"
+check deny "a subfolder of the folder"        "rm -rf $PENDING/nested"
+check deny "a folder named like a marker"     "rm -rf $PENDING/dir-marker.json"
+check deny "a marker-named link"              "rm -f $PENDING/link-marker.json"
+check deny "a link's target, via trailing slash" "rm -rf $PENDING/link-marker.json/"
+check deny "a sibling folder of the cache"    "rm -f $CACHE/sid-aaaa-1111.json"
+check deny "a marker by \$variable"           'rm "$marker_path"'
+check deny "a marker by tilde"                "rm -f ~/.claude-memory-cache/pending-summaries/sid-aaaa-1111.json"
+check deny "a marker-shaped file elsewhere"   "rm -f $VICTIM/victim.json"
+# A `..` climb out of the folder lands on the victim, never on a marker.
+check deny "climbing out of the folder with .." "rm -f $PENDING/../../victim/victim.json"
+check deny "a .. that names no marker at all"   "rm -f $PENDING/.."
+# One valid marker does not carry an outside path with it, in either order:
+# every operand is judged, and one outside operand denies the whole command.
+check deny "a marker, then an outside path"   "rm -f $PENDING/sid-aaaa-1111.json $VICTIM/victim.json"
+check deny "an outside path, then a marker"   "rm -f $VICTIM/victim.json $PENDING/sid-aaaa-1111.json"
+# A link as the pending-summaries folder would aim the permit at its target.
+OUT=$(payload "rm -f $LINKED_CACHE/pending-summaries/victim.json" \
+  | GUARD_CACHE="$LINKED_CACHE" run_guard 2>/dev/null)
+if [ "$(verdict_of "$OUT")" = deny ]; then
+  PASS=$((PASS + 1)); echo "  ✅ a pending-summaries folder that is a link"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ a pending-summaries folder that is a link — got $(verdict_of "$OUT")"
+fi
+OUT=$(payload "rm -f $PENDING/sid-aaaa-1111.json" \
+  | GUARD_CACHE="$LINKED_ROOT" run_guard 2>/dev/null)
+if [ "$(verdict_of "$OUT")" = deny ]; then
+  PASS=$((PASS + 1)); echo "  ✅ a cache root that is a link"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ a cache root that is a link — got $(verdict_of "$OUT")"
+fi
+# The command cannot nominate its own cache: the prefix assignment reaches rm,
+# never the hook, so the victim folder is still judged outside every root.
+check deny "a cache named by the command itself" \
+  "WORKBENCH_MEMORY_CACHE=$ROGUE_CACHE rm -f $ROGUE_CACHE/pending-summaries/sid-rogue.json"
+assert_survives "the rogue marker survives" "$ROGUE_CACHE/pending-summaries/sid-rogue.json"
+assert_survives "the marker-shaped victim survives" "$VICTIM/victim.json"
 
 echo "refuses every other /tmp entry, and every way out of the family:"
 check deny "a /tmp folder named outside the family" "rm -rf $OFF_FAMILY"
@@ -918,6 +999,81 @@ fi
 assert_jq "no Bash allow entry names the helper" \
   "$ROOT_DIR/assets/permissions/rails.json" \
   '[(.allow // [])[] | select(.rule | test("scratch-rm"))] | length' "0"
+
+# ── The prefilter reads whole words ─────────────────────────────────────────
+# A word that merely CONTAINS a verb (`--format`, `permission`, `terminal`) is
+# not a verb, so it must not start python. Every spelling of a real verb must.
+echo "prefilter — a verb inside a longer word starts no python, a real verb does:"
+mkdir -p "$SANDBOX/py-shim"
+printf '#!/bin/bash\necho started >> "%s/py-shim/starts"\nexec "%s" "$@"\n' \
+  "$SANDBOX" "$(command -v python3)" > "$SANDBOX/py-shim/python3"
+chmod +x "$SANDBOX/py-shim/python3"
+python_starts() {  # python_starts <command> → how many python3 starts it cost
+  : > "$SANDBOX/py-shim/starts"
+  payload "$1" "$PROJECT" | PATH="$SANDBOX/py-shim:$PATH" run_guard >/dev/null 2>&1
+  wc -l < "$SANDBOX/py-shim/starts" | tr -d ' '
+}
+assert_starts() {  # assert_starts <none|some> <command>
+  local got
+  got=$(python_starts "$2")
+  if { [ "$1" = none ] && [ "$got" = 0 ]; } || { [ "$1" = some ] && [ "$got" -gt 0 ]; }; then
+    PASS=$((PASS + 1)); echo "  ✅ $1: $2"
+  else
+    FAIL=$((FAIL + 1)); echo "  ❌ $1: $2 — got $got python start(s)"
+  fi
+}
+assert_starts none 'git log --format=%H -3'
+assert_starts none 'echo permission terminal'
+assert_starts none 'ls ./cleanup ./resetting ./stashed ./deleted ./rmx'
+assert_starts some 'rm x'
+assert_starts some '\rm x'
+assert_starts some '/bin/rm x'
+assert_starts some 'cd sub && rm -rf y'
+assert_starts some 'echo $(rm x)'
+assert_starts some '${RM} -rf x'
+assert_starts some '${RM_BIN} -rf x'
+assert_starts some 'RMDIR x'
+assert_starts some 'rmdir x'
+assert_starts some 'find . -name x -delete'
+assert_starts some 'git -C sub reset --hard'
+assert_starts some 'git clean -fd'
+assert_starts some 'git stash drop'
+assert_starts some 'bash -c "git stash clear"'
+# Split verbs. The checker's tokeniser and bash both rejoin quotes, backslashes
+# and backslash-newlines, so each of these runs the verb it spells, and each
+# must reach the checker.
+assert_starts some "r''m -rf /etc/x"
+assert_starts some 'r\m -rf /etc/x'
+assert_starts some $'r\\\nm -rf /etc/x'
+assert_starts some 'find /etc -de""lete'
+# A quote alone does not wake it: the joined text still has to hold a verb.
+assert_starts none 'echo "permission" '\''terminal'\'''
+
+echo "split verbs reach a verdict, not silence:"
+check deny "r''m outside every root"         "r''m -rf $VICTIM/keep.txt"
+check deny "r\\m outside every root"          "r\\m -rf $VICTIM/keep.txt"
+# Bash deletes a backslash-newline before it reads a word, so r\<newline>m runs
+# rm. The tokeniser now does the same, so the checker reads the verb slot.
+check deny "r\\<newline>m outside every root" $'r\\\nm -rf '"$VICTIM/keep.txt"
+check deny "a continued line carrying rm"     $'cd / && \\\nrm -rf '"$VICTIM/keep.txt"
+# macOS resolves command names on a case-insensitive filesystem, so RM runs rm.
+check deny "RM outside every root"            "RM -rf $VICTIM/keep.txt"
+check deny "/BIN/RM outside every root"       "/BIN/RM -rf $VICTIM/keep.txt"
+check deny "-de\"\"lete outside every root"   "find $VICTIM -de\"\"lete"
+
+echo "only bash's own cd moves the shell:"
+# Bash finds the builtin by its exact name. `CD`, `Cd` and `/usr/bin/cd` run
+# /usr/bin/cd in a child on macOS, and so do `sudo cd` and `env cd`, so the
+# relative delete after them resolves where the command started: outside.
+check allow "a real cd into the project"      "cd $PROJECT && rm -rf sub" "$VICTIM"
+for fake in CD Cd /usr/bin/cd 'sudo cd' 'env cd'; do
+  check deny "$fake into the project moves nothing" "$fake $PROJECT && rm -rf keep.txt" "$VICTIM"
+done
+check allow "command cd still moves the shell" "command cd $PROJECT && rm -rf sub" "$VICTIM"
+# Neutral rather than allow: the guard permits only a command that does nothing
+# else, and this one also runs `if`. What matters is that it is not refused.
+check neutral "a cd behind if still moves it"  "if cd $PROJECT; then rm -rf sub; fi" "$VICTIM"
+assert_survives "the victim survived every split verb" "$VICTIM/keep.txt"
 
 echo
 echo "$PASS passed, $FAIL failed"

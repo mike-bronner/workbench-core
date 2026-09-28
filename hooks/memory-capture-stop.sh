@@ -25,8 +25,11 @@
 # Stop, by contrast, fires at the end of every assistant turn, which is the only
 # moment that is both live and guaranteed to arrive.
 #
-# What this hook is FOR. It is a backstop against the per-turn capture nudge
-# (hooks/memory-capture-nudge.sh) being ignored, not a periodic reminder. That
+# What this hook is FOR. It is the backstop behind the capture rule the
+# SessionStart warmup states, not a periodic reminder. (A per-turn
+# UserPromptSubmit capture nudge used to sit in front of it. It was retired on
+# 2026-09-27: it fired on sub-agent hand-backs and task notifications too, and
+# restated warmup text at a measured ~180k tokens in three days.) That
 # distinction sets the whole fire policy: a backstop has to fire at least once
 # per session to be a backstop at all, so WHEN IT FIRES FIRST matters far more
 # than how often it repeats.
@@ -49,24 +52,21 @@
 #   - Never inside a sub-agent, a summary-writer child, an unattended dev-team
 #     agent, or a scheduled task.
 #
-# Blocking a stop is far more expensive than the nudge next door: that one adds
-# a line of context, this one buys a whole extra model turn. Hence the sparse
+# Blocking a stop is expensive: it buys a whole extra model turn. Hence the sparse
 # repeat, and an instruction that explicitly permits a no-op. The early first
 # fire makes that permission MORE important, not less: at turn 5 a session
 # often genuinely has nothing worth recording.
 #
 # Env knobs:
 #   WORKBENCH_CAPTURE_STOP=0            → disable entirely.
-#   WORKBENCH_MEMORY_NUDGE=0            → disable entirely (family kill switch:
-#                                         "no memory-capture reminders" means
-#                                         this one too, not just the nudge).
+#   WORKBENCH_MEMORY_NUDGE=0            → disable entirely (the older family
+#                                         kill switch, still honoured).
 #   WORKBENCH_CAPTURE_STOP_FIRST=N     → turn end of the first fire (default 5).
 #   WORKBENCH_CAPTURE_STOP_INTERVAL=N  → turn ends between later fires (default
 #                                        40). Independent of FIRST on purpose:
 #                                        both are estimates from one project's
 #                                        history and need retuning separately.
-#   WORKBENCH_MEMORY_NUDGE_STATE=DIR   → state dir override, shared with the
-#                                        nudge (tests use this).
+#   WORKBENCH_MEMORY_NUDGE_STATE=DIR   → state dir override (tests use this).
 #
 # Never fails the session. Always exits 0 — bad input, missing jq, or a
 # malformed payload all degrade to a silent no-op.
@@ -145,8 +145,8 @@ fi
 # ──────────── Throttle: an early first fire, then a sparse repeat ────────────
 # Two thresholds, not one, because they do two different jobs.
 #
-# FIRST is the one that matters. This hook is a backstop against the per-turn
-# capture nudge being ignored, and a backstop that never fires is not one. Across
+# FIRST is the one that matters. This hook is the capture rule's backstop, and
+# a backstop that never fires is not one. Across
 # 467 transcripts of this project, a flat interval of 20 (first fire at turn 21)
 # reached 76 sessions — 84% would have captured nothing at all. Turn 9 reaches
 # 55%. Turn 5 reaches 411 of 467, which is 88%.
@@ -169,7 +169,7 @@ case "$REPEAT" in
 esac
 [ "$REPEAT" -lt 1 ] && REPEAT=40
 
-# ──────────── State dir (shared with the capture nudge) ────────────
+# ──────────── State dir ────────────
 STATE_DIR="${WORKBENCH_MEMORY_NUDGE_STATE:-$HOME/.claude-workbench/memory-nudge}"
 mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
 
@@ -182,24 +182,22 @@ STATE_FILE="$STATE_DIR/${SAFE_SID}.stopcount"
 # sentinel value in the counter: the counter is read by an arithmetic test, and
 # an out-of-band value there would have to be defended on every read.
 FIRED_FILE="$STATE_DIR/${SAFE_SID}.stopfired"
-
-# ──────────── Scheduled-task guard ────────────
-# A Stop payload carries no prompt, so the `<scheduled-task …>` wrapper that
-# memory-capture-nudge.sh matches on is not visible here. The nudge drops a
-# marker beside its own state instead, and this hook reads it: UserPromptSubmit
-# always fires before the turn it belongs to ends, so the marker is on disk by
-# the time the first Stop of that tick runs.
-#
-# Same reasoning as the nudge's own guard: an unattended tick capturing memories
-# about its own routing decisions is exactly the noise the vault does not want.
-if [ -f "$STATE_DIR/${SAFE_SID}.scheduled" ]; then
-  exit 0
-fi
+# Presence means the scheduled-task guard below already found this session to be
+# a scheduled tick. Recorded so the transcript is read once per session, not on
+# every turn from the threshold onward.
+SCHEDULED_FILE="$STATE_DIR/${SAFE_SID}.scheduled"
 
 # ──────────── State hygiene ────────────
 # Prune per-session state older than 3 days so the dir doesn't grow unbounded —
 # mirrors session-warmup's find -mtime retention sweep. Fire-and-forget.
-find "$STATE_DIR" \( -name '*.stopcount' -o -name '*.stopfired' \) -mtime +3 -delete 2>/dev/null
+# `.count` belonged to the retired UserPromptSubmit capture nudge, and is swept
+# here so the files it left behind still age out.
+find "$STATE_DIR" \( -name '*.stopcount' -o -name '*.stopfired' \
+  -o -name '*.count' -o -name '*.scheduled' \) -mtime +3 -delete 2>/dev/null
+
+# A session already found to be a scheduled tick stays silent without counting
+# and without reading its transcript again.
+[ -f "$SCHEDULED_FILE" ] && exit 0
 
 # ──────────── Count this turn end ────────────
 # Counted BEFORE the decision, and including the current turn, so a threshold
@@ -224,6 +222,27 @@ if [ "$COUNT" -lt "$THRESHOLD" ]; then
   # No fire — bank this turn end and stay silent.
   printf '%s' "$COUNT" > "$STATE_FILE" 2>/dev/null || true
   exit 0
+fi
+
+# ──────────── Scheduled-task guard ────────────
+# An unattended tick capturing memories about its own routing decisions is
+# exactly the noise the vault does not want, and nobody is present to judge what
+# got written. A Stop payload carries no prompt, so the `<scheduled-task …>`
+# wrapper is read out of the transcript's first user record
+# (lib/scheduled-origin.sh). It is read only here, on a turn that would fire, so
+# the ordinary silent turn pays nothing for it.
+#
+# An unreadable transcript counts as human. This hook's failure mode is one
+# extra checkpoint turn, and refusing it would silence the backstop in every
+# session whose transcript was not flushed yet.
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=hooks/lib/scheduled-origin.sh
+if . "$HOOK_DIR/lib/scheduled-origin.sh" 2>/dev/null; then
+  TRANSCRIPT=$(printf '%s' "$PAYLOAD" | jq -r '.transcript_path // empty' 2>/dev/null)
+  if [ "$(scheduled_origin "$TRANSCRIPT")" = "scheduled" ]; then
+    : > "$SCHEDULED_FILE" 2>/dev/null || true
+    exit 0
+  fi
 fi
 
 printf '0' > "$STATE_FILE" 2>/dev/null || true

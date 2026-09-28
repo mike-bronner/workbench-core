@@ -54,6 +54,10 @@
 #                              watchdog kill-on-timeout path.
 #   FAKE_SEARCH_EXIT_NONZERO=1  (search subcommand only) exit 1 with no stdout —
 #                              simulates a crashed/erroring CLI invocation.
+#   FAKE_SEARCH_TYPE=...       (search subcommand only) the search_type every
+#                              canned hit reports. Default "hybrid", a hit both
+#                              retrievers ranked. "semantic" or "keyword"
+#                              exercises memory-scan-recall.sh's agreement gate.
 #
 # `serve` is a thin bash shim around an inline python3 HTTP server: python3's
 # http.server gives a real bound TCP port that bash /dev/tcp and curl can hit,
@@ -84,6 +88,11 @@ if [ "${1:-}" = "search" ]; then
   hang="${FAKE_SEARCH_HANG_SECONDS:-0}"
   [ "$hang" -gt 0 ] 2>/dev/null && sleep "$hang"
 
+  # Every canned hit carries this search_type. "hybrid" is what the real CLI
+  # reports for a hit both retrievers ranked, "semantic" or "keyword" for a hit
+  # only one of them found.
+  ST="${FAKE_SEARCH_TYPE:-hybrid}"
+
   if [ "${FAKE_SEARCH_EMPTY:-}" = "1" ]; then
     echo '[]'
     exit 0
@@ -91,10 +100,10 @@ if [ "${1:-}" = "search" ]; then
   if [ "${FAKE_SEARCH_LESSONS:-}" = "1" ]; then
     cat <<JSON
 [
-  {"path":"learnings/2026-09-02-eval.md","title":"Decision-quality evaluation — 2026-09-02","folder":"learnings","score":0.99,"search_type":"semantic","frontmatter":{"name":"Decision-quality evaluation — 2026-09-02","type":"learnings","summary":"Dated eval snapshot, superseded by the next one — must not be injected."},"sections":[{"heading":null,"content":"snapshot body"}]},
-  {"path":"skills/release.learnings.md","title":"Learnings — release","folder":"skills","score":0.44,"search_type":"semantic","frontmatter":{"name":"Learnings — release","type":"skill-learnings","summary":"Canned skill-learnings hit for the recall hook test."},"sections":[{"heading":null,"content":"release body"}]},
-  {"path":"recurring-issues/2026-08-29-mcp-connection-failure.md","title":"Recurring — MCP connection failure","folder":"recurring-issues","score":0.41,"search_type":"semantic","frontmatter":{"name":"Recurring — MCP connection failure","type":"recurring-issue","summary":"Canned recurring-issue hit for the recall hook test."},"sections":[{"heading":null,"content":"recurrence body"}]},
-  {"path":"projects/canned-recall-project.md","title":"Canned project hit","folder":"projects","score":0.38,"search_type":"semantic","frontmatter":{"name":"Canned project hit","type":"project","summary":"Canned project summary for the recall hook test."},"sections":[{"heading":null,"content":"project body"}]}
+  {"path":"learnings/2026-09-02-eval.md","title":"Decision-quality evaluation — 2026-09-02","folder":"learnings","score":0.99,"search_type":"$ST","frontmatter":{"name":"Decision-quality evaluation — 2026-09-02","type":"learnings","summary":"Dated eval snapshot, superseded by the next one — must not be injected."},"sections":[{"heading":null,"content":"snapshot body"}]},
+  {"path":"skills/release.learnings.md","title":"Learnings — release","folder":"skills","score":0.44,"search_type":"$ST","frontmatter":{"name":"Learnings — release","type":"skill-learnings","summary":"Canned skill-learnings hit for the recall hook test."},"sections":[{"heading":null,"content":"release body"}]},
+  {"path":"recurring-issues/2026-08-29-mcp-connection-failure.md","title":"Recurring — MCP connection failure","folder":"recurring-issues","score":0.41,"search_type":"$ST","frontmatter":{"name":"Recurring — MCP connection failure","type":"recurring-issue","summary":"Canned recurring-issue hit for the recall hook test."},"sections":[{"heading":null,"content":"recurrence body"}]},
+  {"path":"projects/canned-recall-project.md","title":"Canned project hit","folder":"projects","score":0.38,"search_type":"$ST","frontmatter":{"name":"Canned project hit","type":"project","summary":"Canned project summary for the recall hook test."},"sections":[{"heading":null,"content":"project body"}]}
 ]
 JSON
     exit 0
@@ -102,17 +111,17 @@ JSON
   if [ "${FAKE_SEARCH_NOISE:-}" = "1" ]; then
     cat <<JSON
 [
-  {"path":"sessions/2026-01-01/noise-tick.summary.md","title":"Session summary — dispatch (idle)","folder":"sessions/2026-01-01","score":0.99,"search_type":"semantic","frontmatter":{"name":"Session summary — dispatch (idle)","type":"session","summary":"Noise summary that must not be injected."},"sections":[{"heading":null,"content":"noise body"}]},
-  {"path":"insights/canned-recall-one.md","title":"Canned recall hit one","folder":"insights","score":0.42,"search_type":"semantic","frontmatter":{"name":"Canned recall hit one","type":"insight","summary":"First canned summary for the recall hook test."},"sections":[{"heading":null,"content":"body one"}]},
-  {"path":"decisions/canned-recall-two.md","title":"Canned recall hit two","folder":"decisions","score":0.39,"search_type":"semantic","frontmatter":{"name":"Canned recall hit two","type":"decision","summary":"Second canned summary for the recall hook test."},"sections":[{"heading":null,"content":"body two"}]}
+  {"path":"sessions/2026-01-01/noise-tick.summary.md","title":"Session summary — dispatch (idle)","folder":"sessions/2026-01-01","score":0.99,"search_type":"$ST","frontmatter":{"name":"Session summary — dispatch (idle)","type":"session","summary":"Noise summary that must not be injected."},"sections":[{"heading":null,"content":"noise body"}]},
+  {"path":"insights/canned-recall-one.md","title":"Canned recall hit one","folder":"insights","score":0.42,"search_type":"$ST","frontmatter":{"name":"Canned recall hit one","type":"insight","summary":"First canned summary for the recall hook test."},"sections":[{"heading":null,"content":"body one"}]},
+  {"path":"decisions/canned-recall-two.md","title":"Canned recall hit two","folder":"decisions","score":0.39,"search_type":"$ST","frontmatter":{"name":"Canned recall hit two","type":"decision","summary":"Second canned summary for the recall hook test."},"sections":[{"heading":null,"content":"body two"}]}
 ]
 JSON
     exit 0
   fi
   cat <<JSON
 [
-  {"path":"insights/canned-recall-one.md","title":"Canned recall hit one","folder":"insights","score":0.42,"search_type":"semantic","frontmatter":{"name":"Canned recall hit one","type":"insight","summary":"First canned summary for the recall hook test."},"sections":[{"heading":null,"content":"body one"}]},
-  {"path":"decisions/canned-recall-two.md","title":"Canned recall hit two","folder":"decisions","score":0.39,"search_type":"semantic","frontmatter":{"name":"Canned recall hit two","type":"decision","summary":"Second canned summary for the recall hook test."},"sections":[{"heading":null,"content":"body two"}]}
+  {"path":"insights/canned-recall-one.md","title":"Canned recall hit one","folder":"insights","score":0.42,"search_type":"$ST","frontmatter":{"name":"Canned recall hit one","type":"insight","summary":"First canned summary for the recall hook test."},"sections":[{"heading":null,"content":"body one"}]},
+  {"path":"decisions/canned-recall-two.md","title":"Canned recall hit two","folder":"decisions","score":0.39,"search_type":"$ST","frontmatter":{"name":"Canned recall hit two","type":"decision","summary":"Second canned summary for the recall hook test."},"sections":[{"heading":null,"content":"body two"}]}
 ]
 JSON
   exit 0

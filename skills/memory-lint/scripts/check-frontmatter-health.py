@@ -16,6 +16,10 @@ the search it should. Two shapes cause it:
 Exit 1 when either shape is losing content from an indexed field; 0 otherwise.
 Findings that cost nothing extra (a truncated value in a key that was already
 unsearchable) are reported but do not fail.
+
+Exit 2 when PyYAML is missing, so the scan did not run at all. This used to exit
+0 with a SKIP line on stderr, and a lint reading the exit code alone reported a
+clean vault it had never scanned.
 """
 
 import os, re, sys, fnmatch
@@ -23,8 +27,10 @@ import os, re, sys, fnmatch
 try:
     import yaml
 except ImportError:
-    print("SKIP: PyYAML unavailable — cannot run the frontmatter scan", file=sys.stderr)
-    raise SystemExit(0)
+    print("ERROR: PyYAML is not installed for %s, so the frontmatter scan did not "
+          "run and the vault was NOT checked. Install it (python3 -m pip install "
+          "pyyaml) and run the scan again." % sys.executable, file=sys.stderr)
+    raise SystemExit(2)
 
 VAULT = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser("~/Documents/Claude/Memory")
 INDEXED = {"name", "type", "tags", "summary", "date", "scope", "log_files"}

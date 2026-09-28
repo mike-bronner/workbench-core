@@ -154,14 +154,27 @@ def extract_pattern(tokens, value_flags):
     return None
 
 
+# Operators that feed a search its input from the command text itself. A search
+# fed this way, or through a pipe, filters another command's output.
+STDIN_OPERATORS = {"<<<", "<<", "<<-"}
+
+
 def find_query(command):
-    """Walk a shell command for the first content search that carries a pattern."""
+    """Walk a shell command for the first content search that carries a pattern.
+
+    A search that reads stdin is skipped. `git diff | grep -E "real|allow|deny"`
+    filters a diff, so its pattern names lines the agent wants to see, not a
+    topic it is researching. Searching the vault with it returned notes that had
+    nothing to do with the work, at about 1.6 s each. Only a search that reads
+    files is a repo scan."""
     text, _bodies = extract_heredocs(command)
     for line in token_lines(text):
         for statement in split_statements(line):
-            for stage in statement:
+            for position, stage in enumerate(statement):
                 tokens = strip_noop(stage)
                 if not tokens:
+                    continue
+                if position > 0 or STDIN_OPERATORS & set(tokens):
                     continue
                 head = base(tokens[0])
                 if head == "git":

@@ -2,11 +2,9 @@
 description: Turn a decision-quality evaluation into concrete proposals — corrections to existing memories and new process recordings — then walk human sign-off and apply only what's approved. Gears 3+4 ("Propose" + "Sign-off") of the decision-quality learning loop; consumes /workbench-core:evaluate-decisions output. Run manually any time.
 ---
 
-This is an execution-aware skill — check `skills/propose-upgrades.learnings.md` in the vault before proceeding. If it exists, apply accumulated learnings.
+The user has invoked `/workbench-core:propose-upgrades`. Read the latest evaluation **learnings report** and turn each finding into a concrete **proposal** — a correction to an existing memory/rule, or a new process recording — written into a review digest. Then walk **sign-off**: in phase 1, **every proposal needs the user's explicit approval** (no auto-accept). Apply only the approved ones; log the rejected ones so they never resurface.
 
-The user has invoked `/workbench-core:propose-upgrades`. Read the latest evaluation **learnings report** and turn each finding into a concrete **proposal** — a correction to an existing memory/rule, or a new process recording — written into a review digest. Then walk **sign-off**: in phase 1, **every proposal needs Mike's explicit approval** (no auto-accept). Apply only the approved ones; log the rejected ones so they never resurface.
-
-Why this exists: evaluation produces findings, but a finding changes nothing on its own. This gear closes the loop — it proposes the *correction or missing process to record in memory* so that **future decisions are made correctly**, and it keeps Mike in control of every change to how the system thinks. The bar for each proposal is whether it improves one of three metrics: **accuracy, efficiency, speed**.
+Why this exists: evaluation produces findings, but a finding changes nothing on its own. This gear closes the loop — it proposes the *correction or missing process to record in memory* so that **future decisions are made correctly**, and it keeps the user in control of every change to how the system thinks. The bar for each proposal is whether it improves one of three metrics: **accuracy, efficiency, speed**.
 
 ## Step 0 — Pre-warm tools and read the references
 
@@ -34,7 +32,7 @@ Each proposal has a **type**, which determines the concrete change:
 | **correction** | Fix a wrong/contradictory existing memory or decision | MCP `edit` on the target |
 | **new-process** | Record a missing rule/process as a `feedback` memory so future decisions follow it | MCP `write` (new `feedback` doc) |
 | **promote** | Promote a recurring `feedback`/`insight` into an active rule | MCP `write`/`edit` + (if it lands in `CLAUDE.md`) the repo-file flow below |
-| **claude-md-rule** | Add/adjust a rule in a `CLAUDE.md` | repo-file flow (edit + commit-approval gate) |
+| **claude-md-rule** | Add/adjust a rule in a `CLAUDE.md` | repo-file flow (Watson brief, user commits) |
 | **skill-learning** | Bake a proven learning into a `SKILL.md` | hand to `/workbench-core:compact-learnings` |
 | **new-skill** | A recurring task worth its own skill | repo-file flow, scaffolded separately |
 
@@ -42,7 +40,7 @@ For each proposal capture: the exact target path, the precise proposed write/edi
 
 ## Step 3 — Write the proposal digest (the review queue)
 
-Write via MCP `write` to `proposals/YYYY-MM-DD.md`. The digest **is** the sign-off review queue — each item carries an explicit decision box and status, so the file is the durable record of what was proposed and what Mike decided:
+Write via MCP `write` to `proposals/YYYY-MM-DD.md`. The digest **is** the sign-off review queue — each item carries an explicit decision box and status, so the file is the durable record of what was proposed and what the user decided:
 
 ```markdown
 ---
@@ -69,9 +67,9 @@ summary: "N proposals — C corrections, P new-process, R promotions, … awaiti
 ## P2 — …
 ```
 
-## Step 4 — Sign-off (phase 1: every item needs Mike)
+## Step 4 — Sign-off (phase 1: every item needs the user)
 
-Present the proposals for sign-off via **`AskUserQuestion`** — one question per proposal, in severity order, batched in groups of up to 4 per call (the tool's max). **This is what makes the scheduled run work:** when this skill runs unattended (the nightly `workbench-core-decision-quality` task), the `AskUserQuestion` call **pauses the session and waits** until Mike picks up the triage — it never fabricates an answer or auto-applies. Run interactively, the same call just prompts him directly. The behavior is identical; only who answers (now vs. later) differs.
+Present the proposals for sign-off via **`AskUserQuestion`** — one question per proposal, in severity order, batched in groups of up to 4 per call (the tool's max). **This is what makes the scheduled run work:** when this skill runs unattended (the nightly `workbench-core-decision-quality` task), the `AskUserQuestion` call **pauses the session and waits** until the user picks up the triage — it never fabricates an answer or auto-applies. Run interactively, the same call just prompts them directly. The behavior is identical; only who answers (now vs. later) differs.
 
 Each question states the proposed change + your recommendation + the metric it improves. Options per proposal:
 
@@ -79,28 +77,28 @@ Each question states the proposed change + your recommendation + the metric it i
 |---|---|
 | **Approve** | Apply it (Step 5); set `Status: applied`. |
 | **Reject** | Don't apply; append a one-line entry to `proposals/rejected.md` (title + target + why) so it never resurfaces; set `Status: rejected`. |
-| **Edit & approve** | Mike amends via the question's free-text "Other"; apply the amended version. |
+| **Edit & approve** | The user amends via the question's free-text "Other"; apply the amended version. |
 
-Phase 1 has **no auto-accept** — every proposal goes through a question. Mike judges each against **accuracy / efficiency / speed** — the metrics named on the item. Apply each decision (Step 5) as it lands; when every item is decided, set the digest `status: signed-off`.
+Phase 1 has **no auto-accept** — every proposal goes through a question. The user judges each against **accuracy / efficiency / speed** — the metrics named on the item. Apply each decision (Step 5) as it lands; when every item is decided, set the digest `status: signed-off`.
 
 **Empty-triage guard:** if there are no proposals, do **not** call `AskUserQuestion` — finish silently. A scheduled run must never pause on an empty triage.
 
 ## Step 5 — Apply approved proposals
 
 - **Vault memory** (`correction`, `new-process`, `promote` staying in the vault): apply via MCP `edit` (corrections — never overwrite a doc to change one field) or `write` (new `feedback` doc with proper frontmatter per `vault-conventions.md`). Cross-link to the evidence and the source evaluation per `linking-synthesis.md`.
-- **Repo files** (`claude-md-rule`, `new-skill`, a `promote` landing in `CLAUDE.md`): make the edit with the file tools, then commit it **through the normal commit-approval gate** — show the diff and the `/workbench-dev-team:git-commit`-formatted message and wait for Mike's explicit yes. This skill's sign-off governs *what gets learned*; it does **not** bypass the deployed-code commit gate.
+- **Repo files** (`claude-md-rule`, `new-skill`, a `promote` landing in `CLAUDE.md`): do not edit them from this context. A repository change is development work, so it goes to Dr. Watson in Direct mode through `/workbench-dev-team:orchestrate`, with a five-slot brief. `Workdir:` is the repository. `Goal:` is the approved change in behaviour. `Context:` quotes the approved proposal and its evidence. `Done when:` is the change made and tested, with the tree left uncommitted. Watson hands back the diff and a proposed message, and the user commits through the approval gate. If `workbench-dev-team` is not installed, report each approved repo change with the file it belongs in, and leave it for the user. This skill's sign-off governs *what gets learned*. It never replaces review of the code change.
 - **`skill-learning`**: hand the entry to `/workbench-core:compact-learnings` for integration into the `SKILL.md` (don't reimplement that flow here).
 - Update each applied item's `Status` in the digest as you go, so the digest stays an accurate ledger.
 
 ## Step 6 — Report
 
-Terse: `N proposals — A applied, R rejected, E edited-then-applied.` Note any repo-file changes still pending their commit-approval. Point at the digest path.
+Terse: `N proposals — A applied, R rejected, E edited-then-applied.` Name any repo change handed to Watson, which still waits for the user's commit. Point at the digest path.
 
 ## Safety rails
 
-- **Never auto-apply.** Phase 1 = explicit sign-off on every item. No proposal is applied without Mike's yes for *that* item.
+- **Never auto-apply.** Phase 1 = explicit sign-off on every item. No proposal is applied without the user's yes for *that* item.
 - **Corrections use `edit`, not overwrite.** Preserve the rest of the target document byte-for-byte.
-- **The commit gate is sacrosanct.** Repo-file changes go through the normal show-diff/show-message/wait-for-yes flow. Never set `WORKBENCH_DEV_TEAM_PIPELINE=1` or create a lock to skip it.
+- **Repo changes go through Watson and the commit gate.** Never edit a repository file from this context, never set `WORKBENCH_DEV_TEAM_PIPELINE=1`, and never write an approval record by hand.
 - **Rejections are durable.** A rejected proposal is logged and never re-surfaced — respect the ledger on every run.
 - **One proposal per fix.** Consolidate findings that point at the same change; don't flood the queue.
 - **Stay within the bar.** A proposal must clear `decision-promotion.md` and name the metric it improves; if it does neither, drop it.
@@ -108,5 +106,5 @@ Terse: `N proposals — A applied, R rejected, E edited-then-applied.` Note any 
 ## Notes
 
 - This is gears 3+4 of 4. Gear 1 (Record) = the existing session-log → summary → decision-promotion pipeline; gear 2 (Evaluate) = `/workbench-core:evaluate-decisions`, whose report is this skill's input.
-- **Auto-accept and unattended scheduling are deferred to phase 2** — a future low-risk tier and a scheduled-tasks job that *generates* the digest but still never applies. Do not add either here without an explicit decision.
+- **Unattended runs ship already.** `/workbench-core:setup` Step 3 can register the nightly `workbench-core-decision-quality` task, which runs evaluate and then this skill, and pauses at the sign-off triage. **Auto-accept is deferred to phase 2**, a future low-risk tier. Do not add it here without an explicit decision.
 - If the evaluation report has no findings, say so and stop — nothing to propose.

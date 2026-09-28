@@ -133,6 +133,22 @@ row destructive-scope-guard    silent "cat fed rm -rf /"      "$(printf 'cat <<E
 # …but a heredoc fed to a SHELL is a script, and its body does run.
 row destructive-scope-guard    deny "bash fed rm -rf"         "$(printf 'bash <<EOF\nrm -rf %s/keep.txt\nEOF' "$OUTSIDE")"
 
+echo "a backslash-newline and an upper-case name read as bash reads them:"
+# Bash deletes a backslash-newline before it reads a word, and macOS resolves a
+# command name case-insensitively. The tokeniser does both for every guard, so
+# one parser change moves all four verdicts at once. Each row went from silent
+# to deny when shell_parse learned it.
+row destructive-database-guard deny "drop<continuation>db"   "$(printf 'drop\\\ndb app')"
+row provisioning-guard         deny "create<continuation>db" "$(printf 'create\\\ndb app')"
+row vault-git-guard            deny "git r<continuation>m"   "$(printf 'git -C %s r\\\nm insights/a.md' "$VAULT")"
+row destructive-scope-guard    deny "r<continuation>m"       "$(printf 'r\\\nm -rf %s/keep.txt' "$OUTSIDE")"
+row destructive-database-guard deny "DROPDB"                 "DROPDB app"
+row provisioning-guard         deny "CREATEDB"               "CREATEDB app"
+row vault-git-guard            deny "GIT rm in vault"        "GIT -C $VAULT rm insights/a.md"
+row destructive-scope-guard    deny "RM outside"             "RM -rf $OUTSIDE/keep.txt"
+# Inside single quotes bash keeps the pair, so the word stays split.
+row destructive-scope-guard    silent "quoted r<continuation>m is data" "$(printf "echo 'r\\\\\\nm -rf /'")"
+
 echo "read-only work stays untouched by all of it:"
 row destructive-database-guard silent "psql SELECT"      "psql -c 'SELECT 1'"
 row provisioning-guard         silent "git worktree list" "git worktree list"

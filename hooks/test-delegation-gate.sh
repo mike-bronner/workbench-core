@@ -41,7 +41,7 @@ SESSION="b94bbff5-0f68-4c1c-b3ec-3a899d30bc05"
 # short line naming the action. `additionalContext` arrives in its own block that
 # only the model reads, and it survives the deny, so every instruction an agent
 # acts on lives there. Both were measured on Claude Code 2.1.274.
-EXPECTED_DENY='{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"🛑 Blocked: editing a file from the main agent. File work goes to a sub-agent.","additionalContext":"Delegation gate (workbench-core). The main conversation orchestrates and does not edit files, which is what keeps its context lean. Dispatch a sub-agent with the Agent tool to make this change. Report the deny rather than routing around it. Only the human lifts the gate, by asking for /workbench-core:orchestrator off."}}'
+EXPECTED_DENY='{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"🛑 Blocked: writing a whole file from the main agent. New files go to a sub-agent.","additionalContext":"Delegation gate (workbench-core). The main conversation orchestrates and does not write whole files, which is what keeps its context lean. To change part of an existing file, use Edit, which the main agent may call. To create or rewrite a file, dispatch a sub-agent with the Agent tool. Report the deny rather than routing around it. Only the human lifts the gate, by asking for /workbench-core:orchestrator off."}}'
 DEVTEAM_LINE='For development work, dispatch Dr. Watson in Direct mode per /workbench-dev-team:orchestrate.'
 
 # Builds a payload from key=value pairs. A value of - omits the key entirely,
@@ -123,8 +123,14 @@ assert_grep() {
 
 echo "the deny path (main agent, gate on):"
 run_case "main agent Write"        deny tool_name=Write        session_id="$SESSION" agent_id=- agent_type=-
-run_case "main agent Edit"         deny tool_name=Edit         session_id="$SESSION" agent_id=- agent_type=-
 run_case "main agent NotebookEdit" deny tool_name=NotebookEdit session_id="$SESSION" agent_id=- agent_type=-
+
+echo "Edit is allowed from the main agent (a one-line change costs ~200 tokens inline):"
+run_case "main agent Edit"         silent tool_name=Edit       session_id="$SESSION" agent_id=- agent_type=-
+out=$(jq -cn --arg s "$SESSION" \
+  '{hook_event_name: "PreToolUse", tool_name: "Edit", session_id: $s,
+    tool_input: {file_path: "/etc/hosts"}}' | gate)
+check "main agent Edit outside every scratch root" "$out" silent
 
 echo "(a) sub-agent calls are allowed:"
 run_case "Task sub-agent (agent_id + agent_type)" silent \
@@ -202,7 +208,68 @@ run_case "Bash"              silent tool_name=Bash session_id="$SESSION" agent_i
 run_case "Read"              silent tool_name=Read session_id="$SESSION" agent_id=- agent_type=-
 run_case "missing tool_name" silent tool_name=-    session_id="$SESSION" agent_id=- agent_type=-
 
-echo "(f) errors fail open:"
+echo "(f) the main agent may write scratch files:"
+# A session scratchpad of the real shape, found by session id under
+# /tmp/claude-*/. The gate refuses one with a symlink at any level, so the
+# sibling session's pad, a linked pad, and a link inside a real pad are built
+# beside it to prove each is refused rather than followed.
+SCRATCH_TREE="/tmp/claude-dgate-test-$$"
+SCRATCH_SID="dgate-$$-aaaa"
+PAD="$SCRATCH_TREE/-fake-project/$SCRATCH_SID/scratchpad"
+OTHER_PAD="$SCRATCH_TREE/-fake-project/dgate-$$-bbbb/scratchpad"
+LINK_SID="dgate-$$-link"
+mkdir -p "$PAD/sub" "$OTHER_PAD" "$SANDBOX/outside" "$SCRATCH_TREE/-fake-project/$LINK_SID"
+ln -s "$SANDBOX/outside" "$SCRATCH_TREE/-fake-project/$LINK_SID/scratchpad"
+ln -s "$SANDBOX/outside" "$PAD/escape"
+ln -s "$SANDBOX/outside/target.txt" "$PAD/linked-file.txt"
+trap 'rm -rf "$SANDBOX" "$SCRATCH_TREE"' EXIT
+
+# write_case <description> <expect> <tool> <file_path> [session_id]
+write_case() {
+  local out
+  out=$(jq -nc --arg t "$3" --arg f "$4" --arg s "${5:-$SCRATCH_SID}" \
+    '{hook_event_name: "PreToolUse", tool_name: $t, session_id: $s,
+      tool_input: {file_path: $f}}' | gate)
+  check "$1" "$out" "$2"
+}
+
+write_case "Write a commit message in the session scratchpad" silent Write "$PAD/commit-msg.txt"
+write_case "Edit a file in the session scratchpad"            silent Edit  "$PAD/pr-body.md"
+write_case "Write into a subfolder not made yet"               silent Write "$PAD/new/deeper/x.md"
+if [ /private/tmp -ef /tmp ]; then
+  write_case "the pad by its /private spelling"                silent Write "/private$PAD/msg.txt"
+fi
+# NotebookEdit names its target `notebook_path`, never `file_path`, so only the
+# fallback in the gate's extraction can find it.
+out=$(jq -nc --arg f "$PAD/scratch.ipynb" --arg s "$SCRATCH_SID" \
+  '{hook_event_name: "PreToolUse", tool_name: "NotebookEdit", session_id: $s,
+    tool_input: {notebook_path: $f}}' | gate)
+check "NotebookEdit with only notebook_path in the pad" "$out" silent
+write_case "a project file is still denied"                   deny   Write "$SANDBOX/project/file.txt"
+write_case "the scratchpad folder itself is not a file in it" deny   Write "$PAD"
+write_case "another session's scratchpad"                     deny   Write "$OTHER_PAD/msg.txt"
+write_case "a scratchpad that is a symlink out"               deny   Write "$SCRATCH_TREE/-fake-project/$LINK_SID/scratchpad/x.txt" "$LINK_SID"
+write_case "a symlinked folder inside the pad"                deny   Write "$PAD/escape/x.txt"
+write_case "a symlinked file inside the pad"                  deny   Write "$PAD/linked-file.txt"
+write_case "climbing out with .."                             deny   Write "$PAD/../../../../outside.txt"
+write_case "climbing out of a folder not made yet"            deny   Write "$PAD/never/../../x.txt"
+write_case "a relative path"                                  deny   Write "scratchpad/msg.txt"
+write_case "no file_path at all"                              deny   Write ""
+write_case "a sibling sharing the pad's prefix"               deny   Write "${PAD}-evil/x.txt"
+
+# The login home comes from the password database, so a faked HOME holding a
+# Developer/scratchpad must not count. The suite's gate() already runs with
+# HOME pointed at the sandbox.
+mkdir -p "$FAKE_HOME/Developer/scratchpad"
+write_case "a \$HOME-relative scratchpad does not count"      deny   Write "$FAKE_HOME/Developer/scratchpad/x.txt"
+# The real one is read, never written: the gate only judges the path.
+LOGIN_USER=$(id -un)
+eval "LOGIN_HOME=~$LOGIN_USER"
+if [ -d "$LOGIN_HOME/Developer/scratchpad" ]; then
+  write_case "the login home's Developer/scratchpad"           silent Write "$LOGIN_HOME/Developer/scratchpad/dgate-$$-never-written.txt"
+fi
+
+echo "(g) errors fail open:"
 out=$(printf '%s' 'not json at all {{{' | gate)
 check "malformed JSON" "$out" silent
 out=$(printf '%s' '{"tool_name":"Write","session_id":' | gate)
@@ -241,7 +308,7 @@ fi
 # in the other channel is the regression this split exists to prevent.
 DENY_REASON=$(printf '%s' "$DENY_OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason')
 DENY_CONTEXT=$(printf '%s' "$DENY_OUT" | jq -r '.hookSpecificOutput.additionalContext')
-assert_contains "the human line names the action" "$DENY_REASON" "🛑 Blocked: editing a file from the main agent."
+assert_contains "the human line names the action" "$DENY_REASON" "🛑 Blocked: writing a whole file from the main agent."
 if [ "$(printf '%s' "$DENY_REASON" | wc -l | tr -d ' ')" = "0" ] && [ "${#DENY_REASON}" -le 120 ]; then
   PASS=$((PASS + 1)); echo "  ✅ the human line is one line and stays short (${#DENY_REASON} chars)"
 else
@@ -252,8 +319,9 @@ fi
 assert_missing "the human line carries no Markdown emphasis" "$DENY_REASON" "**"
 # These three are instructions only an agent acts on, so they belong in the
 # model's channel and must not reappear in the person's.
-assert_contains "context names the behaviour" "$DENY_CONTEXT" "orchestrates and does not edit files"
-assert_contains "context names the destination" "$DENY_CONTEXT" "Dispatch a sub-agent with the Agent tool"
+assert_contains "context names the behaviour" "$DENY_CONTEXT" "orchestrates and does not write whole files"
+assert_contains "context names Edit as the inline route" "$DENY_CONTEXT" "use Edit, which the main agent may call"
+assert_contains "context names the destination" "$DENY_CONTEXT" "dispatch a sub-agent with the Agent tool"
 assert_contains "context names the toggle" "$DENY_CONTEXT" "/workbench-core:orchestrator off"
 assert_missing "the human line does not repeat the destination" "$DENY_REASON" "Agent tool"
 assert_missing "the human line does not repeat the toggle" "$DENY_REASON" "/workbench-core:orchestrator off"
@@ -271,9 +339,9 @@ assert_missing "stays generic when the plugin cache is absent" "$DENY_OUT" "$DEV
 
 # Registration is part of the behaviour: a gate nothing calls gates nothing.
 echo "the hook is registered in hooks.json:"
-assert_jq "matcher covers exactly the three file-writing tools" "$HOOKS_JSON" \
+assert_jq "matcher covers exactly the two whole-file tools, not Edit" "$HOOKS_JSON" \
   '[.hooks.PreToolUse[] | select(.hooks[].command | test("delegation-gate.sh")) | .matcher] | join(",")' \
-  "Edit|Write|NotebookEdit"
+  "Write|NotebookEdit"
 assert_jq "registered exactly once" "$HOOKS_JSON" \
   '[.hooks.PreToolUse[].hooks[] | select(.command | test("delegation-gate.sh"))] | length' "1"
 assert_jq "no if condition narrows it" "$HOOKS_JSON" \
@@ -308,16 +376,6 @@ done
 assert_grep "skill keys the file by \$CLAUDE_CODE_SESSION_ID" 'CLAUDE_CODE_SESSION_ID' "$SKILL"
 assert_grep "gate keys the lookup by .session_id"             '.session_id'            "$GATE"
 assert_grep "skill prunes state files after 7 days"           '-mtime +7'              "$SKILL"
-
-echo "guardrail 10 agrees with the gate:"
-# guardrails.md is injected at session start, so a guardrail that contradicts an
-# enforced hook is worse than no guardrail: the agent follows it into a deny.
-# Guardrail 10 used to end with "a single Edit to a known string — do it inline",
-# which is exactly the call the gate now refuses.
-GUARDRAILS="$HOOKS_DIR/../references/guardrails.md"
-assert_grep "guardrail 10 names the enforcing hook" 'hooks/delegation-gate.sh' "$GUARDRAILS"
-assert_missing "guardrail 10 no longer allows an inline Edit" \
-  "$(cat "$GUARDRAILS")" '✅ A single `Edit`'
 
 echo
 echo "$PASS passed, $FAIL failed"

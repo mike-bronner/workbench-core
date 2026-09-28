@@ -17,8 +17,7 @@ SANDBOX=$(mktemp -d)
 trap 'rm -rf "$SANDBOX"' EXIT
 STDERR="$SANDBOX/stderr"
 
-# Prose that satisfies every mechanical rule: emoji present, no em dash, no
-# semicolon, every sentence under twenty words, no paragraph past six sentences.
+# Prose that satisfies both mechanical rules: no em dash and no semicolon.
 CLEAN='🐛 Fixed the list loader.
 
 The form now reads stored values on edit. Saving keeps them.'
@@ -89,17 +88,18 @@ assert_blocked "semicolon in prose" \
   run_bash 'gh pr comment 1 --body "🐛 The list was safe; the form never asked."'
 assert_names   "the block names the semicolon rule" "semicolon"
 
-assert_blocked "a sentence past twenty words" \
+echo
+echo "judgement calls are the output style's, never a deny:"
+# Emoji, sentence length, and paragraph length were checked here once. A deny on
+# a judgement call breeds workarounds: the writer pads in an emoji or chops a
+# sentence to pass the count, and the text gets no easier to read. Each fixture
+# below used to block, so each goes red if its check comes back.
+assert_allowed "a sentence past twenty words" \
   run_bash 'gh pr comment 1 --body "🐛 Editing a list in the List Manager showed an empty textarea whether the list was created new or upgraded from a rule."'
-assert_names   "the block names the sentence-length rule" "long-sent"
-
-assert_blocked "forty words of prose with no emoji" \
+assert_allowed "forty words of prose with no emoji" \
   run_bash 'gh pr comment 1 --body "The list itself was never lost. It sat on S3 the whole time. The form did not ask for it. Editing showed a blank box. Saving then failed on validation. No list could be edited at all. Retyping every value was the only path."'
-assert_names   "the block names the emoji rule" "no-emoji"
-
-assert_blocked "a paragraph past six sentences" \
+assert_allowed "a paragraph past six sentences" \
   run_bash 'gh pr comment 1 --body "🐛 One broke. Two broke. Three broke. Four broke. Five broke. Six broke. Seven broke."'
-assert_names   "the block names the paragraph rule" "long-para"
 
 echo
 echo "every surface that carries a body is covered:"
@@ -133,11 +133,11 @@ printf '🐛 Run `$a = 1;` first.\n' > "$SANDBOX/inline.md"
 assert_allowed "a semicolon inside an inline code span" \
   run_bash "gh pr create --title t --body-file $SANDBOX/inline.md"
 
-# Verbatim from decisioncloud's .github/PULL_REQUEST_TEMPLATE.md. Its second
-# sentence runs 25 words and carries a semicolon-free but comma-spliced clause,
-# so this fixture goes red the moment the checklist exemption stops working.
-printf '🐛 Fixed it.\n\n- [ ] I have addressed all GitHub linter comments. Each linter comment must have a resolution description in order to resolve, unless the concern has been addressed, and the comment is marked as "outdated".\n' > "$SANDBOX/checklist.md"
-assert_allowed "a long sentence inside a template checklist line" \
+# Adapted from decisioncloud's .github/PULL_REQUEST_TEMPLATE.md, with a semicolon
+# added. Template checklist text is not the author's, so this fixture goes red
+# the moment the checklist exemption stops working.
+printf '🐛 Fixed it.\n\n- [ ] I have addressed all GitHub linter comments. Each linter comment must have a resolution description; it resolves only then, unless the concern has been addressed, and the comment is marked as "outdated".\n' > "$SANDBOX/checklist.md"
+assert_allowed "a semicolon inside a template checklist line" \
   run_bash "gh pr create --title t --body-file $SANDBOX/checklist.md"
 
 printf '🐛 Fixed it.\n\n<!-- This is an auto-generated comment: release notes by coderabbit.ai -->\n\n## Summary by CodeRabbit\n\nImproved list editing — preserves saved values.\n\n<!-- end of auto-generated comment: release notes by coderabbit.ai -->\n' > "$SANDBOX/bot.md"
@@ -161,7 +161,6 @@ printf 'Editing a list in List Manager showed an empty textarea, whether the lis
 assert_blocked "the body from decisioncloud#21665" \
   run_bash "gh pr edit 21665 --body-file $BAD"
 assert_names   "it reports the em dash"        "em-dash"
-assert_names   "it reports the long sentence"  "long-sent"
 
 echo
 echo "a realistically large body is judged quickly:"
@@ -175,7 +174,7 @@ echo "a realistically large body is judged quickly:"
 BIG="$SANDBOX/big-body.md"
 : > "$BIG"
 while [ "$(wc -c < "$BIG")" -lt 12000 ]; do
-  printf '%s\n\n' 'Editing a list in the List Manager showed an empty textarea whether the list was created new or upgraded from a rule.' >> "$BIG"
+  printf '%s\n\n' 'Editing a list in the List Manager showed an empty textarea — whether the list was new or upgraded.' >> "$BIG"
 done
 BIG_SIZE=$(wc -c < "$BIG" | tr -d ' ')
 START=$(date +%s)
@@ -236,6 +235,8 @@ echo "the emptiness pre-check decides the same thing on every platform:"
 STUB="$SANDBOX/stub"
 mkdir -p "$STUB/lib"
 cp "$GUARD" "$STUB/"
+# The parser imports the shared tokeniser, so the stub tree carries it too.
+cp "$(dirname "$GUARD")/lib/shell_parse.py" "$STUB/lib/"
 printf '%s\n' 'import sys; sys.stdin.read(); print("stub-finding")' > "$STUB/lib/prose-check.py"
 
 run_stub() {  # run_stub <body-file> -> rc (0 allowed, 2 blocked)
@@ -269,6 +270,75 @@ if [ $? -eq 0 ]; then
 else
   FAIL=$((FAIL + 1)); echo "  ❌ ASCII whitespace reached the checker, so the fast path is gone"
 fi
+
+# ── The prefilter ────────────────────────────────────────────────────────────
+# The guard skips its parser when a Bash command cannot be a gh prose command.
+# These cases prove the skip happens for ordinary calls, and that no spelling
+# the parser accepts is skipped.
+printf '#!/bin/bash\necho started >> "%s/starts"\nexec "%s" "$@"\n' \
+  "$SANDBOX" "$(command -v python3)" > "$SANDBOX/python3"
+chmod +x "$SANDBOX/python3"
+python_starts() {  # python_starts <command> → how many python3 starts it cost
+  : > "$SANDBOX/starts"
+  jq -cn --arg c "$1" --arg d "$SANDBOX" '{tool_name:"Bash", cwd:$d, tool_input:{command:$c}}' \
+    | PATH="$SANDBOX:$PATH" bash "$GUARD" >/dev/null 2>&1
+  wc -l < "$SANDBOX/starts" | tr -d ' '
+}
+assert_starts() {  # assert_starts <description> <command> <expected>
+  local got
+  got=$(python_starts "$2")
+  if [ "$got" = "$3" ]; then
+    PASS=$((PASS + 1)); echo "  ✅ $1"
+  else
+    FAIL=$((FAIL + 1)); echo "  ❌ $1 (expected $3 python start(s), got $got)"
+  fi
+}
+
+echo "prefilter: a Bash call that is not a gh prose command starts no python:"
+assert_starts "ls"                         'ls -la' 0
+assert_starts "a grep that mentions gh"    'grep -rn "ghost" .' 0
+assert_starts "a git log"                  'git log --oneline -3' 0
+assert_starts "gh with no prose noun"      'gh auth status' 0
+assert_starts "a prose noun with no gh"   'echo "open a pr for the release"' 0
+assert_starts "gh with a noun and no prose verb" 'gh pr view 21665 --json body' 0
+assert_starts "gh api reaches the parser"  'gh api repos/o/r/issues/1/comments -f body=' 1
+assert_starts "a backslash-newline gh reaches the parser" "g"$'\\\n'"h pr comment 1 --body ''" 1
+
+echo "prefilter: every spelling the parser accepts still reaches it:"
+EMDASH_BODY="The fix works — mostly."
+assert_blocked "gh split by empty quotes" run_bash "g\"\"h pr create --title t --body '$EMDASH_BODY'"
+assert_blocked "gh split by a backslash"  run_bash "g\\h pr comment 1 --body '$EMDASH_BODY'"
+assert_blocked "pr in quotes"             run_bash "gh 'pr' edit 1 --body '$EMDASH_BODY'"
+assert_blocked "after cd &&"              run_bash "cd /x && gh release create v1 --notes '$EMDASH_BODY'"
+assert_blocked "issue comment"            run_bash "gh issue comment 5 --body '$EMDASH_BODY'"
+
+# The parser used to split the command with plain shlex and look for a token
+# spelled exactly `gh`. An operator glued to the name, an absolute path, a
+# backslash-newline, and `gh api` each hid the call from it.
+echo "parser: every spelling of a gh prose call is read:"
+assert_blocked "x&&gh with no spaces"      run_bash "true&&gh pr comment 1 --body '$EMDASH_BODY'"
+assert_blocked "a subshell (gh"            run_bash "(gh pr comment 1 --body '$EMDASH_BODY')"
+assert_blocked "an upper-case GH"          run_bash "GH pr comment 1 --body '$EMDASH_BODY'"
+assert_blocked "an absolute gh path"      run_bash "/opt/homebrew/bin/gh pr comment 1 --body '$EMDASH_BODY'"
+assert_blocked "gh split by a backslash-newline" \
+  run_bash "g"$'\\\n'"h pr comment 1 --body '$EMDASH_BODY'"
+assert_blocked "a second gh call after a clean first" \
+  run_bash "gh pr view 1 && gh pr comment 1 --body '$EMDASH_BODY'"
+assert_blocked "gh api with -f body"       run_bash "gh api repos/o/r/issues/1/comments -f body='$EMDASH_BODY'"
+assert_blocked "gh api with --raw-field"   run_bash "gh api repos/o/r/issues/1/comments --raw-field 'body=$EMDASH_BODY'"
+assert_blocked "gh api with a nested review body" \
+  run_bash "gh api repos/o/r/pulls/1/reviews -f event=COMMENT -f 'comments[][body]=$EMDASH_BODY'"
+printf '%s' "$EMDASH_BODY" > "$SANDBOX/api-body.md"
+assert_blocked "gh api with -F body=@file" run_bash "gh api repos/o/r/issues/1/comments -F body=@api-body.md"
+printf '{"body": "%s"}' "$EMDASH_BODY" > "$SANDBOX/api-input.json"
+assert_blocked "gh api with --input"       run_bash "gh api repos/o/r/issues/1/comments --input api-input.json"
+assert_blocked "gh api graphql mutation"   run_bash "gh api graphql -f query='mutation { addComment(input: {subjectId: \"x\", body: \"$EMDASH_BODY\"}) { clientMutationId } }'"
+assert_allowed "gh api with a clean body"  run_bash "gh api repos/o/r/issues/1/comments -f body='$CLEAN'"
+assert_allowed "gh api GET carries no prose" \
+  run_bash "gh api -X GET repos/o/r/issues -f body='a; b'"
+assert_allowed "gh api graphql query is a read" \
+  run_bash "gh api graphql -f query='query { viewer { login } }; x'"
+assert_allowed "gh api non-prose fields"   run_bash "gh api repos/o/r/pulls/1/reviews -f event=APPROVE -f commit_id='a;b'"
 
 echo
 echo "$PASS passed, $FAIL failed"

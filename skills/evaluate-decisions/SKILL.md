@@ -2,8 +2,6 @@
 description: Grade recorded decisions and memory entries for decision quality — correctness against outcomes, accuracy/efficiency/speed, consistency/recurrence, and missing process — and write a learnings report. Gear 2 ("Evaluate") of the decision-quality learning loop; feeds /workbench-core:propose-upgrades. Run manually any time.
 ---
 
-This is an execution-aware skill — check `skills/evaluate-decisions.learnings.md` in the vault before proceeding. If it exists, apply accumulated learnings.
-
 The user has invoked `/workbench-core:evaluate-decisions`. Read the recently recorded **decisions** and **memory entries** in the vault and grade their *decision quality*, then write a **learnings report** that the Propose gear turns into concrete corrections. This skill **only reads the corpus and writes one report** — it never edits a decision or memory, and it never proposes or applies a fix (that is `propose-upgrades`' job).
 
 Why this exists: the vault records what was decided, but nothing ever asks *were those decisions any good?* Left alone, wrong calls, contradictions, and the same mistake recorded three times sit in memory and quietly steer future decisions the wrong way. This skill is the periodic graded read that turns the record into learnings — so the next decision is more **accurate**, more **efficient**, and **faster**. Those three are the metrics every finding is measured against.
@@ -46,7 +44,7 @@ The strongest signal that a correction is needed. Detect:
 
 ### Axis 4 — Gaps / missing process (cheap)
 A decision that had to be made with **no governing rule** to guide it. Detect:
-- A `decision` whose context shows a judgment call with no link to, and no existing, `feedback`/process memory or `CLAUDE.md`/guardrail rule covering it (`get_outlinks` + a topic `search` for a governing rule that should exist but doesn't).
+- A `decision` whose context shows a judgment call with no link to, and no existing, `feedback`/process memory or `CLAUDE.md`/output-style rule covering it (`get_outlinks` + a topic `search` for a governing rule that should exist but doesn't).
 - A class of choice that **recurs** with no recorded process — the gap Propose fills by recording the missing process.
 
 ### Axis 1 — Correctness vs. outcomes (best-effort)

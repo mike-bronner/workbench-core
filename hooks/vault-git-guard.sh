@@ -104,14 +104,28 @@ COMMAND=$(printf '%s' "$PAYLOAD" | jq -r '
 [ -n "$COMMAND" ] || exit 0
 
 # Cheap exit before anything expensive. This hook runs on EVERY Bash call, and
-# resolving the vault path costs a config read; a command with no "git" in its
-# text cannot invoke git, so it should pay nothing at all. Substring rather than
-# word match on purpose: `sudo git`, `/usr/bin/git`, and `bash -c "git …"` all
-# have to reach the checker.
-case "$COMMAND" in
-  *git*) ;;
-  *) exit 0 ;;
-esac
+# the checker costs a Python start. The checker refuses only a git WRITE verb,
+# so a command needs two whole words to reach it: `git`, and one of the
+# checker's WRITE_VERBS. Matching `git` as a substring started Python for every
+# `git status`, every `.git` path, and every `digit`.
+#
+# The text is read the way the checker's tokeniser reads it. Backslash-newlines
+# are deleted first, then quotes and backslashes, so `git r\<newline>m`,
+# `git "r"m` and `git r\m` all still spell `rm`. Case is folded for `git`,
+# because macOS runs `GIT` as git. A word boundary is anything but a letter, a
+# digit, `_` or `-`, so `/usr/bin/git`, `sudo git` and `bash -c "git rm"` match,
+# while `--git-dir` and `.git` alone do not.
+#
+# hooks/test-vault-git-guard.sh reads WRITE_VERBS out of the checker and fails
+# when a verb there is missing here. Every deny in that suite also has to pass
+# this filter to be refused, which is the proof that no refused shape is skipped.
+BSNL=$'\\\n'  # a backslash-newline, quoted below so bash 3.2 reads it literally
+WORDS=$(printf '%s' "${COMMAND//"$BSNL"/}" | tr -d "\"'\\\\")
+GIT_WRITE_VERBS='commit|add|rm|mv|push|pull|fetch|reset|checkout|switch|restore|stash|merge|rebase|cherry-pick|revert|clean|apply|am|tag|branch|init|update-ref|gc|repack|prune|worktree|notes|symbolic-ref'
+shopt -s nocasematch
+[[ $WORDS =~ (^|[^[:alnum:]_.-])git([^[:alnum:]_-]|$) ]] || exit 0
+[[ $WORDS =~ (^|[^[:alnum:]_-])($GIT_WRITE_VERBS)([^[:alnum:]_-]|$) ]] || exit 0
+shopt -u nocasematch
 
 # The vault's location, resolved exactly the way every other hook resolves it:
 # WORKBENCH_MEMORY_PATH → config.json `.memory_path` → the default. Reading it

@@ -14,14 +14,19 @@
 
 set -u
 
-# Config resolution: env var → config.json → hardcoded default.
-# Prefer the current data dir; fall back to the pre-rename location so users
-# who customized before the workbench → workbench-core rename keep working.
-CONFIG_FILE="$HOME/.claude/plugins/data/workbench-core-claude-workbench/config.json"
-LEGACY_CONFIG="$HOME/.claude/plugins/data/workbench-claude-workbench/config.json"
-if [ ! -f "$CONFIG_FILE" ] && [ -f "$LEGACY_CONFIG" ]; then
-  CONFIG_FILE="$LEGACY_CONFIG"
-fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HOOKS_DIR="${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/hooks}"
+HOOKS_DIR="${HOOKS_DIR:-$SCRIPT_DIR}"
+
+# Config resolution: env var → config.json → hardcoded default, through the
+# shared resolver in lib/memory-env.sh. The cache path in particular MUST come
+# from memory_resolve_cache_path: this script writes the pending-summary
+# markers, and hooks/destructive-scope-guard.sh permits deleting them only in
+# the folder that same function names. Two copies of the lookup could drift
+# apart, and a marker written where the guard is not looking cannot be deleted.
+# shellcheck source=hooks/lib/memory-env.sh
+. "$HOOKS_DIR/lib/memory-env.sh"
+CONFIG_FILE="$(memory_resolve_config_file)"
 _cfg() { [ -f "$CONFIG_FILE" ] && command -v jq >/dev/null 2>&1 && jq -r "$1 // empty" "$CONFIG_FILE" 2>/dev/null; }
 
 # Warn on malformed config (logged to stderr so it doesn't break hook stdout).
@@ -33,18 +38,14 @@ fi
 
 MEMORY_PATH="${WORKBENCH_MEMORY_PATH:-$(_cfg '.memory_path')}"
 MEMORY_PATH="${MEMORY_PATH:-$HOME/Documents/Claude/Memory}"
-CACHE_PATH="${WORKBENCH_MEMORY_CACHE:-$(_cfg '.memory_cache')}"
-CACHE_PATH="${CACHE_PATH:-$HOME/.claude-memory-cache}"
+CACHE_PATH="$(memory_resolve_cache_path)"
 PENDING_SUMMARIES_DIR="$CACHE_PATH/pending-summaries"
 CHECKPOINTS_DIR="$CACHE_PATH/log-checkpoints"
 
 # Shared writer-spawn helpers. Sourced after MEMORY_PATH/CACHE_PATH/_cfg exist —
 # the lib reads all three. Honor CLAUDE_PLUGIN_ROOT (set by Claude Code's hook
-# host) and fall back to a BASH_SOURCE-relative path so manual and test
-# invocations still resolve hooks/lib, matching session-warmup.sh.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HOOKS_DIR="${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/hooks}"
-HOOKS_DIR="${HOOKS_DIR:-$SCRIPT_DIR}"
+# host) and fall back to a BASH_SOURCE-relative path (HOOKS_DIR, resolved at
+# the top) so manual and test invocations still resolve hooks/lib.
 # shellcheck source=hooks/lib/summary-dispatch.sh
 . "$HOOKS_DIR/lib/summary-dispatch.sh"
 

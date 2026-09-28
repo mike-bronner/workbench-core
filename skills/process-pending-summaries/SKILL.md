@@ -1,10 +1,41 @@
 ---
-description: Process any pending session summaries by dispatching background agents. Use when the warmup notices unprocessed markers, or run manually to clear the backlog. Does NOT block the session — dispatches agents in the background and moves on.
+description: Process pending session summaries by dispatching background summary-writer agents, or summarize one session by ID. Use when the warmup notices unprocessed markers, to clear the backlog, when the auto-summarizer missed a session, or to re-summarize one. Does NOT block the session.
 ---
 
-This is an execution-aware skill — check `skills/process-pending-summaries.learnings.md` in the vault before proceeding. If it exists, apply accumulated learnings.
-
 The user has invoked `/workbench-core:process-pending-summaries`, or pending markers were reported in `~/.claude-workbench/warmup-notices.md` (the session warmup writes housekeeping state there rather than injecting it, to keep the warmup payload byte-stable and cacheable).
+
+With a session ID as its argument, the skill summarizes that one session: follow **Single session** below, then stop. With no argument, it drains the backlog from Step 1.
+
+## Single session (a session ID was given)
+
+The summary is written by one background `summary-writer`, never in this context. A session's log runs to megabytes, and reading it here spends the main context on work a sub-agent does as well.
+
+1. **Check the ID.** A session ID holds only letters, digits and `-`. Refuse anything else: the ID becomes part of a file path below.
+2. **Resolve the paths.**
+
+   ```bash
+   . "${CLAUDE_PLUGIN_ROOT}/hooks/lib/memory-env.sh" && memory_load_env
+   SID='<session-id>'
+   MARKER="$CACHE_PATH/pending-summaries/$SID.json"
+   LOG=$(find "$MEMORY_PATH/sessions" -name "$SID.log.md" 2>/dev/null | head -1)
+   SUMMARY=$(find "$MEMORY_PATH/sessions" -name "$SID.summary.md" 2>/dev/null | head -1)
+   TRANSCRIPT=$(find ~/.claude/projects -name "$SID.jsonl" 2>/dev/null | head -1)
+   echo "marker=$([ -f "$MARKER" ] && echo yes || echo no) log=$LOG summary=$SUMMARY transcript=$TRANSCRIPT"
+   ```
+
+3. **Nothing to read.** If there is no log and no transcript, report the session as unrecoverable and stop.
+4. **A summary already exists.** Ask through `AskUserQuestion` whether to overwrite it or skip. On skip, stop.
+5. **No marker.** Write one, in the shape `hooks/session-log.sh` writes, so the writer has its usual input:
+
+   ```bash
+   mkdir -p "$CACHE_PATH/pending-summaries"
+   jq -n --arg sid "$SID" --arg t "$TRANSCRIPT" --arg l "$LOG" \
+     --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+     '{session_id:$sid, transcript_path:$t, log_path:$l, mode:"manual", event:"ProcessPendingSummaries", marked_at:$at}' \
+     > "$MARKER"
+   ```
+
+6. **Dispatch one writer** with the brief in Step 3, filled from this marker. Tell the user it is running, and move on.
 
 ## Step 1 — Find pending markers
 

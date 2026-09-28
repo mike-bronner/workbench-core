@@ -82,6 +82,26 @@ if [ "$TRANSPORT" = "http" ]; then
     fi
   done
 
+  # memory-status contradicted its own script: its Notes said there was no
+  # start/stop and an in-process per-session server, and called the shared
+  # server an optional re-enable, while scripts/memory-status.sh reports the
+  # shared server and points start/stop at the lifetime scripts.
+  echo
+  echo "memory-status agrees with scripts/memory-status.sh:"
+  STALE_STATUS=$(grep -niE 'no start/stop|in-process|re-enabling the shared|shared HTTP server \(optional\)|per-session server' \
+    "$ROOT/skills/memory-status/SKILL.md" || true)
+  if [ -z "$STALE_STATUS" ]; then
+    ok "memory-status carries no per-session or optional-server claim"
+  else
+    no "memory-status carries no per-session or optional-server claim" \
+       "stale line(s): $(echo "$STALE_STATUS" | head -2 | cut -c1-90)"
+  fi
+  for f in memory-server-up.sh memory-server-down.sh; do
+    grep -q "$f" "$ROOT/skills/memory-status/SKILL.md" \
+      && ok "memory-status names $f, as the script does" \
+      || no "memory-status names $f, as the script does" "no mention of $f"
+  done
+
   echo
   echo "the lifetime scripts the docs promise actually exist:"
   for f in memory-server-up.sh memory-server-release.sh memory-server-idle-stop.sh memory-server-down.sh; do

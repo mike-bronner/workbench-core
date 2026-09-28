@@ -124,6 +124,7 @@ summary_dispatch_spawn() {
     printf 'DISPATCH cwd=%s\n' "$MEMORY_PATH"
     printf 'DISPATCH env WORKBENCH_MEMORY_PATH=%s\n' "$MEMORY_PATH"
     printf 'DISPATCH env WORKBENCH_SUMMARY_WRITER=1\n'
+    printf 'DISPATCH env CLAUDE_CODE_DISABLE_CLAUDE_MDS=1\n'
     printf 'DISPATCH model=%s\n' "$model"
     printf 'DISPATCH logfile=%s\n' "$errlog"
     printf 'DISPATCH args=%s\n' "--add-dir $MEMORY_PATH --model $model --agent summary-writer"
@@ -148,6 +149,16 @@ summary_dispatch_spawn() {
   #     (see the summary-misroute RCA).
   #   - WORKBENCH_SUMMARY_WRITER=1 marks the child so the PreToolUse guard
   #     (hooks/summary-writer-guard.sh) can hard-block any Bash write to a .md.
+  #   - CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 keeps ~/.claude/CLAUDE.md and every
+  #     project CLAUDE.md out of the child. Those files are written for an
+  #     interactive session with a human in it, and the child obeyed them: its
+  #     runs ended in "Open questions" blocks nobody reads and offered `!rm`
+  #     commands to a user who was not there. agents/summary-writer.md sets
+  #     `omitClaudeMd: true` too, but Claude Code applies that field only to a
+  #     sub-agent spawned through the Agent tool. Measured on 2.1.283: a
+  #     top-level `claude -p --agent` run still loaded CLAUDE.md with the field
+  #     set, and loaded none of it with this variable. The memory MCP stayed
+  #     available either way.
   #
   # Output goes to the dispatch log, NOT /dev/null. The process-group kill was
   # the defect; two weeks of nobody noticing was a consequence of discarding
@@ -158,6 +169,7 @@ summary_dispatch_spawn() {
     WORKBENCH_SKIP_LOG=1 WORKBENCH_SKIP_WARMUP=1 \
       WORKBENCH_MEMORY_PATH="$MEMORY_PATH" \
       WORKBENCH_SUMMARY_WRITER=1 \
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 \
       nohup claude -p \
       --no-session-persistence \
       --permission-mode bypassPermissions \

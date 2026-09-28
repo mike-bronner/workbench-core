@@ -1,7 +1,7 @@
 # Linking & Topical Synthesis
 
 Reference document for any skill or agent that ingests a session into the
-vault (summary-writer, log-now, summarize-session). Defines the shared
+vault (summary-writer, log-now). Defines the shared
 linking habit: connect each new summary into the existing wiki layer,
 maintain topical synthesis pages, and keep the vault index current.
 
@@ -186,7 +186,7 @@ Required shape:
 name: vault-index
 type: index
 summary: |
-  Catalog of the vault's curated layer — topics, decisions, identity,
+  Catalog of the vault's curated layer — topics, decisions, and
   reference docs. One line per document. Sessions are not indexed here.
 ---
 
@@ -199,10 +199,6 @@ summary: |
 ## Decisions
 
 - [Vault MCP fork](/decisions/2026-05-02-vault-mcp-fork.md) — superseded 2026-09-01: upstream merged the fixes, so the plugin installs from upstream
-
-## Identity
-
-- [Profile](/identity/profile.md) — user facts and working preferences
 
 ## Reference / Other
 

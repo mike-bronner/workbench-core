@@ -6,27 +6,47 @@
 # written — the ` #`-starts-a-comment truncation that indexes a document
 # successfully while silently discarding half its summary.
 #
-# Exit contract: 1 when an indexed field lost content, 0 otherwise.
+# Exit contract: 1 when an indexed field lost content, 2 when PyYAML is missing
+# and nothing was scanned, 0 otherwise.
 
 set -u
 CHECK="$(cd "$(dirname "$0")/.." && pwd)/skills/memory-lint/scripts/check-frontmatter-health.py"
 PASS=0
 FAIL=0
 
-if ! python3 -c 'import yaml' 2>/dev/null; then
-  echo "SKIP: PyYAML unavailable in this python3"
-  exit 0
-fi
-
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
+
+ok()  { PASS=$((PASS + 1)); echo "  ✅ $1"; }
+bad() { FAIL=$((FAIL + 1)); echo "  ❌ $1 — $2"; }
+
+# A missing PyYAML means the scan never ran. It used to exit 0, so a lint that
+# read the exit code reported a clean vault it had not checked. A stub module
+# that raises ImportError stands in for the missing package.
+echo "no PyYAML means a loud failure, never a clean result:"
+mkdir -p "$TMP/noyaml" "$TMP/vault"
+printf 'raise ImportError("stubbed out")\n' > "$TMP/noyaml/yaml.py"
+NOYAML_ERR=$(PYTHONPATH="$TMP/noyaml" python3 "$CHECK" "$TMP/vault" 2>&1 >/dev/null)
+NOYAML_RC=$?
+[ "$NOYAML_RC" -eq 2 ] && ok "exits 2 without PyYAML" || bad "exits 2 without PyYAML" "got exit $NOYAML_RC"
+case "$NOYAML_ERR" in
+  *"NOT checked"*) ok "says the vault was not checked" ;;
+  *) bad "says the vault was not checked" "stderr: $NOYAML_ERR" ;;
+esac
+rm -rf "$TMP/noyaml" "$TMP/vault"
+
+# The scan cases need the real package. Without it they are skipped, as before,
+# and the case above is the one that still runs.
+if ! python3 -c 'import yaml' 2>/dev/null; then
+  echo "SKIP: PyYAML unavailable in this python3, so the scan cases cannot run"
+  echo "  $PASS passed, $FAIL failed"
+  [ "$FAIL" -eq 0 ] || exit 1
+  exit 0
+fi
 
 note() {  # note <file> <frontmatter-body>
   printf -- '---\n%s\n---\n\nbody text\n' "$2" > "$TMP/$1"
 }
-
-ok()  { PASS=$((PASS + 1)); echo "  ✅ $1"; }
-bad() { FAIL=$((FAIL + 1)); echo "  ❌ $1 — $2"; }
 
 # Assert the scan flags (or does not flag) a given vault, by exit code.
 assert_rc() {

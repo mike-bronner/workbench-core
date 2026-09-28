@@ -213,7 +213,15 @@
     "agent-scratch folder directly in /tmp, named claude-*scratch*, that is a",
     "real directory this account owns. Its name is read from the directory",
     "listing rather than from the caller's spelling, because on case-insensitive",
-    "APFS /tmp/Claude-503 is the live claude-<uid> session tree."
+    "APFS /tmp/Claude-503 is the live claude-<uid> session tree.",
+    "",
+    "One file shape is approved as well: a single session-summary marker, a",
+    "*.json name directly in <cache>/pending-summaries/ that is absent or a",
+    "regular file this account owns. The summary-writer and log-now each end",
+    "by deleting one. The folder is resolved the way",
+    "hooks/session-log.sh resolves it when it writes the marker, from the hook's",
+    "own WORKBENCH_MEMORY_CACHE or config.json, never from the command. The",
+    "folder and the cache root must be real directories, not links."
   ],
 
   "deny": [

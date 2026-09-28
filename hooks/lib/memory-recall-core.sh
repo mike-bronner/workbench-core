@@ -189,26 +189,46 @@ memory_recall_rows() {
   ' 2>/dev/null
 }
 
-# ──────────── memory_recall_seen_file <state-dir> <session-id> ────────────
-# Echo the per-session seen-paths file, creating the state dir and pruning stale
-# state on the way. Returns 1 when the dir or the file cannot be created.
+# ──────────── memory_recall_context_key <session-id> [agent-id] ────────────
+# Echo the filename stem that keys dedup state to ONE context window: the main
+# session's, or one sub-agent's.
 #
-# Retention: 3 days, mirroring capture-nudge and the warmup sweep. The session id
-# is sanitized before it becomes a filename — defense in depth, since ids are
-# normally hex/UUID but an external value never belongs in a path unfiltered.
+# A SUB-AGENT IS ITS OWN CONTEXT, AND KEYING ON session_id ALONE HID MEMORIES
+# FROM IT. A sub-agent's hook payload carries its parent's session_id plus its
+# own agent_id. With the session id as the whole key, every note the main
+# session had already seen was "seen" for every sub-agent too, so no sub-agent
+# could ever receive it, although nothing had put it in the sub-agent's context.
+# The dedup exists to stop repeats within one transcript, and each sub-agent has
+# its own transcript. memory-capture-stop.sh reads agent_id the same way.
+#
+# Both ids are sanitized before they become a filename — defense in depth, since
+# ids are normally hex/UUID but an external value never belongs in a path
+# unfiltered.
+memory_recall_context_key() {
+  local key="$1"
+  [ -n "${2:-}" ] && key="$1.agent-$2"
+  printf '%s' "$key" | tr -c 'A-Za-z0-9._-' '_'
+}
+
+# ──────── memory_recall_seen_file <state-dir> <session-id> [agent-id] ────────
+# Echo the per-context seen-paths file, creating the state dir and pruning stale
+# state on the way. Returns 1 when the dir or the file cannot be created. The
+# file is keyed by memory_recall_context_key, so a sub-agent gets its own.
+#
+# Retention: 3 days, mirroring memory-capture-stop.sh and the warmup sweep.
 memory_recall_seen_file() {
-  local state_dir="$1" session_id="$2" safe_sid seen_file
+  local state_dir="$1" session_id="$2" agent_id="${3:-}" seen_file
   mkdir -p "$state_dir" 2>/dev/null || return 1
   find "$state_dir" -name '*.seen' -mtime +3 -delete 2>/dev/null
-  safe_sid=$(printf '%s' "$session_id" | tr -c 'A-Za-z0-9._-' '_')
-  seen_file="$state_dir/${safe_sid}.seen"
+  seen_file="$state_dir/$(memory_recall_context_key "$session_id" "$agent_id").seen"
   touch "$seen_file" 2>/dev/null || return 1
   printf '%s' "$seen_file"
 }
 
 # ──────────── memory_recall_bullets <rows> <seen-file> [summary-cap] ────────────
-# THE ACCUMULATION BOUND. A memory path is injected AT MOST ONCE PER SESSION,
-# across every hook that shares the seen file. additionalContext accumulates in
+# THE ACCUMULATION BOUND. A memory path is injected AT MOST ONCE PER CONTEXT
+# WINDOW — the main session, or one sub-agent — across every hook that shares the
+# seen file. additionalContext accumulates in
 # the transcript and nothing evicts it, so without this the cost scales with the
 # number of turns and tool calls — unbounded. With it, the bound is the number of
 # DISTINCT relevant memories. A recurring topic never re-injects the same note,

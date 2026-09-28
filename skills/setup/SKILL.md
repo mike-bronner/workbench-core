@@ -1,8 +1,10 @@
 ---
-description: Configure the workbench — agent name, memory paths, MCP server name, identity file paths, and the permission safety rails (defaultMode plus deny/ask rules) written to ~/.claude/settings.json. Config lives in the plugin data directory and is read at MCP start time, so plugin updates never clobber settings.
+description: Configure the workbench — agent name, memory paths, MCP server name, the permission safety rails (defaultMode plus deny/ask rules) written to ~/.claude/settings.json, and the shipped output style. Re-run after a plugin update to re-sync the output style. Config lives in the plugin data directory and is read at MCP start time, so plugin updates never clobber settings.
 ---
 
-The user has invoked `/workbench:setup`. Walk them through configuring all workbench settings interactively.
+The user has invoked `/workbench-core:setup`. Walk them through configuring all workbench settings interactively.
+
+The reasons behind the steps, and their history, are in `${CLAUDE_PLUGIN_ROOT}/docs/setup-design-notes.md`. Read it before changing how a step works. Following the steps needs none of it.
 
 ## Config location
 
@@ -18,12 +20,11 @@ This is the plugin system's persistent data directory — it survives plugin ver
 
 ## Fields
 
-Present each field to the user one at a time. Show the current value (from existing config, or the hardcoded default if no config exists). Accept their input or let them press Enter to keep the current value.
+Show the current value of each field (from the existing config, or the hardcoded default if no config exists), and let the user keep it or change it.
 
 ### 1. `agent_name`
-- **Prompt:** "Agent name — the persona name used in identity files, templates, and the MCP server name"
+- **Prompt:** "Agent name — shown in the session warmup header, and the base of the default MCP server name"
 - **Default:** `Claude`
-- **Note:** Changing this triggers re-templatization of identity files (Step 3 below).
 
 ### 2. `memory_path`
 - **Prompt:** "Memory store path — where your operational memory vault lives on disk"
@@ -37,10 +38,10 @@ Present each field to the user one at a time. Show the current value (from exist
 
 ### 4. `memory_mcp_server_name`
 - **Prompt:** "MCP server friendly name — the display name for the memory vault MCP server"
-- **Default:** `{agent_name}-memory` (derived from field 1)
+- **Default:** `{agent_name}-memory` (derived from field 1). If the user keeps the derived default and changes `agent_name`, derive it again.
 - **Note:** This is the `MARKDOWN_VAULT_MCP_SERVER_NAME` value (`serverInfo.name`).
 
-### 4b. `memory_port`
+### 5. `memory_port`
 - **Prompt:** "Memory server port — the loopback port the shared memory server binds and the MCP client connects to"
 - **Default:** `8765`
 - **Note:** The shared server binds `127.0.0.1:{memory_port}` and `plugin.json` interpolates the same value into the MCP URL, so the two must agree — a mismatch is what the probe reports as `PORT_DRIFT`. If you set a non-default value, **preflight the port** first (`lsof` on macOS, `ss` on a stock Linux box):
@@ -49,29 +50,19 @@ Present each field to the user one at a time. Show the current value (from exist
     echo "WARNING: port $PORT is already in use — pick another or stop the squatter."
   fi
   ```
-  When the shared HTTP server is enabled, the port reaches the MCP client via `~/.claude/settings.json` `.env.WORKBENCH_MEMORY_PORT` (Step 2b writes it there when it differs from the default).
+  The port reaches the MCP client via `~/.claude/settings.json` `.env.WORKBENCH_MEMORY_PORT`, which Step 2b writes when it differs from the default.
 
-### 5. `summary_model`
+### 6. `summary_model`
 - **Prompt:** "Model for background summary-writer agent"
 - **Default:** `sonnet`
 - **Note:** The model used when the detached summary-writer processes session logs. Sonnet is the default because summary quality and reliable tool-use matter more here than raw speed; drop to `haiku` if you want faster, cheaper summaries and can accept more variance.
 
-### 6. `auto_summarize`
+### 7. `auto_summarize`
 - **Prompt:** "Auto-summarize sessions on end?"
 - **Default:** `true`
 - **Note:** When true, spawns a background summary-writer on PreCompact and `/log-now`, and drains pending
   markers at session start. SessionEnd deliberately does NOT spawn — a child started as the parent exits is
   killed during teardown; the marker it writes is drained by the next session's warmup instead.
-
-### 7. `identity_files`
-- **Prompt:** "Identity file paths (relative to memory store), blank for none"
-- **Sub-fields, all optional, all unset by default:**
-  - `soul_hot`: leave blank to use `identity/soul-hot.md`
-  - `soul_core`: leave blank to use `identity/soul-core.md`
-  - `profile`: leave blank to use `identity/profile.md`
-- **Note:** Blank means unset, not missing. The warmup resolves the default path either way, so a file sitting at the default path is loaded whether or not the key exists. Set a key only to point at a **non-default** path.
-- **Note:** Never stamp these keys with their own defaults. `hooks/session-warmup.sh` treats a configured path that does not resolve as a misconfiguration and warns about it at every session start, and it stays silent when no key is set and no file exists, because that absence is deliberate. Stamping the defaults made the silent branch unreachable for everyone who ran setup, so users who had deleted a soul file or a profile on purpose read a "not found" line at the top of every session and concluded the install was broken.
-- **Note:** These are loaded by the session-warmup hook at startup. Load order: soul-hot → profile → skills-protocol → guardrails. Guardrails ship with the plugin (not user-configurable) and load last as absolute rules that override all other identity files.
 
 ## Step 0 — Migrate legacy config (if present)
 
@@ -102,7 +93,7 @@ CONFIG_FILE="$CONFIG_DIR/config.json"
 
 If it exists, parse current values with `jq` and use them as defaults. If not, use the hardcoded defaults listed above.
 
-Present each field to the user using the AskUserQuestion tool. Show the current value and let them confirm or change it.
+Ask with `AskUserQuestion`, up to four fields per call, which is the tool's maximum: fields 1–4 in the first call and fields 5–7 in the second. Each question shows the current value as its first option, marked `(current)`, and the free-text "Other" takes a new value. One question per call spends the user's attention on round trips.
 
 After all fields, show the assembled config JSON and ask "Save this configuration? (yes/no)".
 
@@ -119,11 +110,8 @@ mkdir -p "$CONFIG_DIR"
 # Merge the collected values onto the existing object (existing keys not listed
 # here — e.g. persona/output_style — are preserved untouched). Only include
 # memory_port when it differs from the 8765 default, to keep config minimal.
-#
-# identity_files follows the same "omit the default" rule as memory_port, and for
-# a sharper reason: an unset key is the signal the warmup reads to stay silent
-# about a file the user deleted on purpose. A blank answer drops the key, and an
-# identity_files that ends up empty is deleted outright.
+# identity_files is deleted: it configured the retired soul and profile files,
+# and nothing reads it any more.
 tmp="$(mktemp)"
 jq \
   --arg agent_name        "$AGENT_NAME" \
@@ -131,9 +119,6 @@ jq \
   --arg memory_cache      "$MEMORY_CACHE" \
   --arg mcp_name          "$MCP_NAME" \
   --arg summary_model     "$SUMMARY_MODEL" \
-  --arg soul_hot          "$IDENTITY_SOUL_HOT" \
-  --arg soul_core         "$IDENTITY_SOUL_CORE" \
-  --arg profile           "$IDENTITY_PROFILE" \
   --argjson auto_summarize "$AUTO_SUMMARIZE" \
   --argjson memory_port   "$MEMORY_PORT" \
   '
@@ -143,19 +128,14 @@ jq \
   | .memory_mcp_server_name = $mcp_name
   | .summary_model = $summary_model
   | .auto_summarize = $auto_summarize
-  | .identity_files = (
-      (.identity_files // {})
-      | .soul_hot = $soul_hot | .soul_core = $soul_core | .profile = $profile
-      | with_entries(select(.value != ""))
-    )
-  | if (.identity_files | length) == 0 then del(.identity_files) else . end
+  | del(.identity_files)
   | if $memory_port == 8765 then del(.memory_port) else .memory_port = $memory_port end
   ' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
 ```
 
 Running this twice with the same answers produces a byte-identical file (idempotent).
 
-`persona` and `output_style` are written by `/workbench-core:install` — they record which persona is active. Don't hand-edit them; the merge above never touches them. They're absent until a persona is installed.
+`persona` and `output_style` are written by Step 2f — they record which persona is active. Don't hand-edit them; the merge above never touches them. They're absent until a persona is installed.
 
 **Do not edit `plugin.json`.** The hooks resolve env from `config.json` at launch time (precedence: `WORKBENCH_*` override env → `config.json` → default), via `hooks/lib/memory-env.sh`. Reference mapping:
 
@@ -169,13 +149,11 @@ Running this twice with the same answers produces a byte-identical file (idempot
 | `memory_mcp_server_name` | `MARKDOWN_VAULT_MCP_SERVER_NAME` |
 | `memory_port` | the shared HTTP server's `--port`, and the port in `plugin.json`'s MCP URL |
 
-Optionally write `config.example.json` alongside `config.json` with placeholder values and inline comments — useful for anyone setting up the plugin manually.
+## Step 2b — Provision the bearer token + settings.json env
 
-## Step 2b — Provision the bearer token + settings.json env (shared HTTP server only)
+> **Required — do not skip.** `plugin.json` interpolates `${WORKBENCH_MEMORY_TOKEN}` into the `Authorization` header, so **without this step Claude Code rejects the memory MCP outright** with `Invalid MCP server config for "memory": Missing environment variables: WORKBENCH_MEMORY_TOKEN`, and no server is ever started. That presents as memory being broken rather than unconfigured.
 
-> **Required — do not skip.** The transport is the shared HTTP server (restored in 0.19.0, when dropping Cowork removed the remote-sandbox constraint that forced per-session stdio in v0.13.0). `plugin.json` interpolates `${WORKBENCH_MEMORY_TOKEN}` into the `Authorization` header, so **without this step Claude Code rejects the memory MCP outright** with `Invalid MCP server config for "memory": Missing environment variables: WORKBENCH_MEMORY_TOKEN`, and no server is ever started. That presents as memory being broken rather than unconfigured.
-
-When the shared HTTP server is enabled it authenticates with a per-install **bearer token**, and the MCP client reads the port + token from `~/.claude/settings.json` `.env` (the only channel that reaches the host's config parse — a hook can't). Provision both with **zero user involvement**, idempotently:
+The shared HTTP server authenticates with a per-install **bearer token**, and the MCP client reads the port + token from `~/.claude/settings.json` `.env` (the only channel that reaches the host's config parse — a hook can't). Provision both with **zero user involvement**, idempotently:
 
 ```bash
 CACHE_PATH="$MEMORY_CACHE"   # the resolved memory_cache from Step 1
@@ -212,24 +190,18 @@ chmod 600 "$SETTINGS"
 ```
 
 Notes:
-- **Idempotent:** the token is minted once and reused; the `jq` merge is a no-op when values already match. Running setup twice changes nothing.
-- **Non-default port only:** `WORKBENCH_MEMORY_PORT` is written to settings.json only when it isn't `8765` (the baked-in default in `plugin.json`'s URL), keeping settings minimal.
-- **Restart required:** settings.json `.env` is read at Claude Code launch, so the token/port reach the MCP client on the **next restart**, not just the next session. Mention this in the Step 7 restart reminder.
+- **Idempotent:** the token is minted once and reused; the `jq` merge is a no-op when values already match.
+- **Non-default port only:** `WORKBENCH_MEMORY_PORT` is written only when it isn't `8765`, the default baked into `plugin.json`'s URL.
+- **Restart required:** settings.json `.env` is read at Claude Code launch, so the token/port reach the MCP client on the **next restart**, not the next session. Step 6 says so.
 - **Self-heal:** if the token file is ever lost, the supervisor re-mints one at next start; re-running setup re-syncs settings.json to it.
 
 ## Step 2c — Permission safety rails (default-on)
 
-Claude Code evaluates permission rules **deny → ask → allow, before the auto-mode classifier**, in every permission mode including `bypassPermissions`. That matters because a boundary stated only in conversation — "don't push until I review" — is re-read from the transcript on every check and is **lost when context is compacted**. A deny rule is not. This step installs the durable half of that pair.
-
-The rules ship as data at `${CLAUDE_PLUGIN_ROOT}/assets/permissions/rails.json`, and `scripts/permissions.sh` merges them into `~/.claude/settings.json`. The merge is **additive**: an entry is added when absent, left alone when present, and existing entries keep their position.
-
-The same run writes `permissions.additionalDirectories`: the two scratchpad trees, so every session sees them as working directories. Both are computed for the account running setup. One is the harness's session tree, `claude-<uid>` under the physical `/tmp` (`/private/tmp` on macOS), which holds every session's scratchpad. The other is `~/Developer/scratchpad`. A bare `/tmp` or `/private/tmp` entry is **removed**. That is the one thing this merge ever takes out, because such an entry advertised all of `/tmp` as a working directory, and agents made scratch there by hand as a result. The session-tree entry is broader than the guard's scope: the guard approves only each session's own `…/claude-<uid>/<project>/<session>/scratchpad`, so a loose file elsewhere in the tree is stranded. Agents are told to make scratch nowhere under `/tmp` outside their session scratchpad. Every other directory the user listed stays in place.
-
-The rails also ship one `allow` entry: `mcp__plugin_workbench-core_memory__*`, which keeps a classifier hold from swallowing a memory write — nothing retries that call, so a held write loses the note rather than delaying it. It grants no command *shape* — it is a single plugin's MCP server — and a `Bash(...)` wildcard must never join it. No `Bash(...)` entry ships at all; the one that did is retired (2c.3). Entries the user put in `permissions.allow` themselves are never removed, reordered, or rewritten.
+The rules ship as data at `${CLAUDE_PLUGIN_ROOT}/assets/permissions/rails.json`, and `scripts/permissions.sh` merges them into `~/.claude/settings.json`. The merge is **additive**: an entry is added when absent, left alone when present, and existing entries keep their position. The same run writes the two scratchpad trees into `permissions.additionalDirectories` and removes a bare `/tmp` entry.
 
 ### 2c.1 — Pick the posture (`defaultMode`)
 
-Starting **August 14, 2026**, `auto` becomes the default permission mode for new sessions on Pro, Max, and Team plans — but *a default the user set themselves stays in place*. Setting this explicitly is how the user keeps the choice.
+Since **August 14, 2026**, `auto` is the default permission mode for new sessions on Pro, Max, and Team plans — but *a default the user set themselves stays in place*. Setting it explicitly is how the user keeps the choice.
 
 Show the current value first:
 
@@ -247,7 +219,7 @@ Then ask with AskUserQuestion:
   - `default` — "Manual. Prompts for everything but reads."
 - The auto-provided **Other** covers `dontAsk` and `bypassPermissions`, which are deliberately not offered as one-click options.
 
-If the user would rather leave the current value alone, skip `--mode` in 2c.4 — the script then merges the rails and leaves `defaultMode` untouched.
+If the user would rather leave the current value alone, skip `--mode` in 2c.3 — the script then merges the rails and leaves `defaultMode` untouched.
 
 ⚠️ **`auto` is only honoured from user settings.** Claude Code ignores `defaultMode: "auto"` in `.claude/settings.json` and `.claude/settings.local.json` so a cloned repo can't promote itself. This script writes to `~/.claude/settings.json`, which is correct.
 
@@ -263,16 +235,13 @@ Output is `kind<TAB>rule<TAB>why`. Render it as two short tables — 🔴 deny a
 
 - **deny** — hard wall. Blocks before the classifier, in every mode, with no prompt and no override.
 - **ask** — always prompts, even in `auto`, even when a narrower allow rule matches.
-
-There is a third kind in the list, on a different layer:
-
-- **autoMode.allow** — prose exceptions to the auto-mode classifier's built-in *soft-deny* rules. Not a tool pattern; the classifier reads it as natural language. The shipped entry unblocks `workbench-dev-team` dispatch (see 2c.6).
+- **autoMode.allow** — a third kind, on a different layer: prose exceptions to the auto-mode classifier's built-in *soft-deny* rules. The shipped entry lets the `workbench-dev-team` Dispatch task launch its agents.
 
 Three behaviours worth calling out by name:
 
 - `Bash(git push --force:*)` also blocks `--force-with-lease`, since that string starts with `--force`.
-- **There is deliberately no `Read()` deny rule.** Credential paths — `~/.ssh`, `~/.aws`, `~/.gnupg`, `.env` — are guarded by `hooks/credential-guard.sh` instead, a `PreToolUse` hook returning `permissionDecision: "deny"`, which no allow rule and no permission mode overrides. A `Read` deny never applied to a subprocess that opens the file itself, and any one of them arms a circuit breaker that prompts on every relative-path `grep`/`rg`/`diff`/`git`/`cp`/`mv` in a command containing `cd`. See the `_comment` block in `assets/permissions/rails.json` for the full finding.
-- **There is deliberately no `rm` rule at all — deny, ask, or allow.** `rm` is gated by `hooks/destructive-scope-guard.sh` and by nothing else (2c.3). A deny on `rm -rf /` would match every absolute-path delete — `*` is always a wildcard, and deny beats allow regardless of specificity, so no `/tmp` exception is expressible. An `ask` rule shipped for most of this file's life, and it prompted wherever the verb acted, which is the verb-based policy the guard replaced. Claude Code still gates the catastrophic case semantically underneath: the classifier decides root and home removals in `auto` (including inside `$(...)` and `<(...)` substitution), and they still prompt under `bypassPermissions` as a circuit breaker.
+- **There is no `Read()` deny rule.** Credential paths are guarded by `hooks/credential-guard.sh`, a hook deny no allow rule or mode overrides.
+- **There is no `rm` rule at all.** `rm` and the destructive git verbs are gated by `hooks/destructive-scope-guard.sh`, which permits them only inside the project or a scratch root.
 
 Then offer a dry run — it prints exactly what would change and writes nothing:
 
@@ -280,23 +249,7 @@ Then offer a dry run — it prints exactly what would change and writes nothing:
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/permissions.sh" --dry-run --mode <chosen-mode>
 ```
 
-### 2c.3 — The five scope-able entries that left, and the hook that answers them
-
-**Nothing to install here.** This section exists because five entries were removed from the `ask` list and a hook took over for them. A reader who does not know that will try to put them back.
-
-`Bash(rm -rf:*)`, `Bash(git clean -fd:*)`, `Bash(git reset --hard:*)`, `Bash(git stash clear:*)` and `Bash(git stash drop:*)` were the only ask entries that act on a **filesystem path or on a repository**, which is what makes "inside the project" a meaningful question about them. The fifteen that remain act on published artifacts, system state, or the Keychain, where the question is undefined; those stay rules for good.
-
-Those five encoded a **verb-based** policy: they prompt wherever the verb acts, so an ordinary in-project delete cost the user a prompt. The policy this machine runs is **scope-based** — work inside the project and the scratch roots is permitted, reaching outside them is the user's call. That cannot be layered on top of an ask entry: Anthropic's permissions documentation states that hook decisions do not bypass permission rules, and that a matching ask rule still prompts even when a `PreToolUse` hook returned `"allow"`. A content-scoped ask entry is overridden by nothing, so the five had to **leave** rather than be narrowed. Narrowing one, or adding a scoped companion beside it, does nothing: rules run deny → ask → allow, first match wins, specificity does not reorder them, and Bash rules carry no negation operator.
-
-`hooks/destructive-scope-guard.sh` is that guard, and it ships registered with the plugin — no install step, no fixed path, nothing for setup to write. It permits a destructive command when **every path it acts on** resolves inside the project or a scratch root, and it denies otherwise. The roots are the project from `CLAUDE_PROJECT_DIR`, the login home's `Developer/scratchpad`, this session's scratchpad, and on Darwin this account's per-user temporary directory where `mktemp -d` writes. One folder family beyond the roots is also permitted, for `rm` and `rmdir` only: a leftover `/tmp/claude-*scratch*` folder this account owns, which may be removed along with its contents. It is not a root, so a git verb there is denied, and its name is read from the directory listing rather than the caller's spelling. **No root comes from an environment variable the caller can set** — the login home is read from the password database, the temporary directory from `getconf DARWIN_USER_TEMP_DIR` rather than `$TMPDIR`, and `CLAUDE_PROJECT_DIR` is set by Claude Code for hook commands and is absent from the Bash tool environment entirely. Paths are resolved physically before comparison, since a string prefix accepts a symlink pointing out of the tree.
-
-⚠ **It fails CLOSED, which inverts every other guard in this plugin.** A command whose targets it cannot resolve — a `$variable`, a glob, `bash -c`, `ssh`, `xargs`, `find -delete` — is denied rather than allowed through. The siblings fail open because an unreadable command fell through to `Bash(rm -rf:*)` and cost one prompt; with the five gone there is nothing underneath, so an unreadable command waved through is a command nothing checked. The denial is not a wall: the user runs it themselves with the `!` prefix.
-
-**The five are gone from `rails.json`, and keeping them would not have been a safety net.** The merge is one-way — `scripts/permissions.sh` only ever adds — so an entry left here is an entry restored into a user's `settings.json` at whatever moment somebody next runs this skill, silently undoing a deliberate removal.
-
-⚠ **That cuts the other way for anyone who already ran setup.** They still have all five in `~/.claude/settings.json`, where they keep prompting and keep overriding the guard's permit. Removing an entry from the rails does not remove it from their settings — deleting it there is a manual edit. 2c.4 below detects the leftovers and says so.
-
-### 2c.4 — Apply
+### 2c.3 — Apply
 
 ```bash
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/permissions.sh" --mode <chosen-mode>
@@ -306,7 +259,7 @@ Idempotent — re-running with the same answers reports `all shipped rails alrea
 
 If the user wants to edit the lists, point them at `~/.claude/settings.json` `permissions.deny` / `permissions.ask`. Entries they remove by hand **will be re-added** the next time setup runs, since the merge only knows how to add. Removing a rule permanently means editing `assets/permissions/rails.json` in the plugin.
 
-Then check for leftovers of the five scope-able entries (2c.3). They are no longer shipped, but the merge never removes, so any user who ran setup before they were dropped still has them — and while they sit there they keep prompting and keep overriding the guard's permit:
+Then check for five ask entries an older setup installed and this one no longer ships. While they sit in `settings.json` they keep prompting and override the scope guard's permit, and the merge cannot remove them:
 
 ```bash
 SETTINGS="${WORKBENCH_SETTINGS_FILE:-$HOME/.claude/settings.json}"
@@ -325,62 +278,13 @@ else
 fi
 ```
 
-### 2c.5 — The headless constraint (do not "improve" the ask list)
+Finally, confirm the effective classifier rules with `claude auto-mode config`, which prints the four lists with `"$defaults"` expanded in place. The literal `"$defaults"` must stay in `autoMode.allow`: without it the whole built-in soft-deny list is replaced. `permissions.sh` restores it when it is missing, so never hand-edit it out.
 
-An `ask` rule *always* forces a prompt, and a `claude -p` run has nobody to prompt — so the call is **blocked** instead. `workbench-dev-team` dispatches Watson unattended via `nohup claude -p --agent`, and Watson pushes branches, commits, and opens PRs.
-
-`Bash(git push:*)`, `Bash(git commit:*)`, and `Bash(gh pr create:*)` are therefore **deliberately absent** from the ask list. Adding them would kill the pipeline silently. `hooks/test-permissions.sh` asserts their absence so the mistake can't land quietly.
-
-The git-commit approval gate stays a `PreToolUse` hook for the same reason: a hook can force a prompt *and* carry a pipeline exemption. An ask rule cannot.
-
-### 2c.6 — Why an `autoMode.allow` entry ships alongside the rules
-
-The classifier's built-in **soft-deny** list includes *auto-mode bypass*. The Dispatch task launches agents with `nohup claude -p --agent workbench-dev-team:<name> --dangerously-skip-permissions`, which reads exactly like Claude removing its own oversight — so the classifier blocks it. A soft deny clears on explicit user intent, but a scheduled task has no user message to clear it, so dispatch fails non-deterministically tick to tick.
-
-`autoMode.allow` is the documented mechanism for an exception to a soft deny, so the rails file carries one. `permissions.allow` is the wrong lever: auto mode deliberately suspends broad shell allow rules that grant arbitrary code execution, which is precisely this command's shape. That is about the *pattern*, not the list — `workbench-dev-team` allows its own `dispatch-agent.sh` wrapper by fixed path, which is the narrow shape a `Bash(...)` allow entry is permitted to take, and the soft-deny exception is still required because the wrapper performs the same spawn.
-
-🛑 **The literal string `"$defaults"` must stay in `autoMode.allow`.** Without it, Claude Code replaces the *entire* built-in soft-deny list — force push, `curl | bash`, production deploys, auto-mode bypass, all of it. `permissions.sh` prepends `"$defaults"` whenever it is missing, including on a list a user had emptied of it. Never hand-edit it out.
-
-Two more facts about this layer:
-
-- The classifier reads `autoMode` **only** from `~/.claude/settings.json` and managed settings — never from `.claude/settings.json` or `.claude/settings.local.json`, so a checked-in repo cannot grant itself exceptions.
-- After applying, confirm the effective rules with `claude auto-mode config`, which prints the four lists with `"$defaults"` expanded in place.
+Do not add `Bash(git push:*)`, `Bash(git commit:*)`, or `Bash(gh pr create:*)` to the ask list. A headless `claude -p` run cannot answer a prompt, so those rules would silently kill the `workbench-dev-team` pipeline. `hooks/test-permissions.sh` asserts their absence.
 
 ## Step 2d — Deploy the stale-bundle guard (default-on)
 
-The Claude **desktop app** serves plugin bundles from a server-ingested `rpm/` cache
-(`api.anthropic.com`, keyed per `marketplaceId`), separate from the CLI's local install.
-That ingest can freeze weeks behind: observed 2026-08-27 with `workbench-core` pinned at
-**0.13.2** in the app while the CLI held **0.17.0**, and `workbench-dev-team` at **0.35.0**
-against **0.37.6**. `claude plugin marketplace update` refreshes only the CLI side, so no
-number of updates or restarts moves the app.
-
-The failure is not merely "old code". A stale slash command can **overwrite state a newer
-version deployed** — the 0.35.0 `dev-team` setup would have rewritten a live scheduled task
-with a month-old orchestrator body, stripping the per-item dispatch lock added in 0.37.x.
-
-So this step deploys one guard on **three** events, because staleness reaches you by three
-routes. `UserPromptSubmit` catches a typed `/workbench-*` command. `PreToolUse(Skill)` catches a
-skill invoked from prose ("run the memory lint"), which the first gate never sees. Both resolve
-the authoritative `installPath` from `~/.claude/plugins/installed_plugins.json`, compare it to
-the version this session was served, and — when they differ — tell the agent to read and execute
-the current body instead of the injected one.
-
-`SessionStart` covers the case where **nothing is invoked at all**. A frozen bundle ships stale
-hooks and stale **MCP servers**, which fail with no skill in sight: on 2026-08-29 a frozen
-`workbench-core` **0.13.2** served a memory server whose venv layout predated the installed fix,
-and every memory MCP in every session died with no warning naming the cause. This entry point
-sweeps *every* `workbench-*` plugin in the registry at session start and reports each drifted one
-in a single message, with the remedy — note that a marketplace update plus a relaunch is **not**
-sufficient; only a full reinstall evicts the frozen bundle.
-
-All three are silent when the served bundles match the installed versions.
-
-🛑 **This cannot ship in `hooks/hooks.json`.** The plugin is the thing that freezes, so a
-plugin-declared hook never activates in the app it exists to protect, and `${CLAUDE_PLUGIN_ROOT}`
-resolves *into* the frozen bundle, where a newly-added script does not exist. User settings are
-the only layer outside the freeze. The entries therefore ship as data in
-`assets/hooks/settings-hooks.json` and are merged into `~/.claude/settings.json`.
+The Claude desktop app can serve plugin bundles that are frozen weeks behind the CLI's install, and a stale skill body can overwrite state a newer version deployed. This guard reports that drift at SessionStart, on a typed `/workbench-*` command, and on any Skill call. It is silent when the served bundles match the installed versions. It must live in user settings rather than `hooks/hooks.json`, because a frozen plugin never activates its own hooks.
 
 Run it:
 
@@ -390,15 +294,7 @@ Run it:
 
 Preview first with `--dry-run`, or list what would be deployed with `--list`.
 
-The merge is **additive and idempotent**: the entry is added when its command is absent, left
-alone when present, and a user's own `UserPromptSubmit` hooks are appended alongside, never
-replaced. No other settings key is touched. A malformed `settings.json` is refused rather than
-clobbered. Re-running setup also **refreshes the deployed script**, which is how a stale copy at
-`~/.claude/hooks/` gets updated.
-
-Because the guard reports drift rather than repairing it, the underlying freeze still needs
-escalating upstream (`anthropics/claude-code#45810`). The guard makes the freeze *visible and
-safe*; it does not unfreeze anything.
+The merge is **additive and idempotent**: an entry is added when its command is absent and left alone when present, and a user's own hooks for the same events are kept alongside. No other settings key is touched. A malformed `settings.json` is refused rather than clobbered. Re-running setup also **refreshes the deployed script** at `~/.claude/hooks/`.
 
 ## Step 2e — Git sync for the vault (opt-in)
 
@@ -408,15 +304,10 @@ queue for writes. `hooks/lib/memory-env.sh` already exports every `MARKDOWN_VAUL
 variable this needs, gated entirely on one key: `memory_git_repo_url`. Absent that key, nothing
 in this step has ever run and behaviour is byte-identical to a vault with no sync.
 
-This step exists because that key was reachable only by hand-editing `config.json` — a
-capability nobody discovers, wired to a footgun nobody sees coming (below).
-
 🛑 **Two hard preconditions. Check both before asking anything.**
 
 1. **Shared HTTP transport only.** The strategy's write-quiescing uses in-process `threading`
-   locks. Under the retired one-server-per-session model those would be N independent locks
-   committing into one `.git`, where git's own `index.lock` fails fast rather than waiting.
-   Verify:
+   locks, which hold only when one server owns the vault. Verify:
    ```bash
    jq -r '.mcpServers.memory.type // "stdio"' "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json"
    ```
@@ -465,8 +356,7 @@ history and only a rewrite removes them.
 A **denylist**, deliberately — it mirrors `MARKDOWN_VAULT_MCP_EXCLUDE` so index and git share one
 mental model, and a memory folder the user creates later syncs by default. An allowlist would
 silently fail to sync new content, and a memory that never reaches the other machine gives no
-signal that it is missing. For a memory vault, failing toward *keeping* the memory is the correct
-direction.
+signal that it is missing.
 
 Write `{memory_path}/.gitignore`, preserving any lines already there:
 
@@ -509,7 +399,7 @@ your context.** Have them place it themselves, then verify only that it is non-e
 
 ```bash
 # The user runs this; you do not.
-#   jq '.env.WORKBENCH_MEMORY_GIT_TOKEN = "<paste-token>"' ~/.claude/settings.json > /tmp/s && mv /tmp/s ~/.claude/settings.json && chmod 600 ~/.claude/settings.json
+#   tmp=$(mktemp) && jq '.env.WORKBENCH_MEMORY_GIT_TOKEN = "<paste-token>"' ~/.claude/settings.json > "$tmp" && mv "$tmp" ~/.claude/settings.json && chmod 600 ~/.claude/settings.json
 jq -e '(.env.WORKBENCH_MEMORY_GIT_TOKEN // "") | length > 0' ~/.claude/settings.json >/dev/null \
   && echo "token present" || echo "token NOT set"
 ```
@@ -556,52 +446,86 @@ git -C "$MEMORY_PATH" push -u origin main
 ```
 
 Confirm afterwards that the server picked it up — the sync loop only starts on the next server
-launch, which means the **relaunch in Step 7**, not merely a new session.
+launch, which means the **relaunch in Step 6**, not merely a new session.
 
-## Step 3 — Re-templatize identity files (if `agent_name` changed)
+## Step 2f — Install the shipped output style
 
-If `agent_name` changed from its previous value (or this is a first-time setup):
+Setup is the one entry point for the persona. There is no separate install command, so a re-run
+of setup after a plugin update is also what re-syncs the output style. The warmup does not write
+the style. It only reports `⚠ Output style out of date` in the warmup notices when the live copy
+differs from the shipped one, and that notice points here.
 
-A *target path* here is a path the user configured in step 7. An `identity_files`
-key that is unset has no target path, and it gets no file: seeding one would
-re-run a decision the user already made, and the user who blanked the key is
-exactly the user who deleted that file on purpose. `skills-protocol.md` is the
-exception below, because it is not an identity file and has no key.
+The plugin ships one persona under `${CLAUDE_PLUGIN_ROOT}/assets/personas/<name>/`: an output
+style. `scripts/install.sh` copies it to `~/.claude/output-styles/<name>.md` and writes its
+`name:` to `~/.claude/settings.json` `.outputStyle`, a single-key merge that preserves every
+other setting.
 
-1. Read the template files from `${CLAUDE_PLUGIN_ROOT}/assets/templates/`:
-   - `soul-hot.template.md`
-   - `soul-core.template.md`
-   - `profile.template.md`
-   - `skills-protocol.template.md`
+### 2f.1 — Opt in, or re-sync
 
-2. Replace all `{{agent_name}}` placeholders with the new agent name.
+Read `.persona` from `config.json`. The persona is opt-in:
 
-3. **If identity files already exist at the target paths:**
-   - Read the existing files.
-   - Show the user a diff of what would change (template defaults vs their customized content).
-   - Ask: "Overwrite with re-templatized version, or keep your current files?"
-   - If they choose to keep, skip the overwrite but update any `{{agent_name}}` references in the existing content (find-and-replace the OLD agent name with the NEW one, preserving all other customizations).
+- **Unset** → ask through `AskUserQuestion` whether to install it. Respect a "no", and skip to
+  Step 2g.
+- **Set** → the user already chose it. Re-sync it without asking again, through 2f.2 and 2f.3.
 
-4. **If a configured identity file doesn't exist:**
-   - Write the templatized version to `{memory_path}/{the configured path}`, for each of the `identity_files` keys the user set, and for none of the keys they left blank.
-   - Write `skills-protocol.template.md` to `{memory_path}/identity/skills-protocol.md` (no `{{agent_name}}` substitution needed — it's agent-agnostic). Replace `{{date}}` with today's date.
-   - Create parent directories as needed.
+### 2f.2 — Preview (always dry-run first)
 
-5. Update the `memory_mcp_server_name` to reflect the new agent name if the user chose the default derivation (`{agent_name}-memory`).
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/install.sh" --dry-run
+```
 
-## Step 4 — Confirm
+Relay the output verbatim. It reports whether the style would be written or already matches, and
+prints a diff for a live copy that would change. If everything already matches, say so and skip
+to Step 2g.
 
-Tell the user:
-- Config saved to `{CONFIG_FILE}`
-- MCP env vars will be re-read from config.json on next Claude Code restart
-- The memory server's bearer token was provisioned (and the port, if non-default) into `~/.claude/settings.json`
-- The permission mode that is now set, and how many deny/ask rails were added (the script reports both)
-- Whether git sync was enabled, and if so the remote and the measured synced size (Step 2e)
-- Whether identity files were created/updated
+### 2f.3 — Apply and record
 
-## Step 4.5 — Deploy the nightly decision-quality task (opt-in)
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/install.sh"
+```
 
-The decision-quality learning loop (`/workbench-core:evaluate-decisions` → `/workbench-core:propose-upgrades`) can run on a nightly schedule: it grades the decisions and memories recorded that day, writes a learnings report, then holds a **triage of sign-off questions that pauses until you pick it up** — the same async pattern as the BuJo ritual. Auto-apply never happens; every proposal waits for your explicit approval.
+Then record the active persona in `config.json` so tooling knows which one is live. The persona
+is the directory name, and the style name is the `name:` the script echoed:
+
+```bash
+tmp="$(mktemp)"
+jq --arg p "<name>" --arg s "<StyleName>" '.persona = $p | .output_style = $s' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
+```
+
+The output style takes effect on the next session. Step 6's restart covers it.
+
+## Step 2g — Cap MCP tool output (default-on)
+
+Claude Code persists an MCP response larger than `MAX_MCP_OUTPUT_TOKENS` to a file and hands
+the model a pointer to it instead of the text. Its default is 25,000 tokens. Setup lowers that to
+**15,000**, so a response past about 60 KB stays out of the context.
+
+Set it only when the key is absent. A value already there is the user's own choice, so a re-run
+leaves it alone:
+
+```bash
+SETTINGS="${WORKBENCH_SETTINGS_FILE:-$HOME/.claude/settings.json}"
+mkdir -p "$(dirname "$SETTINGS")"
+[ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
+if jq -e 'type == "object"' "$SETTINGS" >/dev/null 2>&1; then
+  tmp="$(mktemp)"
+  jq '.env = (.env // {}) | .env.MAX_MCP_OUTPUT_TOKENS = (.env.MAX_MCP_OUTPUT_TOKENS // "15000")' \
+    "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
+  chmod 600 "$SETTINGS"
+else
+  echo "settings.json is not a JSON object; left it alone. Set env.MAX_MCP_OUTPUT_TOKENS by hand."
+fi
+```
+
+- **Idempotent:** the merge is a no-op when the key exists, whatever its value.
+- **Restart required:** `settings.json` `.env` is read at launch, like the token in Step 2b.
+- **The memory vault is covered too.** Its `read` tool returns notes up to 262,144 bytes whole, on
+  purpose. A read past the limit reaches the model as a pointer to the persisted response, which
+  it reads from there. Nothing is truncated, so no exemption is needed.
+
+## Step 3 — Deploy the nightly decision-quality task (opt-in)
+
+The decision-quality learning loop (`/workbench-core:evaluate-decisions` → `/workbench-core:propose-upgrades`) can run on a nightly schedule: it grades the decisions and memories recorded that day, writes a learnings report, then holds a **triage of sign-off questions that pauses until you pick it up**. Auto-apply never happens; every proposal waits for your explicit approval.
 
 Ask whether to enable it, via AskUserQuestion:
 - **Question:** "Schedule the nightly decision-quality review? It evaluates recent decisions, then pauses on a proposal triage for your sign-off."
@@ -615,7 +539,7 @@ If the user declines, skip this step (they can re-run setup anytime to enable it
 2. **Read the scheduled-task prompt body** from the plugin — use it verbatim as the `prompt` (it is plain prose, no frontmatter to strip):
    `${CLAUDE_PLUGIN_ROOT}/assets/prompt-templates/decision-quality.prompt.md`
 
-3. **Idempotently register ONE task**, `workbench-core-decision-quality` (mirroring the house pattern in `skills/memory-lint/SKILL.md`). Call `list_scheduled_tasks`; if a task with that `taskId` already exists, call `update_scheduled_task`, otherwise `create_scheduled_task`, with:
+3. **Idempotently register ONE task**, `workbench-core-decision-quality`. Call `list_scheduled_tasks`; if a task with that `taskId` already exists, call `update_scheduled_task`, otherwise `create_scheduled_task`, with:
    ```jsonc
    {
      "taskId": "workbench-core-decision-quality",
@@ -627,13 +551,13 @@ If the user declines, skip this step (they can re-run setup anytime to enable it
 
 4. **Confirm:** "✅ Nightly decision-quality task registered (03:00). It writes a learnings report and pauses on the triage until you pick it up. Re-run setup to change the time or remove it."
 
-**One chained task, not two.** The proposal triage must run only *after* the evaluation report exists, so a single task that runs evaluate then propose expresses that dependency directly — a second fixed-time cron could fire before the evaluation finished. The prompt's pause instruction is what makes the unattended run wait at the triage rather than fabricate answers.
+It is **one chained task, not two**: the triage must run only after the evaluation report exists, and a second fixed-time task could fire before the evaluation finished.
 
-## Step 4.6 — Deploy the monthly memory-lint task (default-on)
+## Step 4 — Deploy the monthly memory-lint task (default-on)
 
 The memory-lint ritual is the vault's only self-healing pass: it rescues files skipped for broken frontmatter, repairs broken links, and writes an audit report. Register it **without asking** — the 2026-07-08 audit found that an unregistered lint schedule let 31 documents rot invisibly for a month. Mention it in the confirmation so the user can remove it if they truly want to.
 
-Idempotently register ONE task (same list → update-else-create pattern as Step 4.5, tools already pre-warmed there):
+Idempotently register ONE task (same list → update-else-create pattern as Step 3; pre-warm the tools the same way if Step 3 was skipped):
 
 ```jsonc
 {
@@ -644,45 +568,22 @@ Idempotently register ONE task (same list → update-else-create pattern as Step
 }
 ```
 
-**Confirm:** "✅ Monthly memory-lint task registered (1st of the month, 09:00). It keeps every vault file searchable; remove it from the Scheduled sidebar if you'd rather run `/workbench-core:memory-lint` manually."
+## Step 5 — Confirm
 
-## Step 5 — User profile interview
+Tell the user:
+- Config saved to `{CONFIG_FILE}`
+- MCP env vars will be re-read from config.json on next Claude Code restart
+- The memory server's bearer token was provisioned (and the port, if non-default) into `~/.claude/settings.json`
+- Whether `MAX_MCP_OUTPUT_TOKENS` was set to 15,000, or an existing value was kept (Step 2g)
+- The permission mode that is now set, and how many deny/ask rails were added (the script reports both)
+- Whether git sync was enabled, and if so the remote and the measured synced size (Step 2e)
+- Whether the output style was installed, re-synced, already current, or declined (Step 2f)
+- Whether the nightly decision-quality task was registered (Step 3)
+- "✅ Monthly memory-lint task registered (1st of the month, 09:00). It keeps every vault file searchable; remove it from the Scheduled sidebar if you'd rather run `/workbench-core:memory-lint` manually." (Step 4)
 
-Check whether `profile.md` exists at the configured path and has real content (not just a template):
+## Step 6 — Restart reminder
 
-```bash
-if [ -f "{memory_path}/identity/profile.md" ]; then
-  grep -q '<!--' "{memory_path}/identity/profile.md" && echo "TEMPLATE" || echo "EXISTS"
-else
-  echo "MISSING"
-fi
-```
-
-- **Missing or template:** Automatically invoke `/workbench:define-profile`. Tell the user: "No user profile found — let's set one up so the agent knows how you work."
-- **Exists with real content:** Ask: "Your user profile already exists. Want to run `/workbench:define-profile` to review and refine it?" Respect a "no."
-
-## Step 6 — Agent identity setup
-
-Check whether `soul-hot.md` and `soul-core.md` exist at the configured paths and have real content:
-
-```bash
-for f in soul-hot.md soul-core.md; do
-  if [ -f "{memory_path}/identity/$f" ]; then
-    grep -q '<!--' "{memory_path}/identity/$f" && echo "TEMPLATE: $f" || echo "EXISTS: $f"
-  else
-    echo "MISSING: $f"
-  fi
-done
-```
-
-- **Any missing or template:** Automatically invoke `/workbench:define-soul`. Tell the user: "Agent identity files need to be set up — launching the soul definition walkthrough."
-- **Both exist with real content:** Ask: "Agent identity files already exist. Want to run `/workbench:define-soul` to review and refine them?" Respect a "no."
-
-The profile is completed first intentionally — define-soul benefits from knowing the user's working style, communication preferences, and expertise level when shaping the agent's voice and relationship dynamic.
-
-## Step 7 — Restart reminder
-
-After both interviews complete (or are skipped), remind the user to **fully restart Claude Code — quit and relaunch, not just `/clear` or a new session.** Permission rules and `defaultMode` from Step 2c would be satisfied by a new session, but the bearer token from Step 2b reaches the MCP client only through `settings.json` `.env`, which Claude Code reads **at launch**. A new session in the same process re-reads neither, and the memory MCP fails identically. Say this plainly: a new session is not enough.
+Remind the user to **fully restart Claude Code — quit and relaunch, not just `/clear` or a new session.** Permission rules and `defaultMode` from Step 2c would be satisfied by a new session, but the bearer token from Step 2b and the MCP output limit from Step 2g reach Claude Code only through `settings.json` `.env`, which it reads **at launch**. A new session in the same process re-reads neither, and the memory MCP fails identically. Say this plainly: a new session is not enough.
 
 ## Notes
 

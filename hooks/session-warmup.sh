@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 #
-# session-warmup: inject identity essentials and handle pending work at session
-# start.
+# session-warmup: inject the memory and scratch rules, and handle pending work
+# at session start.
 #
 # Invoked by the `core` plugin's SessionStart hook. Reads the hook payload from
-# stdin, writes identity + notices to stdout for Claude Code to inject into the
+# stdin, writes the rules + notices to stdout for Claude Code to inject into the
 # assistant's context.
 #
 # Branches on the payload's `source` field:
-#   startup → full warmup: cleanup + identity + notices refresh
-#   resume  → identity refresh (profile as pointer) + notices refresh
-#   clear   → identity refresh + notices refresh
-#   compact → identity refresh only (profile as pointer)
+#   startup → full warmup: cleanup + rules + notices refresh
+#   resume  → rules + notices refresh
+#   clear   → rules + notices refresh
+#   compact → rules only
 #
 # The injected payload is BYTE-STABLE by construction: all volatile housekeeping
 # state goes to ~/.claude-workbench/warmup-notices.md and is surfaced by a
-# constant pointer line. See the append-only invariant at the guardrails block.
+# constant pointer line. See the append-only invariant at the rules block.
 #
 # Exit code is always 0 — warmup failures must not break the session.
 
@@ -55,7 +55,7 @@ memory_load_env
 # shellcheck source=hooks/lib/summary-dispatch.sh
 . "$HOOKS_DIR/lib/summary-dispatch.sh"
 
-# Config resolution for warmup-only fields (agent_name, identity_files).
+# Config resolution for the warmup-only field, agent_name.
 # Prefer the current data dir; fall back to the pre-rename location so users
 # who customized before the workbench → workbench-core rename keep working.
 CONFIG_FILE="$(memory_resolve_config_file)"
@@ -95,53 +95,29 @@ fi
 # These functions manage files that persist on disk across sessions. Defined
 # here, called conditionally below.
 
-# Single source for the behavioral-overrides text. Layer 1
-# (~/.claude/system-overrides.md, system-prompt tier, CLI only) and layer 2
-# (the managed block in ~/.claude/CLAUDE.md, user-message tier, everywhere)
-# are separate authority tiers by design — see the README layer table — so each
-# still ends up with the rules FULLY INLINED, never a pointer: both files are
-# read later, by the CLI and the model, against a version-pinned plugin path
-# that may no longer be live. What converges is only the hook's source for what
-# it writes. Reading it here is safe precisely because the hook runs fresh at
-# every session start, when CLAUDE_PLUGIN_ROOT is current.
+# The behavioural rules load from ONE place: the active output style
+# (assets/personas/clear/output-style.md), which is system-prompt tier and
+# survives compaction on its own. This hook used to render the same rules into
+# ~/.claude/system-overrides.md and the managed ~/.claude/CLAUDE.md block, and
+# inject a third copy on stdout. The copies drifted and contradicted each other,
+# and the CLAUDE.md copy reached every sub-agent. None of them is written now.
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-BEHAVIORAL_OVERRIDES_SRC="$PLUGIN_ROOT/references/behavioral-overrides.md"
+SYSTEM_OVERRIDES="$HOME/.claude/system-overrides.md"
 
-render_behavioral_overrides() {
-  # Print the shared overrides block with the agent name substituted.
-  # FAILS CLOSED: returns non-zero when the shipped source is unreadable or
-  # empty, so callers leave their destination file exactly as it is. Stale
-  # good content beats a truncated or blanked identity block.
-  [ -r "$BEHAVIORAL_OVERRIDES_SRC" ] || return 1
-  local body
-  body="$(cat "$BEHAVIORAL_OVERRIDES_SRC")" || return 1
-  [ -n "$body" ] || return 1
-  printf '%s' "${body//AGENT_NAME_PLACEHOLDER/$AGENT_NAME}"
-}
+# The retired system-overrides.md stays on disk as a rule-free stub, because the
+# user's shell alias still passes it to `claude --append-system-prompt-file`,
+# and the CLI refuses to start when that file is missing. The stub is written
+# only over a file that already exists, so once the user removes the alias and
+# deletes the file, it stays gone. A startup notice tells them to do exactly
+# that, in that order.
+SYSTEM_OVERRIDES_STUB='<!-- workbench-core retired this file. It exists only so a `claude --append-system-prompt-file ~/.claude/system-overrides.md` alias still starts. The behavioural rules load from the output style. -->'
 
-ensure_system_overrides() {
-  local target="$HOME/.claude/system-overrides.md"
-  local overrides
-  overrides="$(render_behavioral_overrides)" || return 1
-
-  local block=""
-  read -r -d '' block <<'SYSEOF' || true
-# Agent identity
-# Loaded via: claude --append-system-prompt-file ~/.claude/system-overrides.md
-
-BEHAVIORAL_OVERRIDES_PLACEHOLDER
-SYSEOF
-  block="${block//BEHAVIORAL_OVERRIDES_PLACEHOLDER/$overrides}"
-
-  mkdir -p "$HOME/.claude"
+retire_system_overrides() {
+  [ -f "$SYSTEM_OVERRIDES" ] || return 0
+  [ "$(cat "$SYSTEM_OVERRIDES" 2>/dev/null)" = "$SYSTEM_OVERRIDES_STUB" ] && return 0
   local tmp
-  tmp=$(mktemp)
-  printf '%s\n' "$block" > "$tmp"
-  if [ -f "$target" ] && cmp -s "$tmp" "$target"; then
-    rm -f "$tmp"
-    return 0
-  fi
-  mv "$tmp" "$target"
+  tmp=$(mktemp) || return 1
+  printf '%s\n' "$SYSTEM_OVERRIDES_STUB" > "$tmp" && mv "$tmp" "$SYSTEM_OVERRIDES"
 }
 
 detect_chat_skill_changes() {
@@ -246,63 +222,47 @@ ensure_claude_md_enforcement() {
   local id_end="<!-- workbench-identity:end -->"
   local warmup_start="<!-- workbench-warmup:start -->"
   local warmup_end="<!-- workbench-warmup:end -->"
-  local overrides
-  overrides="$(render_behavioral_overrides)" || return 1
-
-  # The destructive-command section at the end of this block is here rather than in
-  # the SessionStart stdout below, and both carry it for different readers. A
-  # sub-agent starts with ~/.claude/CLAUDE.md in context and WITHOUT this hook's
-  # stdout — measured by asking a freshly spawned one to introspect before its
-  # first tool call — so the stdout copy reaches the main session only, and an
-  # agent that never saw it reaches for `rm -rf` by reflex and prompts the user.
-  # This is the channel that reaches every agent type at once, including
-  # general-purpose, Explore, Plan, and any agent added later; per-agent
-  # definitions would each have to be edited and would still miss those.
+  # This block carries FACTS ONLY: which gates exist, what each protects, and
+  # where scratch goes. It holds no behavioural rule, because ~/.claude/CLAUDE.md
+  # reaches every sub-agent, and the persona rules belong to the main session's
+  # output style. A rule written here lands in agents that lack the tools it
+  # names (AskUserQuestion) and the human it assumes.
+  #
+  # The scratch roots are here as well as in the SessionStart stdout below, for
+  # different readers. A sub-agent starts with ~/.claude/CLAUDE.md in context and
+  # WITHOUT this hook's stdout (measured by asking a freshly spawned one to
+  # introspect before its first tool call), so the stdout copy reaches the main
+  # session only. This is the channel that reaches every agent type at once,
+  # including general-purpose, Explore, Plan, and any agent added later. Each
+  # gate's deny carries its own recovery text, so the block names the gate and
+  # what it protects, and leaves the way through to the deny.
   local identity_block=""
   read -r -d '' identity_block <<'CMDEOF' || true
 <!-- workbench-identity:start -->
-# Agent Identity
+# Workbench gates and scratch roots
 
-BEHAVIORAL_OVERRIDES_PLACEHOLDER
+These PreToolUse hooks guard every session. Each deny explains its own way
+through, so read the deny and follow it.
 
-## Identity files (loaded by SessionStart hook)
+| Gate | What it protects |
+|---|---|
+| Delegation gate | The main agent does not write whole files. It is denied `Write` and `NotebookEdit` outside the scratchpads, and may use `Edit`. Sub-agents are exempt. Only the user lifts it, with `/workbench-core:orchestrator off`. |
+| Agent dispatch gate | A main-agent `Agent` dispatch must carry the five-slot brief. |
+| Destructive scope guard | `rm`, `rmdir`, `git reset --hard`, `git clean`, and `git stash clear`/`drop` run only when every target resolves inside the project or a scratch root. |
+| Destructive database guard | Database resets, drops, and destructive SQL are refused. |
+| Provisioning guard | Agents do not create worktrees or databases, and do not destroy a worktree they did not create. |
+| Vault git guard | Git writes aimed at the memory vault are refused. |
+| Credential guard | Reads of `~/.ssh`, `~/.aws`, `~/.gnupg`, and `.env` files are refused. |
+| Outbound prose guard | `gh` and board-MCP prose must pass the output style's mechanical checks. |
+| Peer message gate | A sub-agent messages only its orchestrator or the agents it spawned. |
 
-- `profile.md` — user facts, working preferences
-- `skills-protocol.md` — execution-aware skill learnings
-- `guardrails.md` — absolute rules across every agent and context
+A deny is the system working. Report it, and do not route around it.
 
-When these conflict with default Claude behavior, the identity files win.
-
-## Delegation gate (PreToolUse hook, on by default)
-
-The main agent orchestrates and does not edit files. `Edit`, `Write`, and
-`NotebookEdit` are denied in the main conversation. Dispatch a sub-agent with
-the Agent tool instead. Reads and Bash stay open, and sub-agents are exempt.
-A deny is the system working, so report it and delegate. Never route around it.
-Only the user lifts the gate, with `/workbench-core:orchestrator off`.
-
-## Destructive commands are scoped, not asked
-
-`rm`, `rmdir`, `git reset --hard`, `git clean`, and `git stash clear`/`drop` run
-unprompted when every path they act on resolves inside the project or a
-scratch root:
-the session scratchpad, `~/Developer/scratchpad`, or a `mktemp -d` sandbox.
-A PreToolUse guard resolves each path and permits the call.
-`rm` and `rmdir` may also remove a leftover `/tmp/claude-*scratch*` folder you own, the folder itself included. It is not a root, so `git` verbs there are still denied.
-
+A scratch root is the session scratchpad, `~/Developer/scratchpad`, or a `mktemp -d` sandbox.
 Make new scratch in the session scratchpad or `~/Developer/scratchpad`.
 Never create it anywhere under `/tmp` outside your session scratchpad.
-Do not put new scratch in an old `claude-*scratch*` folder there either.
-
-Outside those roots it denies, and it also denies any target it cannot read:
-a `$variable`, a glob, `bash -c`, `ssh`, `xargs`, `find -delete`, or a loop
-body. So spell paths out literally, and keep the delete its own command.
-Never hand the user a `!` command to delete your own scratch.
-A target outside every root that is not scratch is the user's call, and they
-run it with the `!` prefix.
 <!-- workbench-identity:end -->
 CMDEOF
-  identity_block="${identity_block//BEHAVIORAL_OVERRIDES_PLACEHOLDER/$overrides}"
 
   local warmup_body=""
   local warmup_block=""
@@ -381,7 +341,7 @@ ensure_memory_routing_stub() {
 }
 
 # Skip guard: the summary-writer spawn from session-log.sh sets this env
-# var on its detached claude process. That process doesn't need identity
+# var on its detached claude process. That process doesn't need session
 # context or pending-summary scanning — it has a single mechanical job
 # assigned in its prompt and should not touch anything other than its job.
 if [ "${WORKBENCH_SKIP_WARMUP:-}" = "1" ]; then
@@ -389,24 +349,23 @@ if [ "${WORKBENCH_SKIP_WARMUP:-}" = "1" ]; then
 fi
 
 # Skip guard: Claude Code sets this env var on every sub-agent dispatch
-# (Watson, Holmes-reviewer, Lestrade, Harvester — and any future agent
+# (Watson, Holmes-reviewer, Lestrade, Harvester, and any future agent
 # from any plugin). Those runs carry self-contained system prompts and
-# must not inherit the interactive identity this warmup injects:
-# its guardrail #1 ("present options before making changes") directly
-# conflicts with autonomous, unattended pipeline work — Watson dispatched
-# via cron has no human present to answer it. Orchestrator/Dispatch and
-# Mike's own interactive sessions run without --agent, leave this unset,
-# and are unaffected.
+# must not inherit the interactive session context this warmup injects:
+# the memory rules and the housekeeping notices are written for a
+# human-attended session, and Watson dispatched via cron has no human present.
+# Orchestrator/Dispatch and Mike's own interactive sessions run without
+# --agent, leave this unset, and are unaffected.
 if [ -n "${CLAUDE_CODE_AGENT:-}" ]; then
   exit 0
 fi
 
-# ──────────── CLAUDE.md + system-overrides enforcement (startup only) ────────────
-# These files persist on disk — no need to regenerate on compact/resume.
-# Note: system-overrides.md takes effect on the *next* session (must exist before
-# Claude Code starts). CLAUDE.md and hook output cover the current session.
+# ──────────── CLAUDE.md + retired system-overrides (startup only) ────────────
+# These files persist on disk, so there is no need to regenerate on
+# compact/resume. The system-overrides stub is read by the CLI before the
+# session starts, so a rewrite takes effect on the *next* session.
 if [ "$SOURCE" = "startup" ]; then
-  ensure_system_overrides || true
+  retire_system_overrides || true
   ensure_claude_md_enforcement || true
   ensure_memory_routing_stub || true
 fi
@@ -418,7 +377,7 @@ if [ "${CONFIG_BROKEN:-}" = "1" ]; then
   printf '## ⚠ Malformed config.json\n\n'
   printf '`%s` exists but is not valid JSON.\n' "$CONFIG_FILE"
   printf 'All settings are falling back to hardcoded defaults, which may point to wrong directories.\n'
-  printf 'Run `/workbench:setup` to regenerate the config, or fix the JSON manually.\n\n'
+  printf 'Run `/workbench-core:setup` to regenerate the config, or fix the JSON manually.\n\n'
 fi
 
 # ──────────── Memory-routing stub conflict warning ────────────
@@ -427,7 +386,7 @@ if [ -n "${MEMORY_ROUTING_CONFLICT:-}" ]; then
 fi
 
 # ──────────── Retention cleanup (startup only) ────────────
-# Prune stale artifacts on full warmup. Runs before identity injection so it
+# Prune stale artifacts on full warmup. Runs before the rules block so it
 # doesn't add latency to the user-visible part of startup. All find commands
 # are fire-and-forget (-delete exits silently on no matches).
 if [ "$SOURCE" = "startup" ]; then
@@ -502,59 +461,45 @@ if [ "$SOURCE" = "startup" ]; then
   esac
 fi
 
-# ──────────── Identity injection (source-aware) ────────────
-# Guardrails and soul-hot are re-injected on every source: after context
-# compression (compact) the identity may have been shed; on resume it may have
-# drifted. The full profile (~4KB) only loads when the context is genuinely
-# fresh (startup, clear) — compact and resume get a one-line pointer and
-# re-read on demand. skills-protocol is execution-time guidance that skills
-# re-read when they run, so every source gets a pointer.
-#
-# Paths resolve from config.json identity_files, falling back to hardcoded defaults.
-SOUL_HOT_REL="$(_cfg '.identity_files.soul_hot')"
-SOUL_HOT="$MEMORY_PATH/${SOUL_HOT_REL:-identity/soul-hot.md}"
-PROFILE_REL="$(_cfg '.identity_files.profile')"
-PROFILE="$MEMORY_PATH/${PROFILE_REL:-identity/profile.md}"
-SKILLS_PROTOCOL="$MEMORY_PATH/identity/skills-protocol.md"
-GUARDRAILS_INLINE="${CLAUDE_PLUGIN_ROOT}/references/guardrails-inline.md"
+# ──────────── Rules block (every source) ────────────
+# No behavioural rule list is injected here. The rules load once, from the
+# active output style, which is system-prompt tier and survives compaction.
+# No persona file is injected either: the shipped persona is that output style,
+# so the soul and profile files this block used to load had no writer left.
+# Skill learnings are not pointed at from here. hooks/skill-learnings.sh hands
+# each skill its own learnings file when the Skill tool runs.
 
-# Guardrails first — absolute rules must always sit in the inline preview
-# window, even when the rest of the warmup output overflows to a persisted
-# file. Sourced from the condensed -inline copy; full text with examples
-# stays at references/guardrails.md for re-read on demand.
-#
 # APPEND-ONLY INVARIANT (cache-prefix stability). Everything printed from the
-# top of this script through the end of the identity payload below must be
-# BYTE-STABLE across invocations: identical config, identical identity files →
-# identical bytes. Anthropic prompt caching matches on an exact request prefix,
-# so a single drifting byte up here invalidates the cache for the entire rest
-# of the prompt — the identity payload, every plugin's contributions, the
+# top of this script through the end of the rules payload below must be
+# BYTE-STABLE across invocations: identical config → identical bytes.
+# Anthropic prompt caching matches on an exact request prefix, so a single
+# drifting byte up here invalidates the cache for the entire rest of the
+# prompt — the rules payload, every plugin's contributions, the
 # skill body, and the tool definitions. Any block whose content varies run to
 # run (a live file count, a wall-clock-triggered flag, a directory listing)
 # therefore APPENDS after this section, never precedes it. See the
 # stray-summary, recall-liveness, pending-summary, and chat-skills blocks
 # below for the pattern.
-if [ -r "$GUARDRAILS_INLINE" ]; then
-  printf '## Guardrails — absolute rules\n\n'
-  cat "$GUARDRAILS_INLINE"
-  printf '\n\n'
-fi
 
 # Memory routing — countermand the harness's per-project memory instructions.
 # Re-injected on every source so the rule survives compaction. This is the
-# always-on FLOOR for the capture rule; hooks/memory-capture-nudge.sh
-# (UserPromptSubmit) reinforces it per-turn when a turn looks capture-worthy,
-# so the rule keeps its salience deep into a long session.
+# always-on FLOOR for the capture rule. hooks/memory-capture-stop.sh (Stop) is
+# its backstop. A per-turn UserPromptSubmit capture nudge used to sit between
+# the two. It was retired on 2026-09-27, because it also fired on sub-agent
+# hand-backs and task notifications and restated this block at a measured
+# ~180k tokens in three days.
 #
 # It is also the floor for the two recall rules — WHEN to search and WHAT to
-# search for. hooks/memory-recall.sh searches the USER'S PROMPT at turn start and
-# nothing else, and that is not only a coverage gap. The throttles it needs for
-# context cost (prompt-only input, turn-start only, 2 hits, per-session dedup, a
-# substance gate) mean a topic a scan uncovers mid-task never reaches it.
-# hooks/memory-scan-recall.sh (PostToolUse) now catches PART of that — the scans
-# that carry an extractable query — but only those, so the floor below still has
-# to carry the rule in full. And
-# even on the opening prompt, the prompt's own wording is a WEAKER query than the
+# search for. hooks/memory-recall.sh searches each substantive PROMPT of the main
+# session, and nothing else, and that is not only a coverage gap. The throttles
+# it needs for context cost (prompt-only input, turn-start only, 2 hits,
+# per-session dedup, a substance gate) mean a topic a scan uncovers mid-task
+# never reaches it. hooks/memory-scan-recall.sh (PostToolUse) catches PART of
+# that — the file searches that carry an extractable query — but only those, so
+# the floor below still has to carry the rule in full. (Until 2026-09-27 the
+# bullet below claimed auto-recall saw only the OPENING prompt. That was never
+# true: memory-recall.sh runs on every prompt that passes its substance gate.)
+# And even on a prompt, the prompt's own wording is a WEAKER query than the
 # one the agent can form from the task. Measured: "go ahead and push and create a
 # release" left skills/release.learnings.md — which carries the release-title
 # rule — outside the top 8, while "release title naming convention", the query
@@ -566,19 +511,22 @@ fi
 # here (hooks/agent-dispatch-gate.sh) the variants traded 83% precision at 26%
 # recall against 34% precision at 84% recall.
 #
-# hooks/memory-recall-nudge.sh reinforces these two bullets per turn, the way
-# memory-capture-nudge.sh reinforces the capture rule. It is a REMINDER, never a
-# classifier: it decides whether to restate the rule, never whether a recall
-# happens, so it cannot skip a search the way the rejected conditional would.
+# A per-turn recall nudge used to restate these two bullets. It was retired with
+# the capture nudge, for the same cost, and because it repeated the false
+# opening-prompt claim on every turn.
+#
+# The recall bullet does not name a search mode. The server's default is "auto":
+# hybrid when the vault has embeddings, keyword when it does not. Telling the
+# agent to pass `hybrid` broke that fallback on a vault with no embeddings.
 printf '## Memory routing\n\n'
 printf -- '- The workbench memory vault is the CANONICAL durable memory store, served by the `memory` MCP (`mcp__plugin_workbench-core_memory__search` / `write` / etc.).\n'
 printf -- '- When the harness'\''s memory instructions prompt a save, write to the VAULT instead: MCP `write` with frontmatter `name` + `type` (decision | insight | project | feedback | reference) plus tags/summary/date per vault conventions.\n'
-printf -- '- Proactively CAPTURE durable knowledge without asking: a decision (+ rationale), a troubleshooting root-cause, a design choice and the options weighed, a non-obvious insight or gotcha, a project/plan outcome, or feedback on how to work — `write` it to the vault immediately with the correct `type`, then note the save in one line. This is standing authorization; memory-capture writes are EXEMPT from the "present options / confirm before changes" rule. Do NOT ask first.\n'
+printf -- '- Proactively CAPTURE durable knowledge without asking: a decision (+ rationale), a troubleshooting root-cause, a design choice and the options weighed, a non-obvious insight or gotcha, a project/plan outcome, or feedback on how to work — `write` it to the vault immediately with the correct `type`, then note the save in one line. This is standing authorization: a memory-capture write needs no options round and no confirmation. Do NOT ask first.\n'
 printf -- '- Before saving, `search` for an existing memory to UPDATE rather than duplicate. Skip the trivial: routine code edits, facts already in the repo or git, ephemeral chatter. Capture what would otherwise be a "by the way, should I remember this?".\n'
 printf -- '- The per-project memory directory and its MEMORY.md are a router only — never create memory files there.\n'
-printf -- '- Recall = vault `search` (mode hybrid), not directory reads.\n'
-printf -- '- Recall comes FIRST: the moment a task turns up a topic — an error, a tool, a design choice, a repo or file you have worked before — `search` the vault BEFORE you scan the repo for the answer. Auto-recall only ever sees the user'\''s opening prompt, so anything a scan surfaces mid-task has had NO memory searched against it unless you search it yourself.\n'
-printf -- '- Build the recall QUERY from the TASK, not from the prompt: name the thing you are about to produce or decide — the convention, the format, the procedure, the tool, the error — in the words a note about it would use, and search THAT. Auto-recall can only ever run the user'\''s own wording, so your advantage over it is asking the better question; a recorded rule filed under another phrase is one query away and will not arrive on its own.\n\n'
+printf -- '- Recall = vault `search`, not directory reads. Omit `mode`: the server picks hybrid when the vault has embeddings and keyword when it does not.\n'
+printf -- '- Recall comes FIRST: the moment a task turns up a topic — an error, a tool, a design choice, a repo or file you have worked before — `search` the vault BEFORE you scan the repo for the answer. Auto-recall searches only the wording of each prompt and the patterns of your file searches, so a topic that reaches you any other way has had NO memory searched against it unless you search it yourself.\n'
+printf -- '- Build the recall QUERY from the TASK, not from the prompt: name the thing you are about to produce or decide — the convention, the format, the procedure, the tool, the error — in the words a note about it would use, and search THAT. Auto-recall can only ever run wording that was already typed, so your advantage over it is asking the better question; a recorded rule filed under another phrase is one query away and will not arrive on its own.\n\n'
 
 # Destructive commands — scoped by hooks/destructive-scope-guard.sh rather than
 # asked about by a permission rule. What an agent has to know is not a command
@@ -597,49 +545,6 @@ printf '## Destructive commands\n\n'
 printf -- '- `rm`, `rmdir`, `git reset --hard`, `git clean`, and `git stash clear`/`drop` run with no prompt when every path they act on resolves inside the project or a scratch root: the session scratchpad, `~/Developer/scratchpad`, or a `mktemp -d` sandbox. A PreToolUse guard resolves each path and permits the call. `rm` and `rmdir` may also remove a leftover `/tmp/claude-*scratch*` folder you own, the folder itself included. It is not a root, so `git` verbs there are still denied.\n'
 printf -- '- Make new scratch in the session scratchpad or `~/Developer/scratchpad`. Never create it anywhere under `/tmp` outside your session scratchpad. Do not put new scratch in an old `claude-*scratch*` folder there either.\n'
 printf -- '- Outside those roots it DENIES, and so does any target it cannot read: a `$variable`, a glob, `bash -c`, `ssh`, `xargs`, `find -delete`, or a loop body. Spell paths out literally and keep the delete its own command. Never hand the user a `!` command to delete your own scratch. A target outside every root that is not scratch is the user'"'"'s call, and they run it with the `!` prefix.\n\n'
-
-# A soul file is OPTIONAL. An agent with no persona carries its standard in the
-# output style instead, which is system-prompt tier and survives compaction on
-# its own — nothing for this block to re-inject. Three cases, in order:
-#   readable                  → inject it
-#   configured but unreadable → warn, because that is a misconfiguration
-#   not configured at all     → silent, because absence is the deliberate state
-# The default path still resolves above, so a config predating identity_files
-# keeps injecting its soul file exactly as before.
-if [ -r "$SOUL_HOT" ]; then
-  printf '## Identity — soul-hot\n\n'
-  cat "$SOUL_HOT"
-  printf '\n\n'
-elif [ -n "$SOUL_HOT_REL" ]; then
-  printf '_(soul-hot.md not found at %s)_\n\n' "$SOUL_HOT"
-fi
-
-# A profile is OPTIONAL for the same reason a soul file is, and it gets the same
-# three cases. Until this matched the soul branch it warned unconditionally, so a
-# user who deleted profile.md on purpose read "profile.md not found" at the top
-# of every single session, and an agent reading that concluded the install was
-# broken. Absence and misconfiguration are different states and now read
-# differently.
-case "$SOURCE" in
-  startup|clear)
-    if [ -r "$PROFILE" ]; then
-      printf '## User profile\n\n'
-      cat "$PROFILE"
-      printf '\n\n'
-    elif [ -n "$PROFILE_REL" ]; then
-      printf '_(profile.md not found at %s)_\n\n' "$PROFILE"
-    fi
-    ;;
-  *)
-    if [ -r "$PROFILE" ]; then
-      printf -- '- User profile: re-read `%s` when user facts or working preferences matter.\n\n' "$PROFILE"
-    fi
-    ;;
-esac
-
-if [ -r "$SKILLS_PROTOCOL" ]; then
-  printf -- '- Skills protocol: read `%s` before executing workbench skills.\n\n' "$SKILLS_PROTOCOL"
-fi
 
 # ──────────── Pending-summary drain (startup + resume) ────────────
 # THIS BLOCK EMITS NOTHING in production. It runs before the notices section on
@@ -779,7 +684,7 @@ if [ "$SOURCE" = "startup" ]; then
 fi
 
 # ──────────── Pending-summary check (all sources except compact) ────────────
-# On compact we just re-injected identity — don't add summary work on top of
+# On compact we just re-injected the rules — don't add summary work on top of
 # a context that was just shed. On all other sources, check for unprocessed
 # summaries and tell the model to dispatch a background agent.
 if [ "$SOURCE" != "compact" ]; then
@@ -818,6 +723,38 @@ NOTICE
     printf '\n'
   fi
 fi
+
+# ──────────── Retired system-overrides alias (every source) ────────────
+# retire_system_overrides keeps the file as a rule-free stub, because a shell
+# alias passing it to --append-system-prompt-file stops the CLI when it is
+# missing. The shell profile is the user's file, so the hook never edits it.
+# This notice asks them to finish the retirement, alias first, file second.
+# It stops on its own once the file is gone.
+if [ -f "$SYSTEM_OVERRIDES" ]; then
+  printf '## ℹ Retired system-overrides file\n\n'
+  printf '`%s` no longer carries rules. It exists only so an `--append-system-prompt-file` alias still starts `claude`.\n\n' "$SYSTEM_OVERRIDES"
+  printf '**Remove any such alias from your shell profile, open a new shell, then delete the file.** Deleting the file first stops `claude` from starting through the alias.\n\n'
+fi
+
+# ──────────── Output-style drift check (every source) ────────────
+# The warmup re-renders the CLAUDE.md block itself, but
+# the output style is written only by /workbench-core:setup, so after a plugin
+# update the live copy can lag the shipped one with nothing to say so. It once
+# ran 8 days stale and still told the model to run an options round before a
+# push, which the commit gate contradicts. This compares the two and says so.
+# It never writes the style: setup does, where the human sees the diff first.
+# A live copy that is absent is not drift — the persona is opt-in.
+OUTPUT_STYLES_DIR="${WORKBENCH_OUTPUT_STYLES_DIR:-$HOME/.claude/output-styles}"
+for persona_dir in "$PLUGIN_ROOT"/assets/personas/*/; do
+  persona_dir="${persona_dir%/}"
+  shipped_style="$persona_dir/output-style.md"
+  live_style="$OUTPUT_STYLES_DIR/${persona_dir##*/}.md"
+  [ -f "$shipped_style" ] && [ -f "$live_style" ] || continue
+  cmp -s "$shipped_style" "$live_style" && continue
+  printf '## ⚠ Output style out of date\n\n'
+  printf 'The live output style `%s` differs from the copy this plugin version ships. The model is running on stale rules.\n\n' "$live_style"
+  printf '**Run `/workbench-core:setup` to re-sync it.** Setup shows the diff before it writes. The new style takes effect on the next session.\n\n'
+done
 
 # ──────────── Chat-installable skills check (startup only) ────────────
 # Detect new or updated skills in workbench-* plugins that haven't been

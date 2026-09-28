@@ -1,6 +1,6 @@
 ---
 name: install-chat-skills
-description: Install workbench-* plugin skills into Claude Chat (Mac app) via .skill packaging. Discovers all eligible skills in installed @claude-workbench plugins (excluding workbench-core itself), packages them with skill-creator's package_skill.py, and opens each .skill file with the Mac app to trigger the install dialog. Use this skill whenever the SessionStart warmup output mentions new Chat-installable skills, or to manually re-sync Chat skills after installing or updating a workbench plugin.
+description: Install the skills of installed workbench-* plugins into the Claude Mac app. Use when the warmup notices say new Chat-installable skills exist, or to re-sync after installing or updating a workbench plugin.
 ---
 
 # Install Chat Skills

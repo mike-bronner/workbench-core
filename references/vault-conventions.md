@@ -85,17 +85,9 @@ These fields are indexed for search: `name`, `type`, `tags`, `summary`,
   small updates (adding a bullet, updating a date). Read the file first
   to get the correct text to replace.
 
-## Profile updates
-
-`identity/profile.md` tracks user preferences and working style. Only
-update when the session revealed a genuine, repeated preference shift —
-not a one-off mood. Small delta: add or replace a bullet, don't rewrite
-the file. Use `edit`, not `write`.
-
 ## Vault structure
 
 ```
-identity/        — soul-hot, soul-core, profile, skills-protocol
 decisions/       — architectural and process decisions
 topics/          — topical synthesis pages (current state per theme)
 projects/        — project context and system designs

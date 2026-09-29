@@ -185,6 +185,17 @@ fixture_repo() {  # fixture_repo <dir> — a repo with the refs described above
   git -C "$1" update-ref refs/remotes/origin/twin HEAD 2>/dev/null
   git -C "$1" update-ref refs/remotes/upstream/twin HEAD 2>/dev/null
   git -C "$1" update-ref refs/remotes/gone/shadow HEAD 2>/dev/null
+  # Aliases in the repository's own config. `co` is a discard in disguise,
+  # `lg` is harmless, `hop` reaches `co` through a second alias, `nuke` runs
+  # shell, `loop1` never ends, and `wt` moves the worktree from inside the
+  # alias, where no option on the typed command shows it.
+  git -C "$1" config alias.co checkout
+  git -C "$1" config alias.lg "log --oneline"
+  git -C "$1" config alias.hop co
+  git -C "$1" config alias.nuke '!rm -rf scratch'
+  git -C "$1" config alias.loop1 loop2
+  git -C "$1" config alias.loop2 loop1
+  git -C "$1" config alias.wt "-c core.worktree=$OUT_REPO reset --hard"
 }
 fixture_repo "$IN_REPO"
 fixture_repo "$OUT_REPO"
@@ -221,15 +232,27 @@ printf 'not an index' > "$BROKEN_INDEX/.git/index"
 mkdir -p "$SANDBOX/broken-git"
 printf '#!%s/no-such-interpreter\n' "$SANDBOX" > "$SANDBOX/broken-git/git"
 chmod +x "$SANDBOX/broken-git/git"
+# A `git` that runs every command but `config`, which fails the way a config
+# file git cannot parse makes it fail. The alias question has no answer then.
+mkdir -p "$SANDBOX/config-fails-git"
+printf '#!/bin/bash\nfor a; do [ "$a" = config ] && exit 3; done\nexec %s "$@"\n' \
+  "$(command -v git)" > "$SANDBOX/config-fails-git/git"
+chmod +x "$SANDBOX/config-fails-git/git"
+# The global config the checker's own git reads, standing in for ~/.gitconfig
+# so no alias on this machine reaches a case. `gco` is a discard, `gls` is not.
+GLOBAL_CONFIG="$SANDBOX/gitconfig"
+printf '[alias]\n\tgco = checkout\n\tgls = ls-files\n' > "$GLOBAL_CONFIG"
 
 # run_guard — stdin is the payload. The session id reaches the guard through the
 # PAYLOAD, so CLAUDE_CODE_SESSION_ID is unset here: any case that passes is
 # passing on the payload's id alone. $1 overrides the project root, so the
 # no-project case can be exercised. The memory cache is always a sandbox one,
 # so no case reads this machine's config or its real pending-summaries folder;
-# GUARD_CACHE swaps in a different sandbox cache for the link cases.
+# GUARD_CACHE swaps in a different sandbox cache for the link cases. git reads
+# the sandbox global config and no system config, for the same reason.
 run_guard() {
   (unset CLAUDE_CODE_SESSION_ID
+   GIT_CONFIG_GLOBAL="$GLOBAL_CONFIG" GIT_CONFIG_NOSYSTEM=1 \
    WORKBENCH_MEMORY_CACHE="${GUARD_CACHE:-$CACHE}" \
    CLAUDE_PROJECT_DIR="${1-$PROJECT}" bash "$GUARD")
 }
@@ -605,6 +628,44 @@ DISCARDS=(
   "git switch --discard-changes feature"
   "git switch --disc feature"
   "git switch -qf feature"
+  "git rm -n --no-dry-run -f file.txt"
+  "git clean -f -- -n"
+  "git clean -e -n -f"
+  "git clean --exclude -n -f"
+  "git checkout-index -f -a"
+  "git checkout-index --force file.txt"
+  "git checkout-index --forc file.txt"
+  "git checkout-index -af"
+  "git checkout-index -n -f file.txt"
+  "git checkout-index file.txt -f"
+  "git checkout-index --no-force -f file.txt"
+  "git read-tree -u --reset HEAD"
+  "git read-tree --reset -u HEAD"
+  "git read-tree -vu --reset HEAD"
+  "git read-tree -u --res HEAD"
+  "git read-tree -u --no-reset --reset HEAD"
+  "git read-tree -u -n --no-dry-run --reset HEAD"
+  "git mv -f a.txt b.txt"
+  "git mv --force a.txt b.txt"
+  "git mv -kf a.txt b.txt"
+  "git mv a.txt b.txt -f"
+  "git mv -n --no-dry-run -f a.txt b.txt"
+  "git submodule deinit -f sub"
+  "git submodule deinit --force --all"
+  "git submodule --quiet deinit -f sub"
+  "git submodule update -f"
+  "git submodule update --init --force"
+  "git submodule update -j 4 -f"
+  "git co -- file.txt"
+  "git hop -- file.txt"
+  "git gco -- file.txt"
+  "git -c alias.xo=checkout xo -- file.txt"
+  "git -c alias.XO=checkout xo -- file.txt"
+  "git -c alias.xo=checkout XO -- file.txt"
+  "git -c alias.xo=status -c alias.xo=checkout xo -- file.txt"
+  "git -c alias.xo=checkout -c alias.yo=xo yo -- file.txt"
+  "git -c 'alias.xs=restore --staged '\\''--worktree'\\'' file.txt' xs"
+  "git -c alias.xm='mv -f' xm a.txt b.txt"
 )
 # Forms git refuses outright, where the value an option consumed is what makes
 # the rest unreadable. The checker cannot tell them from a discard, so it
@@ -696,6 +757,71 @@ check neutral "git rm, redirected"             "git rm file.txt >/dev/null" "$OU
 check neutral "git -C absolute, no working directory" "git -C $OUT_REPO checkout only-out" ""
 check neutral "git rm -- -f, a path"           "git rm -- -f" "$OUT_REPO"
 check neutral "git rm --end-of-options -f, a path" "git rm --end-of-options -f" "$OUT_REPO"
+check neutral "git rm -f, then --no-force"     "git rm -f --no-force file.txt" "$OUT_REPO"
+check neutral "git clean -f, then --dry"       "git clean -f --dry" "$OUT_REPO"
+
+# The plumbing and submodule forms without their discarding flag, and a value
+# an option consumed that only looks like the flag.
+echo "leaves the plumbing and submodule forms alone when they discard nothing:"
+check neutral "git checkout-index -a"          "git checkout-index -a" "$OUT_REPO"
+check neutral "git checkout-index -u -q file.txt" "git checkout-index -u -q file.txt" "$OUT_REPO"
+check neutral "git checkout-index -- -f, a path" "git checkout-index -- -f" "$OUT_REPO"
+check neutral "git checkout-index --end-of-options -f, a path" \
+  "git checkout-index --end-of-options -f" "$OUT_REPO"
+check neutral "git checkout-index -f, then --no-force" "git checkout-index -f --no-force file.txt" "$OUT_REPO"
+check neutral "git checkout-index --prefix without -f" "git checkout-index --prefix=out/ -a" "$OUT_REPO"
+check neutral "git checkout-index --stage, a value named -f" "git checkout-index --stage -f file.txt" "$OUT_REPO"
+check neutral "git read-tree"                  "git read-tree HEAD" "$OUT_REPO"
+check neutral "git read-tree -m -u"            "git read-tree -m -u HEAD" "$OUT_REPO"
+check neutral "git read-tree --reset without -u" "git read-tree --reset HEAD" "$OUT_REPO"
+check neutral "git read-tree -u --reset -n"    "git read-tree -u --reset -n HEAD" "$OUT_REPO"
+check neutral "git read-tree -u --reset --dry-run" "git read-tree -u --reset --dry-run HEAD" "$OUT_REPO"
+check neutral "git read-tree, --reset then --no-reset" "git read-tree -u --reset --no-reset HEAD" "$OUT_REPO"
+check neutral "git read-tree --prefix, a value named --reset" \
+  "git read-tree --prefix --reset -u HEAD" "$OUT_REPO"
+check neutral "git read-tree -u, then --reset as a tree" "git read-tree -u -- --reset" "$OUT_REPO"
+check neutral "git mv"                         "git mv a.txt b.txt" "$OUT_REPO"
+check neutral "git mv -k"                      "git mv -k a.txt b.txt" "$OUT_REPO"
+check neutral "git mv -n -f"                   "git mv -n -f a.txt b.txt" "$OUT_REPO"
+check neutral "git mv -f --dry-run"            "git mv -f --dry-run a.txt b.txt" "$OUT_REPO"
+check neutral "git mv -f, then --no-force"     "git mv -f --no-force a.txt b.txt" "$OUT_REPO"
+check neutral "git mv -- -f, a path"           "git mv -- -f b.txt" "$OUT_REPO"
+check neutral "git submodule"                  "git submodule" "$OUT_REPO"
+check neutral "git submodule status"           "git submodule status" "$OUT_REPO"
+check neutral "git submodule deinit"           "git submodule deinit sub" "$OUT_REPO"
+check neutral "git submodule deinit -- -f, a path" "git submodule deinit -- -f" "$OUT_REPO"
+check neutral "git submodule update"           "git submodule update --init" "$OUT_REPO"
+check neutral "git submodule update -j, a value named -f" "git submodule update -j -f" "$OUT_REPO"
+check neutral "git submodule --quiet update"   "git submodule --quiet update" "$OUT_REPO"
+check neutral "git submodule add -f, which discards nothing" "git submodule add -f url sub" "$OUT_REPO"
+check neutral "git submodule foreach, a harmless command" "git submodule foreach 'git status'" "$OUT_REPO"
+check neutral "git checkout-index --prefix without -f, inside" "git checkout-index --prefix=out/ -a" "$IN_REPO"
+
+# An alias is judged by what it expands to, so one that expands to a read, to a
+# branch switch, or to nothing git will run is left alone. git runs a builtin
+# as itself, so an alias sharing a builtin's name never counts.
+echo "judges a git alias by what it expands to:"
+check neutral "a harmless alias from the repo config" "git lg" "$OUT_REPO"
+check neutral "a harmless alias from the global config" "git gls" "$OUT_REPO"
+check neutral "an alias for a branch switch"   "git co feature" "$OUT_REPO"
+check neutral "a -c alias for a branch switch" "git -c alias.xo=checkout xo feature" "$OUT_REPO"
+check neutral "a -c alias wins over the repo config" "git -c alias.co=status co -- file.txt" "$OUT_REPO"
+check neutral "an alias named for a builtin is ignored" \
+  "git -c 'alias.status=checkout -- file.txt' status" "$OUT_REPO"
+check neutral "a word that is no alias at all"  "git no-such-verb -- file.txt" "$OUT_REPO"
+check neutral "an empty alias, which git refuses" "git -c alias.xe= xe reset --hard" "$OUT_REPO"
+# The alias is expanded where it stands, not where it would stand without the
+# redirection in front of it.
+check neutral "an alias behind a redirection" "git 2>/dev/null co feature" "$OUT_REPO"
+check deny "an alias with a redirection after it" "git co -- file.txt 2>/dev/null" "$OUT_REPO"
+check allow "an alias with a redirection after it, inside" "git co -- file.txt 2>/dev/null" "$IN_REPO"
+# Each value below is taken by the option before it, so the flag after it
+# still counts.
+check deny "git rm --pathspec-from-file, a value named -n" \
+  "git rm --pathspec-from-file -n -f" "$OUT_REPO"
+check deny "git checkout-index -f --prefix=, a joined value" \
+  "git checkout-index --prefix=out/ -f -a" "$IN_REPO"
+check deny "git submodule update -j4, a joined value" "git submodule update -j4 -f" "$OUT_REPO"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # OUT OF SCOPE. Every command here names a real path, and the guard resolves it
@@ -945,6 +1071,14 @@ check deny "a restore after -C that does not tokenise" 'git -C . restore "file.t
 # multi-line commit message that mentions one is not a destructive command.
 check neutral "a multi-line commit message naming checkout" \
   $'git commit -m "feat: add checkout page\n\nswitch and restore too"' "$IN_REPO"
+# A message line that starts `git` and a word that is no safe builtin is still
+# prose. On the lossy retry the any-word form counts only where a command
+# stands, at the start of a line.
+check neutral "a multi-line commit message naming git mv" \
+  $'git commit -m "fix: hold plumbing discards\n\nhold git mv -f to the roots, git and restore too"' "$IN_REPO"
+# A real alias command on its own line is still read there.
+check deny "an alias on its own line after a multi-line message" \
+  $'git commit -m "a\n\nb"\nGIT_TRACE=0 git co -- file.txt' "$OUT_REPO"
 # A verb held in a variable is still found, spelled in the variable's name.
 check deny "a restore run through \${GIT}" '${GIT} restore file.txt' "$IN_REPO"
 # A number in front of a redirection counts as a path when git cannot be
@@ -958,7 +1092,11 @@ echo "reads a quoted '>' as a possible path where one is tracked:"
 # -f in the third.
 for command in "git checkout -- '>' file.txt" \
                "git restore --staged '>' --worktree file.txt" \
-               "git rm '>' -f file.txt"; do
+               "git rm '>' -f file.txt" \
+               "git mv '>' -f a.txt b.txt" \
+               "git checkout-index '>' -f file.txt" \
+               "git read-tree -u '>' --reset HEAD" \
+               "git submodule deinit '>' -f sub"; do
   check allow "$command, inside" "$command" "$OP_IN"
   check deny "$command, outside" "$command" "$OP_OUT"
 done
@@ -984,6 +1122,65 @@ check allow "another -c setting"     "git -c user.name=x reset --hard" "$IN_REPO
 check allow "another assignment"     "GIT_AUTHOR_NAME=x git reset --hard" "$IN_REPO"
 # The name alone, as a word rather than an assignment, moves nothing.
 check neutral "the variable's name as a word" "echo GIT_DIR && git reset --hard" "$IN_REPO"
+
+# Config this file does not read can set core.worktree or an alias, so each
+# way of pointing git at more config reads as a moved repository.
+echo "reads config it cannot see as a moved repository:"
+for VAR in GIT_COMMON_DIR GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM HOME XDG_CONFIG_HOME; do
+  check deny "$VAR as a prefix" "$VAR=$SANDBOX git reset --hard" "$IN_REPO"
+  check deny "$VAR under an alias" "$VAR=$SANDBOX git lg" "$IN_REPO"
+done
+check deny "-c include.path"          "git -c include.path=$SANDBOX/x reset --hard" "$IN_REPO"
+check deny "-c include.PATH, any case" "git -c include.PATH=$SANDBOX/x reset --hard" "$IN_REPO"
+check deny "-c includeIf.<cond>.path" "git -c includeIf.gitdir:/x/.path=$SANDBOX/x reset --hard" "$IN_REPO"
+check deny "--config-env include.path" "git --config-env include.path=V reset --hard" "$IN_REPO"
+check deny "--config-env=include.path" "git --config-env=include.path=V clean -f" "$IN_REPO"
+check deny "an alias that sets core.worktree itself" "git wt" "$IN_REPO"
+check allow "-c includeIf without .path" "git -c includeIf.x.y=1 reset --hard" "$IN_REPO"
+# Moved config changes nothing a non-destructive builtin does.
+check neutral "GIT_CONFIG_GLOBAL with git status" "GIT_CONFIG_GLOBAL=$SANDBOX/x git status" "$IN_REPO"
+check neutral "-c include.path with git log"      "git -c include.path=$SANDBOX/x log" "$IN_REPO"
+
+# An alias this guard cannot expand is refused outside every root. Inside one
+# it gets no allow either, because an allow would grant whatever it runs.
+UNRESOLVED=(
+  "git nuke"
+  "git -c 'alias.xn=!git checkout -- file.txt' xn"
+  "git -c alias.xb xb -- file.txt"
+  "git --config-env=alias.xv=V xv -- file.txt"
+  "git --config-env alias.xv=V xv -- file.txt"
+  "git loop1"
+  'git $SUB -- file.txt'
+  "git -c 'alias.xu=checkout \"x' xu"
+)
+echo "refuses an alias it cannot expand, outside every root only:"
+for command in "${UNRESOLVED[@]}"; do
+  check neutral "$command, inside" "$command" "$IN_REPO"
+  check deny "$command, outside" "$command" "$OUT_REPO"
+done
+PATH="$SANDBOX/config-fails-git:$PATH" check deny "an alias whose config git cannot read" \
+  "git lg" "$OUT_REPO"
+# The -c wakes the checker, which must not ask config about a builtin.
+PATH="$SANDBOX/config-fails-git:$PATH" check neutral "a builtin needs no config read" \
+  "git -c a.b=c log" "$OUT_REPO"
+PATH="$SANDBOX/broken-git:$PATH" check deny "an alias whose git cannot run" "git lg" "$OUT_REPO"
+# A wrapper's command has no working directory, so no repo config to ask.
+check deny "bash -c hiding an alias"   "bash -c \"git co -- file.txt\"" "$IN_REPO"
+check deny "an alias that does not tokenise" 'git co "file.txt' "$IN_REPO"
+check deny "a git mv -f that does not tokenise" 'git mv -f "a.txt' "$IN_REPO"
+check deny "an alias run through \${GIT}" '${GIT} co -- file.txt' "$IN_REPO"
+# The fallback reads -C as taking its value, so the value is no subcommand.
+check neutral "a -C status that does not tokenise" 'git -C sub status "x' "$IN_REPO"
+# The -c wakes the checker, so the .git path reaches the fallback.
+check neutral "a .git path that does not tokenise" 'git -c a.b=c status && cat .git/HEAD refs "x' "$IN_REPO"
+
+# These act beyond the worktree the command runs in, so no root clears them.
+echo "refuses a discard that reaches past its worktree, even inside a root:"
+check deny "git submodule foreach with a delete" "git submodule foreach 'rm -rf x'" "$IN_REPO"
+check deny "git submodule foreach, a discard"    "git submodule foreach --recursive git checkout -- ." "$IN_REPO"
+check deny "git checkout-index -f --prefix"      "git checkout-index -f --prefix=$VICTIM/ -a" "$IN_REPO"
+check deny "git checkout-index -f --prefix, a separate value" \
+  "git checkout-index -f --prefix $VICTIM/ -a" "$IN_REPO"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FAIL CLOSED — the block this suite exists for. Every case names a destructive
@@ -1342,6 +1539,48 @@ assert_starts some $'r\\\nm -rf /etc/x'
 assert_starts some 'find /etc -de""lete'
 # A quote alone does not wake it: the joined text still has to hold a verb.
 assert_starts none 'echo "permission" '\''terminal'\'''
+# A git call wakes it unless its subcommand is a builtin that discards nothing,
+# because any other word may be an alias for a discard.
+assert_starts none 'git status'
+assert_starts none 'git -C sub log --oneline -3'
+assert_starts none 'git diff && git status | cat'
+assert_starts none 'git -C sub diff-tree HEAD'
+assert_starts none 'ls .git/config && echo git-lfs digit'
+assert_starts some 'git co -- x'
+assert_starts some 'git -c alias.co=checkout co -- x'
+assert_starts some 'git -c user.name=x status'
+assert_starts some 'git mv -f a b'
+assert_starts some 'git read-tree -u --reset HEAD'
+assert_starts some 'git checkout-index -f -a'
+assert_starts some 'git submodule deinit -f sub'
+assert_starts some 'git status && git co -- x'
+assert_starts some 'git status;git lg'
+assert_starts some 'git statusx'
+assert_starts some 'GIT co -- x'
+assert_starts some 'g""it co -- x'
+assert_starts some 'git -C "a b" status'
+
+# GIT_SAFE in the guard and GIT_SAFE_VERBS in the checker are one list kept in
+# two languages. Every name must be a real git builtin, because git ignores an
+# alias only for a builtin, and none may be a verb the checker judges.
+echo "the prefilter's safe git verbs are the checker's, and each is a builtin:"
+SAFE_SH=$(sed -n "s/^GIT_SAFE='\(.*\)'$/\1/p" "$GUARD" | tr '|' '\n' | sort)
+SAFE_REPORT=$(cd "$ROOT_DIR/hooks/lib" && SAFE_SH="$SAFE_SH" python3 -c "
+import importlib.util, os, subprocess
+spec = importlib.util.spec_from_file_location('c', 'destructive-scope-check.py')
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+safe = set(m.GIT_SAFE_VERBS)
+builtins = set(subprocess.run(['git', '--list-cmds=builtins'], capture_output=True,
+                              text=True).stdout.split())
+print('DIFFER' if safe != set(os.environ['SAFE_SH'].split()) else '', end=' ')
+print('NOT-BUILTIN:' + ','.join(sorted(safe - builtins)) if safe - builtins else '', end=' ')
+print('JUDGED:' + ','.join(sorted(safe & m.GIT_JUDGED)) if safe & m.GIT_JUDGED else '', end='')
+" 2>&1)
+if [ -n "$SAFE_SH" ] && [ -z "${SAFE_REPORT// /}" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ the two lists match, and every name is a non-judged builtin"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ the safe git verbs are wrong: ${SAFE_REPORT:-GIT_SAFE not found}"
+fi
 
 echo "split verbs reach a verdict, not silence:"
 check deny "r''m outside every root"         "r''m -rf $VICTIM/keep.txt"

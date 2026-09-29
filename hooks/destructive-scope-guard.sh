@@ -150,9 +150,10 @@ COMMAND=$(printf '%s' "$PAYLOAD" | jq -r '
 # everything below costs a python start — measured at ~70ms against ~11ms for
 # this early exit.
 #
-# THESE NINE WORDS ARE THE CHECKER'S VERB SET, AND THEY MUST STAY THAT WAY.
-# A destructive verb the checker knows and this list does not is a command that
-# never reaches the checker at all, which is the fail-open hole this guard
+# THESE NINE WORDS AND THE git RULE AT GIT_SAFE ARE THE CHECKER'S VERB SET, AND
+# THEY MUST STAY THAT WAY.
+# A destructive verb the checker knows and neither of them wakes is a command
+# that never reaches the checker at all, which is the fail-open hole this guard
 # exists to close — and nothing would report it. As of this writing:
 #   rm, rmdir  `rm` and `rmdir`, in every spelling, and `git rm -f`
 #   reset      `git reset --hard`
@@ -163,7 +164,9 @@ COMMAND=$(printf '%s' "$PAYLOAD" | jq -r '
 #   switch     `git switch -f` and `--discard-changes`
 #   delete     `find -delete`, which spells its destruction in a flag, not a verb
 # A plain branch switch matches here too and costs a python start. The checker
-# returns silence for it.
+# returns silence for it. The rest of the checker's git verbs, `mv`,
+# `read-tree`, `checkout-index`, and `submodule`, and every git alias, wake it
+# the second way, described at GIT_SAFE below.
 # The git verbs are keyed on the SUBCOMMAND rather than on "git", because `git`
 # alone matches every ordinary git call and made all of them pay the python
 # start for nothing. A wrapper hiding one of these — `bash -c "git clean -fd"`,
@@ -199,6 +202,37 @@ COMMAND=$(printf '%s' "$PAYLOAD" | jq -r '
 # guard. That is the limit of this mechanism, not an oversight in it.
 SCOPE_VERBS='[rR][mM]|[rR][mM][dD][iI][rR]|[rR][eE][sS][eE][tT]|[cC][lL][eE][aA][nN]|[sS][tT][aA][sS][hH]|[rR][eE][sS][tT][oO][rR][eE]|[cC][hH][eE][cC][kK][oO][uU][tT]|[sS][wW][iI][tT][cC][hH]|[dD][eE][lL][eE][tT][eE]'
 SCOPE_WORDS="(^|[^[:alnum:]])($SCOPE_VERBS)([^[:alnum:]]|$)"
+# THE SECOND WAY IN: A git SUBCOMMAND THE LIST ABOVE DOES NOT NAME. An alias
+# can stand for any discard, `git co -- file` with `co = checkout` in a config
+# file among them, and so can `git mv -f`, `git read-tree`, `git
+# checkout-index`, and `git submodule`, which the checker judges by name. So
+# the rule is inverted for git: every git call wakes the checker EXCEPT one
+# whose subcommand is a builtin in GIT_SAFE. git runs a builtin as itself and
+# ignores an alias of the same name, so none of these can hide a discard.
+# GIT_SAFE is the checker's GIT_SAFE_VERBS, and the suite checks that the two
+# match. Only a plain `-C <dir>` may stand before the subcommand here. Any other
+# option, `-c alias.x=...` among them, wakes the checker.
+#
+# Each known-safe call is cut out of a copy of the text, and the checker wakes
+# if a `git` word is left. `.git` and `git-lfs` are not the word. `GIT` is, in
+# any case, for the same reason `RM` is above. Bash regex matching forks
+# nothing, so `git status` still costs no python start.
+GIT_SAFE='add|am|apply|archive|bisect|blame|branch|bundle|cat-file|check-attr|check-ignore|cherry|cherry-pick|clone|commit|commit-tree|config|count-objects|describe|diff|diff-files|diff-index|diff-tree|fetch|for-each-ref|format-patch|fsck|gc|grep|hash-object|help|init|log|ls-files|ls-remote|ls-tree|merge|merge-base|mktag|mktree|notes|pull|push|range-diff|rebase|reflog|remote|repack|rev-list|rev-parse|revert|shortlog|show|show-branch|show-ref|status|symbolic-ref|tag|update-index|update-ref|var|verify-commit|verify-tag|version|worktree|write-tree'
+GIT_EDGE='(^|[^[:alnum:]_.-])'
+GIT_END='([^[:alnum:]_.-]|$)'
+GIT_ANY="${GIT_EDGE}[gG][iI][tT]${GIT_END}"
+GIT_KNOWN="${GIT_EDGE}git([[:blank:]]+-C[[:blank:]]+[^[:space:];&|<>()\`\$\"'\\\\]+)*[[:blank:]]+($GIT_SAFE)${GIT_END}"
+
+# wakes <text>: true when the text holds a scope verb, or a git call whose
+# subcommand is not a known-safe builtin.
+wakes() {
+  local rest=$1
+  [[ $rest =~ $SCOPE_WORDS ]] && return 0
+  while [[ $rest =~ $GIT_KNOWN ]]; do
+    rest=${rest/"${BASH_REMATCH[0]}"/ }
+  done
+  [[ $rest =~ $GIT_ANY ]]
+}
 # SPLIT VERBS. The checker's tokeniser, like bash, rejoins a word that quotes,
 # backslashes, or a backslash-newline split: `r''m`, `r\m`, `r\<newline>m` and
 # `-de""lete` all run as the verb they spell. On the raw text none of them is a
@@ -207,13 +241,13 @@ SCOPE_WORDS="(^|[^[:alnum:]])($SCOPE_VERBS)([^[:alnum:]]|$)"
 # fork, so it runs only when the text holds a quote or a backslash; an ordinary
 # command keeps the no-fork path. The database and prose guards strip the same
 # characters for the same reason.
-if ! [[ $COMMAND =~ $SCOPE_WORDS ]]; then
+if ! wakes "$COMMAND"; then
   case "$COMMAND" in
     *[\'\"\\]*)
       JOINED=$(printf '%s' "$COMMAND" \
         | awk '{ if (sub(/\\$/, "")) printf "%s", $0; else print }' \
         | tr -d "'\"\\\\")
-      [[ $JOINED =~ $SCOPE_WORDS ]] || exit 0
+      wakes "$JOINED" || exit 0
       ;;
     *) exit 0 ;;
   esac

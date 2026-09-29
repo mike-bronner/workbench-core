@@ -54,9 +54,36 @@ Each form below discards uncommitted work, per git's own documentation:
   - `git rm` with `-f`/`--force`, which removes files whose changes are not
     committed. Plain `git rm` refuses to, and `-n`/`--dry-run` removes
     nothing.
+  - `git mv` with `-f`/`--force`, which overwrites an existing destination.
+  - `git checkout-index` with `-f`/`--force`, which overwrites working-tree
+    files from the index.
+  - `git read-tree` with both `-u` and `--reset`. `-m -u` refuses to
+    overwrite local changes.
+  - `git submodule deinit -f`, which drops a submodule's local changes, and
+    `git submodule update -f`, which throws them away when it switches
+    commits.
+Every option here is read as git reads it: the last of a pair such as
+`--force` and `--no-force` holds, a word after `--` or `--end-of-options` is a
+path, and an option that takes a value takes the next word.
+Two forms reach past the worktree they run in, so they are refused inside the
+roots too: `git submodule foreach` with a destructive command, which it runs
+through the shell as `bash -c` does, and `git checkout-index -f --prefix`,
+which writes wherever the prefix points.
 A redirection operator is read as one, except that a quoted `'>'` reaches this
-file as the same token. So where a tracked path has the operator's name, a
-checkout, restore, or rm that carries it counts as a discard.
+file as the same token. So where a tracked path has the operator's name, any
+of the git forms above that carries it counts as a discard.
+
+A GIT ALIAS IS JUDGED BY WHAT IT EXPANDS TO. `git co -- file`, with `co =
+checkout` in a config file or on the command line through `-c alias.co=...`,
+matches no verb above until it is expanded, so git_operation() expands it the
+way git does and judges the result. An alias this file cannot expand counts
+as destructive: one that runs shell (`!...`), one whose value is not in the
+text or in config git can be asked about, and one that loops. Outside every
+root that is a deny. Inside one it is silence, never an allow, because an
+allow would grant whatever the alias runs. Config this file does not read can
+set an alias or core.worktree, so `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`,
+`HOME`, `XDG_CONFIG_HOME`, and `include.path` through `-c` or `--config-env`
+each read as a moved repository, as `--work-tree` does.
 A plain branch switch is not here. `git checkout <branch>`, `git switch
 <branch>`, and the `-b`/`-c` creation forms refuse to overwrite local changes.
 Telling `git checkout <branch>` from `git checkout <file>` takes the
@@ -155,10 +182,12 @@ statement would grant that statement too. Saying nothing is the only honest
 answer there.
 """
 
+import functools
 import glob
 import os
 import pwd
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -233,20 +262,67 @@ UNRESOLVABLE = set("*?[]{}$`~\"'")
 # retry ran, so the token is no longer the path it names. Refusing it is why the
 # two quote characters are in the set above.
 
+# The git builtins that discard nothing, and that agents run all the time. A
+# builtin always runs as itself, because git ignores an alias that shares a
+# builtin's name, so none of these can be an alias for a discard. Every OTHER
+# word in git's subcommand slot is either one of the verbs git_operation()
+# judges by name or a word that may be an alias, and both reach the checker.
+# hooks/destructive-scope-guard.sh keeps the same list as GIT_SAFE, so a git
+# call made only of these starts no python. The suite checks that the two lists
+# match, that every name is a builtin, and that none is a judged verb.
+GIT_SAFE_VERBS = (
+    "add", "am", "apply", "archive", "bisect", "blame", "branch", "bundle",
+    "cat-file", "check-attr", "check-ignore", "cherry", "cherry-pick",
+    "clone", "commit", "commit-tree", "config", "count-objects", "describe",
+    "diff", "diff-files", "diff-index", "diff-tree", "fetch", "for-each-ref",
+    "format-patch", "fsck", "gc", "grep", "hash-object", "help", "init",
+    "log", "ls-files", "ls-remote", "ls-tree", "merge", "merge-base",
+    "mktag", "mktree", "notes", "pull", "push", "range-diff", "rebase",
+    "reflog", "remote", "repack", "rev-list", "rev-parse", "revert",
+    "shortlog", "show", "show-branch", "show-ref", "status", "symbolic-ref",
+    "tag", "update-index", "update-ref", "var", "verify-commit",
+    "verify-tag", "version", "worktree", "write-tree")
+
+# The git options that take their value as a SEPARATE word. The fallback below
+# needs them, because `git -C dir status` read with `-C` as a bare flag puts
+# `dir` in the subcommand slot.
+_GIT_VALUE_OPTION = r"(?:-C|-c|--git-dir|--work-tree|--namespace|--exec-path" \
+                    r"|--super-prefix|--config-env)"
+
 # The last-resort test, used only when the text will not tokenise at all. A
 # command that cannot be parsed is exactly the case where a verb slot cannot be
 # read, so this reads words instead and denies on a match.
-_DESTRUCTIVE_PATTERN = (
+_DESTRUCTIVE_BASE = (
     r"(?:^|[^\w./-])(?:rm|rmdir)(?:$|[^\w./-])"
     r"|git\b[^\n;&|]*?(?:reset\b[^\n;&|]*?--hard|clean\b|stash\s+(?:clear|drop))"
-    # The discard verbs are common words in a commit message, so they count
-    # only in the subcommand slot: after git, its options, and their values.
-    # A value never starts with a dash, which keeps the match linear. `\S*`
-    # lets `${GIT} restore` through for the any-case read below.
-    r"|git\b\S*(?:[ \t]+-\S+(?:[ \t]+[^\s-]\S*)?)*[ \t]+"
-    r"(?:restore|checkout|switch)\b"
 )
+# The discard verbs are common words in a commit message, so they count only
+# in the subcommand slot: after git, its options, and their values. An option
+# that takes a value takes the next word, and any other option takes none, so
+# the slot is read one way only. `\S*` lets `${GIT} restore` through for the
+# any-case read below.
+_GIT_SLOT = (r"git\b\S*(?:[ \t]+(?:" + _GIT_VALUE_OPTION + r"[ \t]+\S+"
+             r"|(?!" + _GIT_VALUE_OPTION + r"(?:[ \t]|$))-\S+))*[ \t]+")
+# Any word in the slot but a safe builtin, because an alias can stand for any
+# discard.
+_GIT_ANY_SUBCOMMAND = (
+    r"(?!(?:" + "|".join(re.escape(verb) for verb in sorted(
+        GIT_SAFE_VERBS, key=len, reverse=True)) + r")(?![\w-]))[^\s-]")
+_DESTRUCTIVE_PATTERN = (_DESTRUCTIVE_BASE + r"|(?<![\w.-])" + _GIT_SLOT
+                        + _GIT_ANY_SUBCOMMAND)
 DESTRUCTIVE_WORD = re.compile(_DESTRUCTIVE_PATTERN)
+
+# The same test for text that tokenised only through a lossy retry. That text
+# is often a real command with a multi-line quoted message, and a message line
+# such as "hold git mv -f to the roots" must not count. So there the any-word
+# form counts only at the start of a line, after optional whitespace and
+# NAME=value prefixes, where a command stands. The named discard verbs still
+# count anywhere in the subcommand slot, as they did before aliases were read.
+DESTRUCTIVE_WORD_INEXACT = re.compile(
+    _DESTRUCTIVE_BASE
+    + r"|(?<![\w.-])" + _GIT_SLOT + r"(?:restore|checkout|switch)\b"
+    + r"|^[ \t]*(?:\w+=\S*[ \t]+)*" + _GIT_SLOT + _GIT_ANY_SUBCOMMAND,
+    re.MULTILINE)
 
 # The same needle, case-insensitively, and used ONLY as evidence that an
 # unreadable verb slot is a destructive one. A command whose verb lives in a
@@ -266,17 +342,42 @@ GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
 # tracking. `-C` is followed and the rest are refused rather than guessed at.
 GIT_OPAQUE_OPTS = {"--git-dir", "--work-tree"}
 
-# The environment variables that do the same. GIT_DIR and GIT_WORK_TREE move
-# the repository and the worktree, and the GIT_CONFIG_* pair can carry
-# core.worktree. A command that assigns one anywhere, as a prefix, an export,
-# or a statement of its own, has every git verb in it read as moved.
-GIT_ENV_MOVES = {"GIT_DIR", "GIT_WORK_TREE", "GIT_CONFIG_PARAMETERS",
-                 "GIT_CONFIG_COUNT"}
+# The environment variables that do the same. GIT_DIR, GIT_COMMON_DIR and
+# GIT_WORK_TREE move the repository and the worktree. The rest point git at
+# config this file does not read, and config can set core.worktree or an
+# alias: GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT carry it inline,
+# GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM name its files, and HOME and
+# XDG_CONFIG_HOME are where git finds the global file. A command that assigns
+# one anywhere, as a prefix, an export, or a statement of its own, has every
+# git verb in it read as moved.
+GIT_ENV_MOVES = {"GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE",
+                 "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+                 "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "HOME",
+                 "XDG_CONFIG_HOME"}
 
 # The git verbs whose verdict a word lost behind a quoted operator can change,
 # and the discard each is read as then.
 DISCARD_BY_VERB = {"checkout": "git checkout -- <path>",
-                   "restore": "git restore", "rm": "git rm --force"}
+                   "restore": "git restore", "rm": "git rm --force",
+                   "checkout-index": "git checkout-index --force",
+                   "read-tree": "git read-tree -u --reset",
+                   "mv": "git mv --force",
+                   "submodule": "git submodule deinit --force"}
+
+# What git_operation() returns for an alias it cannot expand: one that runs
+# shell, one whose value is not in the text or in config git can be asked
+# about, and one that expands into itself. It counts as destructive, so outside
+# every root it is refused. Inside one the guard says nothing, because it
+# cannot say what an allow would grant.
+UNRESOLVED_ALIAS = "a git alias this guard cannot expand"
+
+# Discards whose reach is not the worktree the command runs in, so no root
+# check can clear them. `submodule foreach` runs its command through the shell
+# in every submodule, the way `bash -c` does. `checkout-index --prefix` writes
+# its files wherever the prefix points.
+SUBMODULE_FOREACH = "git submodule foreach"
+CHECKOUT_INDEX_PREFIX = "git checkout-index --force --prefix"
+REFUSED_ANYWHERE = {SUBMODULE_FOREACH, CHECKOUT_INDEX_PREFIX}
 
 # The redirection operators, as the tokeniser splits them off. Each takes the
 # word after it as its target. `<<-` arrives as `<<` and `-`, so its delimiter
@@ -685,10 +786,11 @@ def strip_redirects(tokens):
     `>`, the same as `2 >`, so a number in front of an operator may be a file
     descriptor or a word of the command. It also gives a quoted `'>'` as the
     same token as a bare `>`, so an operator may be a path, and the word after
-    it an option. The caller decides both."""
-    kept, numbers, operators = [], [], []
+    it an option. The caller decides both. The fourth value is where each
+    kept token stood in `tokens`."""
+    kept, numbers, operators, positions = [], [], [], []
     target = False
-    for token in tokens:
+    for index, token in enumerate(tokens):
         if target:
             target = False
             continue
@@ -697,19 +799,40 @@ def strip_redirects(tokens):
             operators.append(token)
             if kept and kept[-1].isdigit():
                 numbers.append(kept.pop())
+                positions.pop()
             continue
         kept.append(token)
-    return kept, numbers, operators
+        positions.append(index)
+    return kept, numbers, operators, positions
+
+
+def _moves_config(key):
+    """True when a config key set on the command line moves the worktree or
+    pulls in a file of config this file does not read. core.worktree moves
+    the worktree as --work-tree does, and an included file can set it, or an
+    alias, from anywhere."""
+    key = key.lower()
+    return key in ("core.worktree", "include.path") or (
+        key.startswith("includeif.") and key.endswith(".path"))
 
 
 def git_parts(args):
     """(the -C values in order, whether an option moved the repository
     somewhere this file does not track, the subcommand tokens, the bare
     numbers that stood in front of a redirection, the redirection operators
-    taken out)."""
-    rest, numbers, operators = strip_redirects(args)
+    taken out, the aliases set on the command line, where the subcommand
+    stands in `args`).
+
+    The aliases map each lower-case name to its value, or to None when the
+    text does not hold the value: `-c alias.x` with no `=`, and
+    `--config-env`, whose value is in the environment. git reads an alias
+    name in any case, and the last setting wins. git takes neither `--` nor
+    `--end-of-options` before the subcommand, so neither ends the options
+    here."""
+    rest, numbers, operators, positions = strip_redirects(args)
     chdirs = []
     opaque = False
+    aliases = {}
     while rest and rest[0].startswith("-"):
         option = rest.pop(0)
         name = option.split("=", 1)[0]
@@ -730,23 +853,28 @@ def git_parts(args):
         if name in GIT_VALUE_OPTS:
             value = option.split("=", 1)[1] if joined else (
                 rest.pop(0) if rest else "")
-            # core.worktree set on the command line moves the worktree as
-            # --work-tree does.
-            if name in ("-c", "--config-env") \
-                    and value.split("=", 1)[0].lower() == "core.worktree":
-                opaque = True
-    return chdirs, opaque, rest, numbers, operators
+            if name in ("-c", "--config-env"):
+                key, has_value, setting = value.partition("=")
+                if _moves_config(key):
+                    opaque = True
+                if key.lower().startswith("alias."):
+                    aliases[key[len("alias."):].lower()] = (
+                        setting if name == "-c" and has_value else None)
+    verb_at = positions[len(positions) - len(rest)] if rest else len(args)
+    return chdirs, opaque, rest, numbers, operators, aliases, verb_at
 
 
 def git_directory(args, here):
     """(the directory git starts in, None) or (None, why it is unknown). Each
     relative -C resolves against the one before it, as git resolves it."""
-    chdirs, opaque, _, _, _ = git_parts(args)
+    chdirs, opaque = git_parts(args)[:2]
     if opaque:
-        return None, ("The command sets --git-dir, --work-tree, or "
-                      "core.worktree, or one of the GIT_DIR, GIT_WORK_TREE, "
-                      "and GIT_CONFIG_* variables, which moves git's idea of "
-                      "the repository somewhere this guard is not tracking.")
+        return None, ("The command sets --git-dir, --work-tree, "
+                      "core.worktree, or include.path, or one of the "
+                      "GIT_DIR, GIT_WORK_TREE, GIT_CONFIG_*, HOME, and "
+                      "XDG_CONFIG_HOME variables, which moves git's idea of "
+                      "the repository, or its config, somewhere this guard "
+                      "is not tracking.")
     directory = here
     for chdir in chdirs:
         if set(chdir) & UNRESOLVABLE:
@@ -955,16 +1083,78 @@ def git_restore_discards(tail):
     return None
 
 
-def git_destructive(args, here=None):
-    """The name of the destructive git operation this command performs, or
-    None. Read from the subcommand slot, so `git log --grep="git clean"` is not
-    one. `here` is the working directory, which `git checkout` needs to tell a
-    branch from a path. Without it every one-operand checkout counts."""
-    _, _, rest, numbers, operators = git_parts(args)
-    if not rest:
+def _options(tail, shorts, longs, valued=(), valued_short=""):
+    """The last value each named option takes before `--` or
+    `--end-of-options`, as a dict. `shorts` maps a short flag, alone or in a
+    cluster, to (key, value). `longs` maps a long option, spelled whole or
+    abbreviated as git allows, to (key, value). An option in `valued` or
+    `valued_short` takes the next word as its value when none is joined to
+    it. git reads an option anywhere among the operands, so an operand does
+    not end the read, and the last setting of a pair such as `--force` and
+    `--no-force` is the one that holds."""
+    state = {}
+    index = 0
+    while index < len(tail):
+        token = tail[index]
+        index += 1
+        if token in ("--", "--end-of-options"):
+            break
+        if token.startswith("--"):
+            for name, setting in longs.items():
+                if _long(token, name):
+                    state[setting[0]] = setting[1]
+                    break
+            if "=" not in token and any(_long(token, name) for name in valued):
+                index += 1
+            continue
+        if token.startswith("-") and token != "-":
+            for position, flag in enumerate(token[1:], 1):
+                if flag in shorts:
+                    state[shorts[flag][0]] = shorts[flag][1]
+                if flag in valued_short:
+                    # The rest of the cluster is the value, or the next word
+                    # is when the cluster ends here.
+                    if position == len(token) - 1:
+                        index += 1
+                    break
+    return state
+
+
+# The two option pairs most verbs below read. A dry run discards nothing, and
+# the last of each pair holds.
+FORCE = {"--force": ("force", True), "--no-force": ("force", False)}
+DRY_RUN = {"--dry-run": ("dry", True), "--no-dry-run": ("dry", False)}
+SHORT_FORCE = {"f": ("force", True)}
+SHORT_DRY = {"n": ("dry", True)}
+
+
+def git_submodule_discards(tail):
+    """The discarding form of `git submodule`, or None. `deinit -f` drops a
+    submodule's local changes, and `update -f` throws them away when it
+    switches commits. `foreach` runs its command through the shell in every
+    submodule, so a destructive one is refused as `bash -c` is."""
+    index = 0
+    # `--quiet` and `--cached` may stand in front of the subcommand.
+    while index < len(tail) and tail[index].startswith("-"):
+        index += 1
+    if index == len(tail):
         return None
-    verb = rest[0]
-    tail = rest[1:]
+    sub, rest = tail[index], tail[index + 1:]
+    if sub == "foreach":
+        return SUBMODULE_FOREACH if scan_text(" ".join(rest), 1) else None
+    if sub == "deinit":
+        force = _options(rest, SHORT_FORCE, FORCE).get("force")
+        return "git submodule deinit --force" if force else None
+    if sub == "update":
+        force = _options(rest, SHORT_FORCE, FORCE,
+                         ("--reference", "--depth", "--jobs", "--filter"),
+                         "j").get("force")
+        return "git submodule update --force" if force else None
+    return None
+
+
+def _judge_verb(verb, tail, args, here, numbers, operators):
+    """The discard a builtin git verb performs, or None."""
     # A quoted `'>'` reads as a redirection, so the word after it, which may
     # be `-f` or `--worktree`, was taken out with it. When a tracked path has
     # the operator's name, the operator may have been that path, and what it
@@ -979,36 +1169,156 @@ def git_destructive(args, here=None):
         return git_checkout_discards(args, tail, here, numbers)
     if verb == "switch":
         return git_switch_discards(tail)
-    if verb == "rm":
-        # `-f` removes a file whose changes are not committed, which plain
-        # `git rm` refuses to do, and `-n` removes nothing at all. Every word
-        # after `--` is a path.
-        force = False
-        for token in tail:
-            if token in ("--", "--end-of-options"):
-                break
-            short = token.startswith("-") and not token.startswith("--")
-            if _long(token, "--dry-run") or (short and "n" in token):
-                return None
-            if _long(token, "--force") or (short and "f" in token):
-                force = True
-        return "git rm --force" if force else None
+    if verb in ("rm", "mv"):
+        # `rm -f` removes a file whose changes are not committed, which plain
+        # `git rm` refuses to do. `mv -f` overwrites the destination, which
+        # plain `git mv` refuses to do. `-n` does neither.
+        state = _options(tail, dict(SHORT_FORCE, **SHORT_DRY),
+                         dict(FORCE, **DRY_RUN), ("--pathspec-from-file",))
+        if state.get("force") and not state.get("dry"):
+            return "git %s --force" % verb
+        return None
+    if verb == "checkout-index":
+        # `-f` overwrites working-tree files from the index. `-n` still
+        # refreshes the files that exist, so it is no dry run.
+        state = _options(tail, SHORT_FORCE,
+                         dict(FORCE, **{"--prefix": ("prefix", True)}),
+                         ("--prefix", "--stage"))
+        if not state.get("force"):
+            return None
+        return CHECKOUT_INDEX_PREFIX if state.get("prefix") \
+            else "git checkout-index --force"
+    if verb == "read-tree":
+        # `-u` writes the tree into the working tree, and `--reset` lets it
+        # overwrite local changes. `-m -u` refuses to.
+        state = _options(tail, dict({"u": ("update", True)}, **SHORT_DRY),
+                         dict({"--reset": ("reset", True),
+                               "--no-reset": ("reset", False)}, **DRY_RUN),
+                         ("--prefix", "--exclude-per-directory",
+                          "--index-output"))
+        if state.get("update") and state.get("reset") \
+                and not state.get("dry"):
+            return "git read-tree -u --reset"
+        return None
+    if verb == "submodule":
+        return git_submodule_discards(tail)
     if verb == "reset" and any(t == "--hard" for t in tail):
         return "git reset --hard"
     if verb == "clean":
-        # A dry run prints and removes nothing. `-n` also arrives clustered, as
-        # in `-nd`. `git clean` with neither -f nor -n refuses to run at all,
-        # and counting it as destructive is the safe direction to be wrong in.
-        for token in tail:
-            if token == "--dry-run":
-                return None
-            if token.startswith("-") and not token.startswith("--") \
-                    and "n" in token:
-                return None
-        return "git clean"
+        # A dry run prints and removes nothing. `git clean` with neither -f
+        # nor -n refuses to run at all, and counting it as destructive is the
+        # safe direction to be wrong in. `-e` takes a pattern, which may be
+        # spelled `-n`.
+        state = _options(tail, SHORT_DRY, DRY_RUN, ("--exclude",), "e")
+        return None if state.get("dry") else "git clean"
     if verb == "stash" and tail and tail[0] in ("clear", "drop"):
         return "git stash " + tail[0]
     return None
+
+
+# The verbs _judge_verb() reads by name. Each is a builtin, so git never runs
+# an alias in its place.
+GIT_JUDGED = {"restore", "checkout", "switch", "rm", "mv", "checkout-index",
+              "read-tree", "submodule", "reset", "clean", "stash"}
+
+
+@functools.lru_cache(maxsize=None)
+def git_builtins():
+    """The names git runs as builtins, or None when git cannot be asked. It
+    needs no repository, so a wrapper's command, which has none, can use it
+    too."""
+    git = shutil.which("git")
+    if not git:
+        return None
+    try:
+        out = subprocess.run([git, "--list-cmds=builtins"],
+                             capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    names = frozenset(out.stdout.split())
+    return names if out.returncode == 0 and names else None
+
+
+def git_alias(args, here, name, aliases):
+    """The words the alias `name` expands to, None when git has no alias of
+    that name, or UNRESOLVED_ALIAS.
+
+    A setting on the command line wins, as it does in git. Otherwise git is
+    asked, in the directory the command runs in, because the repository's own
+    config can hold an alias. A command that moved the repository or its
+    config leaves no directory to ask in, and exit status 1 is the only
+    answer that means no alias. A value that starts with `!` runs shell, and
+    one that will not split is one git will not run either."""
+    if set(name) & UNRESOLVABLE:
+        return UNRESOLVED_ALIAS  # the shell decides the word, not the text
+    if name.lower() in aliases:
+        value = aliases[name.lower()]
+    else:
+        where = _git_at(args, here)
+        if not where:
+            return UNRESOLVED_ALIAS
+        try:
+            found = subprocess.run(
+                [where[0], "-C", where[1], "config", "--get",
+                 "alias." + name], capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            return UNRESOLVED_ALIAS
+        if found.returncode == 1:
+            return None
+        if found.returncode != 0:
+            return UNRESOLVED_ALIAS
+        value = found.stdout[:-1] if found.stdout.endswith("\n") \
+            else found.stdout
+    if value is None or value.startswith("!"):
+        return UNRESOLVED_ALIAS
+    try:
+        return shlex.split(value)
+    except ValueError:
+        return UNRESOLVED_ALIAS
+
+
+def git_operation(args, here=None, seen=()):
+    """(the name of the destructive git operation this command performs, or
+    None; the argument list git runs once every alias is expanded).
+
+    Read from the subcommand slot, so `git log --grep="git clean"` is not
+    one. `here` is the working directory, which `git checkout` needs to tell a
+    branch from a path, and an alias needs to be looked up. Without it every
+    one-operand checkout counts, and so does every alias.
+
+    AN ALIAS IS JUDGED BY WHAT IT EXPANDS TO, THE WAY GIT RUNS IT. git runs a
+    builtin as itself and ignores an alias of the same name, so a builtin is
+    read first. Any other word is looked up as an alias, and the expansion
+    takes its place in the argument list. The expansion can carry options of
+    its own, `-c core.worktree` among them, so the whole list is read again
+    from the start. An alias may name another alias, and one that comes back
+    to a name already expanded is a loop."""
+    parts = git_parts(args)
+    rest, aliases, verb_at = parts[2], parts[5], parts[6]
+    if not rest:
+        return None, args
+    verb = rest[0]
+    if verb in GIT_JUDGED:
+        return _judge_verb(verb, rest[1:], args, here, parts[3],
+                           parts[4]), args
+    builtins = git_builtins()
+    if builtins is not None and verb in builtins:
+        return None, args
+    if verb.lower() in seen:
+        return UNRESOLVED_ALIAS, args
+    words = git_alias(args, here, verb, aliases)
+    if words is None or words == []:
+        return None, args  # no alias, or an empty one, which git refuses
+    if words == UNRESOLVED_ALIAS:
+        return UNRESOLVED_ALIAS, args
+    expanded = args[:verb_at] + words + args[verb_at + 1:]
+    return git_operation(expanded, here, seen + (verb.lower(),))
+
+
+def git_destructive(args, here=None):
+    """The name of the destructive git operation this command performs, or
+    None. See git_operation()."""
+    return git_operation(args, here)[0]
 
 
 def git_worktree(args, here):
@@ -1230,7 +1540,7 @@ def judge(command, cwd, roots, markers=None):
                        "tokenise, usually an unbalanced quote, so no target "
                        "can be read out of it.")
         return 0, False
-    if not exact and DESTRUCTIVE_WORD.search(command):
+    if not exact and DESTRUCTIVE_WORD_INEXACT.search(command):
         # The tokeniser fell back to a retry that loses information: the
         # whole-text one merges the lines, so a statement boundary that was
         # only a newline is gone and `mkdir /x` on one line hides `rm -rf /y`
@@ -1379,10 +1689,21 @@ def judge(command, cwd, roots, markers=None):
                     if env_moved:
                         # Read exactly as the option spelling of the move.
                         args = ["--work-tree=(environment)"] + args
-                    operation = git_destructive(args, here)
+                    operation, args = git_operation(args, here)
                     if operation is None:
                         only_destructive = False
                         continue
+                    if operation in REFUSED_ANYWHERE:
+                        raise Deny(
+                            "a destructive git command this guard cannot "
+                            "follow",
+                            "`%s` acts outside the worktree it runs in: "
+                            "`submodule foreach` runs its command through "
+                            "the shell, and `checkout-index --prefix` writes "
+                            "wherever the prefix points. So no root check "
+                            "can clear it. Spell the discard out as its own "
+                            "command, or run this one yourself with the ! "
+                            "prefix." % operation)
                     worktree = git_worktree(args, here)
                     if not within(worktree, roots):
                         raise Deny(
@@ -1391,6 +1712,11 @@ def judge(command, cwd, roots, markers=None):
                             '`%s` would run against the worktree at "%s", '
                             "which is not inside any approved root. %s"
                             % (operation, worktree, roots_note(roots)))
+                    if operation == UNRESOLVED_ALIAS:
+                        # In scope, but what it runs is unknown, so an allow
+                        # would grant that too.
+                        only_destructive = False
+                        continue
                     targets += 1
                     continue
 

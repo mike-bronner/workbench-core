@@ -103,14 +103,15 @@ detects those leftovers.
 ### The headless constraint
 
 An `ask` rule always forces a prompt, and a `claude -p` run has nobody to prompt,
-so the call is **blocked** instead. `workbench-dev-team` dispatches Watson
-unattended via `nohup claude -p --agent`, and Watson pushes branches, commits,
-and opens PRs. `Bash(git push:*)`, `Bash(git commit:*)`, and
-`Bash(gh pr create:*)` are therefore **deliberately absent** from the ask list.
-Adding them would kill the pipeline silently, and `hooks/test-permissions.sh`
-asserts their absence. The commit approval gate stays a `PreToolUse` hook for the
-same reason: a hook can force a prompt *and* carry a pipeline exemption, and an
-ask rule cannot.
+so the call is denied unless a `PermissionRequest` hook answers it.
+`workbench-dev-team` dispatches Watson unattended via `nohup claude -p --agent`,
+and Watson commits, pushes branches, and opens PRs. Its own setup installs the
+ask rules for `git commit` and `git push`, and its `pipeline-scope.sh` hook
+answers those prompts for the pipeline, for `git`, `rm`, and `rmdir` only. So
+the ask list here carries **no rule** for `git commit`, `git push`, or
+`gh pr create`. A commit or push rule would duplicate the rules dev-team owns,
+and a `gh pr create` rule would raise a prompt nothing answers.
+`hooks/test-permissions.sh` asserts their absence.
 
 ### Why an `autoMode.allow` entry ships
 

@@ -487,7 +487,7 @@ assert_jq "every allow rule is an mcp__ pattern or a fixed bin/ script" "$SHIPPE
 #   becomes a statement of its own when the command is tokenised and its verb
 #   slot is judged like any other. That residual is not introduced here anyway:
 #   workbench-dev-team already ships allow entries of exactly this form for
-#   approve-commit.sh and dispatch-agent.sh.
+#   dispatch-agent.sh.
 assert_jq "no wildcard inside the command part of a Bash allow entry" "$SHIPPED_RAILS" \
   '[(.allow // [])[]
     | select(.rule | startswith("Bash("))
@@ -552,16 +552,26 @@ done < <(jq -r '(.allow // [])[] | .rule
   | ltrimstr("Bash(bash \"$HOME/.claude-workbench/bin/")
   | rtrimstr("\":*)")' "$SHIPPED_RAILS")
 
-# The match is on the command prefix rather than one spelling, so
-# `Bash(git push *)` and `Bash(git * push *)` fail here as well as
-# `Bash(git push:*)`.
-echo "ask list never blocks the unattended dev-team pipeline:"
+# workbench-dev-team's setup installs its own ask rules for git commit and git
+# push, and its pipeline answers the prompts they raise through a
+# PermissionRequest hook, hooks/scripts/pipeline-scope.sh. That hook answers
+# only for git, rm, and rmdir. So the two halves of this check protect two
+# different things.
+#   - git commit and git push: dev-team owns these rules and their spelling. A
+#     copy here would duplicate them, and it would stay in settings.json after
+#     dev-team changes or removes its own.
+#   - gh pr create: nothing answers that prompt in `claude -p`, so an ask rule
+#     here would deny every pull request the pipeline opens.
+# The match is on the command prefix rather than one spelling, because dev-team
+# spells its rules `Bash(git push *)` and `Bash(git * push *)`, and a copy of
+# either form must fail here too.
+echo "ask list leaves commit and push to dev-team, and never blocks its pipeline:"
 for PREFIX in "Bash(git push" "Bash(git commit" "Bash(git * push" "Bash(git * commit" "Bash(gh pr create"; do
   COUNT="$(jq -r --arg p "$PREFIX" '[.ask[] | select(.rule | startswith($p))] | length' "$SHIPPED_RAILS")"
   if [ "$COUNT" = "0" ]; then
     PASS=$((PASS + 1)); echo "  ✅ no ask rule starts with $PREFIX"
   else
-    FAIL=$((FAIL + 1)); echo "  ❌ an ask rule starts with $PREFIX — would block headless Watson"
+    FAIL=$((FAIL + 1)); echo "  ❌ an ask rule starts with $PREFIX — it duplicates dev-team's rule or blocks its pipeline"
   fi
 done
 

@@ -45,9 +45,8 @@
 # The slot names the tree to work in, and a branch or worktree is part of naming
 # that tree. workbench-dev-team asks the human before it creates either one, and
 # the answer has to travel with the dispatch. Widening this slot is what carries
-# it: a sixth slot would have to change the gate, this file, and every agent
-# that refuses an incomplete brief, and a Constraints: bullet would separate the
-# branch from the path it belongs to.
+# it, because the branch belongs beside the path it qualifies. A slot of its own,
+# or a Constraints: bullet, would separate the two.
 #
 # A bare absolute path stays fully valid. Most dispatches settle nothing, and
 # skills/process-pending-summaries dispatches into the memory vault, where no

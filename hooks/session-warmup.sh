@@ -247,8 +247,8 @@ through, so read the deny and follow it.
 | Gate | What it protects |
 |---|---|
 | Delegation gate | The main agent does not write whole files. It is denied `Write` and `NotebookEdit` outside the scratchpads, and may use `Edit`. Sub-agents are exempt. Only the user lifts it, with `/workbench-core:orchestrator off`. |
-| Agent dispatch gate | A main-agent `Agent` dispatch must carry the five-slot brief. |
-| Destructive scope guard | `rm`, `rmdir`, `git reset --hard`, `git clean`, and `git stash clear`/`drop` run only when every target resolves inside the project or a scratch root. |
+| Agent dispatch gate | A main-agent `Agent` dispatch must carry the six-slot brief. |
+| Destructive scope guard | `rm`, `rmdir`, `git reset --hard`, `git clean`, `git stash clear`/`drop`, and git commands that discard working-tree changes (`git restore`, `git checkout -- <path>`, `git switch --discard-changes`, `git rm -f`) run only when every target resolves inside the project or a scratch root. |
 | Destructive database guard | Database resets, drops, and destructive SQL are refused. |
 | Provisioning guard | Agents do not create worktrees or databases, and do not destroy a worktree they did not create. |
 | Vault git guard | Git writes aimed at the memory vault are refused. |
@@ -542,7 +542,7 @@ printf -- '- Build the recall QUERY from the TASK, not from the prompt: name the
 # because agents made probe roots by hand under /tmp, which is no root, and then
 # handed their cleanup to the user as a `!` command.
 printf '## Destructive commands\n\n'
-printf -- '- `rm`, `rmdir`, `git reset --hard`, `git clean`, and `git stash clear`/`drop` run with no prompt when every path they act on resolves inside the project or a scratch root: the session scratchpad, `~/Developer/scratchpad`, or a `mktemp -d` sandbox. A PreToolUse guard resolves each path and permits the call. `rm` and `rmdir` may also remove a leftover `/tmp/claude-*scratch*` folder you own, the folder itself included. It is not a root, so `git` verbs there are still denied.\n'
+printf -- '- `rm`, `rmdir`, `git reset --hard`, `git clean`, `git stash clear`/`drop`, and git commands that discard working-tree changes (`git restore`, `git checkout -- <path>`, `git switch --discard-changes`, `git rm -f`) run with no prompt when every path they act on resolves inside the project or a scratch root: the session scratchpad, `~/Developer/scratchpad`, or a `mktemp -d` sandbox. A PreToolUse guard resolves each path and permits the call. `rm` and `rmdir` may also remove a leftover `/tmp/claude-*scratch*` folder you own, the folder itself included. It is not a root, so `git` verbs there are still denied.\n'
 printf -- '- Make new scratch in the session scratchpad or `~/Developer/scratchpad`. Never create it anywhere under `/tmp` outside your session scratchpad. Do not put new scratch in an old `claude-*scratch*` folder there either.\n'
 printf -- '- Outside those roots it DENIES, and so does any target it cannot read: a `$variable`, a glob, `bash -c`, `ssh`, `xargs`, `find -delete`, or a loop body. Spell paths out literally and keep the delete its own command. Never hand the user a `!` command to delete your own scratch. A target outside every root that is not scratch is the user'"'"'s call, and they run it with the `!` prefix.\n\n'
 

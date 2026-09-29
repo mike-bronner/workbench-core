@@ -89,7 +89,7 @@ First resolve the vault root once — it is the `Workdir:` slot for every brief 
 . "${CLAUDE_PLUGIN_ROOT}/hooks/lib/memory-env.sh" && memory_load_env && echo "$MEMORY_PATH"
 ```
 
-Then spawn a background `summary-writer` agent per marker. **The prompt is a five-slot brief**, the same shape `hooks/agent-dispatch-gate.sh` requires of every dispatch from the main session. It carries no exemption and no sentinel — it passes the gate on its own merits, exactly like any other handoff:
+Then spawn a background `summary-writer` agent per marker. **The prompt is a six-slot brief**, the same shape `hooks/agent-dispatch-gate.sh` requires of every dispatch from the main session. It carries no exemption and no sentinel — it passes the gate on its own merits, exactly like any other handoff:
 
 ```
 Agent tool:
@@ -108,6 +108,10 @@ Agent tool:
     - Summarize from transcript_path whenever log_path no longer exists. Never report a pruned log as an unrecoverable session.
     - Follow your agent definition for the summary format and for the bar a decision must clear before promotion.
     - You receive no follow-up messages. Work from this brief alone and stop when the marker is gone.
+    Acceptance:
+    - AC1: The summary is written from the log, or from the transcript when the log is gone.
+    - AC2: A decision is promoted only when it clears the bar in your agent definition.
+    - AC3: The marker is removed only after the summary is written.
     Done when: The summary note exists in the vault, any promoted decisions are written, and {marker_path} no longer exists.
 ```
 

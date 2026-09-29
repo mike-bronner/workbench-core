@@ -73,7 +73,7 @@ For entries marked "Integrate":
 1. Read the installed SKILL.md that Step 2 found, to see the skill's current structure.
 2. Decide where each learning fits: an existing step, a caveat, or a note. If several learnings point at the same issue, consolidate them into one change.
 3. Find the local clone of the plugin's source repository, the `repository` column from Step 2. If the session cannot tell where it is, ask the user through `AskUserQuestion`. Never guess a path.
-4. Dispatch Dr. Watson in Direct mode through `/workbench-dev-team:orchestrate`, with a five-slot brief. `Workdir:` is the clone. `Goal:` is the skill behaving as the learnings describe. `Context:` quotes each integrated learning verbatim and says why it earned integration. `Done when:` is the SKILL.md carrying the guidance, woven into its existing structure, with the tree left uncommitted for the user to review.
+4. Dispatch Dr. Watson in Direct mode through `/workbench-dev-team:orchestrate`, with a six-slot brief. `Workdir:` is the clone. `Goal:` is the skill behaving as the learnings describe. `Context:` quotes each integrated learning verbatim and says why it earned integration. `Acceptance:` lists what the skill must do once each learning is woven in, one criterion per learning. `Done when:` is the SKILL.md carrying the guidance, woven into its existing structure, with the tree left uncommitted for the user to review.
 5. If `workbench-dev-team` is not installed, do not integrate. Report each proposed change, with the file it belongs in, and keep those entries in the learnings file.
 
 The guidance has to read as if it was always part of the skill. Say so in the brief: no appended "learnings" section.

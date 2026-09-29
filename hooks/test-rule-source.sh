@@ -73,6 +73,10 @@ has "rule 6 fixes the option heading"               '### 🔹 Option A'
 has "rule 6 asks for pros and cons"                 'pros and its cons'
 has "rule 6 separates the recommendation"           'separate paragraph'
 has "rule 6 favours correctness"                    'favours correctness over speed'
+has "rule 6 grades against the criteria"            'grade against every one of them'
+# The intake routine is a procedure, not a rule, so the style points at it and
+# carries no copy. hooks/test-intake.sh pins the routine and the absence of a copy.
+has "the style points at the intake skill"          'run the intake routine in `/workbench-core:intake`'
 has "rule 7 holds and then implements"              'do not reopen it'
 has "rule 7 reverses without drama"                 'reverse in one sentence'
 has "rule 8 bans contractions"                      'spell out every contraction'

@@ -158,8 +158,69 @@ echo "not the project" > "$PREFIX_TWIN/keep.txt"
 IN_REPO="$PROJECT/repo"
 OUT_REPO="$SANDBOX/outside-repo"
 mkdir -p "$IN_REPO" "$OUT_REPO"
-git -C "$IN_REPO" init -q . 2>/dev/null
-git -C "$OUT_REPO" init -q . 2>/dev/null
+# `git checkout <operand>` is a branch switch when the operand names a commit
+# and a path discard when it does not, so each repo needs a real commit and
+# branch. git guesses a tracking branch only from a CONFIGURED remote, so both
+# remotes are configured, with URLs nothing ever fetches from. `remote-only`
+# exists on one of them, which git turns into a tracking branch. `twin` exists
+# on two, which git cannot pick between, so it reads the operand as a path.
+# `shadow` is a tracked file and also a ref left behind by a remote that is no
+# longer configured, so git restores the file. `$B` and `` `b` `` are branches
+# spelled with text the shell substitutes before git sees it. `3` is a tracked
+# file whose name is also a file-descriptor number. The identity and
+# signing settings are pinned so no user config reaches the fixture.
+fixture_repo() {  # fixture_repo <dir> — a repo with the refs described above
+  git -C "$1" init -q . 2>/dev/null
+  echo tracked > "$1/shadow"
+  echo tracked > "$1/3"
+  git -C "$1" add shadow 3 2>/dev/null
+  git -C "$1" -c user.name=dscope -c user.email=dscope@example.invalid \
+    -c commit.gpgsign=false commit -q -m fixture 2>/dev/null
+  git -C "$1" branch feature 2>/dev/null
+  git -C "$1" branch "\$B" 2>/dev/null
+  git -C "$1" branch '`b`' 2>/dev/null
+  git -C "$1" remote add origin "$SANDBOX/no-such-remote" 2>/dev/null
+  git -C "$1" remote add upstream "$SANDBOX/no-such-remote" 2>/dev/null
+  git -C "$1" update-ref refs/remotes/origin/remote-only HEAD 2>/dev/null
+  git -C "$1" update-ref refs/remotes/origin/twin HEAD 2>/dev/null
+  git -C "$1" update-ref refs/remotes/upstream/twin HEAD 2>/dev/null
+  git -C "$1" update-ref refs/remotes/gone/shadow HEAD 2>/dev/null
+}
+fixture_repo "$IN_REPO"
+fixture_repo "$OUT_REPO"
+# A pair of repos, one inside the project and one outside, that also track a
+# file named `>`. The tokeniser reads a quoted '>' as a redirection, so there
+# the operator may be that path. They are separate so every other redirection
+# case keeps a repo where `>` names nothing.
+OP_IN="$PROJECT/op-repo"
+OP_OUT="$SANDBOX/op-repo"
+for REPO in "$OP_IN" "$OP_OUT"; do
+  mkdir -p "$REPO"
+  fixture_repo "$REPO"
+  echo tracked > "$REPO/>"
+  git -C "$REPO" add '>' 2>/dev/null
+  git -C "$REPO" -c user.name=dscope -c user.email=dscope@example.invalid \
+    -c commit.gpgsign=false commit -q -m operator 2>/dev/null
+done
+# A branch in the outside repo alone, so a `git -C` checkout that asked the
+# wrong repository about it would get the wrong answer.
+git -C "$OUT_REPO" branch only-out 2>/dev/null
+# A directory literally named `$W`, holding a repo with `feature`. The shell
+# expands `-C $W` to somewhere else, so this repo must never answer for it.
+LITERAL_W="$SANDBOX/\$W"
+mkdir -p "$LITERAL_W"
+fixture_repo "$LITERAL_W"
+# A repo whose index git cannot read, outside every root. The tracked-path
+# question has no answer there, which must count as a path.
+BROKEN_INDEX="$SANDBOX/broken-index"
+mkdir -p "$BROKEN_INDEX"
+fixture_repo "$BROKEN_INDEX"
+printf 'not an index' > "$BROKEN_INDEX/.git/index"
+# A `git` that cannot be executed, for the case where the branch question
+# cannot be asked at all.
+mkdir -p "$SANDBOX/broken-git"
+printf '#!%s/no-such-interpreter\n' "$SANDBOX" > "$SANDBOX/broken-git/git"
+chmod +x "$SANDBOX/broken-git/git"
 
 # run_guard — stdin is the payload. The session id reaches the guard through the
 # PAYLOAD, so CLAUDE_CODE_SESSION_ID is unset here: any case that passes is
@@ -488,6 +549,154 @@ check neutral "git clean -nd"        "git clean -nd" "$IN_REPO"
 check neutral "git reset without --hard" "git reset HEAD~1" "$IN_REPO"
 check neutral "git stash push"       "git stash push -m wip" "$IN_REPO"
 
+# The working-tree discards. Each form overwrites uncommitted changes, and each
+# is refused outside every root in the block further down. Every command in
+# these lists runs through both halves, so a form cannot be permitted here and
+# forgotten there.
+DISCARDS=(
+  "git restore file.txt"
+  "git restore --worktree file.txt"
+  "git restore --work file.txt"
+  "git restore -W file.txt"
+  "git restore --staged --worktree file.txt"
+  "git restore -SW file.txt"
+  "git restore --no-worktree --staged --worktree file.txt"
+  "git restore --source=feature file.txt"
+  "git restore -s feature file.txt"
+  "git restore -sSTAGED file.txt"
+  "git restore -p"
+  "git checkout -- file.txt"
+  "git checkout -- feature"
+  "git checkout feature -- file.txt"
+  "git checkout feature file.txt"
+  "git checkout feature -"
+  "git checkout file.txt"
+  "git checkout ."
+  "git checkout twin"
+  "git checkout shadow"
+  "git checkout --no-guess remote-only"
+  "git checkout remote-o*"
+  "git checkout remote-onl?"
+  "git checkout remote-onl[y]"
+  "git checkout 'remote\\-only'"
+  "git checkout --conflict=merge file.txt"
+  "git checkout --end-of-options -x"
+  "git checkout >/dev/null -- file.txt"
+  "git checkout feature 3 >log"
+  "git rm -f file.txt"
+  "git rm --force file.txt"
+  "git rm --forc file.txt"
+  "git rm -rf dir"
+  "git rm -f --ignore-unmatch file.txt"
+  "git rm -f -- -n"
+  "git rm -f --end-of-options -n"
+  "git checkout -f"
+  "git checkout --force"
+  "git checkout --forc"
+  "git checkout -qf"
+  "git checkout -f feature"
+  "git checkout feature --force"
+  "git checkout -p"
+  "git checkout --patch"
+  "git checkout --pathspec-from-file=list.txt"
+  "git checkout --ours file.txt"
+  "git switch -f feature"
+  "git switch --force feature"
+  "git switch --discard-changes feature"
+  "git switch --disc feature"
+  "git switch -qf feature"
+)
+# Forms git refuses outright, where the value an option consumed is what makes
+# the rest unreadable. The checker cannot tell them from a discard, so it
+# treats them as one, which is the direction the guard exists for.
+FAIL_CLOSED=(
+  "git restore --source --staged file.txt"
+  "git restore -s -S file.txt"
+  "git checkout -bfresh file.txt"
+)
+echo "permits the working-tree discards inside the project:"
+for command in "${DISCARDS[@]}" "${FAIL_CLOSED[@]}"; do
+  check allow "$command" "$command" "$IN_REPO"
+done
+check allow "git -C an in-scope repo restore" "git -C $IN_REPO restore file.txt" "$SANDBOX"
+
+# A plain branch switch refuses to overwrite local changes, so it is not a
+# discard. Each one is asked about OUTSIDE every root, where a discard denies,
+# so a branch switch read as a discard fails here rather than passing as an
+# in-scope allow.
+echo "leaves a plain branch switch alone, even outside every root:"
+check neutral "git checkout a branch"          "git checkout feature" "$OUT_REPO"
+check neutral "git checkout the previous branch" "git checkout -" "$OUT_REPO"
+check neutral "git checkout a remote-only branch" "git checkout remote-only" "$OUT_REPO"
+check neutral "git checkout a commit"          "git checkout HEAD" "$OUT_REPO"
+check neutral "git checkout --detach"          "git checkout --detach feature" "$OUT_REPO"
+check neutral "git checkout -b"                "git checkout -b fresh" "$OUT_REPO"
+check neutral "git checkout -b from a start"   "git checkout -b fresh feature" "$OUT_REPO"
+check neutral "git checkout -qb"               "git checkout -qb fresh feature" "$OUT_REPO"
+check neutral "git checkout -bfix, a branch named fix" "git checkout -bfix" "$OUT_REPO"
+check neutral "git checkout -B"                "git checkout -B fresh feature" "$OUT_REPO"
+check neutral "git checkout --orphan"          "git checkout --orphan fresh" "$OUT_REPO"
+check neutral "git checkout --conflict value"  "git checkout --conflict merge feature" "$OUT_REPO"
+check neutral "git checkout with no operand"   "git checkout" "$OUT_REPO"
+check neutral "git -C a branch switch"         "git -C $OUT_REPO checkout feature" "$IN_REPO"
+# `only-out` is a branch in the outside repo and nothing in the inside one, so
+# asking the working directory instead of the -C repo reads it as a path.
+check neutral "git -C asks the -C repo"        "git -C $OUT_REPO checkout only-out" "$IN_REPO"
+check neutral "git -C relative to the cwd"     "git -C outside-repo checkout only-out" "$SANDBOX"
+check neutral "git switch a branch"            "git switch feature" "$OUT_REPO"
+check neutral "git switch -- a branch"         "git switch -- feature" "$OUT_REPO"
+check neutral "git switch -c"                  "git switch -c fresh" "$OUT_REPO"
+check neutral "git switch -cf, a branch named f" "git switch -cf" "$OUT_REPO"
+check neutral "git switch -C"                  "git switch -C fresh feature" "$OUT_REPO"
+check neutral "git switch -Cf, a branch named f" "git switch -Cf" "$OUT_REPO"
+check neutral "git switch --detach"            "git switch --detach feature" "$OUT_REPO"
+check neutral "git restore --staged"           "git restore --staged file.txt" "$OUT_REPO"
+check neutral "git restore -S"                 "git restore -S file.txt" "$OUT_REPO"
+check neutral "git restore --stag"             "git restore --stag file.txt" "$OUT_REPO"
+check neutral "git restore -S with a source"   "git restore -S -s feature file.txt" "$OUT_REPO"
+check neutral "git restore -S, a joined source" "git restore -sfeature -S file.txt" "$OUT_REPO"
+check neutral "git restore -S, --source="      "git restore --source=feature --staged file.txt" "$OUT_REPO"
+check neutral "git restore -S, then a path"    "git restore -S -- -Wfile" "$OUT_REPO"
+check neutral "git restore --staged --no-worktree" "git restore --staged --no-worktree file.txt" "$OUT_REPO"
+check neutral "git restore, worktree turned off last" "git restore --worktree --no-worktree --staged file.txt" "$OUT_REPO"
+# Both switches off, which git refuses before it touches anything.
+check neutral "git restore --no-staged"        "git restore --no-staged file.txt" "$OUT_REPO"
+check neutral "git restore --staged --no-staged" "git restore --staged --no-staged file.txt" "$OUT_REPO"
+check neutral "git restore --no-worktree"      "git restore --no-worktree file.txt" "$OUT_REPO"
+check neutral "git restore, a path after --end-of-options" \
+  "git restore --staged --end-of-options -W" "$OUT_REPO"
+check neutral "git switch --force-create"      "git switch --force-create fresh" "$OUT_REPO"
+# `--` with nothing after it closes the operands, and git switches branches.
+check neutral "git checkout a branch, then --" "git checkout feature --" "$OUT_REPO"
+check neutral "git checkout --end-of-options, a branch" \
+  "git checkout --end-of-options feature" "$OUT_REPO"
+# A redirection is not an operand, and `2` in front of one is a descriptor
+# when no tracked path is named 2. Each operator takes its own target along.
+check neutral "git checkout, stderr redirected" "git checkout feature 2>/dev/null" "$OUT_REPO"
+check neutral "git checkout, both streams redirected" \
+  "git checkout feature >/dev/null 2>&1" "$OUT_REPO"
+for OP in '<' '>' '>>' '<<' '<<<' '<&' '>&' '&>' '&>>' '<>' '>|'; do
+  check neutral "git checkout, redirected with $OP" "git checkout feature $OP x" "$OUT_REPO"
+done
+# Several -C options resolve each against the one before.
+check neutral "git -C, then a relative -C"     "git -C $SANDBOX -C outside-repo checkout only-out" "$IN_REPO"
+check neutral "git rm"                         "git rm file.txt" "$OUT_REPO"
+check neutral "git rm -r"                      "git rm -r dir" "$OUT_REPO"
+check neutral "git rm --cached"                "git rm --cached file.txt" "$OUT_REPO"
+check neutral "git rm, a long option holding an f" "git rm --pathspec-from-file=list.txt" "$OUT_REPO"
+# A dry run removes nothing, whatever else the command says.
+check neutral "git rm -f -n"                   "git rm -f -n file.txt" "$OUT_REPO"
+check neutral "git rm -nf"                     "git rm -nf file.txt" "$OUT_REPO"
+check neutral "git rm --force --dry-run"       "git rm --force --dry-run file.txt" "$OUT_REPO"
+check neutral "git rm -f --dry"                "git rm -f --dry file.txt" "$OUT_REPO"
+# Where no tracked path is named `>`, a redirection hides nothing.
+check neutral "git restore --staged, redirected" "git restore --staged file.txt >/dev/null" "$OUT_REPO"
+check neutral "git rm, redirected"             "git rm file.txt >/dev/null" "$OUT_REPO"
+# An absolute -C needs no working directory to resolve against.
+check neutral "git -C absolute, no working directory" "git -C $OUT_REPO checkout only-out" ""
+check neutral "git rm -- -f, a path"           "git rm -- -f" "$OUT_REPO"
+check neutral "git rm --end-of-options -f, a path" "git rm --end-of-options -f" "$OUT_REPO"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # OUT OF SCOPE. Every command here names a real path, and the guard resolves it
 # perfectly well — it simply lands outside. Each asserts the deny AND that the
@@ -694,6 +903,87 @@ check deny "git reset --hard in an outside repo" "git reset --hard" "$OUT_REPO"
 check deny "git clean -fd in an outside repo"    "git clean -fd" "$OUT_REPO"
 check deny "git stash clear in an outside repo"  "git stash clear" "$OUT_REPO"
 check deny "git -C an outside repo"  "git -C $OUT_REPO reset --hard" "$IN_REPO"
+
+echo "refuses a working-tree discard outside every root:"
+for command in "${DISCARDS[@]}" "${FAIL_CLOSED[@]}"; do
+  check deny "$command" "$command" "$OUT_REPO"
+done
+check deny "git -C an outside repo restore" "git -C $OUT_REPO restore file.txt" "$IN_REPO"
+# A wrapper runs its command somewhere this guard does not follow, so a branch
+# cannot be told from a path, and the checkout counts as a discard.
+check deny "bash -c hiding a restore"  "bash -c \"git restore file.txt\"" "$IN_REPO"
+check deny "bash -c hiding a checkout" "bash -c \"git checkout feature\"" "$IN_REPO"
+# Every case below is a branch switch in the fixture, and each is refused
+# because the checker cannot ask the repository that git will act on.
+# The shell expands "$B" and runs "`b`" first, so the real branches with
+# those literal names do not answer for them.
+check deny "a checkout operand held in a variable" 'git checkout "$B"' "$OUT_REPO"
+check deny "a checkout operand from a substitution" 'git checkout "`b`"' "$OUT_REPO"
+check deny "a checkout with no working directory" "git checkout feature" ""
+# The reason says why, so a checker that crashed on the missing directory,
+# which denies too, fails here.
+assert_contains "the refusal names the missing working directory" \
+  "$(context_of "$(payload "git checkout feature" "" | run_guard 2>/dev/null)")" \
+  "carried no working directory"
+# -C $W goes wherever the shell expands $W, not to the directory named $W.
+check deny "a checkout under a -C variable" 'git -C $W checkout feature' "$SANDBOX"
+check deny "a checkout under --git-dir and --work-tree" \
+  "git --git-dir=$OUT_REPO/.git --work-tree=$OUT_REPO checkout feature" "$IN_REPO"
+check deny "a checkout in a repo whose index cannot be read" \
+  "git checkout remote-only" "$BROKEN_INDEX"
+PATH="$SANDBOX/broken-git:$PATH" check deny "a checkout whose git cannot run" \
+  "git checkout feature" "$OUT_REPO"
+PATH="$SANDBOX/broken-git:$PATH" check deny "a redirected checkout whose git cannot run" \
+  "git checkout -b fresh 2>/dev/null" "$OUT_REPO"
+# An unbalanced quote defeats the tokeniser, so only the fallback word match
+# sees the verb. It must know the new ones.
+check deny "a restore that does not tokenise" 'git restore "file.txt' "$IN_REPO"
+check deny "a checkout that does not tokenise" 'git checkout "feature' "$IN_REPO"
+check deny "a switch that does not tokenise" 'git switch -f "feature' "$IN_REPO"
+check deny "a restore after -C that does not tokenise" 'git -C . restore "file.txt' "$IN_REPO"
+# The fallback reads those three words only in the subcommand slot, so a
+# multi-line commit message that mentions one is not a destructive command.
+check neutral "a multi-line commit message naming checkout" \
+  $'git commit -m "feat: add checkout page\n\nswitch and restore too"' "$IN_REPO"
+# A verb held in a variable is still found, spelled in the variable's name.
+check deny "a restore run through \${GIT}" '${GIT} restore file.txt' "$IN_REPO"
+# A number in front of a redirection counts as a path when git cannot be
+# asked whether it is one.
+check deny "a redirected checkout with no working directory" \
+  "git checkout -b fresh 2>/dev/null" ""
+
+echo "reads a quoted '>' as a possible path where one is tracked:"
+# Each command names the tracked file '>'. Read as a redirection, it would take
+# the word after it out: the path in the first, --worktree in the second, and
+# -f in the third.
+for command in "git checkout -- '>' file.txt" \
+               "git restore --staged '>' --worktree file.txt" \
+               "git rm '>' -f file.txt"; do
+  check allow "$command, inside" "$command" "$OP_IN"
+  check deny "$command, outside" "$command" "$OP_OUT"
+done
+
+echo "resolves every -C in turn, as git does:"
+check deny "an outside -C, then -C ."         "git -C $OUT_REPO -C . restore ." "$IN_REPO"
+check deny "an outside -C, then -C ., reset"  "git -C $OUT_REPO -C . reset --hard" "$IN_REPO"
+check allow "an outside -C, then an absolute inside one" \
+  "git -C $OUT_REPO -C $IN_REPO restore file.txt" "$SANDBOX"
+
+echo "reads a repository moved by the environment or by core.worktree as unknown:"
+for VAR in GIT_DIR GIT_WORK_TREE GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT; do
+  check deny "$VAR as a prefix" "$VAR=$OUT_REPO git reset --hard" "$IN_REPO"
+done
+check deny "GIT_DIR behind env"      "env GIT_DIR=$OUT_REPO/.git git restore ." "$IN_REPO"
+check deny "GIT_WORK_TREE exported first" \
+  "export GIT_WORK_TREE=$OUT_REPO; git restore ." "$IN_REPO"
+check deny "GIT_DIR with a branch switch" "GIT_DIR=$OUT_REPO/.git git checkout feature" "$IN_REPO"
+check deny "-c core.worktree"        "git -c core.worktree=$OUT_REPO reset --hard" "$IN_REPO"
+check deny "-c core.workTree, any case" "git -c core.workTree=$OUT_REPO reset --hard" "$IN_REPO"
+check deny "--config-env core.worktree" "git --config-env core.worktree=W reset --hard" "$IN_REPO"
+check allow "another -c setting"     "git -c user.name=x reset --hard" "$IN_REPO"
+check allow "another assignment"     "GIT_AUTHOR_NAME=x git reset --hard" "$IN_REPO"
+# The name alone, as a word rather than an assignment, moves nothing.
+check neutral "the variable's name as a word" "echo GIT_DIR && git reset --hard" "$IN_REPO"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FAIL CLOSED — the block this suite exists for. Every case names a destructive
@@ -1039,6 +1329,10 @@ assert_starts some 'git -C sub reset --hard'
 assert_starts some 'git clean -fd'
 assert_starts some 'git stash drop'
 assert_starts some 'bash -c "git stash clear"'
+assert_starts some 'git restore x'
+assert_starts some 'git checkout -- x'
+assert_starts some 'git switch -f main'
+assert_starts some 'GIT RESTORE x'
 # Split verbs. The checker's tokeniser and bash both rejoin quotes, backslashes
 # and backslash-newlines, so each of these runs the verb it spells, and each
 # must reach the checker.

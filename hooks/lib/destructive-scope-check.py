@@ -33,6 +33,36 @@ assets/permissions/rails.json in favour of this file. The fifteen ask entries
 that remain act on published artifacts, system state, or the Keychain, where the
 question is undefined; they are out of scope here and stay rules.
 
+The git forms that overwrite uncommitted working-tree changes are here too,
+though no ask entry ever named them. The dev-team pipeline runs `claude -p` in
+bypass mode, where only an ask rule raises a prompt its PermissionRequest hook
+can judge, so without this file `git restore` ran against any tree at all.
+Each form below discards uncommitted work, per git's own documentation:
+  - `git restore` that restores the working tree. It does when the last of
+    `--worktree`/`--no-worktree` turns it on, and when neither that pair nor
+    `--staged`/`--no-staged` is named at all. `--staged` alone touches only
+    the index, and a command that turns both off is refused by git.
+  - `git checkout` with `-f`/`--force`, with `-p`/`--patch`, with `--` and a
+    word after it, with `--pathspec-from-file`, with two operands
+    (`<tree-ish> <path>`), or with one operand that does not name a commit or
+    a single remote branch. A word after `--end-of-options` is an operand
+    even when it starts with a dash, and a redirection is no operand. In
+    every one of those, git overwrites local changes. A remote branch whose
+    name is also a tracked path counts as a path, because git reads it as one
+    when it does not guess a tracking branch.
+  - `git switch` with `-f`/`--force` or `--discard-changes`.
+  - `git rm` with `-f`/`--force`, which removes files whose changes are not
+    committed. Plain `git rm` refuses to, and `-n`/`--dry-run` removes
+    nothing.
+A redirection operator is read as one, except that a quoted `'>'` reaches this
+file as the same token. So where a tracked path has the operator's name, a
+checkout, restore, or rm that carries it counts as a discard.
+A plain branch switch is not here. `git checkout <branch>`, `git switch
+<branch>`, and the `-b`/`-c` creation forms refuse to overwrite local changes.
+Telling `git checkout <branch>` from `git checkout <file>` takes the
+repository, so git_checkout_discards() asks git whether the operand names a
+commit, and treats every answer it cannot get as a path.
+
 `rm -r`, plain `rm`, `rm -f`, and `rmdir` match no permission rule at all and
 never did. The retired scratch-delete guard covered them anyway, and dropping
 that coverage while retiring it would be a silent regression, so they are here.
@@ -209,6 +239,12 @@ UNRESOLVABLE = set("*?[]{}$`~\"'")
 _DESTRUCTIVE_PATTERN = (
     r"(?:^|[^\w./-])(?:rm|rmdir)(?:$|[^\w./-])"
     r"|git\b[^\n;&|]*?(?:reset\b[^\n;&|]*?--hard|clean\b|stash\s+(?:clear|drop))"
+    # The discard verbs are common words in a commit message, so they count
+    # only in the subcommand slot: after git, its options, and their values.
+    # A value never starts with a dash, which keeps the match linear. `\S*`
+    # lets `${GIT} restore` through for the any-case read below.
+    r"|git\b\S*(?:[ \t]+-\S+(?:[ \t]+[^\s-]\S*)?)*[ \t]+"
+    r"(?:restore|checkout|switch)\b"
 )
 DESTRUCTIVE_WORD = re.compile(_DESTRUCTIVE_PATTERN)
 
@@ -229,6 +265,24 @@ GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
 # The two that move git's idea of the repository somewhere this file is not
 # tracking. `-C` is followed and the rest are refused rather than guessed at.
 GIT_OPAQUE_OPTS = {"--git-dir", "--work-tree"}
+
+# The environment variables that do the same. GIT_DIR and GIT_WORK_TREE move
+# the repository and the worktree, and the GIT_CONFIG_* pair can carry
+# core.worktree. A command that assigns one anywhere, as a prefix, an export,
+# or a statement of its own, has every git verb in it read as moved.
+GIT_ENV_MOVES = {"GIT_DIR", "GIT_WORK_TREE", "GIT_CONFIG_PARAMETERS",
+                 "GIT_CONFIG_COUNT"}
+
+# The git verbs whose verdict a word lost behind a quoted operator can change,
+# and the discard each is read as then.
+DISCARD_BY_VERB = {"checkout": "git checkout -- <path>",
+                   "restore": "git restore", "rm": "git rm --force"}
+
+# The redirection operators, as the tokeniser splits them off. Each takes the
+# word after it as its target. `<<-` arrives as `<<` and `-`, so its delimiter
+# is read as a word of the command, which fails closed.
+REDIRECT_OPS = {"<", ">", ">>", "<<", "<<<", "<&", ">&", "&>", "&>>", "<>",
+                ">|"}
 
 
 class Deny(Exception):
@@ -621,11 +675,40 @@ def operands(tokens):
 
 # ── git ──────────────────────────────────────────────────────────────────────
 
+def strip_redirects(tokens):
+    """(the tokens without their redirections, the bare numbers that stood in
+    front of one, the operators taken out).
+
+    Each operator and the word after it go, wherever they sit: git takes
+    `git checkout >/dev/null -- file` as `git checkout -- file`, so stopping at
+    the first one would lose the `--`. The tokeniser splits `2>` into `2` and
+    `>`, the same as `2 >`, so a number in front of an operator may be a file
+    descriptor or a word of the command. It also gives a quoted `'>'` as the
+    same token as a bare `>`, so an operator may be a path, and the word after
+    it an option. The caller decides both."""
+    kept, numbers, operators = [], [], []
+    target = False
+    for token in tokens:
+        if target:
+            target = False
+            continue
+        if token in REDIRECT_OPS:
+            target = True
+            operators.append(token)
+            if kept and kept[-1].isdigit():
+                numbers.append(kept.pop())
+            continue
+        kept.append(token)
+    return kept, numbers, operators
+
+
 def git_parts(args):
-    """(-C value or None, whether an opaque option moved the repository, the
-    subcommand tokens)."""
-    rest = list(args)
-    chdir = None
+    """(the -C values in order, whether an option moved the repository
+    somewhere this file does not track, the subcommand tokens, the bare
+    numbers that stood in front of a redirection, the redirection operators
+    taken out)."""
+    rest, numbers, operators = strip_redirects(args)
+    chdirs = []
     opaque = False
     while rest and rest[0].startswith("-"):
         option = rest.pop(0)
@@ -641,21 +724,275 @@ def git_parts(args):
                 rest.pop(0) if rest else None)
             if chdir is None:
                 opaque = True
+            else:
+                chdirs.append(chdir)
             continue
-        if name in GIT_VALUE_OPTS and not joined and rest:
-            rest.pop(0)
-    return chdir, opaque, rest
+        if name in GIT_VALUE_OPTS:
+            value = option.split("=", 1)[1] if joined else (
+                rest.pop(0) if rest else "")
+            # core.worktree set on the command line moves the worktree as
+            # --work-tree does.
+            if name in ("-c", "--config-env") \
+                    and value.split("=", 1)[0].lower() == "core.worktree":
+                opaque = True
+    return chdirs, opaque, rest, numbers, operators
 
 
-def git_destructive(args):
+def git_directory(args, here):
+    """(the directory git starts in, None) or (None, why it is unknown). Each
+    relative -C resolves against the one before it, as git resolves it."""
+    chdirs, opaque, _, _, _ = git_parts(args)
+    if opaque:
+        return None, ("The command sets --git-dir, --work-tree, or "
+                      "core.worktree, or one of the GIT_DIR, GIT_WORK_TREE, "
+                      "and GIT_CONFIG_* variables, which moves git's idea of "
+                      "the repository somewhere this guard is not tracking.")
+    directory = here
+    for chdir in chdirs:
+        if set(chdir) & UNRESOLVABLE:
+            return None, ('The -C operand "%s" carries an unexpanded glob, '
+                          "variable, substitution or tilde." % chdir)
+        # An absolute -C replaces what came before, which join does itself.
+        if directory or os.path.isabs(chdir):
+            directory = os.path.join(directory or "", chdir)
+    if not directory:
+        return None, ("The call carried no working directory, so which "
+                      "repository the command acts on is not settled by its "
+                      "text.")
+    return directory, None
+
+
+def _git_at(args, here):
+    """(git, the directory it starts in), or None when either is unknown."""
+    directory, _ = git_directory(args, here)
+    git = shutil.which("git")
+    return (git, directory) if directory and git else None
+
+
+def _tracked(where, name):
+    """True unless git answers that no tracked path matches `name`. Exit 1 is
+    that answer. Anything else, `where` unknown included, is an answer not
+    had, and counts as a path."""
+    if not where:
+        return True
+    try:
+        found = subprocess.run(
+            [where[0], "-C", where[1], "ls-files", "--error-unmatch", "--",
+             name], capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return found.returncode != 1
+
+
+def _long(token, name):
+    """True when `token` spells the long option `name`, whole or abbreviated.
+    git accepts any unambiguous prefix, so `--forc` is `--force`. An ambiguous
+    prefix makes git refuse the command, so counting it is harmless."""
+    spelled = token.split("=", 1)[0]
+    return len(spelled) > 2 and name.startswith(spelled)
+
+
+def _names_branch(where, name, guess):
+    """True when git would read `name` as a branch to switch to rather than as
+    a path: it resolves to a commit, or `guess` is on, exactly one remote
+    carries a branch of that name, and no tracked path has it. `where` is what
+    _git_at() returned. Every answer this cannot get is False, so an
+    unreadable operand is treated as the path that discards work."""
+    if name == "-":
+        return True  # the previous branch, `@{-1}`
+    # `$` and a backtick stand for text the shell substitutes. `*?[\` make git
+    # read the operand as a pathspec, and make for-each-ref below glob. Quotes
+    # are not here: an operand still carrying one reached this function only
+    # through the exact tokeniser, so the quote is part of the name.
+    if not where or set(name) & set("$`*?[\\"):
+        return False
+    git, directory = where
+    try:
+        commit = subprocess.run(
+            [git, "-C", directory, "rev-parse", "--verify", "--quiet",
+             "--end-of-options", name + "^{commit}"],
+            capture_output=True, timeout=10)
+        if commit.returncode == 0:
+            return True
+        if not guess:
+            return False
+        remote = subprocess.run(
+            [git, "-C", directory, "for-each-ref", "--format=%(refname)",
+             "refs/remotes/*/" + name],
+            capture_output=True, text=True, timeout=10)
+        # git creates a tracking branch only when exactly one remote matches.
+        # With two, it falls back to reading the operand as a path.
+        if len(remote.stdout.split()) != 1:
+            return False
+    except (OSError, subprocess.SubprocessError):
+        return False
+    # git skips the guess and restores the path instead when checkout.guess is
+    # off or the ref's remote is no longer configured. This file reads
+    # neither, so a tracked path of that name decides it.
+    return not _tracked(where, name)
+
+
+def git_checkout_discards(args, tail, here, numbers):
+    """The name of the discarding form of `git checkout`, or None for a branch
+    switch. `args` is the whole git argument list, for `-C`. `numbers` are the
+    bare numbers that stood in front of a redirection."""
+    operands = []
+    guess = True
+    options = True
+    index = 0
+    while index < len(tail):
+        token = tail[index]
+        index += 1
+        if token == "--":
+            # With nothing after it, `--` only closes the operands, and git
+            # switches branches as it would without it.
+            if index < len(tail):
+                return "git checkout -- <path>"
+            break
+        if not options:
+            operands.append(token)
+            continue
+        if token == "--end-of-options":
+            options = False  # every word after it is an operand, dash or not
+            continue
+        if _long(token, "--pathspec-from-file"):
+            return "git checkout -- <path>"
+        if token.startswith("--"):
+            if _long(token, "--force"):
+                return "git checkout --force"
+            if _long(token, "--patch"):
+                return "git checkout --patch"
+            if _long(token, "--no-guess"):
+                guess = False
+            # A new branch's name is not an operand. A start point after it
+            # still is, and it names a commit.
+            if "=" not in token and (_long(token, "--orphan")
+                                     or _long(token, "--conflict")):
+                index += 1
+            continue
+        if token.startswith("-") and token != "-":
+            for position, flag in enumerate(token[1:], 1):
+                if flag == "f":
+                    return "git checkout --force"
+                if flag == "p":
+                    return "git checkout --patch"
+                if flag in "bB":
+                    # The rest of the cluster is the new branch's name, or the
+                    # next token is when the cluster ends here.
+                    if position == len(token) - 1:
+                        index += 1
+                    break
+            continue
+        operands.append(token)
+    where = _git_at(args, here)
+    # A number in front of a redirection is a file descriptor unless a space
+    # stood between them, and the tokens cannot tell. git reads it as a path
+    # only when a tracked path matches it.
+    if any(_tracked(where, number) for number in numbers):
+        return "git checkout -- <path>"
+    if not operands:
+        return None
+    if len(operands) > 1 or not _names_branch(where, operands[0], guess):
+        return "git checkout -- <path>"
+    return None
+
+
+def git_switch_discards(tail):
+    """The name of the discarding form of `git switch`, or None."""
+    # No `--` stop: what follows one is a branch name, and git refuses a
+    # branch name that starts with a dash.
+    for token in tail:
+        if token.startswith("--"):
+            if _long(token, "--force") or _long(token, "--discard-changes"):
+                return "git switch --discard-changes"
+            continue
+        if token.startswith("-"):
+            for flag in token[1:]:
+                if flag == "f":
+                    return "git switch --discard-changes"
+                if flag in "cC":
+                    break  # the rest of the cluster is a branch name
+    return None
+
+
+def git_restore_discards(tail):
+    """`git restore` when it restores the working tree, or None. Each of the
+    two switches is None until named, then the last value given."""
+    staged = worktree = None
+    index = 0
+    while index < len(tail):
+        token = tail[index]
+        index += 1
+        if token in ("--", "--end-of-options"):
+            break  # every word after it is a path
+        if token.startswith("--"):
+            if _long(token, "--source"):
+                if "=" not in token:
+                    index += 1
+            elif _long(token, "--staged"):
+                staged = True
+            elif _long(token, "--no-staged"):
+                staged = False
+            elif _long(token, "--worktree"):
+                worktree = True
+            elif _long(token, "--no-worktree"):
+                worktree = False
+            continue
+        if token.startswith("-"):
+            for position, flag in enumerate(token[1:], 1):
+                if flag == "S":
+                    staged = True
+                elif flag == "W":
+                    worktree = True
+                elif flag == "s":
+                    if position == len(token) - 1:
+                        index += 1
+                    break  # the rest of the cluster is the source
+    # git turns the working tree on by itself only when neither switch was
+    # named. `--no-staged` alone leaves both off, and git refuses it.
+    if worktree or (worktree is None and staged is None):
+        return "git restore"
+    return None
+
+
+def git_destructive(args, here=None):
     """The name of the destructive git operation this command performs, or
     None. Read from the subcommand slot, so `git log --grep="git clean"` is not
-    one."""
-    _, _, rest = git_parts(args)
+    one. `here` is the working directory, which `git checkout` needs to tell a
+    branch from a path. Without it every one-operand checkout counts."""
+    _, _, rest, numbers, operators = git_parts(args)
     if not rest:
         return None
     verb = rest[0]
     tail = rest[1:]
+    # A quoted `'>'` reads as a redirection, so the word after it, which may
+    # be `-f` or `--worktree`, was taken out with it. When a tracked path has
+    # the operator's name, the operator may have been that path, and what it
+    # took out cannot be known.
+    if verb in DISCARD_BY_VERB:
+        where = _git_at(args, here)
+        if any(_tracked(where, operator) for operator in operators):
+            return DISCARD_BY_VERB[verb]
+    if verb == "restore":
+        return git_restore_discards(tail)
+    if verb == "checkout":
+        return git_checkout_discards(args, tail, here, numbers)
+    if verb == "switch":
+        return git_switch_discards(tail)
+    if verb == "rm":
+        # `-f` removes a file whose changes are not committed, which plain
+        # `git rm` refuses to do, and `-n` removes nothing at all. Every word
+        # after `--` is a path.
+        force = False
+        for token in tail:
+            if token in ("--", "--end-of-options"):
+                break
+            short = token.startswith("-") and not token.startswith("--")
+            if _long(token, "--dry-run") or (short and "n" in token):
+                return None
+            if _long(token, "--force") or (short and "f" in token):
+                force = True
+        return "git rm --force" if force else None
     if verb == "reset" and any(t == "--hard" for t in tail):
         return "git reset --hard"
     if verb == "clean":
@@ -676,27 +1013,10 @@ def git_destructive(args):
 
 def git_worktree(args, here):
     """The physical root of the worktree a git command acts on, or a Deny."""
-    chdir, opaque, _ = git_parts(args)
-    if opaque:
+    directory, why = git_directory(args, here)
+    if why:
         raise Deny("a destructive git command whose repository this guard "
-                   "cannot resolve",
-                   "The command sets --git-dir or --work-tree, which moves "
-                   "git's idea of the repository somewhere this guard is not "
-                   "tracking.")
-    directory = here
-    if chdir:
-        if set(chdir) & UNRESOLVABLE:
-            raise Deny("a destructive git command whose repository this guard "
-                       "cannot resolve",
-                       'The -C operand "%s" carries an unexpanded glob, '
-                       "variable, substitution or tilde." % chdir)
-        directory = chdir if os.path.isabs(chdir) else (
-            os.path.join(here, chdir) if here else None)
-    if not directory:
-        raise Deny("a destructive git command whose repository this guard "
-                   "cannot resolve",
-                   "The call carried no working directory, so which repository "
-                   "the command acts on is not settled by its text.")
+                   "cannot resolve", why)
     git = shutil.which("git")
     if not git:
         raise Deny("a destructive git command whose repository this guard "
@@ -928,6 +1248,11 @@ def judge(command, cwd, roots, markers=None):
     targets = 0
     only_destructive = True
     here = cwd
+    # An assignment is stripped from the front of its statement before the
+    # verb is read, and an export reaches every statement after it, so both
+    # are read here, over the whole command, before any verb is.
+    env_moved = any("=" in token and token.split("=", 1)[0] in GIT_ENV_MOVES
+                    for tokens in lines for token in tokens)
     for tokens in lines:
         # `restore` shadows the group stack: one entry per open group, holding
         # the working directory to put back when that group closes, or None
@@ -1050,11 +1375,15 @@ def judge(command, cwd, roots, markers=None):
                     continue
 
                 if verb == "git":
-                    operation = git_destructive(stage[1:])
+                    args = stage[1:]
+                    if env_moved:
+                        # Read exactly as the option spelling of the move.
+                        args = ["--work-tree=(environment)"] + args
+                    operation = git_destructive(args, here)
                     if operation is None:
                         only_destructive = False
                         continue
-                    worktree = git_worktree(stage[1:], here)
+                    worktree = git_worktree(args, here)
                     if not within(worktree, roots):
                         raise Deny(
                             "a destructive git command outside this project "

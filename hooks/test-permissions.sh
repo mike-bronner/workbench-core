@@ -552,13 +552,16 @@ done < <(jq -r '(.allow // [])[] | .rule
   | ltrimstr("Bash(bash \"$HOME/.claude-workbench/bin/")
   | rtrimstr("\":*)")' "$SHIPPED_RAILS")
 
+# The match is on the command prefix rather than one spelling, so
+# `Bash(git push *)` and `Bash(git * push *)` fail here as well as
+# `Bash(git push:*)`.
 echo "ask list never blocks the unattended dev-team pipeline:"
-for RULE in "Bash(git push:*)" "Bash(git commit:*)" "Bash(gh pr create:*)"; do
-  COUNT="$(jq -r --arg r "$RULE" '[.ask[] | select(.rule == $r)] | length' "$SHIPPED_RAILS")"
+for PREFIX in "Bash(git push" "Bash(git commit" "Bash(git * push" "Bash(git * commit" "Bash(gh pr create"; do
+  COUNT="$(jq -r --arg p "$PREFIX" '[.ask[] | select(.rule | startswith($p))] | length' "$SHIPPED_RAILS")"
   if [ "$COUNT" = "0" ]; then
-    PASS=$((PASS + 1)); echo "  ✅ $RULE not in ask"
+    PASS=$((PASS + 1)); echo "  ✅ no ask rule starts with $PREFIX"
   else
-    FAIL=$((FAIL + 1)); echo "  ❌ $RULE in ask — would block headless Watson"
+    FAIL=$((FAIL + 1)); echo "  ❌ an ask rule starts with $PREFIX — would block headless Watson"
   fi
 done
 

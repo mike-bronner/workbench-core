@@ -150,15 +150,20 @@ COMMAND=$(printf '%s' "$PAYLOAD" | jq -r '
 # everything below costs a python start — measured at ~70ms against ~11ms for
 # this early exit.
 #
-# THESE SIX WORDS ARE THE CHECKER'S VERB SET, AND THEY MUST STAY THAT WAY.
+# THESE NINE WORDS ARE THE CHECKER'S VERB SET, AND THEY MUST STAY THAT WAY.
 # A destructive verb the checker knows and this list does not is a command that
 # never reaches the checker at all, which is the fail-open hole this guard
 # exists to close — and nothing would report it. As of this writing:
-#   rm, rmdir  `rm` and `rmdir`, in every spelling
+#   rm, rmdir  `rm` and `rmdir`, in every spelling, and `git rm -f`
 #   reset      `git reset --hard`
 #   clean      `git clean`
 #   stash      `git stash clear` and `git stash drop`
+#   restore    `git restore` of the working tree
+#   checkout   `git checkout` that overwrites files, not a branch switch
+#   switch     `git switch -f` and `--discard-changes`
 #   delete     `find -delete`, which spells its destruction in a flag, not a verb
+# A plain branch switch matches here too and costs a python start. The checker
+# returns silence for it.
 # The git verbs are keyed on the SUBCOMMAND rather than on "git", because `git`
 # alone matches every ordinary git call and made all of them pay the python
 # start for nothing. A wrapper hiding one of these — `bash -c "git clean -fd"`,
@@ -192,7 +197,7 @@ COMMAND=$(printf '%s' "$PAYLOAD" | jq -r '
 # gives no hint — `${TOOL} -rf /etc/x`, with TOOL set to rm in an earlier,
 # separate call — matches nothing here and is not reachable by any text-based
 # guard. That is the limit of this mechanism, not an oversight in it.
-SCOPE_VERBS='[rR][mM]|[rR][mM][dD][iI][rR]|[rR][eE][sS][eE][tT]|[cC][lL][eE][aA][nN]|[sS][tT][aA][sS][hH]|[dD][eE][lL][eE][tT][eE]'
+SCOPE_VERBS='[rR][mM]|[rR][mM][dD][iI][rR]|[rR][eE][sS][eE][tT]|[cC][lL][eE][aA][nN]|[sS][tT][aA][sS][hH]|[rR][eE][sS][tT][oO][rR][eE]|[cC][hH][eE][cC][kK][oO][uU][tT]|[sS][wW][iI][tT][cC][hH]|[dD][eE][lL][eE][tT][eE]'
 SCOPE_WORDS="(^|[^[:alnum:]])($SCOPE_VERBS)([^[:alnum:]]|$)"
 # SPLIT VERBS. The checker's tokeniser, like bash, rejoins a word that quotes,
 # backslashes, or a backslash-newline split: `r''m`, `r\m`, `r\<newline>m` and

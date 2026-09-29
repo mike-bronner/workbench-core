@@ -1,6 +1,6 @@
 #!/bin/bash
 # Tests for hooks/agent-dispatch-gate.sh — the PreToolUse gate that requires the
-# five-slot brief on every Agent dispatch from the main session.
+# six-slot brief on every Agent dispatch from the main session.
 # Run directly: ./test-agent-dispatch-gate.sh
 #
 # Each case feeds one synthetic PreToolUse payload on stdin and asserts one of
@@ -9,7 +9,7 @@
 # — no network, no server, nothing read from the real home directory.
 #
 # Allow branches (a)-(g) from the script header are each covered independently,
-# so no one branch can mask another. Each of the five slots is pinned by its own
+# so no one branch can mask another. Each of the six slots is pinned by its own
 # omission fixture, because a closed set with no fixture per member degrades
 # silently.
 
@@ -42,7 +42,7 @@ DEVTEAM_LINE='The dev-team specialists and the brief they expect are in /workben
 
 # ---------------------------------------------------------------------------
 # Fixtures. The briefs below are real dispatch text from the 14-day transcript
-# sample, trimmed and fitted to the five-slot template. Using real prose rather
+# sample, trimmed and fitted to the six-slot template. Using real prose rather
 # than "lorem ipsum" is what makes the read-only pass-through case meaningful.
 # ---------------------------------------------------------------------------
 
@@ -53,6 +53,9 @@ Goal: Make the credential guard stop matching .env by substring.
 Context: The guard matches .env anywhere in the raw command text, so any command
 mentioning a path containing .envrc trips it. Three false positives in one day.
 Constraints: none
+Acceptance:
+- AC1: A path containing .envrc passes the guard.
+- AC2: A read of .env is still refused.
 Done when: The guard rejects .envrc and still catches .env, with a test per case.
 EOF
 
@@ -65,6 +68,8 @@ Context: The branch replaced a regex parser with a tree-sitter walk. Read-only,
 no write tools, no patching. Do not edit any file. Report findings only.
 Constraints:
 - Read-only. Do not modify anything.
+Acceptance:
+- AC1: Each finding names a file, a line, and a failing input.
 Done when: Every finding is reported with a file, a line, and a failing input.
 EOF
 
@@ -176,11 +181,11 @@ run_prompt "a free-form paragraph"      "$FREEFORM"                       deny
 run_prompt "an empty-ish prompt of dots" "..."                            deny
 run_prompt "slot headers only in prose" "Mention the repo and the goal."  deny
 
-echo "each of the five slots is required, pinned independently:"
+echo "each of the six slots is required, pinned independently:"
 # Every fixture below is the GOOD brief with exactly one slot line removed, so a
 # pass proves that slot alone is load-bearing. Drop any single grep from the
-# gate and exactly one of these five goes deny-to-hint.
-for slot in "Workdir:" "Goal:" "Context:" "Constraints:" "Done when:"; do
+# gate and exactly one of these six goes deny-to-hint.
+for slot in "Workdir:" "Goal:" "Context:" "Constraints:" "Acceptance:" "Done when:"; do
   stripped="$(printf '%s\n' "$GOOD_BRIEF" | grep -v "^${slot}")"
   out="$(main_payload "$stripped" | gate)"
   check "missing '$slot' is denied" "$out" deny
@@ -215,7 +220,7 @@ done
 assert_grep "Repo sweep: survived the rename" 'Repo sweep:' "$GATE"
 
 echo "a complete brief passes:"
-run_prompt "all five slots, no prescriptive markers" "$GOOD_BRIEF" silent
+run_prompt "all six slots, no prescriptive markers" "$GOOD_BRIEF" silent
 # Slot ORDER is deliberately not enforced: a reordered brief still uses the
 # template. Reversing the lines must not change the verdict.
 REVERSED="$(printf '%s\n' "$GOOD_BRIEF" | sed -n '1!G;h;$p')"
@@ -314,6 +319,27 @@ OldContext: The guard matches}" silent
 LONG_CONTEXT="$GOOD_BRIEF"
 run_prompt "Context: prose" "$LONG_CONTEXT" silent
 
+echo "the Acceptance slot is a presence check, like the other five:"
+# The intake routine writes the criteria, and the receiving agent grades against
+# them. The gate judges neither: it never reads the value, so a one-word value
+# and a bare header both pass. If the gate ever starts classifying criteria,
+# one of these goes red.
+run_prompt "Acceptance: none passes" \
+  "$(printf '%s\n' "$GOOD_BRIEF" | grep -v '^- AC' | sed 's/^Acceptance:$/Acceptance: none/')" silent
+run_prompt "a bare Acceptance: header with no criteria passes" \
+  "$(printf '%s\n' "$GOOD_BRIEF" | grep -v '^- AC')" silent
+# The brief every dispatch carried before this slot. It is refused, and the
+# refusal names Acceptance: alone, so the orchestrator knows the one line to add.
+OLD_FIVE="$(printf '%s\n' "$GOOD_BRIEF" | grep -v '^Acceptance:' | grep -v '^- AC')"
+run_prompt "the old five-slot brief is refused" "$OLD_FIVE" deny
+assert_contains "and the refusal names only Acceptance:" \
+  "$(main_payload "$OLD_FIVE" | gate | jq -r '.hookSpecificOutput.permissionDecisionReason')" \
+  "Missing: Acceptance:."
+# "Acceptance criteria" in prose is not the header. Only a line that opens with
+# the header counts, the same anchoring every other slot uses.
+run_prompt "Acceptance: only mid-line in prose is refused" \
+  "$(printf '%s\n' "$OLD_FIVE" | sed 's/^Constraints: none$/Constraints: none, see the Acceptance: list later/')" deny
+
 echo "no length is enforced, in either direction:"
 # A prose Context slot runs long by design (measured median 4,788 chars). A
 # ceiling would deny essentially every well-formed brief, so there must be none.
@@ -326,6 +352,7 @@ run_prompt "a very short complete brief still passes" \
 Goal: g
 Context: none
 Constraints: none
+Acceptance: none
 Done when: d" silent
 
 echo "(a) sub-agent dispatches are allowed:"
@@ -616,7 +643,7 @@ assert_missing "the human line carries no Markdown emphasis" "$DENY_REASON" "**"
 assert_missing "the human line does not carry the slot catalogue" "$DENY_REASON" "Done when: (observable finish line)"
 assert_missing "the human line does not carry the toggle" "$DENY_REASON" "/workbench-core:orchestrator off"
 
-assert_contains "context names the template"   "$DENY_CONTEXT" "five-slot brief"
+assert_contains "context names the template"   "$DENY_CONTEXT" "six-slot brief"
 assert_contains "context says research counts" "$DENY_CONTEXT" "research included"
 assert_contains "context lists every slot"     "$DENY_CONTEXT" "Done when: (observable finish line)"
 assert_contains "context names the toggle"     "$DENY_CONTEXT" "/workbench-core:orchestrator off"
@@ -721,14 +748,14 @@ echo "the shared definition is the only place the slots are written:"
 # slot inline again, these go red.
 # shellcheck source=hooks/lib/brief-template.sh
 . "$HOOKS_DIR/lib/brief-template.sh"
-if [ "${#WORKBENCH_BRIEF_SLOTS[@]}" -eq 5 ]; then
-  PASS=$((PASS + 1)); echo "  ✅ the definition holds exactly five slots"
+if [ "${#WORKBENCH_BRIEF_SLOTS[@]}" -eq 6 ]; then
+  PASS=$((PASS + 1)); echo "  ✅ the definition holds exactly six slots"
 else
-  FAIL=$((FAIL + 1)); echo "  ❌ the definition holds ${#WORKBENCH_BRIEF_SLOTS[@]} slots, expected 5"
+  FAIL=$((FAIL + 1)); echo "  ❌ the definition holds ${#WORKBENCH_BRIEF_SLOTS[@]} slots, expected 6"
 fi
 # Every slot in the definition is actually enforced: drop it from an otherwise
 # complete brief and the gate must refuse, naming that slot. This is what makes
-# the definition load-bearing rather than decorative — add a sixth record and
+# the definition load-bearing rather than decorative — add a seventh record and
 # this loop demands the gate enforce it too.
 for record in "${WORKBENCH_BRIEF_SLOTS[@]}"; do
   header="$(brief_slot_field "$record" 1)"
@@ -753,7 +780,7 @@ for record in "${WORKBENCH_BRIEF_SLOTS[@]}"; do
   assert_contains "the deny message carries '$(brief_slot_field "$record" 1)' and its description" \
     "$DENY_SLOTS" "$(brief_slot_field "$record" 1) ($(brief_slot_field "$record" 3))"
 done
-# The README documents the same five headers. It is static prose and cannot
+# The README documents the same six headers. It is static prose and cannot
 # derive at runtime, so a test is what keeps it honest.
 for record in "${WORKBENCH_BRIEF_SLOTS[@]}"; do
   assert_grep "README documents the '$(brief_slot_field "$record" 1)' slot" \

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# brief-template: the ONE definition of the five-slot dispatch brief.
+# brief-template: the ONE definition of the six-slot dispatch brief.
 #
 # Every dispatch from the main session carries this shape, and
 # hooks/agent-dispatch-gate.sh refuses one that does not. Before this file the
@@ -36,7 +36,7 @@
 # others.
 #
 # ORDER IS THE TEMPLATE'S ORDER. The gate does not enforce slot order in a
-# prompt — a brief carrying all five in any order still uses the template — but
+# prompt — a brief carrying all six in any order still uses the template — but
 # this array is the order a human reads them in, so the deny message and the
 # README both present them this way.
 #
@@ -55,6 +55,19 @@
 #
 # This is documented meaning only. The gate greps the headers below and never
 # reads slot content, so both shapes already pass and no pattern changed here.
+
+# ACCEPTANCE IS THE SIXTH SLOT, AND IT IS WHAT THE WORK IS GRADED AGAINST
+#
+# The intake routine (skills/intake/SKILL.md) turns the goal and the context
+# into acceptance criteria before any work starts, and grades its options
+# against them. A handoff carries those criteria in this slot, so the receiving
+# agent grades its own forks against the same list and reports against it.
+# Before the slot existed, a brief said what to do and when it was done, but
+# not what "good" meant in between, and the receiver guessed.
+#
+# Presence only, like every other slot. The gate never reads the criteria, and
+# a classifier that judged them was never on the table: prompt classifiers were
+# measured against real dispatch traffic and were not good enough to keep.
 
 # THE WHITESPACE IN THESE PATTERNS IS SPELLED OUT, NEVER [[:space:]]
 #
@@ -91,6 +104,7 @@ WORKBENCH_BRIEF_SLOTS=(
   "Goal:|^[$_brief_ws]*Goal:|one or two sentences, measurable"
   "Context:|^[$_brief_ws]*Context:|why the task exists, and what the agent cannot derive"
   "Constraints:|^[$_brief_ws]*Constraints:|hard limits, or none"
+  "Acceptance:|^[$_brief_ws]*Acceptance:|the criteria the work is graded against, one per line"
   "Done when:|^[$_brief_ws]*Done[$_brief_ws]+when:|observable finish line"
 )
 

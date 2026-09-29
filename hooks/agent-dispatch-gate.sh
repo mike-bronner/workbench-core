@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # agent-dispatch-gate: PreToolUse gate on the Agent tool that denies a MAIN-agent
-# sub-agent dispatch whose prompt does not use the five-slot brief, and attaches
+# sub-agent dispatch whose prompt does not use the six-slot brief, and attaches
 # an advisory note when a brief dictates method instead of outcome.
 #
 # The rule already existed in prose and drifted anyway, which is the same story
@@ -10,7 +10,7 @@
 #
 # WHAT THIS GATE CHECKS, AND WHAT IT DELIBERATELY DOES NOT
 #
-# It checks ONE thing: are the five slot headers present. That is a structural
+# It checks ONE thing: are the six slot headers present. That is a structural
 # question a shell script can answer exactly. It is not a judgement about
 # whether the work is code work, and not a judgement about whether `Goal:`
 # states an outcome rather than a numbered script. Both of those are questions
@@ -39,6 +39,12 @@
 # `Context:` may not, and that rule is enforced by the receiving agent. This gate
 # deliberately encodes neither answer: header presence is true under both, so a
 # future reversal needs no change here.
+#
+# `Acceptance:` is held to the same rule. The slot carries the criteria the
+# intake routine (skills/intake/SKILL.md) derived, and the receiver grades its
+# forks against them. Whether the criteria are observable, or cover the goal, is
+# a question about substance, so the gate asks only whether the header is there.
+# The two machine-built shapes in (g) stay exempt: they carry no brief at all.
 #
 # No length is enforced, anywhere. A brief carrying a prose `Context:` slot runs
 # long by design; measured median is 4,788 characters. A ceiling would deny
@@ -211,7 +217,7 @@ printf '%s' "$PROMPT" | grep -q "[^$WS]" || exit 0
 #     exempted by a "Process pending session summary." sentinel. That was a
 #     bypass string in an enforcement path: it patched the caller's problem
 #     inside the enforcer, and any prompt could wear it. The caller now sends a
-#     real five-slot brief (skills/process-pending-summaries/SKILL.md) and
+#     real six-slot brief (skills/process-pending-summaries/SKILL.md) and
 #     passes on its own merits, so the sentinel is gone rather than merely
 #     unused.
 NONBLANK=$(printf '%s' "$PROMPT" | grep -c "[^$WS]")
@@ -265,9 +271,9 @@ HOOKS_DIR="${HOOKS_DIR:-$SCRIPT_DIR}"
 . "$HOOKS_DIR/lib/brief-template.sh" 2>/dev/null || true
 [ -n "${WORKBENCH_BRIEF_SLOTS+set}" ] || exit 0
 
-# The five slots. Presence only: a header at the start of a line, case
+# The six slots. Presence only: a header at the start of a line, case
 # insensitive, with flexible spacing inside "Done when". Slot ORDER is not
-# checked — a brief carrying all five in a different order still uses the
+# checked — a brief carrying all six in a different order still uses the
 # template, and refusing it would cost a real dispatch for no gain.
 #
 # The slots themselves are NOT written here. They come from the one definition
@@ -298,7 +304,7 @@ if [ -n "$MISSING" ]; then
   # Both strings name the slots from the same records the check above greps for,
   # so a renamed slot cannot ask for one name while refusing another.
   REASON="🛑 Blocked: an Agent dispatch without a complete brief. Missing: ${MISSING}."
-  CONTEXT="Dispatch gate (workbench-core). Every Agent dispatch from the main session uses the five-slot brief, research included. Slots: $(brief_slot_summary). Add the missing slots and dispatch again.${PLUGIN_LINE} To dispatch without the brief in this session, the human can ask for /workbench-core:orchestrator off."
+  CONTEXT="Dispatch gate (workbench-core). Every Agent dispatch from the main session uses the six-slot brief, research included. Slots: $(brief_slot_summary). Add the missing slots and dispatch again.${PLUGIN_LINE} To dispatch without the brief in this session, the human can ask for /workbench-core:orchestrator off."
   jq -nc --arg reason "$REASON" --arg context "$CONTEXT" '{
     hookSpecificOutput: {
       hookEventName: "PreToolUse",

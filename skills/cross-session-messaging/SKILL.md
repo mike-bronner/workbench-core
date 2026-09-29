@@ -98,7 +98,7 @@ parent session's address, and any reply is delivered to the parent's
 conversation rather than to the sub-agent.
 
 A sub-agent that wants something said outside itself sends it to `main` and lets
-the orchestrator decide. That is the same boundary the five-slot brief draws for
+the orchestrator decide. That is the same boundary the six-slot brief draws for
 dispatch, in the other direction.
 
 **A pipeline agent launched by `claude -p --agent` is top-level and may send.**

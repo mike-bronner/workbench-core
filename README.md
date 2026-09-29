@@ -91,7 +91,9 @@ markdown-vault-mcp --version
 
 The rules load from one place: the output style `/workbench-core:setup` installs from `assets/personas/clear/output-style.md`. An output style is system-prompt tier, so it outranks the base prompt's defaults (such as "no emojis unless asked") without any shell alias, and it survives compaction on its own. It also reaches the main session only, which is where the rules belong.
 
-No hook restates them. Earlier versions loaded the same rules four times per main session: the output style, a `~/.claude/system-overrides.md` file passed by a shell alias, the managed `~/.claude/CLAUDE.md` block, and a guardrails payload on the warmup's stdout. The copies drifted and contradicted each other. The `CLAUDE.md` copy also reached every sub-agent, which put "present options" and `AskUserQuestion` into agents that have neither a human nor the tool. `hooks/test-rule-source.sh` pins the new shape: eleven rules and three habits of shape in the output style, the style obeying its own register, and no rule text in anything the warmup writes or prints.
+No hook restates them. Earlier versions loaded the same rules four times per main session: the output style, a `~/.claude/system-overrides.md` file passed by a shell alias, the managed `~/.claude/CLAUDE.md` block, and a guardrails payload on the warmup's stdout. The copies drifted and contradicted each other. The `CLAUDE.md` copy also reached every sub-agent, which put "present options" and `AskUserQuestion` into agents that have neither a human nor the tool. `hooks/test-rule-source.sh` pins the new shape: eleven rules and three habits of shape in the output style, its pointer to the intake skill, the style obeying its own register, and no rule text in anything the warmup writes or prints.
+
+The task-intake routine is not a rule, so it does not live in the output style. It is a procedure, and its one copy is `skills/intake/SKILL.md`. The style carries a one-line pointer to it, and `hooks/test-intake.sh` fails if the style starts restating it. See [Task intake](#task-intake).
 
 The managed `~/.claude/CLAUDE.md` block now carries facts only: the gates, what each protects, and the scratch roots. Sub-agents need those facts, and each gate's deny carries its own recovery text.
 
@@ -192,9 +194,10 @@ core/
 │   │                             scratch root, deny it outside — and deny what it cannot resolve
 │   ├── provisioning-guard.sh   — PreToolUse: block worktree and database creation, on all four surfaces
 │   ├── delegation-gate.sh      — PreToolUse: deny main-agent Write/NotebookEdit, redirect to sub-agents
-│   ├── agent-dispatch-gate.sh  — PreToolUse: deny a main-agent Agent dispatch that skips the five-slot brief
+│   ├── agent-dispatch-gate.sh  — PreToolUse: deny a main-agent Agent dispatch that skips the six-slot brief
+│   ├── intake-nudge.sh         — PreToolUse(Edit): remind the main agent once per task to show its intake block (never denies)
 │   ├── peer-message-gate.sh    — PreToolUse: deny a sub-agent SendMessage to anything but main or its own children
-│   ├── lib/brief-template.sh   — the ONE definition of the five-slot brief (gate + deny message read it)
+│   ├── lib/brief-template.sh   — the ONE definition of the six-slot brief (gate + deny message read it)
 │   ├── lib/                    — sourceable libs: memory-env / -probe / -vacuum / -install, summary-dispatch, prose-check,
 │   │                             memory-recall-core (levers both recall hooks share), scan-query (a scan's own query),
 │   │                             shell_parse (shared tokeniser), destructive-db-check, vault-git-check,
@@ -244,7 +247,8 @@ These hooks fire across the session lifecycle and on each turn:
 | `UserPromptSubmit` | `hooks/memory-recall.sh` | Proactive recall — search the vault with the prompt and inject relevant memories, **once per session** per memory (memory **reads**) |
 | `PreToolUse` | `hooks/outbound-prose-guard.sh` | Check prose leaving the machine against the output style's mechanical rules — see [Outbound prose guard](#outbound-prose-guard) |
 | `PreToolUse` | `hooks/delegation-gate.sh` | Deny `Write`/`NotebookEdit` from the main agent so whole-file work goes to sub-agents. `Edit` is allowed — see [Delegation gate](#delegation-gate) |
-| `PreToolUse` | `hooks/agent-dispatch-gate.sh` | Deny an `Agent` dispatch from the main agent unless its prompt uses the five-slot brief — see [Agent dispatch gate](#agent-dispatch-gate) |
+| `PreToolUse` | `hooks/agent-dispatch-gate.sh` | Deny an `Agent` dispatch from the main agent unless its prompt uses the six-slot brief — see [Agent dispatch gate](#agent-dispatch-gate) |
+| `PreToolUse` | `hooks/intake-nudge.sh` | On the first `Edit` of a task with no intake block on screen, remind the main agent to run the intake routine. Never denies — see [Task intake](#task-intake) |
 | `PreToolUse` | `hooks/peer-message-gate.sh` | Deny a `SendMessage` from a sub-agent to anything but its own orchestrator or its own children — see [Peer message gate](#peer-message-gate) |
 
 ### How a gate speaks
@@ -316,19 +320,22 @@ Tests: `hooks/test-delegation-gate.sh` (71 cases: every allow branch independent
 
 ### Agent dispatch gate
 
-**A handoff to a sub-agent states the outcome, and it uses the brief.** The delegation gate sends file work to a sub-agent. This gate governs what that handoff has to look like. `hooks/agent-dispatch-gate.sh` denies an `Agent` dispatch from the main session whose prompt is missing any of the five slots:
+**A handoff to a sub-agent states the outcome, and it uses the brief.** The delegation gate sends file work to a sub-agent. This gate governs what that handoff has to look like. `hooks/agent-dispatch-gate.sh` denies an `Agent` dispatch from the main session whose prompt is missing any of the six slots:
 
 ```
 Workdir:     absolute path of the tree the agent works in, and the branch or worktree if one was settled
 Goal:        concise, measurable, achievable. One or two sentences.
 Context:     prose. Why the task exists, and what the agent cannot derive.
 Constraints: bullet points. Hard limits, or "none".
+Acceptance:  bullet points. The criteria the work is graded against, one per line.
 Done when:   observable finish line.
 ```
 
-**`Workdir:` names the tree, so it carries the branch too.** A branch or a worktree is part of naming which tree the agent works in. `workbench-dev-team` asks the human before it creates either one, and the settled answer rides in this slot rather than in a sixth slot or a `Constraints:` bullet. A bare absolute path stays fully valid: most dispatches settle nothing, and `process-pending-summaries` dispatches into the memory vault, where no branch applies. Nothing about enforcement changes here. The gate greps the headers and never reads slot content, so both shapes already pass.
+**`Workdir:` names the tree, so it carries the branch too.** A branch or a worktree is part of naming which tree the agent works in. `workbench-dev-team` asks the human before it creates either one, and the settled answer rides in this slot rather than in a slot of its own or a `Constraints:` bullet. A bare absolute path stays fully valid: most dispatches settle nothing, and `process-pending-summaries` dispatches into the memory vault, where no branch applies. Nothing about enforcement changes here. The gate greps the headers and never reads slot content, so both shapes already pass.
 
-**Those five slots are defined once, in `hooks/lib/brief-template.sh`.** The gate's checks and the deny message's slot list are both generated from that file, so renaming a slot changes what is enforced and what is asked for in a single edit. Before it existed the template was restated in four places with no shared source, and renaming the first slot from `Repo:` to `Workdir:` is the drift that argued for it — core dispatches work that has no repo, since `summary-writer` operates on the memory vault. A test fails if any consumer restates a slot inline again, and another fails if a slot in the definition is not actually enforced.
+**`Acceptance:` carries the criteria the intake routine derived.** [`/workbench-core:intake`](#task-intake) turns the goal and the context into acceptance criteria before any work starts, and grades its options against them. The slot hands the same list to the receiving agent, so it grades its own forks against the list and reports against it. Before the slot, a brief said what to do and when it was done, but not what "good" meant in between. The gate checks the header and never the criteria, exactly as it does for `Context:`. A brief written before this slot existed is refused, and the refusal names `Acceptance:` alone.
+
+**Those six slots are defined once, in `hooks/lib/brief-template.sh`.** The gate's checks and the deny message's slot list are both generated from that file, so renaming a slot changes what is enforced and what is asked for in a single edit. Before it existed the template was restated in four places with no shared source, and renaming the first slot from `Repo:` to `Workdir:` is the drift that argued for it — core dispatches work that has no repo, since `summary-writer` operates on the memory vault. A test fails if any consumer restates a slot inline again, and another fails if a slot in the definition is not actually enforced.
 
 **It checks slot presence and nothing else.** It does not decide whether the work is code work, it does not decide which sub-agent should receive it, and it does not judge whether `Goal:` states an outcome rather than a numbered script. Those are questions about substance, and they belong to the agent reading the brief.
 
@@ -359,9 +366,9 @@ The wrong ones were not tunable away. They were prose tasks naming source files 
 
 Both are anchored at each end and must be the entire prompt. Matching them as a prefix would let any brief walk past the gate by opening with `Item ID: 12` and continuing in free prose.
 
-**There is no third shape, and that is deliberate.** Core's own `summary-writer` dispatch was briefly exempted by a `Process pending session summary.` sentinel, because `skills/process-pending-summaries` sent a fixed key/value prompt rather than a brief. A sentinel is a bypass string sitting in an enforcement path: it patches the caller's problem inside the enforcer, and any prompt that wears the string inherits the exemption. The caller now sends a real five-slot brief and passes on its own merits, so the sentinel is gone rather than merely unused. A test asserts both halves — that the skill emits no sentinel, and that the retired string earns no special treatment.
+**There is no third shape, and that is deliberate.** Core's own `summary-writer` dispatch was briefly exempted by a `Process pending session summary.` sentinel, because `skills/process-pending-summaries` sent a fixed key/value prompt rather than a brief. A sentinel is a bypass string sitting in an enforcement path: it patches the caller's problem inside the enforcer, and any prompt that wears the string inherits the exemption. The caller now sends a real six-slot brief and passes on its own merits, so the sentinel is gone rather than merely unused. A test asserts both halves — that the skill emits no sentinel, and that the retired string earns no special treatment.
 
-**The prescriptive-prompt hint never blocks.** Once the five slots are present, a brief carrying a fenced code block, a shell command on its own line, or three or more numbered steps gets a note attached as `additionalContext`. Over-specified method wastes the sub-agent's judgement, but it does not break anything the way a missing slot does, and the markers are far too common to sit behind a refusal: fenced blocks appear in 40% of real briefs and numbered steps in 51%. The shell-command marker is line-anchored on purpose, because matching a command anywhere in the text fires on 91% of briefs, including prose that merely mentions `git log`.
+**The prescriptive-prompt hint never blocks.** Once the six slots are present, a brief carrying a fenced code block, a shell command on its own line, or three or more numbered steps gets a note attached as `additionalContext`. Over-specified method wastes the sub-agent's judgement, but it does not break anything the way a missing slot does, and the markers are far too common to sit behind a refusal: fenced blocks appear in 40% of real briefs and numbered steps in 51%. The shell-command marker is line-anchored on purpose, because matching a command anywhere in the text fires on 91% of briefs, including prose that merely mentions `git log`.
 
 The hint emits `additionalContext` and **no `permissionDecision`**. That is deliberate and load-bearing: the harness only touches permission behaviour when that key is present (verified against the 2.1.263 binary), so the hint cannot silently grant a permission the call would otherwise have had to ask for.
 
@@ -375,7 +382,26 @@ The hint emits `additionalContext` and **no `permissionDecision`**. That is deli
 
 Like the delegation gate, it is sidesteppable and deliberately so. Slot headers are cheap to bolt onto a 17,000-character prompt, and the gate will pass it. What survives that is the receiving agent's own check on substance, which is where the judgement belongs.
 
-Tests: `hooks/test-agent-dispatch-gate.sh` (183 cases: every allow branch independently, each of the five slots pinned by its own omission fixture, a `Workdir:` carrying a branch and one carrying a worktree, the deny and hint paths, the hint's absence of a permission grant, each exempt shape plus its prefix-smuggling counter-case, a realistic read-only dispatch passing clean, `hooks.json` wiring, the shared-definition drift guards, and agreement with the toggle skill and the summary-writer skill).
+Tests: `hooks/test-agent-dispatch-gate.sh` (195 cases: every allow branch independently, each of the six slots pinned by its own omission fixture, `Acceptance:` held to a presence check with the pre-slot brief refused by name, a `Workdir:` carrying a branch and one carrying a worktree, the deny and hint paths, the hint's absence of a permission grant, each exempt shape plus its prefix-smuggling counter-case, a realistic read-only dispatch passing clean, `hooks.json` wiring, the shared-definition drift guards, and agreement with the toggle skill and the summary-writer skill).
+
+### Task intake
+
+**Before a task that produces work, the agent runs one routine, and shows its result before the work starts.** The routine is `skills/intake/SKILL.md` (`/workbench-core:intake`): state the goal, gather context from the prompt, the repo, and the vault, interview the user through `AskUserQuestion` only about gaps none of those can fill, derive acceptance criteria, and show them in an intake block. Then it drafts three options from genuinely different angles, checks in writing that they are not variants of one approach, grades each against every criterion, and recommends the best grade. The options go to the user only at a real fork. Otherwise the agent proceeds on the top grade and says so in one line.
+
+**It exists because asking had become only a fallback.** No file in the workbench made intake a step, and several rules pushed against asking at all: research before asking, "blocking uncertainty only", options "only where they earn their place", and two vault notes against re-asking. The fix is a routine rather than a louder rule. What keeps the routine from slowing work down is its bar. A question is asked only when the answer is not in reach and a wrong guess wastes real work. What makes the silence safe is the intake block: the goal and the criteria are on screen before work starts, so every assumption can be corrected in one line.
+
+**The skill decides when intake applies, and no hook does.** Trivial asks and pure questions skip it. Sub-agents take their brief as the intake, and the Index pipeline and scheduled ticks never interview. The [agent dispatch gate](#agent-dispatch-gate) carries the criteria across a handoff in its `Acceptance:` slot.
+
+**`hooks/intake-nudge.sh` is a reminder, and it never denies.** On the first `Edit` of a task, it looks for a Markdown heading naming "Intake" in the assistant's text. If there is none, it attaches one line of `additionalContext` pointing at the skill, and the edit goes ahead untouched. A deny here would be a judgement-call deny, which is what f18a2f9 removed because it breeds workarounds.
+
+- **A task is the latest human prompt.** Claude Code stamps those records `"origin":{"kind":"human"}`. Tool results, sub-agent hand-backs, and task notifications carry no such stamp, so none of them opens a new task. That field is undocumented Claude Code behaviour, checked against 400 recent transcripts on 2026-09-29. If a CLI release renames or drops it, the hook finds no prompt and goes silent, with no error anywhere. Re-check it after an upgrade if the nudge stops appearing.
+- **Once per task.** The prompt's id is kept in `~/.claude-workbench/intake-nudge/<session_id>`, so later edits on the same prompt are silent. Files older than three days are swept, like the sibling state directories.
+- **An approved intake counts.** A block that closed the turn before the prompt (the agent showed it, asked "proceed?", and got "yes") keeps the nudge quiet. A Stop hook that wakes the agent after that question, such as the memory capture checkpoint, does not reopen the turn: tool calls after it leave the closing text alone. A block from the start of an earlier task does not count.
+- **Only assistant text counts.** An `Edit` whose new text contains an intake heading is not an intake block.
+- **Lanes that never see it:** sub-agents and `claude -p --agent` runs (by `agent_id` and `agent_type`, as the delegation gate reads them), and scheduled ticks (the current prompt opens with the `<scheduled-task>` wrapper). Only the current prompt decides, so a typed task later in a session that began as a tick is nudged like any other.
+- **Every failure is silence.** A missing `jq`, an unreadable transcript, or state that cannot be written all exit with no output. Unwritable state stays silent rather than nudging on every edit.
+
+Tests: `hooks/test-intake.sh` (the skill's routine pinned step by step, including the gap test and the written distinctness check; the output style pointing at the skill without restating it; the skill's own block silencing the hook; and the nudge's once-per-task, approved-intake (including a Stop hook wake before the answer), lane, scope, retention, and failure cases, plus an assertion that no output of the suite carries a permission decision).
 
 ### Peer message gate
 
@@ -1006,6 +1032,7 @@ Runs on every `startup` warmup:
 | `/workbench-core:memory-lint` | Monthly health-and-repair pass over the memory vault — frontmatter rescue, broken-link repair, conservative orphan linking, vault-index drift repair, duplicate flagging, audit report |
 | `/workbench-core:memory-status` | Report the shared memory server's facts — vault/cache, server-binary presence, index & last-VACUUM |
 | `/workbench-core:install-chat-skills` | Discover skills in `@claude-workbench` plugins and install them into the Claude Mac app's Chat surface via `.skill` packaging |
+| `/workbench-core:intake` | The task-intake routine for an interactive session — goal, context, an interview limited to real gaps, acceptance criteria shown before work starts, and three options from different angles graded against every criterion. See [Task intake](#task-intake) |
 | `/workbench-core:orchestrator` | Turn the [delegation gate](#delegation-gate) off or on for this session, or report its state. `off` allows whole-file writes, `on` restores the gate, no argument reports. `Edit` is never gated |
 | `/workbench-core:cross-session-messaging` | The protocol for messaging another Claude Code session — when to reach out, what a message carries, the receive-side rule that keeps a human in the loop, and which sends a sub-agent may make. Paired with the [peer message gate](#peer-message-gate) |
 

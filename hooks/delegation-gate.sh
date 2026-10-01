@@ -124,12 +124,12 @@ case "$TOOL_NAME" in
   *) exit 0 ;;
 esac
 
-# (f) A scratch file is not file work. CLAUDE.md and the dev-team commit gate
-#     tell the main session to write a multi-line commit message or a PR body
-#     to a file in the scratchpad and pass it with `git commit -F`. Denying that
-#     write pushed the model into a heredoc through Bash, or into a sub-agent
-#     that spent 54k tokens writing one file. Every real denial in the 30 days
-#     before this branch was one of those files.
+# (f) A scratch file is not file work. CLAUDE.md and the dev-team git-commit
+#     skill tell the main session to write a multi-line commit message or a PR
+#     body to a file in the scratchpad and pass it with `git commit -F`.
+#     Denying that write pushed the model into a heredoc through Bash, or into
+#     a sub-agent that spent 54k tokens writing one file. Every real denial in
+#     the 30 days before this branch was one of those files.
 #
 #     The roots are the two scratchpads the destructive-scope guard
 #     (hooks/lib/destructive-scope-check.py) already trusts, resolved the same

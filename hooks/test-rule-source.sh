@@ -70,7 +70,18 @@ has "rule 5 requires a verdict and a recommendation" 'verdict and a recommendati
 has "rule 5 keeps \"no action needed\" a verdict"   'No action needed" is a valid verdict'
 has "rule 6 limits options to a real fork"          'real fork that Mike has not decided'
 has "rule 6 keeps options before irreversible acts" 'outward-facing or irreversible action'
-has "rule 6 hands commits and pushes to the gate"   'Commits and ordinary pushes are the exception'
+has "rule 6 exempts commits and pushes from options" 'Commits and ordinary pushes are the exception'
+# The approval is Mike's answer to one AskUserQuestion, asked alone after his
+# review. The permission prompt is only a backstop, because a prompt that
+# appears mid-flow gets answered without a review. A sub-agent never commits,
+# and the Index pipeline never asks.
+has "rule 6 asks one approval question"             'one approval question, not three options'
+has "rule 6 asks it alone, after the review"        'reviewed the tree, ask it through `AskUserQuestion`, on its own'
+has "rule 6 names the answer as the approval"       'His answer is the approval'
+has "rule 6 keeps the prompt a backstop"            'permission prompt that follows is a backstop\. It is never the approval'
+has "rule 6 keeps sub-agents from committing"       'A sub-agent never commits or pushes'
+has "rule 6 leaves the question to the orchestrator" 'the orchestrator asks Mike'
+has "rule 6 keeps the Index pipeline silent"        'An Index pipeline run never asks to commit or push'
 # Rule 6 renders options as one table, because three headings with pros and
 # cons ran 25 to 30 rows and pushed the recommendation off Mike's screen.
 has "rule 6 keeps three options"                    'give options, give three'
@@ -124,6 +135,7 @@ lacks "no drift test"                        'drift test'
 lacks "no delegate-by-default rule"          'delegate'
 lacks "no reason that outranks brevity"     'outranks brevity'
 lacks "no heading per option"               '### 🔹 Option'
+lacks "no permission prompt as the approval" 'because the approval gate prompts'
 
 # ── 2. The source obeys its own register ─────────────────────────────────────
 echo

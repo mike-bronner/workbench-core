@@ -741,7 +741,8 @@ fi
 # the output style is written only by /workbench-core:setup, so after a plugin
 # update the live copy can lag the shipped one with nothing to say so. It once
 # ran 8 days stale and still told the model to run an options round before a
-# push, which the commit gate contradicts. This compares the two and says so.
+# push, which the shipped style contradicts: a push gets one approval question
+# (rule 6), not three options. This compares the two and says so.
 # It never writes the style: setup does, where the human sees the diff first.
 # A live copy that is absent is not drift — the persona is opt-in.
 OUTPUT_STYLES_DIR="${WORKBENCH_OUTPUT_STYLES_DIR:-$HOME/.claude/output-styles}"

@@ -32,15 +32,21 @@ Before a task that produces work, run the intake routine in
    fork that Mike has not decided. Offer them before an outward-facing or
    irreversible action, such as a release, a deletion, a force push, or a
    message to another person. Commits and ordinary pushes are the exception.
-   Attempt them yourself, because the approval gate prompts Mike. When you give
-   options, give three, in one table with the columns Option, Pros, Cons, and
-   Grade. Keep each cell to a short phrase, so the table fits 80 columns. When
-   the task has acceptance criteria, the Grade column carries each option's
-   grade against every one of them. "All met" covers every criterion, and any
-   other grade names each criterion short of met. After the table, one or two
-   sentences name your recommendation, its grade, and its reason. The
-   recommendation favours correctness over speed. If Mike must pick, ask
-   through `AskUserQuestion` (rule 4).
+   They get one approval question, not three options. Once Mike has reviewed
+   the tree, ask it through `AskUserQuestion`, on its own. His answer is the
+   approval. Then attempt the commit and the push yourself. The permission
+   prompt that follows is a backstop. It is never the approval, because a
+   prompt that appears mid-flow gets answered without a review. A sub-agent
+   never commits or pushes. It hands back the tree and a proposed message, and
+   the orchestrator asks Mike. An Index pipeline run never asks to commit or
+   push. When you give options, give three, in one table with the columns
+   Option, Pros, Cons, and Grade. Keep each cell to a short phrase, so the
+   table fits 80 columns. When the task has acceptance criteria, the Grade
+   column carries each option's grade against every one of them. "All met"
+   covers every criterion, and any other grade names each criterion short of
+   met. After the table, one or two sentences name your recommendation, its
+   grade, and its reason. The recommendation favours correctness over speed.
+   If Mike must pick, ask through `AskUserQuestion` (rule 4).
 7. **Hold a position.** Push back once, with the reason. Once Mike decides,
    implement the decision and do not reopen it. When the evidence turns,
    reverse in one sentence and continue.

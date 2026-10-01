@@ -66,7 +66,7 @@ If all entries were dropped or integrated, write a minimal file with just frontm
 
 ### Integrate into SKILL.md (workbench plugin skills only)
 
-**Never write the installed copy under `~/.claude/plugins/cache`, and never copy a file into the source repository yourself.** A plugin update overwrites the installed copy. A change copied into the repository skips the development flow, its tests, and the commit gate. Integration is development work on the plugin, so it goes to Dr. Watson.
+**Never write the installed copy under `~/.claude/plugins/cache`, and never copy a file into the source repository yourself.** A plugin update overwrites the installed copy. A change copied into the repository skips the development flow, its tests, and the user's review. A commit lands only after the user has reviewed the tree and approved it through `AskUserQuestion`. Integration is development work on the plugin, so it goes to Dr. Watson.
 
 For entries marked "Integrate":
 

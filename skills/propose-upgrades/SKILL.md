@@ -32,7 +32,7 @@ Each proposal has a **type**, which determines the concrete change:
 | **correction** | Fix a wrong/contradictory existing memory or decision | MCP `edit` on the target |
 | **new-process** | Record a missing rule/process as a `feedback` memory so future decisions follow it | MCP `write` (new `feedback` doc) |
 | **promote** | Promote a recurring `feedback`/`insight` into an active rule | MCP `write`/`edit` + (if it lands in `CLAUDE.md`) the repo-file flow below |
-| **claude-md-rule** | Add/adjust a rule in a `CLAUDE.md` | repo-file flow (Watson brief, user commits) |
+| **claude-md-rule** | Add/adjust a rule in a `CLAUDE.md` | repo-file flow (Watson brief, user approves the commit through `AskUserQuestion`) |
 | **skill-learning** | Bake a proven learning into a `SKILL.md` | hand to `/workbench-core:compact-learnings` |
 | **new-skill** | A recurring task worth its own skill | repo-file flow, scaffolded separately |
 
@@ -86,19 +86,19 @@ Phase 1 has **no auto-accept** — every proposal goes through a question. The u
 ## Step 5 — Apply approved proposals
 
 - **Vault memory** (`correction`, `new-process`, `promote` staying in the vault): apply via MCP `edit` (corrections — never overwrite a doc to change one field) or `write` (new `feedback` doc with proper frontmatter per `vault-conventions.md`). Cross-link to the evidence and the source evaluation per `linking-synthesis.md`.
-- **Repo files** (`claude-md-rule`, `new-skill`, a `promote` landing in `CLAUDE.md`): do not edit them from this context. A repository change is development work, so it goes to Dr. Watson in Direct mode through `/workbench-dev-team:orchestrate`, with a six-slot brief. `Workdir:` is the repository. `Goal:` is the approved change in behaviour. `Context:` quotes the approved proposal and its evidence. `Acceptance:` lists the behaviour the approved proposal asks for, as criteria the change is graded against. `Done when:` is the change made and tested, with the tree left uncommitted. Watson hands back the diff and a proposed message, and the user commits through the approval gate. If `workbench-dev-team` is not installed, report each approved repo change with the file it belongs in, and leave it for the user. This skill's sign-off governs *what gets learned*. It never replaces review of the code change.
+- **Repo files** (`claude-md-rule`, `new-skill`, a `promote` landing in `CLAUDE.md`): do not edit them from this context. A repository change is development work, so it goes to Dr. Watson in Direct mode through `/workbench-dev-team:orchestrate`, with a six-slot brief. `Workdir:` is the repository. `Goal:` is the approved change in behaviour. `Context:` quotes the approved proposal and its evidence. `Acceptance:` lists the behaviour the approved proposal asks for, as criteria the change is graded against. `Done when:` is the change made and tested, with the tree left uncommitted. Watson hands back the diff and a proposed message. Once the user has reviewed the tree, the orchestrator asks them to approve the commit through `AskUserQuestion`, as one question on its own. Their answer is the approval. The permission prompt that follows is only a backstop. If `workbench-dev-team` is not installed, report each approved repo change with the file it belongs in, and leave it for the user. This skill's sign-off governs *what gets learned*. It never replaces review of the code change.
 - **`skill-learning`**: hand the entry to `/workbench-core:compact-learnings` for integration into the `SKILL.md` (don't reimplement that flow here).
 - Update each applied item's `Status` in the digest as you go, so the digest stays an accurate ledger.
 
 ## Step 6 — Report
 
-Terse: `N proposals — A applied, R rejected, E edited-then-applied.` Name any repo change handed to Watson, which still waits for the user's commit. Point at the digest path.
+Terse: `N proposals — A applied, R rejected, E edited-then-applied.` Name any repo change handed to Watson, which still waits for the user's commit approval through `AskUserQuestion`. Point at the digest path.
 
 ## Safety rails
 
 - **Never auto-apply.** Phase 1 = explicit sign-off on every item. No proposal is applied without the user's yes for *that* item.
 - **Corrections use `edit`, not overwrite.** Preserve the rest of the target document byte-for-byte.
-- **Repo changes go through Watson and the commit gate.** Never edit a repository file from this context, never set `WORKBENCH_DEV_TEAM_PIPELINE=1`, and never write an approval record by hand.
+- **Repo changes go through Watson and the user's commit approval.** Never edit a repository file from this context, never set `WORKBENCH_DEV_TEAM_PIPELINE=1`, and never commit before the user approves through `AskUserQuestion`. The permission prompt is a backstop, not the approval.
 - **Rejections are durable.** A rejected proposal is logged and never re-surfaced — respect the ledger on every run.
 - **One proposal per fix.** Consolidate findings that point at the same change; don't flood the queue.
 - **Stay within the bar.** A proposal must clear `decision-promotion.md` and name the metric it improves; if it does neither, drop it.

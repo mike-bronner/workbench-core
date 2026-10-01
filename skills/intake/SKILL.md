@@ -97,6 +97,10 @@ the one place Mike sees what you are about to optimise for.
 - AC2: <...>
 ```
 
+Keep the block to about 12 rows at 80 columns, so it leaves room on Mike's
+screen for what follows it. Give each criterion one line. Put in the context
+only the facts that shape the work and the guesses he may need to correct.
+
 Keep the heading. `hooks/intake-nudge.sh` looks for a Markdown heading that
 names "Intake" in your replies, and stays quiet when it finds one.
 
@@ -125,6 +129,10 @@ Grade each option against each criterion as met, partly met, or not met, with a
 short reason for anything short of met. Recommend the option with the best
 grade. On a tie, the more correct option beats the faster one. The
 recommendation cites its grade on every criterion, not only the ones it wins.
+"All met" covers every criterion at once. Any other grade names each criterion
+short of met by its number and a few words, such as "AC2 partly met: no UI
+test". The intake block may have scrolled away by the time Mike reads the
+grade, so the grade must make sense without it.
 
 ### 8. Fork, or proceed
 
@@ -136,8 +144,12 @@ a real fork when:
 - the best option still fails a criterion, or
 - the pick is outward-facing or irreversible.
 
-Put the recommended option first, and put each option's grade in its
-description. The output style governs how options look when you show them.
+Put the recommended option first. Each option's description carries its grade
+and any warning Mike needs, so the question stands on its own after the prose
+above it has scrolled away. This holds for every decision Mike must make, not
+only this one. Fall back to the output style's `## ❓ Open questions` block only
+when the tool does not fit. The output style governs how options look when you
+show them in a reply.
 
 **Otherwise proceed on the top-graded option, and say so in one line** that
 names the option and its grade on each criterion. For example: "Proceeding on

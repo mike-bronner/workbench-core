@@ -16,7 +16,7 @@
 # assets/personas/clear/output-style.md and nowhere a session loads. Three
 # checks carry that:
 #
-#   1. The source holds the approved rule set: eleven numbered rules, three
+#   1. The source holds the approved rule set: twelve numbered rules, three
 #      habits of shape, and the verify line. Each keeps the anchor that makes it
 #      that rule.
 #   2. The source obeys its own register. A literal model imitates the text it
@@ -50,18 +50,20 @@ has() { # desc, extended-regex
 # ── 1. The approved rule set ─────────────────────────────────────────────────
 echo "the output style carries the approved rule set:"
 RULE_COUNT="$(printf '%s\n' "$BODY" | grep -cE '^[0-9]+\. \*\*')"
-if [ "$RULE_COUNT" -eq 11 ]; then
-  ok "exactly eleven numbered rules"
+if [ "$RULE_COUNT" -eq 12 ]; then
+  ok "exactly twelve numbered rules"
 else
-  no "exactly eleven numbered rules" "found $RULE_COUNT"
+  no "exactly twelve numbered rules" "found $RULE_COUNT"
 fi
 has "verify before asserting is stated"             'Verify before you assert'
 has "rule 1 leads with the answer"                  '1\. \*\*Lead with the answer'
 has "rule 2 requires the reason"                    '2\. \*\*Always state the reason'
+has "rule 2 bounds the reason to one per point"     'one reason per point'
 has "rule 3 separates ordering from labelling"      '3\. \*\*Order by risk, label by fact'
 has "rule 3 defines a cost by the reader"           'worse off for'
 has "rule 3 keeps a fix out of the cost column"     'correctness fix is never filed as a cost'
-has "rule 4 routes blocking questions to the tool"  'AskUserQuestion'
+has "rule 4 routes every decision to the tool"     'each decision Mike must make, and each blocking question, to him through `AskUserQuestion`'
+has "rule 4 puts grade and warning in the option"   "option's description carries its grade and any warning"
 has "rule 4 names the fallback heading"             '## ❓ Open questions'
 has "rule 4 places the fallback last"               'comes last in the reply'
 has "rule 5 requires a verdict and a recommendation" 'verdict and a recommendation'
@@ -69,9 +71,13 @@ has "rule 5 keeps \"no action needed\" a verdict"   'No action needed" is a vali
 has "rule 6 limits options to a real fork"          'real fork that Mike has not decided'
 has "rule 6 keeps options before irreversible acts" 'outward-facing or irreversible action'
 has "rule 6 hands commits and pushes to the gate"   'Commits and ordinary pushes are the exception'
-has "rule 6 fixes the option heading"               '### 🔹 Option A'
-has "rule 6 asks for pros and cons"                 'pros and its cons'
-has "rule 6 separates the recommendation"           'separate paragraph'
+# Rule 6 renders options as one table, because three headings with pros and
+# cons ran 25 to 30 rows and pushed the recommendation off Mike's screen.
+has "rule 6 keeps three options"                    'give options, give three'
+has "rule 6 renders the options as one table"       'in one table with the columns Option, Pros, Cons, and Grade'
+has "rule 6 keeps the table to 80 columns"          'the table fits 80 columns'
+has "rule 6 puts the recommendation after the table" 'After the table, one or two sentences name your recommendation'
+has "rule 6 sends the pick to the tool"             'If Mike must pick, ask through `AskUserQuestion`'
 has "rule 6 favours correctness"                    'favours correctness over speed'
 has "rule 6 grades against the criteria"            'grade against every one of them'
 # The intake routine is a procedure, not a rule, so the style points at it and
@@ -92,6 +98,13 @@ has "rule 11 says only what the reader needs to act" 'Say only what they need to
 has "rule 11 asks for short paragraphs and plain words" 'short paragraphs and plain words'
 has "rule 11 bans restated context"                 'Do not restate context'
 has "rule 11 aims at one pass"                      'get the point in one pass'
+# Rule 12 is the screen budget. Mike reads at 80 by 50, and a reply that
+# outruns the screen scrolls away the very text a decision depends on.
+has "rule 12 fits a reply on one screen"            '12\. \*\*Fit a terminal reply on one screen'
+has "rule 12 sets the row budget at 80 columns"     'about 40 rows at that width'
+has "rule 12 puts the item Mike acts on last"       'The item Mike acts on comes last'
+has "rule 12 makes that item stand on its own"      'It stands on its own'
+has "rule 12 bans pointing at text not restated"    'Never refer to earlier text that the reply does not restate'
 has "the table habit is stated"                     'three or more comparable items in a table'
 has "the caveat habit is stated, and is not a hedge" 'honest caveat.{0,80}It is not a hedge'
 has "the synthesis habit is stated"                 'Synthesize sub-agent output'
@@ -109,6 +122,8 @@ lacks "no hard 20-word sentence cap"         '20 words'
 lacks "no emoji at the same density"         'same density'
 lacks "no drift test"                        'drift test'
 lacks "no delegate-by-default rule"          'delegate'
+lacks "no reason that outranks brevity"     'outranks brevity'
+lacks "no heading per option"               '### 🔹 Option'
 
 # ── 2. The source obeys its own register ─────────────────────────────────────
 echo

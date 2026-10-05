@@ -246,7 +246,7 @@ through, so read the deny and follow it.
 
 | Gate | What it protects |
 |---|---|
-| Delegation gate | The main agent does not write whole files. It is denied `Write` and `NotebookEdit` outside the scratchpads, and may use `Edit`. Sub-agents are exempt. Only the user lifts it, with `/workbench-core:orchestrator off`. |
+| Delegation gate | Whole-file work belongs in a sub-agent. It never denies: a main-agent `Write` or `NotebookEdit` goes ahead with a reminder, once per session. Plans and scratch roots draw none. `/workbench-core:orchestrator off` silences it. |
 | Agent dispatch gate | A main-agent `Agent` dispatch must carry the six-slot brief. |
 | Destructive scope guard | `rm`, `rmdir`, `git reset --hard`, `git clean`, `git stash clear`/`drop`, and git commands that discard working-tree changes (such as `git restore`, `git checkout -- <path>`, or `git mv -f`, also through an alias) run only when every target resolves inside the project or a scratch root. |
 | Destructive database guard | Database resets, drops, and destructive SQL are refused. |

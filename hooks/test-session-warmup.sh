@@ -293,12 +293,13 @@ assert_contains "user prose below the block survives"  "$OV_CLAUDE" "USER-PROSE-
 assert_missing  "block no longer lists identity files" "$OV_ID_BLOCK" "## Identity files"
 # The delegation gate is announced here and nowhere else. Core is excluded from
 # collect_session_warmup_contributions by design, so there is no root
-# session-warmup.md to carry it, and a hook that denies an edit with no prior
-# notice reads as a malfunction.
+# session-warmup.md to carry it. The gate is advisory since 2026-10-05, and the
+# block must say so, or the model reads every reminder as a refusal.
 assert_contains "block announces the delegation gate"  "$OV_ID_BLOCK" "| Delegation gate |"
-assert_contains "block names what that gate denies"    "$OV_ID_BLOCK" "denied \`Write\` and \`NotebookEdit\` outside the scratchpads"
-assert_contains "block says Edit is allowed"           "$OV_ID_BLOCK" "and may use \`Edit\`"
-assert_contains "block names the gate's escape hatch"  "$OV_ID_BLOCK" "/workbench-core:orchestrator off"
+assert_contains "block says the gate never denies"     "$OV_ID_BLOCK" "It never denies: a main-agent \`Write\` or \`NotebookEdit\` goes ahead with a reminder, once per session."
+assert_contains "block names the silent targets"       "$OV_ID_BLOCK" "Plans and scratch roots draw none."
+assert_missing  "block no longer says Write is denied" "$OV_ID_BLOCK" "denied \`Write\`"
+assert_contains "block names the gate's silencer"      "$OV_ID_BLOCK" "/workbench-core:orchestrator off"
 # Every gate the block names must be a hook this plugin ships AND registers. The
 # list is read from the block, so a renamed or retired hook turns the row red
 # instead of leaving the block telling every sub-agent about a gate that is gone.

@@ -193,7 +193,7 @@ core/
 │   ├── destructive-scope-guard.sh — PreToolUse: permit a destructive command inside the project or a
 │   │                             scratch root, deny it outside — and deny what it cannot resolve
 │   ├── provisioning-guard.sh   — PreToolUse: block worktree and database creation, on all four surfaces
-│   ├── delegation-gate.sh      — PreToolUse: deny main-agent Write/NotebookEdit, redirect to sub-agents
+│   ├── delegation-gate.sh      — PreToolUse: allow main-agent Write/NotebookEdit, remind once per session to delegate
 │   ├── agent-dispatch-gate.sh  — PreToolUse: deny a main-agent Agent dispatch that skips the six-slot brief
 │   ├── intake-nudge.sh         — PreToolUse(Edit): remind the main agent once per task to show its intake block (never denies)
 │   ├── peer-message-gate.sh    — PreToolUse: deny a sub-agent SendMessage to anything but main or its own children
@@ -220,7 +220,7 @@ core/
 │   ├── log-now/                — dump + narrate the current session inline
 │   ├── memory-lint/            — monthly vault health-and-repair pass
 │   ├── cross-session-messaging/ — the protocol for messaging another session, and for receiving one
-│   ├── orchestrator/           — per-session on/off toggle for the delegation gate
+│   ├── orchestrator/           — per-session on/off toggle for the delegation reminder and the dispatch gate
 │   └── process-pending-summaries/ — dispatch background agents for pending markers, or for one session by ID
 ├── scripts/
 │   ├── install-chat-skills.sh  — package + install skills into Claude Chat
@@ -246,14 +246,14 @@ These hooks fire across the session lifecycle and on each turn:
 | `Stop` | `hooks/memory-capture-stop.sh` | Early in a session, then rarely, block the stop and have the live session write its durable findings to the vault — see [Pre-shed capture](#pre-shed-capture) |
 | `UserPromptSubmit` | `hooks/memory-recall.sh` | Proactive recall — search the vault with the prompt and inject relevant memories, **once per session** per memory (memory **reads**) |
 | `PreToolUse` | `hooks/outbound-prose-guard.sh` | Check prose leaving the machine against the output style's mechanical rules — see [Outbound prose guard](#outbound-prose-guard) |
-| `PreToolUse` | `hooks/delegation-gate.sh` | Deny `Write`/`NotebookEdit` from the main agent so whole-file work goes to sub-agents. `Edit` is allowed — see [Delegation gate](#delegation-gate) |
+| `PreToolUse` | `hooks/delegation-gate.sh` | Allow `Write`/`NotebookEdit` from the main agent, with a reminder once per session to delegate whole-file work. Never denies — see [Delegation gate](#delegation-gate) |
 | `PreToolUse` | `hooks/agent-dispatch-gate.sh` | Deny an `Agent` dispatch from the main agent unless its prompt uses the six-slot brief — see [Agent dispatch gate](#agent-dispatch-gate) |
 | `PreToolUse` | `hooks/intake-nudge.sh` | On the first `Edit` of a task with no intake block on screen, remind the main agent to run the intake routine. Never denies — see [Task intake](#task-intake) |
 | `PreToolUse` | `hooks/peer-message-gate.sh` | Deny a `SendMessage` from a sub-agent to anything but its own orchestrator or its own children — see [Peer message gate](#peer-message-gate) |
 
 ### How a gate speaks
 
-Every gate here refuses the same way, and says so in the same shape. Read this once and the other seven sections need only name what each one blocks.
+Every gate here refuses the same way, and says so in the same shape. Read this once and each gate's own section need only name what it blocks.
 
 **The mechanism is the JSON deny, everywhere.** A `PreToolUse` hook that returns `permissionDecision: "deny"` refuses the call outright: no prompt appears, no allow rule overrides it, and `bypassPermissions` does not get through. Four guards used to block by exiting 2 instead, and exit 2 is strictly worse at the same job. Measured on Claude Code 2.1.274, it prefixes the model's message with the hook script's own absolute filesystem path and silently discards stdout, so the author does not control the first line a reader hits. Of the three verdicts a hook can return, only `deny` binds at all: `ask` is classifier-approvable and gets auto-answered under `permissions.defaultMode "auto"`.
 
@@ -286,13 +286,19 @@ The record behind all of this is `insights/2026-09-17-hook-message-channels-meas
 
 Two `PreToolUse` hooks still exit 2 and are not gates in this sense: `hooks/outbound-prose-guard.sh` and `hooks/summary-writer-guard.sh`. Both hand a revision brief to the model rather than a verdict to a person.
 
+The [delegation gate](#delegation-gate) keeps its name but refuses nothing since 2026-10-05. It sends a reminder in `additionalContext` and returns no verdict.
+
 ### Delegation gate
 
-**The main agent orchestrates. It does not write whole files.** A written "delegate work to sub-agents by default" rule said so in prose for months, and prose drifts: the main conversation builds one file to "just get it done", and the context it was supposed to stay lean for is gone. `hooks/delegation-gate.sh` makes it structural. `Write` and `NotebookEdit` from the main agent return `permissionDecision: "deny"`. Per [How a gate speaks](#how-a-gate-speaks), the human reads `🛑 Blocked: writing a whole file from the main agent. New files go to a sub-agent.`, and the destination and the escape hatch go to the model in `additionalContext`. The deny is not overridable by permission mode: `bypassPermissions` does not get through it.
+**The main agent orchestrates, and whole-file work belongs in a sub-agent. The gate reminds, and never denies.** A written "delegate work to sub-agents by default" rule said so in prose for months, and prose drifts: the main conversation builds one file to "just get it done", and the context it was supposed to stay lean for is gone. `hooks/delegation-gate.sh` puts a reminder in front of the model at the moment it happens. The first main-agent `Write` or `NotebookEdit` in a session returns `additionalContext` and no `permissionDecision`, so the write goes through the normal permission flow. The reminder reaches only the model, and nothing is shown to the human.
 
-**`Edit` is allowed, since 2026-09-27.** The gates audit that day measured a delegated one-line edit at tens of thousands of tokens, against about 200 for the same `Edit` inline. The deny also pushed the model toward `sed -i` and heredocs through `Bash`, which reach the same file past every guard anyway. A whole-file `Write` is where main-session context actually grows, so that half of the gate stays. The matcher is `Write|NotebookEdit`, and branch (e) below lets an `Edit` through if anything else ever routes one here.
+**Why it stopped denying (2026-10-05).** Until then, `Write` and `NotebookEdit` from the main agent were denied outside the scratchpads. Plan mode allows the main agent to write exactly one file, its plan under `~/.claude/plans/`, and the gate denied that write, so plan mode was unusable while the gate was on. Mike decided that the main agent may write a file when it needs to, and that delegation stays advice. An `allow` verdict would be wrong too: it would skip the permission prompt the write would otherwise get.
 
-It is deliberately plugin-agnostic. Every install ships built-in sub-agents (general-purpose, Explore, Plan) reachable through the `Agent` tool, so the gate always has somewhere to send the work. When a dev-team plugin *is* installed, the `additionalContext` names it too, via a runtime directory probe of `~/.claude/plugins/cache/*/workbench-dev-team`. That is a runtime read, never a build-time dependency: core stays ignorant of any plugin, and a plugin opts into core's contract rather than the other way round.
+**Once per session.** A reminder on every write spends tokens on every turn, which is what delegation exists to save. The first reminded write creates `~/.claude-workbench/delegation-reminder/<session_id>` with `set -C`, so the create is atomic and two racing writes still draw one reminder. When the marker cannot be written, the hook stays silent rather than risk repeating itself. Markers older than 3 days are swept, like the sibling state directories.
+
+**`Edit` never draws it, since 2026-09-27.** The gates audit that day measured a delegated one-line edit at tens of thousands of tokens, against about 200 for the same `Edit` inline. The old deny also pushed the model toward `sed -i` and heredocs through `Bash`, which reach the same file past every guard anyway. A whole-file `Write` is where main-session context actually grows. The matcher is `Write|NotebookEdit`, and branch (e) below stays silent if anything else ever routes an `Edit` here.
+
+It is deliberately plugin-agnostic. Every install ships built-in sub-agents (general-purpose, Explore, Plan) reachable through the `Agent` tool, so the reminder always has somewhere to point. When a dev-team plugin *is* installed, the `additionalContext` names it too, via a runtime directory probe of `~/.claude/plugins/cache/*/workbench-dev-team`. That is a runtime read, never a build-time dependency: core stays ignorant of any plugin, and a plugin opts into core's contract rather than the other way round.
 
 **How it tells a main agent from a sub-agent.** The `PreToolUse` payload carries the signal, verified empirically on Claude Code 2.1.260 against a logging-only hook:
 
@@ -302,25 +308,25 @@ It is deliberately plugin-agnostic. Every install ships built-in sub-agents (gen
 | Sub-agent (Task tool) | present | present |
 | Top-level `claude -p --agent <name>` | **absent** | present |
 
-That third row is why `agent_type` alone has to allow: a scheduled `claude -p --agent <name>` run is top-level in its own session and carries no `agent_id`, so gating on `agent_id` alone would kill every scheduled run at its first file write. `CLAUDE_CODE_CHILD_SESSION` is **not** a usable signal, because it was `1` in all three cases, including a plain main session.
+That third row is why `agent_type` alone stays silent: a scheduled `claude -p --agent <name>` run is top-level in its own session and carries no `agent_id`, and a reminder to delegate means nothing to it. `CLAUDE_CODE_CHILD_SESSION` is **not** a usable signal, because it was `1` in all three cases, including a plain main session.
 
-**Allow branches, in order.** Any one of these lets the call through: (a) `agent_id` is set, so the call is a sub-agent, which is the destination this gate redirects to; (b) `agent_type` is set, a top-level `--agent` dispatch; (c) `WORKBENCH_ORCHESTRATOR=0` in the environment, which is how an automated harness opts its own run out; (d) the session toggle is off; (e) the tool is not `Write` or `NotebookEdit`, which the matcher should already have handled; (f) the target is a file in a scratchpad: this session's, matched by session id with no symlink at any level, or the login home's `Developer/scratchpad`, with the home read from the password database rather than `$HOME`. The target is compared physically and may not itself be a symlink. The main session writes a `git commit -F` message or a PR body there, as the identity block and the dev-team `git-commit` skill tell it to, and every such write used to be denied; (g) anything went wrong.
+**Silent branches, in order.** Any one of these lets the call through with no reminder: (a) `agent_id` is set, so the call is a sub-agent, which is where the reminder points; (b) `agent_type` is set, a top-level `--agent` dispatch; (c) `WORKBENCH_ORCHESTRATOR=0` in the environment, which is how an automated harness opts its own run out; (d) the session toggle is off; (e) the tool is not `Write` or `NotebookEdit`, which the matcher should already have handled; (f) the target is a file in a scratch root or a plan: this session's scratchpad, matched by session id with no symlink at any level, or the login home's `Developer/scratchpad` or `.claude/plans`, with the home read from the password database rather than `$HOME`. The target is compared physically and may not itself be a symlink. The main session writes a `git commit -F` message or a PR body to a scratchpad, as the identity block and the dev-team `git-commit` skill tell it to, and plan mode writes its plan to `~/.claude/plans/`. While the gate denied, those two kinds of file were nearly every denial it made; (g) the reminder already fired this session; (h) anything went wrong.
 
-**Turning it off for a session.** `/workbench-core:orchestrator off` writes an empty file named for the current session under `$WORKBENCH_ORCHESTRATOR_STATE_DIR` (default `~/.claude-workbench/orchestrator-mode/`). The gate stands down while that file exists. `on` removes it, and no argument reports the state. The gate is **ON by default**, so an absent file means enforcement: every new session starts gated and nothing leaks between sessions. The file is keyed by `$CLAUDE_CODE_SESSION_ID`, which equals the `.session_id` the hook reads from its payload (verified live), so the skill and the hook agree on the key without passing anything between them. Each invocation prunes state files older than 7 days, so the directory does not accumulate one file per session forever.
+**Turning it off for a session.** `/workbench-core:orchestrator off` writes an empty file named for the current session under `$WORKBENCH_ORCHESTRATOR_STATE_DIR` (default `~/.claude-workbench/orchestrator-mode/`). The reminder stays silent while that file exists, and the [agent dispatch gate](#agent-dispatch-gate) stands down too. `on` removes it, and no argument reports the state. It is **ON by default**, so an absent file means the reminder is active: every new session starts with it, and nothing leaks between sessions. The file is keyed by `$CLAUDE_CODE_SESSION_ID`, which equals the `.session_id` the hook reads from its payload (verified live), so the skill and the hook agree on the key without passing anything between them. Each invocation prunes state files older than 7 days, so the directory does not accumulate one file per session forever.
 
-**The gate announces itself** in the identity block `hooks/session-warmup.sh` writes into `~/.claude/CLAUDE.md`. Core is excluded from `collect_session_warmup_contributions` by design (see [docs/session-warmup-contributions.md](docs/session-warmup-contributions.md)), so there is no root `session-warmup.md` to carry the notice, and an unannounced deny reads as a malfunction rather than as a rule.
+**The gate announces itself** in the identity block `hooks/session-warmup.sh` writes into `~/.claude/CLAUDE.md`. Core is excluded from `collect_session_warmup_contributions` by design (see [docs/session-warmup-contributions.md](docs/session-warmup-contributions.md)), so there is no root `session-warmup.md` to carry the notice. The block says the gate never denies, so the model does not read the reminder as a refusal.
 
-**Fail-open, and what that costs you.** Every error path exits 0 and allows the call: a malformed payload, a missing `jq`, an unreadable state directory, or a session id the toggle cannot address. This matches `hooks/credential-guard.sh`, because a guard that errors must never brick a session. Be clear about the trade. **If this script breaks, enforcement stops silently and there is no layer behind it.** Nothing announces that the gate is down; the main agent simply starts writing whole files again. It is a discipline aid, not a security boundary, and should never be relied on as one.
+**It fails silent.** Every error path exits 0 with no output: a malformed payload, a missing `jq`, an unreadable state directory, a session id that cannot key the toggle or the marker, or a marker that cannot be written. The write goes ahead either way, so a broken script costs only the reminder. Nothing announces that the reminder has stopped. It is a discipline aid, not a security boundary.
 
-**`Bash` is not gated, so the gate is trivially sidesteppable.** The matcher covers two tools, and `printf 'x' > file` writes a file without touching any of them. This is deliberate: gating `Bash` would break `git`, the test runners, and every read-only command the orchestrator still needs. It also means a main agent that treats the deny as an obstacle can route around it in one call. The rule the gate backs is prose, in the identity block the warmup writes into `~/.claude/CLAUDE.md`, and it says a deny is the system working rather than something to defeat. Enforcement that a determined agent cannot evade is not on offer here.
+**`Bash` is not covered.** The matcher covers two tools, and `printf 'x' > file` writes a file without touching either. Covering `Bash` would remind on `git`, the test runners, and every read-only command the orchestrator still needs. Since the gate never denies, nothing is gained by routing around it.
 
-A session id holding anything outside `[A-Za-z0-9._-]` is refused rather than resolved, which keeps a `../` from walking out of the state directory. Refusal means fail-open here: a session that cannot address its own toggle has no honest escape hatch, so the gate stands down rather than trapping the user.
+A session id holding anything outside `[A-Za-z0-9._-]` is refused rather than resolved, which keeps a `../` from walking out of the state or marker directory. The hook then stays silent.
 
-Tests: `hooks/test-delegation-gate.sh` (71 cases: every allow branch independently, the deny path, `Edit` allowed from the main agent, byte-exact deny JSON, the conditional dev-team enrichment, `hooks.json` wiring, and agreement with the toggle skill).
+Tests: `hooks/test-delegation-gate.sh` (every silent branch independently, the reminder path, once per session, the 3-day marker sweep, an unwritable marker, plans (including a plans folder not made yet) and scratch roots, byte-exact reminder JSON with no permission verdict, the conditional dev-team enrichment, `hooks.json` wiring, and agreement with the toggle skill).
 
 ### Agent dispatch gate
 
-**A handoff to a sub-agent states the outcome, and it uses the brief.** The delegation gate sends file work to a sub-agent. This gate governs what that handoff has to look like. `hooks/agent-dispatch-gate.sh` denies an `Agent` dispatch from the main session whose prompt is missing any of the six slots:
+**A handoff to a sub-agent states the outcome, and it uses the brief.** The delegation gate advises sending file work to a sub-agent. This gate governs what that handoff has to look like. `hooks/agent-dispatch-gate.sh` denies an `Agent` dispatch from the main session whose prompt is missing any of the six slots:
 
 ```
 Workdir:     absolute path of the tree the agent works in, and the branch or worktree if one was settled
@@ -459,7 +465,9 @@ That is not hypothetical. `insight-llc/decisioncloud#21665` shipped a 1,855-word
 
 **What it exempts,** because the author does not control it: fenced and inline code (a semicolon there belongs to the language), HTML comments, bot-authored regions such as CodeRabbit's release notes, `- [ ]` checklist lines from a repository pull request template, and URLs inside markdown links. A bare `PULL_REQUEST_TEMPLATE.md` passes clean, which is the calibration that matters. A gate that blocks the template blocks every pull request.
 
-**It fails open.** A heredoc, a command substitution such as `--body "$(cat notes.md)"`, or an unreadable path exits 0 rather than blocking. This is a style gate, not a security boundary, so a false block costs more than a missed check. `hooks/credential-guard.sh` makes the same trade for the same reason.
+**A body read from standard input is checked when a heredoc or a here-string feeds the gh stage.** That covers `--body-file -`, `--notes-file -`, `-F -`, and `gh api` with `--input -` or `-F body=@-`. The heredoc is the form the dev-team `git-commit` skill recommends, and until 2026-10-05 this guard let it through unchecked. Bodies are matched to their `<<` openers in order, so a heredoc on an earlier line never stands in for the gh body. Standard input from a pipe or a file redirect is not in the command text, so a body read from it is not checked.
+
+**It fails open.** A command substitution such as `--body "$(cat notes.md)"`, or an unreadable path, exits 0 rather than blocking. This is a style gate, not a security boundary, so a false block costs more than a missed check. `hooks/credential-guard.sh` makes the same trade for the same reason.
 
 **It costs an ordinary Bash call no Python.** The matcher sends every `Bash` call here, and the parser only ever reads a command in which `gh` is a token and the subcommand is a `pr`, `issue`, or `release` verb. So a bash test runs first: with quotes and backslashes deleted, the command has to name `gh`, one of those three nouns, and one of `create`, `edit`, `comment`, or `review`, each as a whole word, or the guard exits before Python starts. Deleting the quotes matters because the parser's `shlex` joins `g""h` into `gh`. The board-MCP tools skip that test, because the matcher already limits them to the four prose-carrying tools.
 
@@ -1033,7 +1041,7 @@ Runs on every `startup` warmup:
 | `/workbench-core:memory-status` | Report the shared memory server's facts — vault/cache, server-binary presence, index & last-VACUUM |
 | `/workbench-core:install-chat-skills` | Discover skills in `@claude-workbench` plugins and install them into the Claude Mac app's Chat surface via `.skill` packaging |
 | `/workbench-core:intake` | The task-intake routine for an interactive session — goal, context, an interview limited to real gaps, acceptance criteria shown before work starts, and three options from different angles graded against every criterion. See [Task intake](#task-intake) |
-| `/workbench-core:orchestrator` | Turn the [delegation gate](#delegation-gate) off or on for this session, or report its state. `off` allows whole-file writes, `on` restores the gate, no argument reports. `Edit` is never gated |
+| `/workbench-core:orchestrator` | Turn orchestrator mode off or on for this session, or report its state. `off` silences the [delegation gate](#delegation-gate) reminder and stands down the [agent dispatch gate](#agent-dispatch-gate), `on` restores both, no argument reports |
 | `/workbench-core:cross-session-messaging` | The protocol for messaging another Claude Code session — when to reach out, what a message carries, the receive-side rule that keeps a human in the loop, and which sends a sub-agent may make. Paired with the [peer message gate](#peer-message-gate) |
 
 Every skill is **execution-aware** without saying so: `hooks/skill-learnings.sh` hands it its `skills/{name}.learnings.md` file from the vault when it runs (see [Execution-aware skills](#execution-aware-skills)).
@@ -1096,8 +1104,8 @@ All config values can be overridden via environment variables for testing:
 | `WORKBENCH_MEMORY_IDLE_SETTLE` | Seconds between the reaper's two pre-kill ref checks (default 3) |
 | `WORKBENCH_MEMORY_REFS_DIR` | Session ref registry location (default `{memory_cache}/refs`; used by tests) |
 | `WORKBENCH_RAILS_FILE` | `assets/permissions/rails.json` path (used by `permissions.sh` for testing) |
-| `WORKBENCH_ORCHESTRATOR` | Set to `0` to stand the [delegation gate](#delegation-gate) down for the whole process (for a headless harness that cannot answer a deny) |
-| `WORKBENCH_ORCHESTRATOR_STATE_DIR` | Delegation-gate session-toggle directory (default `~/.claude-workbench/orchestrator-mode`; used by tests) |
+| `WORKBENCH_ORCHESTRATOR` | Set to `0` to stand the [delegation gate](#delegation-gate) reminder and the [agent dispatch gate](#agent-dispatch-gate) down for the whole process (for a headless harness) |
+| `WORKBENCH_ORCHESTRATOR_STATE_DIR` | Orchestrator-mode session-toggle directory (default `~/.claude-workbench/orchestrator-mode`; used by tests) |
 
 ## Known limitations
 

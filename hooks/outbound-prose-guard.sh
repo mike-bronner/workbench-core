@@ -19,10 +19,17 @@
 # usefully be. A Stop hook fires after the reply has already been displayed, so
 # blocking there appends a correction rather than preventing the text.
 #
-# Fail-open by design. Anything unparseable (a heredoc, a command substitution
-# such as --body "$(cat notes.md)", an unreadable path) exits 0 rather than
-# blocking. This is a style gate, not a security boundary: a false block costs
-# more than a missed check, and credential-guard.sh makes the same trade.
+# A body read from standard input (`--body-file -`, `--notes-file -`, `-F -`,
+# `gh api --input -` or `-F body=@-`) is checked when the gh stage itself takes
+# a heredoc or a here-string. The heredoc is the form the dev-team git-commit
+# skill recommends, so leaving it unchecked let nearly every agent-written body
+# through. Standard input from a pipe or a file redirect is not in the command
+# text, so a body read from it is not checked.
+#
+# Fail-open by design. Anything unparseable (a command substitution such as
+# --body "$(cat notes.md)", an unreadable path) exits 0 rather than blocking.
+# This is a style gate, not a security boundary: a false block costs more than
+# a missed check, and credential-guard.sh makes the same trade.
 #
 # Exit codes: 0 = allow (default). 2 = block. Stderr is surfaced to the model
 # on a blocking PreToolUse hook, so the findings become the revision brief.
@@ -125,7 +132,7 @@ def prose_strings(node):
         for value in node:
             yield from prose_strings(value)
 
-def from_api(args, cwd):
+def from_api(args, cwd, stdin):
     parts = []
     method = ""
     index = 0
@@ -145,15 +152,18 @@ def from_api(args, cwd):
             key, _, field = value.partition("=")
             words = re.findall(r"[A-Za-z_]+", key)
             leaf = words[-1] if words else ""
-            if name in ("-F", "--field") and field.startswith("@") and field != "@-":
+            if name in ("-F", "--field") and field == "@-":
+                field = stdin or ""
+            elif name in ("-F", "--field") and field.startswith("@"):
                 field = read_file(field[1:], cwd)
             if leaf in API_PROSE_KEYS:
                 parts.append(field)
             elif leaf == "query" and field.lstrip().startswith("mutation"):
                 parts.append(field)
-        elif name == "--input" and value not in (None, "-"):
+        elif name == "--input" and value is not None and (value != "-" or stdin is not None):
+            text = stdin if value == "-" else read_file(value, cwd)
             try:
-                parts.extend(prose_strings(json.loads(read_file(value, cwd))))
+                parts.extend(prose_strings(json.loads(text)))
             except ValueError:
                 raise Unreadable()
         else:
@@ -161,10 +171,10 @@ def from_api(args, cwd):
         index += step
     return [] if method == "GET" else parts
 
-def from_gh(args, cwd):
+def from_gh(args, cwd, stdin):
     verbs = [t for t in args if not t.startswith("-")][:2]
     if verbs[:1] == ["api"]:
-        return from_api(args[args.index("api") + 1:], cwd)
+        return from_api(args[args.index("api") + 1:], cwd, stdin)
     if len(verbs) < 2 or (verbs[0], verbs[1]) not in PROSE_COMMANDS:
         return []
     parts = []
@@ -172,23 +182,50 @@ def from_gh(args, cwd):
         value = args[i + 1] if i + 1 < len(args) else ""
         if token in INLINE_FLAGS and value:
             parts.append(value)
-        elif token in FILE_FLAGS and value and value != "-":
+        elif token in FILE_FLAGS and value == "-":
+            # Standard input from a pipe or a file redirect is not in the
+            # command text, so it contributes nothing, as before.
+            if stdin is not None:
+                parts.append(stdin)
+        elif token in FILE_FLAGS and value:
             parts.append(read_file(value, cwd))
     return parts
 
+def stage_stdin(stage, bodies):
+    """The heredoc body or here-string a stage reads as standard input, or None.
+
+    The parser lifts heredoc bodies out of the text in order, keyed by
+    delimiter, and leaves `<<` and the delimiter on the stage. So every `<<` in
+    the command takes the next body under its delimiter, whether or not its
+    stage runs gh, and the queues stay in step. `<<-EOF` tokenises as `<<` then
+    `-EOF`, and `<<- EOF` as `<<`, `-`, `EOF`. The last redirect wins, as in
+    bash."""
+    stdin = None
+    for i, token in enumerate(stage):
+        following = stage[i + 1:i + 3]
+        if token == "<<<" and following:
+            stdin = following[0]
+        elif token == "<<" and following:
+            word = following[1] if following[0] == "-" and len(following) > 1 else following[0]
+            delimiter = word.lstrip("-").strip("\x27\"")  # \x27: this code sits in single quotes
+            queue = bodies.get(delimiter) or []
+            stdin = queue.pop(0) if queue else None
+    return stdin
+
 def from_bash(command, cwd):
-    lines, _exact, _bodies = token_lines_ex(command)
+    lines, _exact, bodies = token_lines_ex(command)
     parts = []
     try:
         for tokens in lines:
             for stages in split_statements(tokens):
                 for stage in stages:
                     stage = strip_noop(stage)
+                    stdin = stage_stdin(stage, bodies)
                     # Anywhere in the stage, not only at its head: a retry that
                     # merged two lines puts a `gh` call after the first line.
                     at = next((i for i, t in enumerate(stage) if base(t) == "gh"), None)
                     if at is not None:
-                        parts.extend(from_gh(stage[at + 1:], cwd))
+                        parts.extend(from_gh(stage[at + 1:], cwd, stdin))
     except Unreadable:
         return ""
     return "\n\n".join(parts)

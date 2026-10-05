@@ -117,6 +117,44 @@ assert_blocked "a project board MCP review" \
   run_mcp 'mcp__the-index__submit_review' '{"id":"1","event":"REQUEST_CHANGES","body":"🐛 The fix is wrong — see below."}'
 
 echo
+echo "a body read from standard input is checked when a heredoc feeds it:"
+# The dev-team git-commit skill recommends `--body-file - <<'EOF'`, and this
+# guard let every such body through until 2026-10-05. lines joins its arguments
+# into one multi-line command, the way the agent sends it.
+lines() { printf '%s\n' "$@"; }
+assert_blocked "the recommended form, with an em dash and a semicolon" \
+  run_bash "$(lines "gh pr comment 1 --body-file - <<'EOF'" '🐛 The list was safe — the form never asked; now it does.' 'EOF')"
+assert_names   "the heredoc block names the em-dash rule" "em-dash"
+assert_names   "the heredoc block names the semicolon rule" "semicolon"
+assert_allowed "the recommended form, with a clean body" \
+  run_bash "$(lines "gh pr comment 1 --body-file - <<'EOF'" "$CLEAN" 'EOF')"
+assert_blocked "an unquoted delimiter" \
+  run_bash "$(lines 'gh pr edit 2 --body-file - <<EOF' '🐛 Fixed it — at last.' 'EOF')"
+assert_blocked "a tab-stripping <<- heredoc" \
+  run_bash "$(lines 'gh issue comment 3 --body-file - <<-EOF' $'\t🐛 Fixed it — at last.' $'\tEOF')"
+assert_blocked "a <<- heredoc with a space before the delimiter" \
+  run_bash "$(lines 'gh issue comment 3 --body-file - <<- EOF' '🐛 Fixed it — at last.' 'EOF')"
+assert_blocked "-F - on a pr comment" \
+  run_bash "$(lines "gh pr comment 1 -F - <<'EOF'" '🐛 Fixed it — at last.' 'EOF')"
+assert_blocked "--notes-file - on a release" \
+  run_bash "$(lines "gh release create v1.0 --notes-file - <<'EOF'" '🐛 Shipped the fix — at last.' 'EOF')"
+assert_blocked "a here-string" \
+  run_bash "gh pr comment 1 --body-file - <<< '🐛 Fixed it — at last.'"
+assert_blocked "gh api -F body=@-" \
+  run_bash "$(lines "gh api repos/o/r/issues/1/comments -F body=@- <<'EOF'" '🐛 Fixed it — at last.' 'EOF')"
+assert_blocked "gh api --input -" \
+  run_bash "$(lines "gh api repos/o/r/issues/1/comments --input - <<'EOF'" '{"body": "🐛 Fixed it — at last."}' 'EOF')"
+# Bodies are matched to their opener in order. A heredoc on an earlier non-gh
+# line must take its own body, or the gh line reads the wrong one. Each pair
+# goes red if the guard stops consuming bodies for stages that are not gh.
+assert_allowed "an earlier heredoc's bad body is not the gh body" \
+  run_bash "$(lines 'cat <<EOF >/dev/null' 'Not posted — ever.' 'EOF' "gh pr comment 1 --body-file - <<EOF" "$CLEAN" 'EOF')"
+assert_blocked "a bad gh body after an earlier clean heredoc" \
+  run_bash "$(lines 'cat <<EOF >/dev/null' "$CLEAN" 'EOF' "gh pr comment 1 --body-file - <<EOF" '🐛 Fixed it — at last.' 'EOF')"
+assert_allowed "a heredoc gh never reads, beside a clean --body" \
+  run_bash "$(lines "gh pr comment 1 --body 'Fixed it.' <<'EOF'" 'Not posted — ever.' 'EOF')"
+
+echo
 echo "identifier fields in an MCP payload are not prose:"
 assert_allowed "an id-only payload" \
   run_mcp 'mcp__the-index__move' '{"item_id":"PVTI_x","status":"In Review","url":"https://x.test/a;b"}'
@@ -149,6 +187,10 @@ echo "unreadable input fails OPEN, never blocking the session:"
 assert_allowed "a command substitution body" \
   run_bash 'gh pr create --title t --body "$(cat notes.md)"'
 assert_allowed "a body file read from stdin"  run_bash 'gh pr create --title t --body-file -'
+# Piped standard input is not in the command text, so it is not read.
+assert_allowed "a body piped in from another stage" \
+  run_bash "$(printf '%s\n' 'cat <<EOF | gh pr comment 1 --body-file -' 'Not read — piped.' 'EOF')"
+assert_allowed "an unterminated heredoc"     run_bash "$(printf '%s\n' "gh pr comment 1 --body-file - <<'EOF'" 'Never closed — so no body.')"
 assert_allowed "a body file that is missing" run_bash "gh pr create --title t --body-file $SANDBOX/absent.md"
 assert_allowed "an unbalanced quote"         run_bash 'gh pr create --body "unclosed'
 assert_allowed "a malformed payload"         bash -c 'printf "not json" | bash "'"$GUARD"'" 2>/dev/null'

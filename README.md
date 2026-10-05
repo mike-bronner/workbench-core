@@ -11,7 +11,7 @@ The infrastructure layer that turns Claude Code from a stateless coding assistan
 - **Session logging** — every session is captured as a rolling JSONL log, then summarized by a background agent into a searchable narrative.
 - **Operational memory** — a shared, lazy-started local MCP server (markdown-vault-mcp) fronts a searchable vault of decisions, projects, insights, and session history, optionally kept in sync across machines over git.
 - **Execution-aware skills** — a `PreToolUse(Skill)` hook hands any skill its vault-backed learnings file, so each run starts from what past runs learned.
-- **Retention management** — automatic cleanup of raw logs (28 days) and checkpoints (7 days); summaries and decisions persist indefinitely.
+- **Retention management** — automatic cleanup of raw logs (7 days) and checkpoints (7 days); summaries and decisions persist indefinitely.
 
 ## Installation
 
@@ -177,7 +177,8 @@ core/
 ├── hooks/
 │   ├── hooks.json              — hook → script bindings
 │   ├── session-log.sh          — raw log capture + summary-writer dispatch (not at SessionEnd)
-│   ├── session-warmup.sh       — memory and scratch rules + retention cleanup + summary drain
+│   ├── session-warmup.sh       — memory and scratch rules + retention cleanup + dead-marker sweep +
+│   │                             session reconciler + summary drain
 │   ├── skill-learnings.sh      — PreToolUse(Skill): hand a skill its vault learnings file, warn past 30 entries
 │   ├── mcp-memory.sh           — stdio launcher, retained but unwired (see Memory server transport)
 │   ├── memory-server-up.sh     — shared-HTTP SessionStart kicker (disabled; retained for re-enable)
@@ -198,7 +199,8 @@ core/
 │   ├── intake-nudge.sh         — PreToolUse(Edit): remind the main agent once per task to show its intake block (never denies)
 │   ├── peer-message-gate.sh    — PreToolUse: deny a sub-agent SendMessage to anything but main or its own children
 │   ├── lib/brief-template.sh   — the ONE definition of the six-slot brief (gate + deny message read it)
-│   ├── lib/                    — sourceable libs: memory-env / -probe / -vacuum / -install, summary-dispatch, prose-check,
+│   ├── lib/                    — sourceable libs: memory-env / -probe / -vacuum / -install, summary-dispatch,
+│   │                             session-reconcile (start-up reconciler + dead-marker sweep), prose-check,
 │   │                             memory-recall-core (levers both recall hooks share), scan-query (a scan's own query),
 │   │                             shell_parse (shared tokeniser), destructive-db-check, vault-git-check,
 │   │                             provisioning-check, destructive-scope-check
@@ -238,11 +240,11 @@ These hooks fire across the session lifecycle and on each turn:
 
 | Hook | Script | Purpose |
 |------|--------|---------|
-| `SessionStart` | `hooks/session-warmup.sh` | Memory and scratch rules, retention cleanup, pending-summary drain, housekeeping notices (written to a file, not injected) |
+| `SessionStart` | `hooks/session-warmup.sh` | Memory and scratch rules, retention cleanup, dead-marker sweep, session reconciler, pending-summary drain, housekeeping notices (written to a file, not injected) |
 | `PostToolUse` | `hooks/memory-scan-recall.sh` | Mid-turn recall — search the vault with a repo scan's own query and inject hits beside the scan's results (matcher `Grep\|Bash`), **once per session** per memory, sharing that bound with `memory-recall.sh` |
 | `PreCompact` | `hooks/session-log.sh` | Dump raw log checkpoint, spawn summary-writer |
 | `PostCompact` | `hooks/session-warmup.sh` | Re-inject the memory and scratch rules after context compression |
-| `SessionEnd` | `hooks/session-log.sh` | Dump final log segment and write the pending-summary marker — **no writer is spawned here** (see [Why SessionEnd does not spawn](#why-sessionend-does-not-spawn)) |
+| `SessionEnd` | `hooks/session-log.sh` | Dump final log segment and write the pending-summary marker, with the SessionEnd `reason` — **no writer is spawned here** (see [Why SessionEnd does not spawn](#why-sessionend-does-not-spawn)) |
 | `Stop` | `hooks/memory-capture-stop.sh` | Early in a session, then rarely, block the stop and have the live session write its durable findings to the vault — see [Pre-shed capture](#pre-shed-capture) |
 | `UserPromptSubmit` | `hooks/memory-recall.sh` | Proactive recall — search the vault with the prompt and inject relevant memories, **once per session** per memory (memory **reads**) |
 | `PreToolUse` | `hooks/outbound-prose-guard.sh` | Check prose leaving the machine against the output style's mechanical rules — see [Outbound prose guard](#outbound-prose-guard) |
@@ -657,7 +659,7 @@ Tests: `hooks/test-provisioning-guard.sh` (210 cases), weighted towards the allo
 ### Logging pipeline
 
 ```
-Session event (PreCompact / SessionEnd / manual)
+Session event (PreCompact / SessionEnd / manual / reconcile)
     ↓
 hooks/session-log.sh
     ├── Load per-session checkpoint (where did I leave off?)
@@ -666,11 +668,13 @@ hooks/session-log.sh
     ├── Update checkpoint
     ├── Write pending-summary marker
     └── Spawn background summary-writer (sonnet, detached)
-        — PreCompact and manual ONLY; mode=final stops at the marker
+        — PreCompact and manual ONLY; mode=final and mode=reconcile stop at the marker
 
 Next session start
     ↓
 hooks/session-warmup.sh
+    ├── Sweep: delete markers no writer can use (0-byte, or log and transcript both gone)
+    ├── Reconcile: log sessions that never got a usable SessionEnd (mode=reconcile)
     └── Drain: spawn a writer for the N oldest markers (default 3)
             ↓
         summary-writer agent
@@ -696,7 +700,30 @@ Each marker names both the vault log (`log_path`) and the original Claude Code t
 
 The drain therefore accepts a marker when **either** source is readable, and refuses only when both are gone. Gating on the log alone made the drain stricter than the agent it gates, so that documented fallback was unreachable: measured on 2026-09-18, 778 of 779 markers were refused, and 503 of them still had a readable transcript on disk. Transcript retention is the real deadline, and those 503 were aging out against it untouched.
 
-A marker with both sources gone is logged as `undrainable` and left alone. **Purging one is a deliberate human call, not the drain's** — it is the only surviving record that the session went unsummarised.
+A marker with both sources gone can never be drained. Until 2026-10-05 the drain logged it as `undrainable` on every start and left it on disk, and 276 such markers from July and August were rewritten to the dispatch log about six times a day. **The dead-marker sweep now deletes it at session start**, together with any 0-byte marker, and writes one `purged-dead-marker` line per deletion to the dispatch log. It deletes nothing it cannot read with certainty: a marker that is not a JSON object, or a path field it cannot extract cleanly, stays. A marker with any surviving source is still recoverable and stays too.
+
+#### Sessions with no SessionEnd — the start-up reconciler
+
+The drain works only from markers, and only `session-log.sh` writes one. A session with no usable SessionEnd leaves no marker, so the drain never sees it. That covers a reboot, a kill, and a SessionEnd copy that ran past the exit budget. On 2026-10-05 a reboot left nine transcripts with no log, no checkpoint, and no marker, and one of them was a 789-line working session. Nothing at exit can cover a reboot or a `SIGKILL`.
+
+So each `startup` and `resume` runs a reconciler (`hooks/lib/session-reconcile.sh`) just before the drain. It scans the top-level transcripts in `${CLAUDE_CONFIG_DIR:-~/.claude}/projects/*/`, last written between 30 minutes and 3 days ago. A transcript is recovered when it has no checkpoint and no marker, when a SessionEnd deferred its copy (below, and found at any age up to the 7-day retention), or when it was written after its checkpoint and holds user or assistant lines past `next_line`. The reconciler hands each one to `session-log.sh` with `WORKBENCH_LOG_MODE=reconcile`, so one script still owns the log format, the checkpoint, and the marker. The marker it writes carries `origin: reconciler`, and the drain right after it takes the marker like any other. A transcript can sit a line or two past its checkpoint with only bookkeeping records (`cost-state`, `mode`), and that is not a lost segment. The reconciler touches such a checkpoint, so the next start skips it on the mtime test alone.
+
+It never reconciles:
+
+- the session that is starting, named by the SessionStart payload's `session_id`.
+- a live session. Claude Code keeps one `sessions/<pid>.json` per running CLI, and a file whose pid answers `kill -0` is live. If that registry cannot be read, or a live pid's file cannot be parsed, the reconciler does nothing and the warmup notices say so.
+- a transcript written in the last 30 minutes, as a second guard against a live session the registry misses.
+- a sub-agent transcript (`<session>/subagents/`), a summary writer's transcript, or any transcript `session-log.sh` already treats as disposable (scratchpad, eval, and probe roots).
+
+The 3-day window is clamped to 6 days at most, below the 7-day checkpoint retention. A wider window would reach transcripts whose checkpoints were pruned and log them again from line 1. Each start logs at most `WORKBENCH_RECONCILE_BATCH` sessions (default 5), oldest first, under a `mkdir` lock that keeps a second session starting at the same moment from reconciling alongside it. The lock is treated as stale after a minute and is not refreshed, so it covers a normal run, not one that takes longer than that. It never spawns a writer, for the reason in [Why SessionEnd does not spawn](#why-sessionend-does-not-spawn).
+
+Measured on 2026-10-05 against this machine's real transcripts (315 in the window): the reconciler adds about 75 ms to a start with nothing to recover. The first start recovered 5 of the 9 lost sessions and swept 276 dead markers in 1.1 s, and the next start recovered the other 4 in 0.6 s.
+
+The marker also records the SessionEnd `reason` (`prompt_input_exit`, `other`, and so on), or `null` when none was reported, so a lost or partial log can be traced to the kind of exit that produced it.
+
+#### The SessionEnd copy fits the exit budget
+
+SessionEnd runs inside Claude Code's exit budget, and a hook still copying when the budget ends is killed mid-write. The segment copy used `tail -n +N`. The BSD build of `tail` took 1.5 s to copy a 42 MB transcript, and `sed -n 'N,Mp'` takes about 30 ms. The copy now uses `sed`. On top of that, a transcript larger than `WORKBENCH_LOG_SYNC_MAX_BYTES` (default 128 MB) is not copied at exit at all. Its checkpoint keeps the old `next_line`, which is still correct, and a `<session>.deferred` file beside it holds the SessionEnd reason. The file also names the transcript. The reconciler reads every such file at each start, with no 3-day window, so the segment is logged at the next start however late it comes, and the log write deletes the file. The deferral and its checkpoint are pruned together after 7 days, so only a week with no session start at all loses it. The deferral is a file because file times cannot show it: the deferring SessionEnd writes its checkpoint after the transcript's last line, so the checkpoint is always the newer file. A stat per transcript also keeps the scan cheap, where reading every checkpoint would not.
 
 ### Pre-shed capture
 
@@ -741,8 +768,8 @@ The warmup injects the memory-routing and destructive-command rules on **every**
 
 | Source | When | What happens |
 |--------|------|--------------|
-| `startup` | Fresh session | Full warmup: retention cleanup + rules + pending-summary drain + notices refresh |
-| `resume` | Reconnecting | Rules + pending-summary drain + notices refresh |
+| `startup` | Fresh session | Full warmup: retention cleanup + rules + dead-marker sweep + reconciler + pending-summary drain + notices refresh |
+| `resume` | Reconnecting | Rules + dead-marker sweep + reconciler + pending-summary drain + notices refresh |
 | `clear` | After `/clear` | Rules + notices refresh |
 | `compact` | After compression | Rules only (via PostCompact hook) |
 
@@ -1022,7 +1049,7 @@ Runs on every `startup` warmup:
 | Artifact | Retention | Rationale |
 |----------|-----------|-----------|
 | Raw `.log.md` files | 7 days | Summaries are the durable record |
-| Checkpoint files | 7 days | Sessions don't resume after that |
+| Checkpoint files | 7 days | Sessions don't resume after that. A `.deferred` file beside a checkpoint is pruned on the same schedule |
 | Legacy summary-writer logs | Immediate cleanup | No longer generated; remnants deleted on startup |
 | Summary `.summary.md` files | Forever | Searchable session history |
 | Decisions, projects | Forever | Core operational memory |
@@ -1078,7 +1105,11 @@ All config values can be overridden via environment variables for testing:
 | `WORKBENCH_MEMORY_TOKEN` | the shared HTTP server's bearer token, minted by `/workbench-core:setup` |
 | `WORKBENCH_SUMMARY_MODEL` | `summary_model` |
 | `WORKBENCH_AUTO_SUMMARIZE` | `auto_summarize` |
-| `WORKBENCH_LOG_MODE` | Force log mode (`checkpoint`, `final`, `manual`) |
+| `WORKBENCH_LOG_MODE` | Force log mode (`checkpoint`, `final`, `manual`, `reconcile`). `reconcile` is what the start-up reconciler passes |
+| `WORKBENCH_LOG_SYNC_MAX_BYTES` | Transcript size past which SessionEnd defers its copy to the next start's reconciler (default `134217728`, 128 MB) |
+| `WORKBENCH_RECONCILE_BATCH` | Max sessions the start-up reconciler logs per start (default `5`; `0` disables it) |
+| `WORKBENCH_RECONCILE_WINDOW_MIN` | How far back the reconciler looks, in minutes (default `4320`, 3 days; clamped to `8640`) |
+| `WORKBENCH_RECONCILE_QUIET_MIN` | Minutes a transcript must sit unwritten before the reconciler treats it as ended (default `30`) |
 | `WORKBENCH_SKIP_LOG` | Set to `1` to skip logging (used by summary-writer) |
 | `WORKBENCH_SKIP_WARMUP` | Set to `1` to skip warmup (used by summary-writer) |
 | `WORKBENCH_MCP_SERVER_NAME` | `memory_mcp_server_name` |

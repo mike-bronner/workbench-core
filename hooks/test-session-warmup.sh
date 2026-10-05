@@ -15,6 +15,11 @@ FAIL=0
 # would trip the new skip guard. Unset it here so every invocation below tests
 # the unset case unless it opts into an agent via run_warmup's second argument.
 unset CLAUDE_CODE_AGENT
+# The reconciler reads transcripts from ${CLAUDE_CONFIG_DIR:-$HOME/.claude}. A
+# runner inside Claude Code may export CLAUDE_CONFIG_DIR, which would point every
+# warmup below at the developer's real transcripts. Unset, it follows the
+# sandbox HOME.
+unset CLAUDE_CONFIG_DIR
 
 SANDBOX=$(mktemp -d)
 trap 'rm -rf "$SANDBOX"' EXIT
@@ -91,6 +96,16 @@ assert_block() {
     *"$needle"*) PASS=$((PASS + 1)); echo "  ✅ $desc" ;;
     *) FAIL=$((FAIL + 1)); echo "  ❌ $desc — block not found verbatim" ;;
   esac
+}
+
+assert_path() {
+  if [ -e "$2" ]; then PASS=$((PASS + 1)); echo "  ✅ $1"
+  else FAIL=$((FAIL + 1)); echo "  ❌ $1 — expected to exist: $2"; fi
+}
+
+assert_no_path() {
+  if [ -e "$2" ]; then FAIL=$((FAIL + 1)); echo "  ❌ $1 — should NOT exist: $2"
+  else PASS=$((PASS + 1)); echo "  ✅ $1"; fi
 }
 
 # Volatile notices are no longer injected into the warmup payload — they are
@@ -511,8 +526,11 @@ mkdir -p "$PREFIX_PROJ/memory"
 printf 'stray\n' > "$PREFIX_PROJ/memory/prefix-canary.summary.md"
 touch -t "$(date -v-3d +%Y%m%d%H%M 2>/dev/null || date -d '3 days ago' +%Y%m%d%H%M)" \
   "$RECALL_STATE/last-attempt"
-printf '{"session_id":"cache-canary","log_path":"/nonexistent/cache-canary.log.md"}\n' \
-  > "$SANDBOX/cache/pending-summaries/cache-canary.json"
+# The marker keeps a live transcript, or the dead-marker sweep would delete it
+# before the notice could count it.
+: > "$SANDBOX/cache-canary.jsonl"
+printf '{"session_id":"cache-canary","log_path":"/nonexistent/cache-canary.log.md","transcript_path":"%s"}\n' \
+  "$SANDBOX/cache-canary.jsonl" > "$SANDBOX/cache/pending-summaries/cache-canary.json"
 OUT_B=$(run_in_prefix_proj)
 NOTICES_B=$(notices)
 
@@ -576,9 +594,13 @@ assert_missing  "no stale pre-rename namespace"      "$(notices)" "\`/workbench:
 rm -f "$SANDBOX/cache/pending-summaries/aaaa1111-protected.json" "$PROTECTED_LOG"
 
 echo "pending listing — capped at count + 3 oldest:"
-mkdir -p "$SANDBOX/cache/pending-summaries"
+mkdir -p "$SANDBOX/cache/pending-summaries" "$SANDBOX/listing-transcripts"
+# Each marker keeps a live transcript, so the dead-marker sweep leaves it alone
+# and the listing below has five markers to count.
 for i in 1 2 3 4 5; do
-  printf '{"session_id":"sid-%s","log_path":"/nonexistent/sid-%s.log.md"}\n' "$i" "$i" \
+  : > "$SANDBOX/listing-transcripts/sid-$i.jsonl"
+  printf '{"session_id":"sid-%s","log_path":"/nonexistent/sid-%s.log.md","transcript_path":"%s"}\n' \
+    "$i" "$i" "$SANDBOX/listing-transcripts/sid-$i.jsonl" \
     > "$SANDBOX/cache/pending-summaries/sid-$i.json"
   touch -t "2026010${i}0000" "$SANDBOX/cache/pending-summaries/sid-$i.json"
 done
@@ -615,7 +637,7 @@ DRAIN_TRANSCRIPTDIR="$SANDBOX/transcripts"
 #   log        (default) log only, transcript already past its ~30-day retention
 #   both       log and transcript present
 #   nolog      log pruned at 7 days, transcript still readable — RECOVERABLE
-#   nosource   both gone — the only genuinely undrainable shape
+#   nosource   both gone — the dead-marker sweep deletes it before the drain
 make_marker() {
   local sid="$1" stamp="$2" mode="${3:-log}"
   local logpath="$DRAIN_LOGDIR/$sid.log.md"
@@ -721,7 +743,7 @@ assert_contains "dispatched"          "$OUT" "DISPATCH sid=both-live"
 assert_contains "log path passed"     "$OUT" "DISPATCH log=$DRAIN_LOGDIR/both-live.log.md"
 assert_contains "transcript passed"   "$OUT" "DISPATCH transcript=$DRAIN_TRANSCRIPTDIR/both-live.jsonl"
 
-echo "drain — only a marker with BOTH sources gone is undrainable:"
+echo "drain — only a marker with BOTH sources gone is swept, never drained:"
 reset_drain
 make_marker "all-gone" "202601010000" nosource
 make_marker "good-1"   "202601020000"
@@ -730,11 +752,19 @@ OUT=$(run_drain startup "WORKBENCH_DRAIN_BATCH=2")
 assert_missing  "marker with no log and no transcript not dispatched" "$OUT" "DISPATCH sid=all-gone"
 assert_contains "slot passed to next marker"        "$OUT" "DISPATCH sid=good-1"
 assert_contains "second slot still available"       "$OUT" "DISPATCH sid=good-2"
-if grep -q "undrainable marker=.*all-gone.*transcript=" "$SANDBOX/cache/summary-dispatch-errors.log" 2>/dev/null; then
-  PASS=$((PASS + 1)); echo "  ✅ undrainable marker recorded with both sources named"
+# The dead-marker sweep runs before the drain and deletes this marker, so the
+# drain never sees it again. Before the sweep, the drain logged it as
+# undrainable on every start, forever.
+assert_no_path "the both-sources-gone marker is deleted" \
+  "$SANDBOX/cache/pending-summaries/all-gone.json"
+if grep -q "purged-dead-marker marker=.*all-gone.json reason=no-source" \
+     "$SANDBOX/cache/summary-dispatch-errors.log" 2>/dev/null; then
+  PASS=$((PASS + 1)); echo "  ✅ the purge is recorded in the dispatch log"
 else
-  FAIL=$((FAIL + 1)); echo "  ❌ undrainable marker not recorded to the dispatch log"
+  FAIL=$((FAIL + 1)); echo "  ❌ the purge is not recorded in the dispatch log"
 fi
+assert_missing "and it is no longer re-logged as undrainable" \
+  "$(cat "$SANDBOX/cache/summary-dispatch-errors.log" 2>/dev/null)" "undrainable marker=$SANDBOX/cache/pending-summaries/all-gone.json"
 
 echo "drain — a marker with no session id is undrainable whatever its sources:"
 reset_drain

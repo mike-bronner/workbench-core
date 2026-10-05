@@ -196,7 +196,7 @@ mkdir -p "$SANDBOX/home/.claude" "$SANDBOX/memory/identity" "$SANDBOX/cache" "$S
 printf '# Agent identity\n\n1. **Lead with the answer.**\n' > "$SANDBOX/home/.claude/system-overrides.md"
 
 run() { # source
-  (cd "$SANDBOX/cwd" && unset CLAUDE_CODE_AGENT && printf '{"source":"%s"}' "$1" | \
+  (cd "$SANDBOX/cwd" && unset CLAUDE_CODE_AGENT CLAUDE_CONFIG_DIR && printf '{"source":"%s"}' "$1" | \
     HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
     WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" WORKBENCH_MEMORY_PORT=1 \
     CLAUDE_PLUGIN_ROOT="$ROOT" bash "$WARMUP" 2>/dev/null)

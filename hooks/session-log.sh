@@ -8,9 +8,17 @@
 #   - the `core` plugin's PreCompact hook → mode=checkpoint
 #   - the `core` plugin's SessionEnd hook  → mode=final
 #   - the /log-now slash command            → mode=manual (WORKBENCH_LOG_MODE=manual)
+#   - the start-up reconciler               → mode=reconcile (WORKBENCH_LOG_MODE=reconcile)
+#
+# The reconciler (hooks/lib/session-reconcile.sh, run by session-warmup.sh)
+# feeds this script the sessions that never got a usable SessionEnd: a reboot, a
+# kill, or a final segment deferred by the size cap below, which it finds by the
+# `<session>.deferred` file the cap leaves. It is how a session with no marker still reaches
+# the drain.
 #
 # Never fails the hook. Always exits 0. Worst case: the session ends without
-# a log entry; the next warmup finds no pending-summary and proceeds.
+# a log entry, and the next session start's reconciler logs it from the
+# transcript.
 
 set -u
 
@@ -48,6 +56,10 @@ CHECKPOINTS_DIR="$CACHE_PATH/log-checkpoints"
 # the top) so manual and test invocations still resolve hooks/lib.
 # shellcheck source=hooks/lib/summary-dispatch.sh
 . "$HOOKS_DIR/lib/summary-dispatch.sh"
+# session_transcript_disposable lives with the reconciler, so the rule for which
+# transcripts are never logged has one copy that both of them read.
+# shellcheck source=hooks/lib/session-reconcile.sh
+. "$HOOKS_DIR/lib/session-reconcile.sh"
 
 # ──────────── Recursion guard ────────────
 # The dispatch block at the bottom of this script spawns a detached claude
@@ -77,6 +89,10 @@ fi
 SESSION_ID=$(printf '%s' "$PAYLOAD" | jq -r '.session_id // empty' 2>/dev/null)
 TRANSCRIPT=$(printf '%s' "$PAYLOAD" | jq -r '.transcript_path // empty' 2>/dev/null)
 EVENT=$(printf '%s' "$PAYLOAD" | jq -r '.hook_event_name // "SessionEnd"' 2>/dev/null)
+# SessionEnd carries why the session ended (clear, logout, prompt_input_exit,
+# other, and so on). It goes on the marker, so a lost or partial log can be
+# traced to the kind of exit that produced it.
+REASON=$(printf '%s' "$PAYLOAD" | jq -r '.reason // empty' 2>/dev/null)
 
 if [ -z "$SESSION_ID" ] || [ -z "$TRANSCRIPT" ] || [ ! -r "$TRANSCRIPT" ]; then
   exit 0
@@ -94,19 +110,11 @@ fi
 #
 # Filtering at summary time is too late: the marker already exists, already
 # queues, and already costs a full agent dispatch to reject.
-# See `insights/2026-08-19-eval-fixture-sessions-dominate-the-summary-backlog`.
-case "$TRANSCRIPT" in
-  */scratchpad/*|*/evalroot/*|*evalroot*|*/probe-root/*|*probe-root*)
-    exit 0
-    ;;
-esac
-# Claude Code encodes the session cwd into the transcript directory name, so a
-# scratch cwd shows up as a flattened path segment rather than a real directory.
-case "$TRANSCRIPT" in
-  */projects/-private-tmp-claude-*|*-scratchpad-*)
-    exit 0
-    ;;
-esac
+# The patterns live in session_transcript_disposable (hooks/lib/session-reconcile.sh),
+# which the start-up reconciler applies to the same transcripts.
+if session_transcript_disposable "$TRANSCRIPT"; then
+  exit 0
+fi
 
 # ──────────── Per-session checkpoint ────────────
 CHECKPOINT="$CHECKPOINTS_DIR/${SESSION_ID}.json"
@@ -123,11 +131,21 @@ fi
 
 # ──────────── Determine segment bounds ────────────
 START_LINE=1
+EXISTING_LOG=""
+DEFERRAL="$CHECKPOINTS_DIR/${SESSION_ID}.deferred"
 if [ -f "$CHECKPOINT" ]; then
   PREV_SID=$(jq -r '.session_id // empty' "$CHECKPOINT" 2>/dev/null)
   if [ "$PREV_SID" = "$SESSION_ID" ]; then
     START_LINE=$(jq -r '.next_line // 1' "$CHECKPOINT" 2>/dev/null)
+    EXISTING_LOG=$(jq -r '.last_log_file // empty' "$CHECKPOINT" 2>/dev/null)
   fi
+fi
+# A reconciler run has no SessionEnd payload. A SessionEnd that deferred its
+# copy (below) left its reason in the deferral file, and only the segment it
+# deferred may use it. Every log write deletes the file, so a resumed session's
+# old clean-exit reason never reaches a later segment.
+if [ -f "$DEFERRAL" ] && [ -z "$REASON" ]; then
+  REASON=$(sed -n '2p' "$DEFERRAL" 2>/dev/null)
 fi
 
 # Clamp START_LINE to a positive integer.
@@ -145,7 +163,41 @@ if [ "$TOTAL_LINES" -lt "$START_LINE" ]; then
   exit 0
 fi
 
-SEG_LINES=$((TOTAL_LINES - START_LINE + 1))
+NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# write_checkpoint <next_line> <log_file> — the per-session resume point. Built
+# with jq so a path can never break the JSON.
+write_checkpoint() {
+  jq -n --arg sid "$SESSION_ID" --argjson next "$1" --arg log "$2" \
+    --arg mode "$MODE" --arg at "$NOW_ISO" \
+    '{session_id: $sid, next_line: $next, last_log_file: $log,
+      last_log_mode: $mode, last_logged_at: $at}' \
+    > "$CHECKPOINT.tmp" 2>/dev/null && mv "$CHECKPOINT.tmp" "$CHECKPOINT" 2>/dev/null
+}
+
+# ──────────── Exit-budget cap (mode=final only) ────────────
+# SessionEnd runs inside Claude Code's exit budget, and a hook still copying
+# when that budget ends is killed mid-write. The copy below uses `sed`, which
+# moves a 42 MB transcript in about 30 ms. BSD `tail -n +N`, the copy this hook
+# used to make, took 1.5 s on the same file. The cap is the hard bound on top: a
+# transcript past WORKBENCH_LOG_SYNC_MAX_BYTES (default 128 MB) is not copied at
+# exit at all. The checkpoint keeps its old `next_line`, which is still correct,
+# and a `<session>.deferred` file beside it holds the transcript path (line 1)
+# and the SessionEnd reason (line 2). The next session start's reconciler walks
+# those files with no time window, treats each as a segment owed, and logs it
+# with no budget to run out of. A file, not a
+# checkpoint field: this checkpoint is written after the transcript's last line,
+# so an mtime test passes over it, and the reconciler can stat a file for every
+# recent transcript where reading every checkpoint would cost a read each.
+SYNC_MAX_BYTES="${WORKBENCH_LOG_SYNC_MAX_BYTES:-134217728}"
+case "$SYNC_MAX_BYTES" in ''|*[!0-9]*) SYNC_MAX_BYTES=134217728 ;; esac
+if [ "$MODE" = "final" ] \
+   && [ -n "$(find "$TRANSCRIPT" -prune -size "+${SYNC_MAX_BYTES}c" 2>/dev/null)" ]; then
+  mkdir -p "$CHECKPOINTS_DIR" 2>/dev/null || exit 0
+  write_checkpoint "$START_LINE" "$EXISTING_LOG"
+  printf '%s\n%s\n' "$TRANSCRIPT" "$REASON" > "$DEFERRAL" 2>/dev/null
+  exit 0
+fi
 
 # ──────────── Write the raw log (one file per session) ────────────
 # Instead of creating a new file per hook invocation, we maintain a single
@@ -154,13 +206,20 @@ SEG_LINES=$((TOTAL_LINES - START_LINE + 1))
 # same file. This eliminates the need for the summary-writer to glob and
 # stitch siblings.
 TODAY=$(date -u +%Y-%m-%d)
-NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-
-# Check if this session already has a log file from a previous checkpoint.
-EXISTING_LOG=""
-if [ -f "$CHECKPOINT" ]; then
-  EXISTING_LOG=$(jq -r '.last_log_file // empty' "$CHECKPOINT" 2>/dev/null)
+# A reconciled session is filed under the day its transcript was last written,
+# not the day a later start recovered it. `date -r <file>` reads a file's mtime
+# on both BSD and GNU date.
+if [ "$MODE" = "reconcile" ]; then
+  TODAY=$(date -u -r "$TRANSCRIPT" +%Y-%m-%d 2>/dev/null || date -u +%Y-%m-%d)
 fi
+
+# The segment is lines START_LINE..TOTAL_LINES, read with `sed`, which quits at
+# TOTAL_LINES so lines appended during the copy wait for the next segment. Never
+# `tail -n +N`: the BSD build is about 50 times slower on a large transcript,
+# which is what put the SessionEnd copy at risk of the exit budget.
+copy_segment() {
+  sed -n "${START_LINE},${TOTAL_LINES}p;${TOTAL_LINES}q" "$TRANSCRIPT"
+}
 
 if [ -n "$EXISTING_LOG" ] && [ -f "$EXISTING_LOG" ]; then
   # Append to existing log file.
@@ -169,7 +228,7 @@ if [ -n "$EXISTING_LOG" ] && [ -f "$EXISTING_LOG" ]; then
     printf '\n---\n\n'
     printf '## Segment: %s (lines %s–%s, %s)\n\n' "$MODE" "$START_LINE" "$TOTAL_LINES" "$NOW_ISO"
     printf '```jsonl\n'
-    tail -n "+${START_LINE}" "$TRANSCRIPT" | head -n "$SEG_LINES"
+    copy_segment
     printf '\n```\n'
   } >> "$SEG_FILE" 2>/dev/null || exit 0
 else
@@ -196,39 +255,37 @@ else
     printf '# Session log — %s\n\n' "$SESSION_ID"
     printf '## Segment: %s (lines %s–%s, %s)\n\n' "$MODE" "$START_LINE" "$TOTAL_LINES" "$NOW_ISO"
     printf '```jsonl\n'
-    tail -n "+${START_LINE}" "$TRANSCRIPT" | head -n "$SEG_LINES"
+    copy_segment
     printf '\n```\n'
   } > "$SEG_FILE" 2>/dev/null || exit 0
 fi
 
 # ──────────── Update checkpoint ────────────
-NEXT=$((TOTAL_LINES + 1))
-cat > "$CHECKPOINT" <<EOF
-{
-  "session_id": "$SESSION_ID",
-  "next_line": $NEXT,
-  "last_log_file": "$SEG_FILE",
-  "last_log_mode": "$MODE",
-  "last_logged_at": "$NOW_ISO"
-}
-EOF
+mkdir -p "$CHECKPOINTS_DIR" "$PENDING_SUMMARIES_DIR" 2>/dev/null || exit 0
+write_checkpoint "$((TOTAL_LINES + 1))" "$SEG_FILE"
+# The segment a SessionEnd deferred is logged now, so its deferral is closed.
+rm -f "$DEFERRAL" 2>/dev/null
 
 # ──────────── Mark pending-summary ────────────
 # Every log write (checkpoint, final, manual) gets a marker. With one rolling
 # file per session, each summary-writer invocation reads the full log and
 # writes a complete summary — later runs overwrite earlier ones. The marker
 # uses the session ID as filename so concurrent sessions don't clobber.
+#
+# `reason` is the SessionEnd reason, or null when no SessionEnd reported one (a
+# reboot leaves none). `origin` names the writer: "reconciler" for a marker the
+# start-up reconciler created, "session-log" for every hook and /log-now write.
 PENDING_SUMMARY_FILE="$PENDING_SUMMARIES_DIR/${SESSION_ID}.json"
-cat > "$PENDING_SUMMARY_FILE" <<EOF
-{
-  "session_id": "$SESSION_ID",
-  "transcript_path": "$TRANSCRIPT",
-  "log_path": "$SEG_FILE",
-  "mode": "$MODE",
-  "event": "$EVENT",
-  "marked_at": "$NOW_ISO"
-}
-EOF
+ORIGIN="session-log"
+[ "$MODE" = "reconcile" ] && ORIGIN="reconciler"
+jq -n --arg sid "$SESSION_ID" --arg t "$TRANSCRIPT" --arg log "$SEG_FILE" \
+  --arg mode "$MODE" --arg event "$EVENT" --arg at "$NOW_ISO" \
+  --arg reason "$REASON" --arg origin "$ORIGIN" \
+  '{session_id: $sid, transcript_path: $t, log_path: $log, mode: $mode,
+    event: $event, reason: (if $reason == "" then null else $reason end),
+    origin: $origin, marked_at: $at}' \
+  > "$PENDING_SUMMARY_FILE.tmp" 2>/dev/null \
+  && mv "$PENDING_SUMMARY_FILE.tmp" "$PENDING_SUMMARY_FILE" 2>/dev/null
 
 # ──────────── Dispatch background summary-writer ────────────
 # Spawn a detached claude process — but ONLY when this session is going to stay
@@ -249,12 +306,18 @@ EOF
 # both fire mid-session with the parent alive and staying alive, which is exactly
 # why PreCompact markers never accumulated.
 #
-# The guard is on MODE, not EVENT. MODE=final is the "this is a terminal log
-# write" signal, and an unrecognised event falls through to final by design — so
-# any future teardown-time hook inherits the safe path (write the marker, let the
-# next session start drain it) instead of the one that loses work.
-if [ "$MODE" != "final" ] && summary_dispatch_enabled; then
-  summary_dispatch_spawn "$SESSION_ID" "$PENDING_SUMMARY_FILE" "$SEG_FILE" "$TRANSCRIPT" || true
-fi
+# The guard is on MODE, not EVENT, and it is an allowlist. MODE=final is the
+# "this is a terminal log write" signal, and an unrecognised event falls through
+# to final by design — so any future teardown-time hook inherits the safe path
+# (write the marker, let the next session start drain it) instead of the one that
+# loses work. mode=reconcile does not dispatch either: it runs inside
+# session-warmup.sh just before the drain, which takes the marker from there.
+case "$MODE" in
+  checkpoint|manual)
+    if summary_dispatch_enabled; then
+      summary_dispatch_spawn "$SESSION_ID" "$PENDING_SUMMARY_FILE" "$SEG_FILE" "$TRANSCRIPT" || true
+    fi
+    ;;
+esac
 
 exit 0

@@ -72,6 +72,15 @@ assert_file() {
   fi
 }
 
+assert_no_file() {
+  local desc="$1" path="$2"
+  if [ -e "$path" ]; then
+    FAIL=$((FAIL + 1)); echo "  ❌ $desc — marker should NOT exist: $path"
+  else
+    PASS=$((PASS + 1)); echo "  ✅ $desc"
+  fi
+}
+
 echo "PreCompact (mode=checkpoint) — dispatches, anchored to the vault:"
 OUT=$(run_dispatch "WORKBENCH_AUTO_SUMMARIZE=1" "PreCompact" "sid-precompact")
 assert_contains "runs from the vault dir"              "$OUT" "DISPATCH cwd=$SANDBOX/memory"
@@ -131,6 +140,78 @@ echo "WORKBENCH_LOG_MODE=manual overrides a SessionEnd payload:"
 OUT=$(run_dispatch "WORKBENCH_AUTO_SUMMARIZE=1 WORKBENCH_LOG_MODE=manual" "SessionEnd" "sid-modeoverride")
 assert_contains "explicit manual mode dispatches"      "$OUT" "DISPATCH sid=sid-modeoverride"
 
+echo "mode=reconcile — writes the marker, NO dispatch, names the reconciler:"
+# The reconciler runs inside session-warmup.sh just before the drain, and the
+# drain takes the marker from there. A spawn here would be a second writer.
+OUT=$(run_dispatch "WORKBENCH_AUTO_SUMMARIZE=1 WORKBENCH_LOG_MODE=reconcile" "Reconcile" "sid-reconcile")
+assert_missing "reconcile does not spawn"              "$OUT" "DISPATCH sid="
+assert_file    "reconcile still writes the marker"     "$SANDBOX/cache/pending-summaries/sid-reconcile.json"
+assert_contains "the marker's origin is reconciler" \
+  "$(jq -r .origin "$SANDBOX/cache/pending-summaries/sid-reconcile.json" 2>/dev/null)" "reconciler"
+
+echo "the SessionEnd reason is recorded on the marker:"
+printf '{"session_id":"sid-reason","transcript_path":"%s","hook_event_name":"SessionEnd","reason":"prompt_input_exit"}' \
+  "$TRANSCRIPT" | env HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
+    WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" bash "$LOG_HOOK" >/dev/null 2>&1
+REASON_MARKER="$SANDBOX/cache/pending-summaries/sid-reason.json"
+assert_contains "reason carried from the payload" "$(jq -r .reason "$REASON_MARKER" 2>/dev/null)" "prompt_input_exit"
+assert_contains "a hook-written marker names session-log" "$(jq -r .origin "$REASON_MARKER" 2>/dev/null)" "session-log"
+# A normal write stores no reason and no open deferral, so the reason cannot
+# outlive the segment it belongs to.
+assert_no_file "a normal write leaves no deferral" "$SANDBOX/cache/log-checkpoints/sid-reason.deferred"
+OUT=$(run_dispatch "" "SessionEnd" "sid-noreason")
+assert_contains "no reason in the payload records null" \
+  "$(jq -c .reason "$SANDBOX/cache/pending-summaries/sid-noreason.json" 2>/dev/null)" "null"
+
+echo "a reason with quotes cannot break the marker JSON:"
+printf '{"session_id":"sid-quote","transcript_path":"%s","hook_event_name":"SessionEnd","reason":"a\\"b"}' \
+  "$TRANSCRIPT" | env HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
+    WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" bash "$LOG_HOOK" >/dev/null 2>&1
+assert_contains "the marker parses and keeps the quote" \
+  "$(jq -r .reason "$SANDBOX/cache/pending-summaries/sid-quote.json" 2>/dev/null)" 'a"b'
+
+echo "the segment copy is exactly lines next_line..end:"
+SEG_T="$SANDBOX/seg.jsonl"
+printf '{"n":1}\n{"n":2}\n{"n":3}\n{"n":4}\n{"n":5}\n' > "$SEG_T"
+mkdir -p "$SANDBOX/cache/log-checkpoints"
+printf '{"session_id":"sid-seg","next_line":3}\n' > "$SANDBOX/cache/log-checkpoints/sid-seg.json"
+printf '{"session_id":"sid-seg","transcript_path":"%s","hook_event_name":"SessionEnd"}' "$SEG_T" | \
+  env HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
+    WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" bash "$LOG_HOOK" >/dev/null 2>&1
+SEG_LOG=$(jq -r .last_log_file "$SANDBOX/cache/log-checkpoints/sid-seg.json" 2>/dev/null)
+SEG_BODY=$(sed -n '/^```jsonl$/,/^```$/p' "$SEG_LOG" 2>/dev/null | grep '^{')
+if [ "$SEG_BODY" = "$(printf '{"n":3}\n{"n":4}\n{"n":5}')" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ lines 3-5 copied, nothing before, nothing missing"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ segment body wrong: $SEG_BODY"
+fi
+assert_contains "the checkpoint advances past the end" \
+  "$(jq -r .next_line "$SANDBOX/cache/log-checkpoints/sid-seg.json")" "6"
+# BSD `tail -n +N` took 1.5 s on a 42 MB transcript where sed takes 30 ms. The
+# speed is not observable in a unit test, so pin the source: the slow form must
+# not come back.
+assert_missing "the copy does not use tail -n +N" "$(grep -v '^[[:space:]]*#' "$LOG_HOOK")" 'tail -n'
+
+echo "exit-budget cap — a transcript past the cap is deferred, not copied:"
+printf '{"session_id":"sid-cap","transcript_path":"%s","hook_event_name":"SessionEnd","reason":"other"}' "$TRANSCRIPT" | \
+  env HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
+    WORKBENCH_LOG_SYNC_MAX_BYTES=5 bash "$LOG_HOOK" >/dev/null 2>&1
+assert_no_file "no marker at exit"                      "$SANDBOX/cache/pending-summaries/sid-cap.json"
+assert_contains "the checkpoint stays at line 1" \
+  "$(jq -r .next_line "$SANDBOX/cache/log-checkpoints/sid-cap.json" 2>/dev/null)" "1"
+assert_contains "the deferral file records the transcript" \
+  "$(sed -n 1p "$SANDBOX/cache/log-checkpoints/sid-cap.deferred" 2>/dev/null)" "$TRANSCRIPT"
+assert_contains "the deferral file records the reason" \
+  "$(sed -n 2p "$SANDBOX/cache/log-checkpoints/sid-cap.deferred" 2>/dev/null)" "other"
+printf '{"session_id":"sid-cap2","transcript_path":"%s","hook_event_name":"SessionEnd"}' "$TRANSCRIPT" | \
+  env HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
+    WORKBENCH_LOG_SYNC_MAX_BYTES=100000 bash "$LOG_HOOK" >/dev/null 2>&1
+assert_file "under the cap the copy runs as before"    "$SANDBOX/cache/pending-summaries/sid-cap2.json"
+printf '{"session_id":"sid-cap3","transcript_path":"%s","hook_event_name":"PreCompact"}' "$TRANSCRIPT" | \
+  env HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
+    WORKBENCH_LOG_SYNC_MAX_BYTES=5 bash "$LOG_HOOK" >/dev/null 2>&1
+assert_file "the cap applies to SessionEnd only"       "$SANDBOX/cache/pending-summaries/sid-cap3.json"
+
 echo "auto-summarize off — no dispatch:"
 OUT=$(run_dispatch "WORKBENCH_AUTO_SUMMARIZE=0" "PreCompact" "sid-off")
 assert_missing "no writer dispatched when disabled"    "$OUT" "DISPATCH cwd="
@@ -151,14 +232,6 @@ run_scratch() {
       bash "$LOG_HOOK" >/dev/null 2>&1
 }
 
-assert_no_file() {
-  local desc="$1" path="$2"
-  if [ -e "$path" ]; then
-    FAIL=$((FAIL + 1)); echo "  ❌ $desc — marker should NOT exist: $path"
-  else
-    PASS=$((PASS + 1)); echo "  ✅ $desc"
-  fi
-}
 
 mkdir -p "$SANDBOX/scratchpad/evalroot" "$SANDBOX/probe-root" \
          "$SANDBOX/projects/-private-tmp-claude-503--Users-mike-scratchpad-evalroot"

@@ -8,8 +8,8 @@
 # assistant's context.
 #
 # Branches on the payload's `source` field:
-#   startup → full warmup: cleanup + rules + notices refresh
-#   resume  → rules + notices refresh
+#   startup → full warmup: cleanup + rules + reconcile + drain + notices refresh
+#   resume  → rules + reconcile + drain + notices refresh
 #   clear   → rules + notices refresh
 #   compact → rules only
 #
@@ -54,6 +54,10 @@ memory_load_env
 # all of which exist by the time the drain runs.
 # shellcheck source=hooks/lib/summary-dispatch.sh
 . "$HOOKS_DIR/lib/summary-dispatch.sh"
+# The start-up session reconciler and the dead-marker sweep, both run just
+# before the drain.
+# shellcheck source=hooks/lib/session-reconcile.sh
+. "$HOOKS_DIR/lib/session-reconcile.sh"
 
 # Config resolution for the warmup-only field, agent_name.
 # Prefer the current data dir; fall back to the pre-rename location so users
@@ -89,7 +93,10 @@ if [ -n "$PAYLOAD" ] && command -v jq >/dev/null 2>&1; then
   # after the context was compressed — route them to the compact branch.
   HOOK_EVENT=$(printf '%s' "$PAYLOAD" | jq -r '.hook_event_name // empty' 2>/dev/null)
   [ "$HOOK_EVENT" = "PostCompact" ] && SOURCE="compact"
+  # The session that is starting. The reconciler must never log it.
+  CURRENT_SID=$(printf '%s' "$PAYLOAD" | jq -r '.session_id // empty' 2>/dev/null)
 fi
+CURRENT_SID="${CURRENT_SID:-}"
 
 # ──────────── Persistent file management (function defs) ────────────
 # These functions manage files that persist on disk across sessions. Defined
@@ -411,7 +418,11 @@ if [ "$SOURCE" = "startup" ]; then
   done < <(find "$MEMORY_PATH/sessions" -name "*.log.md" -mtime +7 2>/dev/null)
 
   # Per-session checkpoint files older than 7 days — sessions don't resume.
-  [ -d "$CHECKPOINTS_DIR" ] && find "$CHECKPOINTS_DIR" -name "*.json" -mtime +7 -delete 2>/dev/null
+  # A `.deferred` file marks a SessionEnd copy still owed to the reconciler,
+  # which finds it at any age up to here. It goes with its checkpoint at 7 days,
+  # because the deferred segment can only be appended from that checkpoint.
+  [ -d "$CHECKPOINTS_DIR" ] && find "$CHECKPOINTS_DIR" \( -name "*.json" -o -name "*.deferred" \) \
+    -mtime +7 -delete 2>/dev/null
 
   # Legacy summary-writer logs — no longer generated, clean up any remaining.
   find "$CACHE_PATH" -name "summary-writer-*.log" -delete 2>/dev/null
@@ -546,6 +557,42 @@ printf -- '- `rm`, `rmdir`, `git reset --hard`, `git clean`, `git stash clear`/`
 printf -- '- Make new scratch in the session scratchpad or `~/Developer/scratchpad`. Never create it anywhere under `/tmp` outside your session scratchpad. Do not put new scratch in an old `claude-*scratch*` folder there either.\n'
 printf -- '- Outside those roots it DENIES, and so does any target it cannot read: a `$variable`, a glob, `bash -c`, `ssh`, `xargs`, `find -delete`, or a loop body. Spell paths out literally and keep the delete its own command. Never hand the user a `!` command to delete your own scratch. A target outside every root that is not scratch is the user'"'"'s call, and they run it with the `!` prefix.\n\n'
 
+# ──────────── Dead-marker sweep + session reconciler (startup + resume) ────────────
+# EMITS NOTHING, like the drain below, and runs right before it.
+#
+# The sweep deletes markers no writer can ever use: 0-byte files, and markers
+# whose log and transcript are both gone. Before it, the drain skipped each one
+# on every start and wrote it to the dispatch log again, so a dead backlog was
+# re-logged forever and never shrank.
+#
+# The reconciler covers the sessions that never got a usable SessionEnd (a
+# reboot, a kill, a copy the exit-budget cap deferred). It scans recent
+# transcripts that are not live, finds the ones with no checkpoint or a
+# checkpoint behind the conversation, and has session-log.sh write the missing
+# segment and a marker (`origin: reconciler`). The drain then summarizes them.
+# Bounded per start by WORKBENCH_RECONCILE_BATCH (default 5), and steady-state
+# cost is a find plus two stats per recent transcript. The mkdir lock keeps a
+# second session starting at the same moment from reconciling alongside this
+# one. It counts as stale after a minute and is not refreshed, so it covers a
+# normal run, not one that takes longer than that.
+# Details and every skip rule: hooks/lib/session-reconcile.sh.
+RECONCILE_STATUS=""
+if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
+  pending_marker_sweep "$PENDING_SUMMARIES_DIR" "$(summary_dispatch_logfile)"
+
+  CLAUDE_HOME="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  RECONCILE_LOCK="$CACHE_PATH/session-reconcile.lock"
+  mkdir -p "$CACHE_PATH" 2>/dev/null || true
+  if [ -d "$RECONCILE_LOCK" ] && [ -z "$(find "$RECONCILE_LOCK" -mmin -1 2>/dev/null)" ]; then
+    rmdir "$RECONCILE_LOCK" 2>/dev/null || true
+  fi
+  if mkdir "$RECONCILE_LOCK" 2>/dev/null; then
+    session_reconcile "$CLAUDE_HOME/projects" "$CURRENT_SID" "$HOOKS_DIR/session-log.sh" \
+      "$CHECKPOINTS_DIR" "$PENDING_SUMMARIES_DIR" "$CLAUDE_HOME/sessions"
+    rmdir "$RECONCILE_LOCK" 2>/dev/null || true
+  fi
+fi
+
 # ──────────── Pending-summary drain (startup + resume) ────────────
 # THIS BLOCK EMITS NOTHING in production. It runs before the notices section on
 # purpose: it is an action, not a report, and the warmup payload must stay
@@ -608,7 +655,9 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
           # Fail closed on a marker we cannot act on. A malformed marker, or one
           # whose log AND transcript are both gone, would otherwise be retried on
           # every session start forever, permanently consuming batch slots that
-          # the drainable markers behind it need.
+          # the drainable markers behind it need. The sweep above has already
+          # deleted the empty and both-sources-gone ones, so what still lands
+          # here is a marker the sweep could not read with certainty.
           #
           # A missing log alone is NOT that case. The log is a 7-day vault cache
           # and the transcript is the ~30-day original, so a pruned log is a
@@ -722,6 +771,16 @@ remainder is picked up by subsequent session starts automatically.
 NOTICE
     printf '\n'
   fi
+fi
+
+# ──────────── Session reconciler skipped (startup + resume) ────────────
+# The reconciler fails closed when it cannot tell which sessions are live, so a
+# Claude Code release that moves its session registry would switch it off with
+# no other sign. This is that sign.
+if [ "$RECONCILE_STATUS" = "registry-unreadable" ]; then
+  printf '## ⚠ Session reconciler skipped\n\n'
+  printf 'The live-session registry `%s` could not be read, so sessions that ended without a SessionEnd were not recovered at this start.\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions"
+  printf 'Check that directory, and see `hooks/lib/session-reconcile.sh` (`session_live_ids`).\n\n'
 fi
 
 # ──────────── Retired system-overrides alias (every source) ────────────

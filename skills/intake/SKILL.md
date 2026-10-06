@@ -147,8 +147,9 @@ a real fork when:
 Put the recommended option first. Each option's description carries its grade
 and any warning Mike needs, so the question stands on its own after the prose
 above it has scrolled away. This holds for every decision Mike must make, not
-only this one. Fall back to the output style's `## ❓ Open questions` block only
-when the tool does not fit. The output style governs how options look when you
+only this one. Write the context the question needs in prose immediately above
+the call, in the same message. A question with no fixed choices still goes
+through the tool. The output style governs how options look when you
 show them in a reply.
 
 **Otherwise proceed on the top-graded option, and say so in one line** that

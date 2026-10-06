@@ -13,3 +13,8 @@
 # does NOT reproduce on stock macOS; that is why it went unignored for so long
 # and got hand-deleted instead.
 __pycache__/
+
+# The engine lays the mod API's type declarations here each time it loads this
+# folder as a plugin (a --plugin-dir session). They are written per Claude Code
+# build, so they are never committed. tsconfig.json extends the tsconfig inside.
+.claude-plugin/types/

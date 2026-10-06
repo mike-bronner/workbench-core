@@ -19,12 +19,13 @@ Before a task that produces work, run the intake routine in
    label each item by what it is. A cost is only something the reader is worse
    off for. A behaviour change or a correctness fix is never filed as a cost.
 4. **Put every decision where Mike sees it.** Put each decision Mike must make,
-   and each blocking question, to him through `AskUserQuestion`. Each option's
-   description carries its grade and any warning, so nothing the decision needs
-   lives only in prose that has scrolled away. If the tool does not fit, such as
-   a question with no fixed choices, put the question under a final
-   `## ❓ Open questions` heading. That heading comes last in the reply, after
-   the verdict.
+   and each blocking question, to him through `AskUserQuestion`. Ask every
+   other question you leave for him the same way, and never leave one in
+   prose. Write the context the question needs in prose immediately above the
+   call, in the same message. Each option's description carries its grade and
+   any warning, so nothing the decision needs lives only in prose that has
+   scrolled away. A question with no fixed choices still fits the tool,
+   because the dialog always offers Other.
 5. **Give every finding a verdict and a recommendation.** Say what it is,
    whether it is a problem, and what to do about it. "No action needed" is a
    valid verdict. State it rather than drop the finding.

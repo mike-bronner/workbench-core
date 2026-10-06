@@ -64,8 +64,12 @@ has "rule 3 defines a cost by the reader"           'worse off for'
 has "rule 3 keeps a fix out of the cost column"     'correctness fix is never filed as a cost'
 has "rule 4 routes every decision to the tool"     'each decision Mike must make, and each blocking question, to him through `AskUserQuestion`'
 has "rule 4 puts grade and warning in the option"   "option's description carries its grade and any warning"
-has "rule 4 names the fallback heading"             '## ❓ Open questions'
-has "rule 4 places the fallback last"               'comes last in the reply'
+# Every question goes through the tool, with its context right above the call.
+# The prose fallback was retired on 2026-10-05, and hooks/register.ts enforces
+# the rule: a prose question gets one re-prompt, and a bare call is refused.
+has "rule 4 leaves no question in prose"            'never leave one in prose'
+has "rule 4 puts the context above the call"        'context the question needs in prose immediately above the call, in the same message'
+has "rule 4 fits a question with no fixed choices"  'no fixed choices still fits the tool, because the dialog always offers Other'
 has "rule 5 requires a verdict and a recommendation" 'verdict and a recommendation'
 has "rule 5 keeps \"no action needed\" a verdict"   'No action needed" is a valid verdict'
 has "rule 6 limits options to a real fork"          'real fork that Mike has not decided'
@@ -136,6 +140,7 @@ lacks "no delegate-by-default rule"          'delegate'
 lacks "no reason that outranks brevity"     'outranks brevity'
 lacks "no heading per option"               '### 🔹 Option'
 lacks "no permission prompt as the approval" 'because the approval gate prompts'
+lacks "no prose fallback for questions"     'Open questions'
 
 # ── 2. The source obeys its own register ─────────────────────────────────────
 echo

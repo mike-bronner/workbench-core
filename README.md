@@ -93,6 +93,8 @@ The rules load from one place: the output style `/workbench-core:setup` installs
 
 No hook restates them. Earlier versions loaded the same rules four times per main session: the output style, a `~/.claude/system-overrides.md` file passed by a shell alias, the managed `~/.claude/CLAUDE.md` block, and a guardrails payload on the warmup's stdout. The copies drifted and contradicted each other. The `CLAUDE.md` copy also reached every sub-agent, which put "present options" and `AskUserQuestion` into agents that have neither a human nor the tool. `hooks/test-rule-source.sh` pins the new shape: twelve rules and three habits of shape in the output style, its pointer to the intake skill, the style obeying its own register, and no rule text in anything the warmup writes or prints.
 
+The [hooks module](#the-hooks-module) enforces rule 4 without loading it. Its re-prompt and its refusal speak only when a reply breaks the rule, in an attended main-session turn, so they correct a reply and never add a copy to the context.
+
 The task-intake routine is not a rule, so it does not live in the output style. It is a procedure, and its one copy is `skills/intake/SKILL.md`. The style carries a one-line pointer to it, and `hooks/test-intake.sh` fails if the style starts restating it. See [Task intake](#task-intake).
 
 The managed `~/.claude/CLAUDE.md` block now carries facts only: the gates, what each protects, and the scratch roots. Sub-agents need those facts, and each gate's deny carries its own recovery text.
@@ -168,14 +170,16 @@ References are loaded at execution time via `${CLAUDE_PLUGIN_ROOT}/references/`.
 ```
 core/
 ├── .claude-plugin/
-│   └── plugin.json              — manifest + MCP server config
+│   └── plugin.json              — manifest + MCP server config + the hooks module's type contract
 ├── agents/
 │   └── summary-writer.md       — background narrative agent definition
 ├── assets/
 │   ├── personas/              — the shipped persona (an output style)
 │   └── prompt-templates/      — scheduled-task prompt bodies (decision-quality nightly)
 ├── hooks/
-│   ├── hooks.json              — hook → script bindings
+│   ├── hooks.json              — hook → script bindings, and the hooks module
+│   ├── register.ts             — the hooks module (a mod): question rule + request meter
+│   ├── mods/                   — the module's pure logic: lane, question-rule, request-meter
 │   ├── session-log.sh          — raw log capture + summary-writer dispatch (not at SessionEnd)
 │   ├── session-warmup.sh       — memory and scratch rules + retention cleanup + dead-marker sweep +
 │   │                             session reconciler + summary drain
@@ -224,6 +228,10 @@ core/
 │   ├── cross-session-messaging/ — the protocol for messaging another session, and for receiving one
 │   ├── orchestrator/           — per-session on/off toggle for the delegation reminder and the dispatch gate
 │   └── process-pending-summaries/ — dispatch background agents for pending markers, or for one session by ID
+├── tests/                      — the hooks module's `claude plugin test` suites
+├── types/
+│   └── index.d.ts              — the hooks module's $.state contract
+├── tsconfig.json               — extends the tsconfig the engine lays in .claude-plugin/types/
 ├── scripts/
 │   ├── install-chat-skills.sh  — package + install skills into Claude Chat
 │   ├── install.sh              — install the shipped output style
@@ -816,11 +824,31 @@ Claude Code caps MCP tool output itself. A response past `MAX_MCP_OUTPUT_TOKENS`
 
 The setting is a **backstop, not a substitute** for servers capping their own output: it can only persist whatever was returned, where a server knows to return its 10 best results with snippets. See `docs/mcp-output-capping.md` for the per-server standard.
 
-### Question delivery is prose, not a hook
+### The hooks module
 
-The output style carries the question-delivery rules: a decision Mike must make, or a blocking question, goes through `AskUserQuestion`, with each option's grade and any warning in its description. When the tool does not fit, the question goes into a `## ❓ Open questions` block placed last. A reply fits about 40 rows at 80 columns, and the item Mike acts on comes last and stands on its own. `docs/rule-history.md` records why each of those rules was added.
+`hooks/hooks.json` names one hooks module beside its command hooks: `hooks/register.ts`, a Claude Code mod of function hooks. The command hooks all stay registered. The guards move to the module only after parity, gated on the mods API settling, because it is early access. The module carries two features:
 
-**It is prose rather than a hook, deliberately.** Detecting an unanswered question in free text is a semantic judgement, and every enforcement gate in this plugin matches on something mechanical instead — a tool name, a command prefix, a file path, a slot header, a literal character. The one time semantic heuristics were built and measured here, for the [agent dispatch gate](#agent-dispatch-gate), the three variants traded 83% precision at 26% recall against 34% precision at 84% recall, and the wrong answers were not tunable away. A classifier on question delivery fails the same way in both directions: a false positive blocks a finished reply, and a false negative teaches the agent the rule is optional. The written rule is the enforcement that is actually available, and `hooks/test-rule-source.sh` guards that it is written once.
+- **The question rule.** See [Question delivery](#question-delivery-the-rule-in-the-style-the-enforcement-in-the-mod).
+- **The request meter.** The status line shows the turns since session start and the latest API request's cost against the session's first API request's, for example `T14 · $0.21/req · 3.4× first`. A request is one main-loop model request (one `turn.step`), priced from the usage the API reported for that response alone. T counts completed main-loop turns. A sub-agent's requests and turns are left out. The first request is the baseline and never moves. When it has no price the line says `first unpriced`, and when it cost $0 the line says `first $0`, rather than comparing against a later request. A step that got no response reported no cost, so it is not a request. Each request is priced from its uncached input, cache reads, cache writes, and output, at the list price of the model that answered (`hooks/mods/request-meter.ts`). A cache write is priced at 2 times input, the 1-hour rate, because the engine's usage does not split writes by TTL. Claude Code's transcripts do. Across 400 of Mike's transcripts, every main-loop write since 2026-09-01 was a 1-hour write, and at that rate a probe matched the engine's own cost ledger to the cent. The rate is not universal: 0.5% of messages, from two desktop sessions in July and August, wrote 5-minute caches. In a session like those, the write share of `$/req` reads up to 60% high. A model with no price shows `unpriced` and no figure. The line updates after every request and every turn, is drawn again after a reload, and starts over on `/clear`. The figures change every turn, so they live on the status line and never in the system prompt, where they would re-bill the cached prefix.
+
+Every hook that touches `$` lives in `register.ts`, because the engine follows `$` into no imported function, and a plugin registers each event once. The logic is pure and lives in `hooks/mods/`, and `types/index.d.ts` declares the values the module keeps in `$.state`.
+
+**Testing it.** `claude plugin test <repo>` runs `tests/*.test.ts` against the engine's own test kit, and `claude plugin validate <repo>` checks the manifest and what the module hooks and calls. A shell alias that puts an option before `plugin` makes the CLI refuse both, so call the binary with `command claude`. The engine lays the API's type declarations into `.claude-plugin/types/` (ignored) when it loads this folder through `--plugin-dir`, and `tsconfig.json` extends the tsconfig it lays there. To type-check without a load, point a scratch tsconfig at the `types/claude-code.d.ts` that the `plugin-authoring` skill writes.
+
+### Question delivery: the rule in the style, the enforcement in the mod
+
+The output style carries the rule. Every question to Mike goes through `AskUserQuestion`, with its context written in prose immediately above the call, in the same message. Each option's description carries its grade and any warning. A question with no fixed choices still fits the tool, because the dialog always offers Other. A reply fits about 40 rows at 80 columns, and the item Mike acts on comes last and stands on its own. `docs/rule-history.md` records why each of those rules was added.
+
+The [hooks module](#the-hooks-module) enforces the two halves, in an attended main-session turn only:
+
+- **A reply that leaves a question in prose gets one correction turn.** A `classic.Stop` hook blocks the stop, and its reason tells the model to re-ask through the tool. Code fences, inline code, quoted lines, and double-quoted spans are stripped first, so a question shown rather than asked never counts. A reply with no question mark and no asking phrase ("let me know", "should I") is let stand with no model call. The rest goes to `$.model.classify`, which tells a question for Mike from a rhetorical one. If the classifier fails, or answers with neither label, the reply counts as asking when its last line ends on a question mark.
+- **An `AskUserQuestion` call with no prose immediately before it is refused**, with a reason that says to write the context first. Thinking blocks do not count as context, because Mike never sees them. A call no message holds, such as another plugin's `$.ui.ask`, is let through.
+
+**It fires at most once per turn.** The engine's `stop_hook_active` flag and a per-turn flag in `$.state` both stop a second re-prompt. A synchronous block from another Stop hook stands alone. The memory checkpoint is not one: it is an `asyncRewake` hook, so it runs in the background after the stop and never shows as a block. A turn the rule re-prompts can therefore also get a checkpoint wake afterwards. That wake arrives with `stop_hook_active` set, so its own stop is never re-prompted.
+
+**It applies where a person in an interactive session opened the turn:** a typed prompt, a Remote Control message, an auto-continuation, or a background task's notification. A notification turn is where a commit question or a relayed result gets asked. **It never fires where nobody can answer:** a `claude -p` run, a top-level `--agent` run (`CLAUDE_CODE_AGENT`), a process with `WORKBENCH_DEV_TEAM_PIPELINE=1`, a turn a scheduled task or a peer opened, and any sub-agent. A re-prompt there would loop, because nobody can answer the dialog.
+
+**This used to be prose only, deliberately.** The old reason was that a semantic heuristic fails both ways: when the [agent dispatch gate](#agent-dispatch-gate) was measured, its variants traded 83% precision at 26% recall against 34% precision at 84% recall. Mike chose enforcement on 2026-10-05. Two things change the trade here. The classifier runs only behind a deterministic filter, and on a 10-reply probe set it labelled every reply correctly. A false positive also costs one bounded correction turn, never a blocked reply.
 
 ### Permission safety rails
 

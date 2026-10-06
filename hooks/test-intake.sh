@@ -149,7 +149,15 @@ has "a real fork goes through AskUserQuestion"       'Put the options to Mike th
 has "a grade short of met names its criterion"     'names each criterion short of met by its number and a few words'
 has "each option description carries grade and warning" "Each option.s description carries its grade and any warning Mike needs"
 has "every decision goes through the tool"           'This holds for every decision Mike must make'
-has "prose is the fallback only when the tool does not fit" 'Fall back to the output style.s `## ❓ Open questions` block only when the tool does not fit'
+has "the context sits right above the call"          'Write the context the question needs in prose immediately above the call, in the same message'
+has "a question with no fixed choices uses the tool"  'A question with no fixed choices still goes through the tool'
+# The prose fallback was retired on 2026-10-05: every question goes through the
+# tool, and the workbench-core mod re-prompts a reply that leaves one in prose.
+if printf '%s' "$FLAT" | grep -q 'Open questions'; then
+  no "the skill offers no prose fallback" "found: Open questions"
+else
+  ok "the skill offers no prose fallback"
+fi
 has "otherwise the agent proceeds and says so"       'Otherwise proceed on the top-graded option, and say so in one line'
 has "the proceed line carries each grade"            'names the option and its grade on each criterion'
 has "trivial asks skip it, and a hook does not decide" 'You decide that threshold, not a hook'

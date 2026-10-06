@@ -837,7 +837,7 @@ Every hook that touches `$` lives in `register.ts`, because the engine follows `
 
 ### Question delivery: the rule in the style, the enforcement in the mod
 
-The output style carries the rule. Every question to Mike goes through `AskUserQuestion`, with its context written in prose immediately above the call, in the same message. Each option's description carries its grade and any warning. A question with no fixed choices still fits the tool, because the dialog always offers Other. A reply fits about 40 rows at 80 columns, and the item Mike acts on comes last and stands on its own. `docs/rule-history.md` records why each of those rules was added.
+The output style carries the rule. Every question to Mike goes through `AskUserQuestion`, with its context written in prose immediately above the call, in the same message. Each option's description carries its grade and any warning. A question with no fixed choices still fits the tool, because the dialog always offers Other. A reply fits about 40 rows at 80 columns. Each question is asked right after the context it depends on first appears, and is not held for the end of the reply with that context restated. A verdict with no question can still close a reply. `docs/rule-history.md` records why each of those rules was added.
 
 The [hooks module](#the-hooks-module) enforces the two halves, in an attended main-session turn only:
 

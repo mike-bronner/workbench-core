@@ -67,11 +67,13 @@ Before a task that produces work, run the intake routine in
 12. **Fit a terminal reply on one screen.** Mike reads in a terminal about 80
     columns wide and 50 rows tall. Keep a reply to about 40 rows at that width.
     Cut detail that does not change what Mike does next. The first line still
-    carries the answer (rule 1). The item Mike acts on comes last: the
-    decision, the question, or the verdict. It stands on its own, so it
-    restates what it depends on. Never refer to earlier text that the reply
-    does not restate, such as "see above" or "as noted earlier". Output Mike
-    asked for in full, such as a file or a log, is exempt from the budget.
+    carries the answer (rule 1). Ask each question right after the context it
+    depends on first appears. Do not hold it for the end of the reply and
+    restate that context there. The dialog pauses the turn, so the reply goes
+    on after Mike answers. A verdict with no question can still close the
+    reply. Never refer to earlier text that the reply does not restate, such
+    as "see above" or "as noted earlier". Output Mike asked for in full, such
+    as a file or a log, is exempt from the budget.
 
 Three habits of shape:
 

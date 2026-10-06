@@ -148,8 +148,9 @@ Put the recommended option first. Each option's description carries its grade
 and any warning Mike needs, so the question stands on its own after the prose
 above it has scrolled away. This holds for every decision Mike must make, not
 only this one. Write the context the question needs in prose immediately above
-the call, in the same message. A question with no fixed choices still goes
-through the tool. The output style governs how options look when you
+the call, in the same message. Ask it right after that context first appears,
+and do not hold it for the end of the reply. A question with no fixed choices
+still goes through the tool. The output style governs how options look when you
 show them in a reply.
 
 **Otherwise proceed on the top-graded option, and say so in one line** that

@@ -151,6 +151,28 @@ has "each option description carries grade and warning" "Each option.s descripti
 has "every decision goes through the tool"           'This holds for every decision Mike must make'
 has "the context sits right above the call"          'Write the context the question needs in prose immediately above the call, in the same message'
 has "a question with no fixed choices uses the tool"  'A question with no fixed choices still goes through the tool'
+# A question goes right after its context first appears, not held for the end
+# of the reply with that context restated. Mike set this on 2026-10-06.
+has "the question follows its context at once"      'Ask it right after that context first appears, and do not hold it for the end of the reply'
+# Both files are hard-wrapped, so each check reads a flattened copy, and a
+# returning clause is caught wherever a line break splits it. The needles are
+# each file's own old wording: the skill echoed the style's clause, and the
+# README said the item "comes last and stands on its own".
+README_FLAT="$(tr '\n' ' ' < "$README" | tr -s ' ')"
+lacks_in() { # desc, flattened text, fixed string
+  if printf '%s' "$2" | grep -qF -- "$3"; then no "$1" "found: $3"; else ok "$1"; fi
+}
+for needle in 'item Mike acts on comes last' 'stands on its own, so it restates'; do
+  lacks_in "the skill does not hold the question for the end ('$needle')" "$FLAT" "$needle"
+done
+for needle in 'item Mike acts on comes last' 'comes last and stands on its own'; do
+  lacks_in "the README does not hold the question for the end ('$needle')" "$README_FLAT" "$needle"
+done
+if printf '%s' "$README_FLAT" | grep -qF -- 'Each question is asked right after the context it depends on first appears, and is not held for the end of the reply with that context restated.'; then
+  ok "the README asks right after the context appears"
+else
+  no "the README asks right after the context appears" "missing the placement sentence"
+fi
 # The prose fallback was retired on 2026-10-05: every question goes through the
 # tool, and the workbench-core mod re-prompts a reply that leaves one in prose.
 if printf '%s' "$FLAT" | grep -q 'Open questions'; then

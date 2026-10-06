@@ -18,7 +18,7 @@ HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 GATE="$HOOKS_DIR/agent-dispatch-gate.sh"
 HOOKS_JSON="$HOOKS_DIR/hooks.json"
 DELEGATION="$HOOKS_DIR/delegation-gate.sh"
-SKILL="$HOOKS_DIR/../skills/orchestrator/SKILL.md"
+TOGGLE="$HOOKS_DIR/mods/orchestrator.ts"  # /orchestrator, in hooks/register.ts
 SUMMARY_SKILL="$HOOKS_DIR/../skills/process-pending-summaries/SKILL.md"
 README="$HOOKS_DIR/../README.md"
 PASS=0
@@ -137,7 +137,32 @@ check() {
   fi
 }
 
-run_prompt() { check "$1" "$(main_payload "$2" | gate)" "$3"; }
+# The prompt half of this gate is ported to TypeScript as
+# $.workbench.briefCheck() (hooks/mods/brief.ts). With BRIEF_CASES_OUT set,
+# every prompt case below is also written there, one JSON line each, with the
+# verdict and the missing slots this gate gave it. hooks/test-brief-parity.sh
+# turns those lines into tests/brief-cases.ts, and tests/workbench.test.ts holds
+# the port to the same verdicts. A case decided by the session toggle rather
+# than by its prompt is left out.
+record_case() {
+  [ -n "${BRIEF_CASES_OUT:-}" ] || return 0
+  [ -e "$STATE_DIR/$SESSION" ] && return 0
+  local reason
+  reason="$(printf '%s' "$3" | jq -r '.hookSpecificOutput.permissionDecisionReason // ""' 2>/dev/null)"
+  jq -nc --arg name "$1" --arg prompt "$2" --arg verdict "$(verdict_of "$3")" --arg reason "$reason" '{
+    name: $name,
+    prompt: $prompt,
+    isComplete: ($verdict != "deny"),
+    missing: (if $reason == "" then [] else ($reason | capture("Missing: (?<m>.*)[.]$").m | split(", ")) end)
+  }' >>"$BRIEF_CASES_OUT"
+}
+
+run_prompt() {
+  local out
+  out="$(main_payload "$2" | gate)"
+  check "$1" "$out" "$3"
+  record_case "$1" "$2" "$out"
+}
 
 assert_jq() {
   local desc="$1" file="$2" filter="$3" expected="$4" actual
@@ -189,6 +214,7 @@ for slot in "Workdir:" "Goal:" "Context:" "Constraints:" "Acceptance:" "Done whe
   stripped="$(printf '%s\n' "$GOOD_BRIEF" | grep -v "^${slot}")"
   out="$(main_payload "$stripped" | gate)"
   check "missing '$slot' is denied" "$out" deny
+  record_case "missing '$slot' is denied" "$stripped" "$out"
   assert_contains "the deny names the missing '$slot'" "$out" "Missing: $slot"
 done
 
@@ -392,6 +418,15 @@ check "state file for ANOTHER session does not allow" \
   "$(payload session_id=11111111-2222-3333-4444-555555555555 agent_id=- agent_type=- prompt="$FREEFORM" | gate)" deny
 rm -f "$STATE_DIR/$SESSION"
 run_prompt "removing the state file re-enables the gate" "$FREEFORM" deny
+# Off is a regular file that is not a link. A directory or a link planted at the
+# path, which `[ -e ]` once read as off, switches nothing off.
+mkdir "$STATE_DIR/$SESSION"
+check "a directory planted at the path does not stand it down" "$(main_payload "$FREEFORM" | gate)" deny
+rmdir "$STATE_DIR/$SESSION"
+: >"$SANDBOX/real-file"
+ln -s "$SANDBOX/real-file" "$STATE_DIR/$SESSION"
+check "a link to a regular file does not stand it down" "$(main_payload "$FREEFORM" | gate)" deny
+rm -f "$STATE_DIR/$SESSION"
 
 # An unset override must fall back to the documented default under $HOME, and a
 # fresh fake HOME has no state file there — so the gate still denies. This is
@@ -641,12 +676,12 @@ else
 fi
 assert_missing "the human line carries no Markdown emphasis" "$DENY_REASON" "**"
 assert_missing "the human line does not carry the slot catalogue" "$DENY_REASON" "Done when: (observable finish line)"
-assert_missing "the human line does not carry the toggle" "$DENY_REASON" "/workbench-core:orchestrator off"
+assert_missing "the human line does not carry the toggle" "$DENY_REASON" "/orchestrator off"
 
 assert_contains "context names the template"   "$DENY_CONTEXT" "six-slot brief"
 assert_contains "context says research counts" "$DENY_CONTEXT" "research included"
 assert_contains "context lists every slot"     "$DENY_CONTEXT" "Done when: (observable finish line)"
-assert_contains "context names the toggle"     "$DENY_CONTEXT" "/workbench-core:orchestrator off"
+assert_contains "context names the toggle"     "$DENY_CONTEXT" "the human can run /orchestrator off"
 assert_contains "context names the gate, so the model can report which one fired" \
   "$DENY_CONTEXT" "Dispatch gate (workbench-core)"
 # The gate must never claim to judge substance — that belongs to the receiving
@@ -702,7 +737,7 @@ echo "the two gates agree on their shared escape hatches:"
 for token in "WORKBENCH_ORCHESTRATOR_STATE_DIR" ".claude-workbench/orchestrator-mode"; do
   assert_grep "dispatch gate uses $token"   "$token" "$GATE"
   assert_grep "delegation gate uses $token" "$token" "$DELEGATION"
-  assert_grep "toggle skill uses $token"    "$token" "$SKILL"
+  assert_grep "toggle command uses $token"  "$token" "$TOGGLE"
 done
 assert_grep "dispatch gate honours WORKBENCH_ORCHESTRATOR=0" 'WORKBENCH_ORCHESTRATOR:-' "$GATE"
 

@@ -64,7 +64,8 @@
 #
 # Escape hatches match delegation-gate.sh exactly, so one mental model covers
 # both: WORKBENCH_ORCHESTRATOR=0 in the environment, and the per-session state
-# file written by /workbench-core:orchestrator off. The gate is ON by default.
+# file written by the /orchestrator off command (hooks/register.ts). The gate
+# is ON by default.
 #
 # Fail-open by design. A malformed payload, a missing jq, an absent prompt, or a
 # session id that cannot address a state file all exit 0. A guard that errors
@@ -142,7 +143,9 @@ IFS=$'\x1f' read -r AGENT_ID AGENT_TYPE TOOL_NAME SESSION_ID <<<"$FIELDS"
 STATE_DIR="${WORKBENCH_ORCHESTRATOR_STATE_DIR:-${HOME:-}/.claude-workbench/orchestrator-mode}"
 case "$SESSION_ID" in
   '' | *[!A-Za-z0-9._-]*) exit 0 ;;
-  *) [ -e "$STATE_DIR/$SESSION_ID" ] && exit 0 ;;
+  # Off is a regular file that is not a symbolic link, as /orchestrator writes
+  # it. A directory or a link planted at the path switches nothing off.
+  *) [ -f "$STATE_DIR/$SESSION_ID" ] && [ ! -L "$STATE_DIR/$SESSION_ID" ] && exit 0 ;;
 esac
 
 # (e) Defensive: the hooks.json matcher should already scope this.
@@ -304,7 +307,7 @@ if [ -n "$MISSING" ]; then
   # Both strings name the slots from the same records the check above greps for,
   # so a renamed slot cannot ask for one name while refusing another.
   REASON="🛑 Blocked: an Agent dispatch without a complete brief. Missing: ${MISSING}."
-  CONTEXT="Dispatch gate (workbench-core). Every Agent dispatch from the main session uses the six-slot brief, research included. Slots: $(brief_slot_summary). Add the missing slots and dispatch again.${PLUGIN_LINE} To dispatch without the brief in this session, the human can ask for /workbench-core:orchestrator off."
+  CONTEXT="Dispatch gate (workbench-core). Every Agent dispatch from the main session uses the six-slot brief, research included. Slots: $(brief_slot_summary). Add the missing slots and dispatch again.${PLUGIN_LINE} To dispatch without the brief in this session, the human can run /orchestrator off."
   jq -nc --arg reason "$REASON" --arg context "$CONTEXT" '{
     hookSpecificOutput: {
       hookEventName: "PreToolUse",

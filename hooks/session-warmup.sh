@@ -4,8 +4,8 @@
 # at session start.
 #
 # Invoked by the `core` plugin's SessionStart hook. Reads the hook payload from
-# stdin, writes the rules + notices to stdout for Claude Code to inject into the
-# assistant's context.
+# stdin, writes the rules to stdout for Claude Code to inject into the
+# assistant's context, and writes the notices to a file for Mike.
 #
 # Branches on the payload's `source` field:
 #   startup → full warmup: cleanup + rules + reconcile + drain + notices refresh
@@ -14,8 +14,10 @@
 #   compact → rules only
 #
 # The injected payload is BYTE-STABLE by construction: all volatile housekeeping
-# state goes to ~/.claude-workbench/warmup-notices.md and is surfaced by a
-# constant pointer line. See the append-only invariant at the rules block.
+# state goes to ~/.claude-workbench/warmup-notices.md, which the model is never
+# told to read. hooks/register.ts brings the notices to Mike: a toast naming
+# each one, a count on the status line, and the file behind /notices. See the
+# append-only invariant at the rules block.
 #
 # Exit code is always 0 — warmup failures must not break the session.
 
@@ -253,7 +255,7 @@ through, so read the deny and follow it.
 
 | Gate | What it protects |
 |---|---|
-| Delegation gate | Whole-file work belongs in a sub-agent. It never denies: a main-agent `Write` or `NotebookEdit` goes ahead with a reminder, once per session. Plans and scratch roots draw none. `/workbench-core:orchestrator off` silences it. |
+| Delegation gate | Whole-file work belongs in a sub-agent. It never denies: a main-agent `Write` or `NotebookEdit` goes ahead with a reminder, once per session. Plans and scratch roots draw none. The user's `/orchestrator off` silences it. |
 | Agent dispatch gate | A main-agent `Agent` dispatch must carry the six-slot brief. |
 | Destructive scope guard | `rm`, `rmdir`, `git reset --hard`, `git clean`, `git stash clear`/`drop`, and git commands that discard working-tree changes (such as `git restore`, `git checkout -- <path>`, or `git mv -f`, also through an alias) run only when every target resolves inside the project or a scratch root. |
 | Destructive database guard | Database resets, drops, and destructive SQL are refused. |
@@ -449,25 +451,25 @@ if [ "$SOURCE" = "startup" ]; then
       printf '## ⚠ Memory server port drift\n\n'
       printf 'The running memory server bound a different port than configured (port `%s`).\n' "$MEMORY_PORT"
       printf 'This usually means `WORKBENCH_MEMORY_PORT` in `~/.claude/settings.json` and the\n'
-      printf 'recorded `%s/server.port` disagree. Reconcile them (or run `/workbench-core:memory-status`), then restart Claude Code.\n\n' "$CACHE_PATH"
+      printf 'recorded `%s/server.port` disagree. Reconcile them (or run `/memory-status`), then restart Claude Code.\n\n' "$CACHE_PATH"
       ;;
     DOWN_FOREIGN)
       printf '## ⚠ Memory server port conflict\n\n'
       printf 'Another process is listening on memory port `%s` that is not the `%s` vault.\n' "$MEMORY_PORT" "$MCP_NAME"
       printf 'The shared server was not started to avoid a conflict. Free the port or set a different\n'
-      printf '`WORKBENCH_MEMORY_PORT`, then restart. See `/workbench-core:memory-status`.\n\n'
+      printf '`WORKBENCH_MEMORY_PORT`, then restart. See `/memory-status`.\n\n'
       ;;
     DOWN_FAILED)
       printf '## ⚠ Memory server failed to start\n\n'
       printf 'The last attempt to start the shared memory server failed (see `%s/server.log`).\n' "$CACHE_PATH"
-      printf 'Memory search and write will fail until it comes up. Run `/workbench-core:memory-status` to diagnose.\n\n'
+      printf 'Memory search and write will fail until it comes up. Run `/memory-status` to diagnose.\n\n'
       ;;
     *)  # DOWN_NONE — the up-hook already waited out its bind budget and it is
         # STILL not answering, so this is a slow or stuck start, not a fresh one.
       printf '## ℹ Memory server starting\n\n'
       printf 'The shared memory server did not answer within the startup wait, so it is still coming up.\n'
       printf 'Memory tools are likely unavailable for this session: the MCP client startup retries are already spent.\n'
-      printf 'Open `/mcp` to check the server and reconnect it in place. If that does not take, run `/workbench-core:memory-status`, and restart Claude Code only as a fallback.\n\n'
+      printf 'Open `/mcp` to check the server and reconnect it in place. If that does not take, run `/memory-status`, and restart Claude Code only as a fallback.\n\n'
       ;;
   esac
 fi
@@ -691,12 +693,17 @@ fi
 # prompt-cache reuse for the ENTIRE prompt downstream of it — the ~36k-token
 # tail of a scheduled Dispatch tick never cached for exactly this reason.
 #
-# So they are PULLED, not PUSHED: collected into $NOTICES_FILE and surfaced by
-# a pointer line whose bytes never change. The warmup payload is therefore
-# byte-stable for every session type — interactive, sub-agent, or scheduled —
-# without the hook needing to detect which kind of fire this is (no such signal
-# exists at SessionStart — see README, "Housekeeping notices — pulled, not
-# pushed", for what was checked and ruled out).
+# So they never reach the payload: they are collected into $NOTICES_FILE, and
+# hooks/register.ts reads that file a few seconds after session start and shows
+# the notices to Mike, never to the model (README, "Housekeeping notices — for
+# Mike, not the model"). The warmup payload is therefore byte-stable for every
+# session type — interactive, sub-agent, or scheduled — without the hook needing
+# to detect which kind of fire this is.
+#
+# A pointer line used to tell the model to read the file at session start. That
+# cost a Read turn in every session, and a session that read the file acted on
+# notices addressed to Mike. The notices are his: the summaries he drains, the
+# setup he re-runs, the Chat skills he installs.
 
 collect_warmup_notices() {
 # ──────────── Stray project-dir summary detector (startup only) ────────────
@@ -728,7 +735,7 @@ if [ "$SOURCE" = "startup" ]; then
   if [ -f "$RECALL_STAMP" ] && [ -z "$(find "$RECALL_STAMP" -mtime -2 2>/dev/null)" ]; then
     printf '## ⚠ Memory recall may be dead\n\n'
     printf 'The proactive recall hook last attempted a search more than 48h ago.\n'
-    printf 'Check hook registration and the memory server: `/workbench-core:memory-status`.\n\n'
+    printf 'Check hook registration and the memory server: `/memory-status`.\n\n'
   fi
 fi
 
@@ -827,16 +834,12 @@ fi
 
 # Collect, then persist. The file is rewritten every run — including when there
 # is nothing to report, so a stale notice from a previous session can never
-# masquerade as current. A write failure is not fatal (warmup never breaks a
-# session), but it must not leave the pointer promising a file that is missing
-# or stale: on failure the pointer is suppressed, which is the only branch here
-# that changes the injected bytes, and it only fires when the filesystem is
-# already broken.
+# masquerade as current. A write failure is not fatal: warmup never breaks a
+# session, and the status line then shows no notices.
 NOTICES_FILE="$HOME/.claude-workbench/warmup-notices.md"
 NOTICES="$(collect_warmup_notices)"
-NOTICES_WRITTEN=0
 if mkdir -p "$(dirname "$NOTICES_FILE")" 2>/dev/null; then
-  if {
+  {
     printf '# Warmup notices\n\n'
     printf '_Written by session-warmup.sh at %s session start. Rewritten every run._\n\n' "$SOURCE"
     if [ -n "$NOTICES" ]; then
@@ -844,27 +847,7 @@ if mkdir -p "$(dirname "$NOTICES_FILE")" 2>/dev/null; then
     else
       printf 'No outstanding notices.\n'
     fi
-  } > "$NOTICES_FILE" 2>/dev/null; then
-    NOTICES_WRITTEN=1
-  fi
-fi
-
-# The pointer. These bytes are IDENTICAL on every run — no count, no per-session
-# path, no conditional phrasing. That is the whole point: the notices change
-# constantly, this line never does.
-#
-# The instruction is UNCONDITIONAL on purpose. The push version this replaced
-# said "Run /workbench-core:process-pending-summaries" flat out; a pointer that
-# said "read this if housekeeping seems relevant" would be strictly weaker,
-# because deciding relevance is exactly what the agent cannot do before reading.
-# Pull-not-push is a transport change, not a licence to make the instruction
-# softer.
-if [ "$NOTICES_WRITTEN" = "1" ]; then
-  printf '## Session health notices\n\n'
-  # Deliberately paraphrased rather than echoing each notice's own heading: a
-  # heading repeated here would read as the notice itself having fired.
-  printf -- '- Read `%s` at the start of this session. It may list items that require action — summaries waiting to be drained, summaries misrouted into this project, a recall hook that has stopped firing, Chat skill installs.\n' "$NOTICES_FILE"
-  printf -- '- The file is rewritten at every session start, so it is always current. This pointer is constant by design: the notices live in the file so the warmup payload stays byte-stable and cacheable.\n\n'
+  } > "$NOTICES_FILE" 2>/dev/null
 fi
 
 exit 0

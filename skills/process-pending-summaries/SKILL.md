@@ -1,5 +1,6 @@
 ---
 description: Process pending session summaries by dispatching background summary-writer agents, or summarize one session by ID. Use when the warmup notices unprocessed markers, to clear the backlog, when the auto-summarizer missed a session, or to re-summarize one. Does NOT block the session.
+disable-model-invocation: true
 ---
 
 The user has invoked `/workbench-core:process-pending-summaries`, or pending markers were reported in `~/.claude-workbench/warmup-notices.md` (the session warmup writes housekeeping state there rather than injecting it, to keep the warmup payload byte-stable and cacheable).

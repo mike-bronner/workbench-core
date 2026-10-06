@@ -14,8 +14,11 @@
 #   Invalid MCP server config for "memory": Missing environment variables:
 #   WORKBENCH_MEMORY_TOKEN
 #
-# skills/memory-status — the tool a user reaches for when memory is broken —
+# The memory-status skill — the tool a user reaches for when memory is broken —
 # was stale in the same way, reporting "no port, no token, nothing to probe".
+# The skill is gone since /memory-status became a command (hooks/register.ts):
+# the pane shows scripts/memory-status.sh's own output, so the script is the
+# user-facing doc now, and the checks below read it.
 #
 # Every existing test asserted behaviour. Nothing asserted that the PROSE
 # telling a human what to do still matched the code, so the drift shipped.
@@ -44,7 +47,8 @@ echo
 
 # Docs a human reads and acts on. Excludes README's history sections and code
 # comments, which legitimately discuss the transport that is NOT in use.
-USER_DOCS="$ROOT/skills/setup/SKILL.md $ROOT/skills/memory-status/SKILL.md"
+STATUS_DOC="$ROOT/scripts/memory-status.sh"
+USER_DOCS="$ROOT/skills/setup/SKILL.md $STATUS_DOC"
 
 if [ "$TRANSPORT" = "http" ]; then
   echo "under the shared HTTP transport, the setup skill must PROVISION the token:"
@@ -89,7 +93,7 @@ if [ "$TRANSPORT" = "http" ]; then
   echo
   echo "memory-status agrees with scripts/memory-status.sh:"
   STALE_STATUS=$(grep -niE 'no start/stop|in-process|re-enabling the shared|shared HTTP server \(optional\)|per-session server' \
-    "$ROOT/skills/memory-status/SKILL.md" || true)
+    "$STATUS_DOC" || true)
   if [ -z "$STALE_STATUS" ]; then
     ok "memory-status carries no per-session or optional-server claim"
   else
@@ -97,7 +101,7 @@ if [ "$TRANSPORT" = "http" ]; then
        "stale line(s): $(echo "$STALE_STATUS" | head -2 | cut -c1-90)"
   fi
   for f in memory-server-up.sh memory-server-down.sh; do
-    grep -q "$f" "$ROOT/skills/memory-status/SKILL.md" \
+    grep -q "$f" "$STATUS_DOC" \
       && ok "memory-status names $f, as the script does" \
       || no "memory-status names $f, as the script does" "no mention of $f"
   done
@@ -110,7 +114,7 @@ if [ "$TRANSPORT" = "http" ]; then
 
 elif [ "$TRANSPORT" = "stdio" ]; then
   echo "under per-session stdio, the docs must NOT demand a port or a token:"
-  grep -q 'mcp-memory.sh' "$ROOT/skills/memory-status/SKILL.md" \
+  grep -q 'mcp-memory.sh' "$STATUS_DOC" \
     && ok "memory-status names the stdio launcher" \
     || no "memory-status names the stdio launcher" "no mention of mcp-memory.sh"
 else

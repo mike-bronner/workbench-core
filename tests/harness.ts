@@ -9,7 +9,9 @@ import type { On, PromptOrigin, TurnUsage } from 'claude-code'
 type Block = { type: string; [field: string]: unknown }
 
 export type World = {
-  // Each status line the module drew, in order. Undefined is a clear.
+  // The request meter's part of each status line the module drew, in order:
+  // the text before ` │ `, where the workbench facts begin. Undefined is a
+  // clear. The facts are tests/workbench.test.ts's.
   statuses: (string | undefined)[]
   // Each text the module sent to the classifier.
   classified: string[]
@@ -45,6 +47,7 @@ export function world(on: On, env: Record<string, string>): World {
   const ids: string[] = []
   const w: World = { statuses: [], classified: [], label: 'unset', stopBeneath: {}, blocksBefore: null, asked: 0, stepUsage: null }
   mock.env(on, env)
+  mock.clock(on)
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.end', ($, e) => ({ sessionId: e.sessionId }))
   on('prompt.submit', ($, e) => ({ text: e.text }))
@@ -58,9 +61,10 @@ export function world(on: On, env: Record<string, string>): World {
   })
   on('classic.Stop', () => w.stopBeneath)
   on('ui.status', ($, e) => {
-    w.statuses.push(e.text)
+    w.statuses.push(e.text?.split(' │ ')[0])
     return { value: undefined }
   })
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('model.classify', ($, e) => {
     w.classified.push(e.text)
     if (w.label instanceof Error) throw w.label

@@ -1,5 +1,6 @@
 ---
 description: Log the current session segment right now — dump the raw log and write the narrative summary + any decision promotions inline. Use this when you want to snapshot mid-conversation, or when you want a richer summary than the auto-generated one.
+disable-model-invocation: true
 ---
 
 The user has invoked `/log-now`. Log the current session segment immediately and write the narrative pieces inline.

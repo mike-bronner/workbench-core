@@ -4,7 +4,7 @@
 #
 # NOT a hook. The shared server follows a single never-stop model — once up it
 # stays up across sessions — so this is the ONLY stop path, and it is explicit:
-# run it (or /workbench-core:memory-status's stop affordance) when you want the
+# run it (scripts/memory-status.sh stop points here too) when you want the
 # server gone (e.g. to change ports, free the port, or force a clean restart).
 #
 # It reads server.pid, verifies the process is actually our server before

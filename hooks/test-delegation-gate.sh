@@ -15,7 +15,8 @@ set -u
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 GATE="$HOOKS_DIR/delegation-gate.sh"
 HOOKS_JSON="$HOOKS_DIR/hooks.json"
-SKILL="$HOOKS_DIR/../skills/orchestrator/SKILL.md"
+TOGGLE="$HOOKS_DIR/mods/orchestrator.ts"  # /orchestrator, in hooks/register.ts
+MODULE="$HOOKS_DIR/register.ts"
 PASS=0
 FAIL=0
 
@@ -183,6 +184,15 @@ run_case "state file for ANOTHER session does not silence" remind \
   tool_name=Write session_id=11111111-2222-3333-4444-555555555555 agent_id=- agent_type=-
 rm -f "$STATE_DIR/$SESSION"
 run_case "removing the state file re-enables the gate" remind tool_name=Write session_id="$SESSION" agent_id=- agent_type=-
+# Off is a regular file that is not a link. A directory or a link planted at the
+# path, which `[ -e ]` once read as off, switches nothing off.
+mkdir "$STATE_DIR/$SESSION"
+run_case "a directory planted at the path does not silence it" remind tool_name=Write session_id="$SESSION" agent_id=- agent_type=-
+rmdir "$STATE_DIR/$SESSION"
+: >"$SANDBOX/real-file"
+ln -s "$SANDBOX/real-file" "$STATE_DIR/$SESSION"
+run_case "a link to a regular file does not silence it" remind tool_name=Write session_id="$SESSION" agent_id=- agent_type=-
+rm -f "$STATE_DIR/$SESSION"
 
 # An unset override must fall back to the documented default under $HOME, and a
 # fresh fake HOME has no state file there — so the gate still reminds. This is
@@ -299,7 +309,11 @@ fi
 if [ -d "$LOGIN_HOME/.claude" ]; then
   MISSING="dgate-$$-plans"
   [ ! -e "$LOGIN_HOME/.claude/$MISSING" ] || echo "  ⚠️  $LOGIN_HOME/.claude/$MISSING exists, so the next case proves less"
-  sed "s#/plans#/$MISSING#g" "$GATE" >"$SANDBOX/missing-plans-gate.sh"
+  # The plans root is resolved in the lib the gate sources from beside itself,
+  # so the copy gets a lib of its own with the same rename.
+  mkdir -p "$SANDBOX/lib"
+  sed "s#/plans#/$MISSING#g" "$HOOKS_DIR/lib/scratch-roots.sh" >"$SANDBOX/lib/scratch-roots.sh"
+  cp "$GATE" "$SANDBOX/missing-plans-gate.sh"
   out=$(jq -nc --arg f "$LOGIN_HOME/.claude/$MISSING/first-plan.md" --arg s "$SESSION" \
     '{hook_event_name: "PreToolUse", tool_name: "Write", session_id: $s,
       tool_input: {file_path: $f}}' \
@@ -444,8 +458,9 @@ CMD_TEMPLATE="$(jq -r '
   [.hooks.PreToolUse[] | select(.hooks[].command | test("delegation-gate.sh")) | .hooks[].command][0] // ""
 ' "$HOOKS_JSON")"
 SPACED_ROOT="$SANDBOX/plugin root"  # deliberate space
-mkdir -p "$SPACED_ROOT/hooks"
+mkdir -p "$SPACED_ROOT/hooks/lib"
 cp "$GATE" "$SPACED_ROOT/hooks/delegation-gate.sh"
+cp "$HOOKS_DIR/lib/scratch-roots.sh" "$SPACED_ROOT/hooks/lib/scratch-roots.sh"
 reset_marks
 out=$(payload tool_name=Write session_id="$SESSION" agent_id=- agent_type=- \
   | env -u WORKBENCH_ORCHESTRATOR HOME="$FAKE_HOME" \
@@ -453,19 +468,36 @@ out=$(payload tool_name=Write session_id="$SESSION" agent_id=- agent_type=- \
         CLAUDE_PLUGIN_ROOT="$SPACED_ROOT" sh -c "${CMD_TEMPLATE:-false}")
 check "gate fires when the plugin path contains a space" "$out" remind
 
-echo "the toggle skill agrees with the gate:"
-# The skill writes the file the gate reads. If either side renames the env var
-# or the default directory, the toggle stops working and nothing else notices.
+echo "the scratch-root resolver, run directly as \$.workbench.scratchRoots() runs it:"
+# hooks/register.ts runs `bash lib/scratch-roots.sh <sid>` and keeps each
+# absolute line. The gate cases above cover what the roots mean. These cover
+# the command-line door: the session's pad for its own id only, and no
+# session root at all for an id that could walk out of the tree.
+RESOLVER="$HOOKS_DIR/lib/scratch-roots.sh"
+REAL_PAD="$(cd -P "$PAD" && pwd -P)"
+assert_contains "the session's own pad is a root"   "$(bash "$RESOLVER" "$SCRATCH_SID")" "$REAL_PAD"
+assert_missing  "another session's pad is not"      "$(bash "$RESOLVER" "$SCRATCH_SID")" "$(cd -P "$OTHER_PAD" && pwd -P)"
+assert_missing  "a symlinked pad is not"            "$(bash "$RESOLVER" "$LINK_SID")" "$SANDBOX/outside"
+assert_missing  "an id with a path separator names no session root" \
+  "$(bash "$RESOLVER" "../$SCRATCH_SID")" "$REAL_PAD"
+# A glob in the id would match every session's pad, real paths and all.
+assert_missing  "an id that is a glob names no session root" "$(bash "$RESOLVER" '*')" "$REAL_PAD"
+if bash "$RESOLVER" '../x' >/dev/null 2>&1; then RESOLVER_EXIT=""; else RESOLVER_EXIT="failed"; fi
+check "the resolver exits 0 on a bad id" "$RESOLVER_EXIT" silent
+
+echo "the /orchestrator command agrees with the gate:"
+# The command mirrors its mode into the file the gate reads. If either side
+# renames the env var or the default directory, the toggle stops working and
+# nothing else notices.
 for token in "WORKBENCH_ORCHESTRATOR_STATE_DIR" ".claude-workbench/orchestrator-mode"; do
-  assert_grep "skill uses $token" "$token" "$SKILL"
-  assert_grep "gate uses $token"  "$token" "$GATE"
+  assert_grep "toggle uses $token" "$token" "$TOGGLE"
+  assert_grep "gate uses $token"   "$token" "$GATE"
 done
-# The toggle keys its filename by $CLAUDE_CODE_SESSION_ID; the gate keys its
-# lookup by the payload's .session_id. The two are equal (verified live), and
-# each side must keep using its own name for that key.
-assert_grep "skill keys the file by \$CLAUDE_CODE_SESSION_ID" 'CLAUDE_CODE_SESSION_ID' "$SKILL"
-assert_grep "gate keys the lookup by .session_id"             '.session_id'            "$GATE"
-assert_grep "skill prunes state files after 7 days"           '-mtime +7'              "$SKILL"
+# The command keys the file by the session id the engine reports; the gate keys
+# its lookup by the payload's .session_id. The two are the same id.
+assert_grep "toggle keys the file by the session id" 'legacyFileOf(await $.session.id()' "$MODULE"
+assert_grep "gate keys the lookup by .session_id"    '.session_id'                       "$GATE"
+assert_grep "toggle keeps a stored mode 7 days"      'KEEP_DAYS = 7'                     "$TOGGLE"
 
 echo
 echo "$PASS passed, $FAIL failed"

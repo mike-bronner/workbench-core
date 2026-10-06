@@ -87,14 +87,13 @@ Concretely, **never** put any of these in `session-warmup.md`:
 | Version-drift banners, update-available notices | Flips on every upgrade |
 | Anything derived from session state | Different per session by definition |
 
-If you have volatile state that genuinely needs surfacing, use the pattern core
-uses for its own: **write it to a file and point at it with a constant line.**
-See `~/.claude-workbench/warmup-notices.md` and the "Housekeeping notices" README
-section. The pointer's bytes never change; the file behind it changes freely.
-
-Make the pointer's instruction **unconditional** ("Read `<path>` at the start of
-this session") rather than conditional ("read it if X seems relevant") — judging
-relevance is exactly what requires having read the file.
+If you have volatile state that genuinely needs surfacing, keep it out of the
+payload entirely. Core writes its own to `~/.claude-workbench/warmup-notices.md`,
+and its hooks module shows each notice to the user in a toast, a status-line
+count and the `/notices` pane (see the "Housekeeping notices" README section).
+Nothing in the payload points at the file. A constant pointer line telling the
+model to read it was tried first, and it cost a `Read` turn in every session for
+notices that were the user's to act on, not the model's.
 
 ---
 
@@ -142,7 +141,7 @@ agent *aware*; skills and references carry the detail.
 **Bad** — belongs elsewhere:
 
 - Full skill instructions → the `SKILL.md`; skills load on demand.
-- Anything volatile → a notices file plus a constant pointer.
+- Anything volatile → out of the payload, onto a surface the user reads (a file plus a status line, toast or pane), never a pointer the model must follow.
 - Anything over ~2 KB → a reference file plus a pointer.
 - Setup or troubleshooting prose → your README.
 

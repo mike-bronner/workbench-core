@@ -130,7 +130,7 @@
 #
 # NO ESCAPE HATCH, and none is needed. This gate never fires on a human: a
 # person types into a top-level session, which is the first allow branch. There
-# is nothing here for /workbench-core:orchestrator to stand down, and wiring
+# is nothing here for /orchestrator to stand down, and wiring
 # that toggle in would let one unrelated request — "let me edit inline" — also
 # open peer messaging from every sub-agent in the session.
 #

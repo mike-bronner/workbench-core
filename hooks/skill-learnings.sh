@@ -13,8 +13,12 @@
 # This hook does the mechanical half instead. When the Skill tool is about to
 # run, it looks for the skill's learnings file on disk. No file: silent, and no
 # cost at all. A file: its text goes to the model as additionalContext, with the
-# rule for adding to it. Past 30 entries: a warning that names the compaction
-# skill.
+# rule for adding to it.
+#
+# The 30-entry limit is no longer the model's to report. A file past it used to
+# carry a warning here, telling the model to tell the user. The count now goes
+# to the status line instead (hooks/register.ts runs scripts/learnings-count.sh
+# after each Skill call), where Mike sees it without a token spent.
 #
 # A file too large for one hook message is not truncated. Claude Code cuts a hook
 # output past 10,000 characters, so the tail would be lost silently. The budget
@@ -28,7 +32,6 @@
 set -u
 
 MAX_OUTPUT=9000  # characters of printed JSON, with headroom under 10,000
-COMPACT_AT=30
 
 PAYLOAD=""
 if [ ! -t 0 ]; then
@@ -57,19 +60,7 @@ REL="skills/$NAME.learnings.md"  # vault-relative, as the memory MCP takes it
 FILE="$(memory_resolve_memory_path)/$REL"
 [ -f "$FILE" ] && [ -r "$FILE" ] || exit 0
 
-# An entry is a `## ` heading, or a dated bullet (`- **2026-06-11** — …`), the
-# two shapes learnings files are written in.
-ENTRIES=$(grep -cE '^## |^- \*\*[0-9]{4}-[0-9]{2}-[0-9]{2}' "$FILE" 2>/dev/null)
-ENTRIES=${ENTRIES:-0}
-
 RULE="Add to this file only when this run taught something a future run needs: the user corrected the approach, something failed and you learned why, or the user confirmed a non-obvious approach. Append it through the memory MCP as \`## YYYY-MM-DD - short title\` followed by what to do next time. A routine run adds nothing."
-
-WARNING=""
-if [ "$ENTRIES" -gt "$COMPACT_AT" ]; then
-  WARNING="
-
-⚠ This learnings file has $ENTRIES entries, past the $COMPACT_AT-entry limit. After this run, tell the user and suggest \`/workbench-core:compact-learnings $NAME\`. Do not compact it yourself: compaction needs the user's review."
-fi
 
 emit() { jq -nc --arg c "$1" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$c}}'; }
 
@@ -77,10 +68,10 @@ OUT=$(emit "Learnings for the \`$NAME\` skill, recorded from its past runs at \`
 
 $(cat "$FILE")
 
-$RULE$WARNING")
+$RULE")
 
 if [ "${#OUT}" -gt "$MAX_OUTPUT" ]; then
-  OUT=$(emit "The \`$NAME\` skill has learnings from its past runs, too large to include here. Read the whole file with the memory MCP \`read\` tool, at the vault path \`$REL\`, before you start, and apply it to this run. $RULE$WARNING")
+  OUT=$(emit "The \`$NAME\` skill has learnings from its past runs, too large to include here. Read the whole file with the memory MCP \`read\` tool, at the vault path \`$REL\`, before you start, and apply it to this run. $RULE")
 fi
 
 printf '%s\n' "$OUT"

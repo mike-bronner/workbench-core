@@ -1,8 +1,9 @@
 ---
 description: Review and compact accumulated skill learnings. For workbench plugin skills, optionally integrate proven learnings into the SKILL.md itself. Triggered when a learnings file exceeds 30 entries, or run manually any time.
+disable-model-invocation: true
 ---
 
-The user has invoked `/workbench-core:compact-learnings`, or `hooks/skill-learnings.sh` warned that a skill's learnings file is past the 30-entry threshold.
+The user has invoked `/workbench-core:compact-learnings`, often because the status line shows a skill's learnings file past the 30-entry threshold.
 
 ## Step 1 — Identify targets
 

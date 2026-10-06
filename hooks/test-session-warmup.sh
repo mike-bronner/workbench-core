@@ -108,9 +108,9 @@ assert_no_path() {
   else PASS=$((PASS + 1)); echo "  ✅ $1"; fi
 }
 
-# Volatile notices are no longer injected into the warmup payload — they are
-# written to this file and surfaced by a byte-stable pointer. Tests that used
-# to grep stdout for a notice now read here instead.
+# Volatile notices are never injected into the warmup payload — they are
+# written to this file, and hooks/register.ts shows them to Mike. Tests that
+# used to grep stdout for a notice now read here instead.
 NOTICES_FILE="$SANDBOX/home/.claude-workbench/warmup-notices.md"
 notices() { cat "$NOTICES_FILE" 2>/dev/null; }
 
@@ -314,7 +314,7 @@ assert_contains "block announces the delegation gate"  "$OV_ID_BLOCK" "| Delegat
 assert_contains "block says the gate never denies"     "$OV_ID_BLOCK" "It never denies: a main-agent \`Write\` or \`NotebookEdit\` goes ahead with a reminder, once per session."
 assert_contains "block names the silent targets"       "$OV_ID_BLOCK" "Plans and scratch roots draw none."
 assert_missing  "block no longer says Write is denied" "$OV_ID_BLOCK" "denied \`Write\`"
-assert_contains "block names the gate's silencer"      "$OV_ID_BLOCK" "/workbench-core:orchestrator off"
+assert_contains "block names the gate's silencer"      "$OV_ID_BLOCK" "The user's \`/orchestrator off\` silences it."
 # Every gate the block names must be a hook this plugin ships AND registers. The
 # list is read from the block, so a renamed or retired hook turns the row red
 # instead of leaving the block telling every sub-agent about a gate that is gone.
@@ -475,7 +475,7 @@ OUT=$(cd "$STRAY_PROJ" && printf '{"source":"startup"}' | \
 assert_contains "warns about stray summaries"          "$(notices)" "Stray session summaries in this project"
 assert_contains "lists the stray file"                 "$(notices)" "xyz.summary.md"
 assert_missing  "notice is NOT injected into stdout"   "$OUT" "Stray session summaries in this project"
-assert_contains "stdout carries the stable pointer"    "$OUT" "Session health notices"
+assert_missing  "stdout carries no pointer to the file" "$OUT" "warmup-notices.md"
 
 echo "stray-summary detector — clean project stays quiet:"
 CLEAN_PROJ="$SANDBOX/clean"
@@ -486,19 +486,19 @@ OUT=$(cd "$CLEAN_PROJ" && printf '{"source":"startup"}' | \
   CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" 2>/dev/null)
 assert_missing  "no stray warning when project is clean" "$(notices)" "Stray session summaries"
 assert_contains "notices file rewritten, not appended"   "$(notices)" "No outstanding notices."
-assert_contains "pointer still printed with no notices"  "$OUT" "Session health notices"
-# The instruction must be unconditional. A pointer that says "read this if
-# housekeeping seems relevant" is strictly weaker than the push banner it
-# replaced, because judging relevance is what requires reading the file.
-assert_contains "pointer names the file and orders a read" "$OUT" "Read \`$NOTICES_FILE\` at the start of this session."
-assert_missing  "pointer is not conditional on perceived relevance" "$OUT" "when starting work that touches"
+# The notices are Mike's, and reach him through the status line, a toast and
+# /notices. The model is never told to read the file, which cost a Read turn in
+# every session.
+assert_missing  "no pointer heading in the payload"       "$OUT" "Session health notices"
+assert_missing  "no instruction to read the file"         "$OUT" "at the start of this session"
+assert_missing  "the file is not named in the payload"    "$OUT" "warmup-notices.md"
 
 # ──────────── Cache stability (volatile notices are pulled, not pushed) ────────
 # Anthropic prompt caching matches on an exact request prefix: one drifting byte
 # in the warmup output invalidates the cache for everything downstream — which
 # is why a scheduled Dispatch tick's ~36k-token tail never cached. The fix is
-# that NO volatile notice is injected at all; they go to the notices file and a
-# constant pointer line stands in. So the property to pin is not "stable prefix"
+# that NO volatile notice is injected at all; they go to the notices file,
+# which only Mike's surfaces read. So the property to pin is not "stable prefix"
 # but "byte-identical ENTIRE payload", regardless of how much notice state
 # churns underneath it.
 
@@ -562,7 +562,7 @@ for leak in "Stray session summaries in this project" "Memory recall may be dead
             "Pending session summaries" "New Chat-installable skills"; do
   assert_missing "payload omits: $leak" "$OUT_B" "$leak"
 done
-assert_contains "payload carries the constant pointer instead" "$OUT_B" "Session health notices"
+assert_missing  "payload carries no pointer either"           "$OUT_B" "warmup-notices.md"
 
 rm -f "$PREFIX_PROJ/memory/prefix-canary.summary.md" "$RECALL_STATE/last-attempt" \
       "$SANDBOX/cache/pending-summaries/cache-canary.json"

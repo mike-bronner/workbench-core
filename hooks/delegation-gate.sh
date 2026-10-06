@@ -48,7 +48,8 @@
 #
 # Silencers, in order of scope: WORKBENCH_ORCHESTRATOR=0 in the environment
 # (how an automated harness opts its own run out), and a per-session state file
-# written by /workbench-core:orchestrator off. The reminder is ON by default.
+# written by the /orchestrator off command (hooks/register.ts). The reminder
+# is ON by default.
 # Two kinds of target never draw it: a file in a scratchpad, and a plan under
 # ~/.claude/plans/, branch (f) below.
 #
@@ -116,7 +117,9 @@ IFS=$'\x1f' read -r AGENT_ID AGENT_TYPE TOOL_NAME SESSION_ID FILE_PATH <<<"$FIEL
 STATE_DIR="${WORKBENCH_ORCHESTRATOR_STATE_DIR:-${HOME:-}/.claude-workbench/orchestrator-mode}"
 case "$SESSION_ID" in
   '' | *[!A-Za-z0-9._-]*) exit 0 ;;
-  *) [ -e "$STATE_DIR/$SESSION_ID" ] && exit 0 ;;
+  # Off is a regular file that is not a symbolic link, as /orchestrator writes
+  # it. A directory or a link planted at the path switches nothing off.
+  *) [ -f "$STATE_DIR/$SESSION_ID" ] && [ ! -L "$STATE_DIR/$SESSION_ID" ] && exit 0 ;;
 esac
 
 # (e) Only a whole-file write draws the reminder. Edit never does (see the
@@ -135,16 +138,9 @@ esac
 #
 #     The roots are the two scratchpads the destructive-scope guard
 #     (hooks/lib/destructive-scope-check.py) already trusts, resolved the same
-#     way, plus the plans folder. None comes from anything the caller can set:
-#       - this session's scratchpad, matched by session id under
-#         /private/tmp/claude-*/ and /tmp/claude-*/, and refused when any level
-#         of it is a symlink, because anyone can build a directory of that
-#         shape and point it somewhere else;
-#       - the login home's Developer/scratchpad and .claude/plans, where the
-#         home comes from the password database through `~user` expansion,
-#         never from $HOME. When plans/ does not exist yet, its root is the
-#         resolved .claude folder plus /plans, so plan mode's first write,
-#         which creates the folder, still draws no reminder.
+#     way, plus the plans folder. hooks/lib/scratch-roots.sh holds the one
+#     resolver, which $.workbench.scratchRoots() in hooks/register.ts runs too,
+#     and its header says how each root is found.
 #     The target is compared physically: its deepest existing ancestor is
 #     resolved with `cd -P`, so `<root>/link/x` and `<root>/../x` cannot pass a
 #     prefix test. A target that is itself a symlink is refused, because Write
@@ -152,35 +148,11 @@ esac
 #
 #     Everything this cannot settle falls through to the reminder below. The
 #     write goes ahead either way, so a wrong answer here costs one reminder.
-physical_dir() {
-  [ -d "$1" ] && (cd -P -- "$1" 2>/dev/null && pwd -P)
-}
-
-scratch_roots() {
-  local candidate real user home plans claude_dir
-  for candidate in /private/tmp/claude-*/*/"$SESSION_ID"/scratchpad \
-                   /tmp/claude-*/*/"$SESSION_ID"/scratchpad; do
-    real=$(physical_dir "$candidate") || continue
-    [ "$real" = "$candidate" ] && printf '%s\n' "$real"
-  done
-  user=$(id -un 2>/dev/null)
-  case "$user" in
-    '' | -* | *[!A-Za-z0-9._-]*) return 0 ;;
-  esac
-  eval "home=~$user"
-  case "$home" in
-    /*) physical_dir "$home/Developer/scratchpad"
-        # Plan mode's first write can come before plans/ exists. The root is
-        # then built from .claude, which does exist, giving the same prefix
-        # physical_target builds for a target under the missing folder.
-        if plans=$(physical_dir "$home/.claude/plans"); then
-          printf '%s\n' "$plans"
-        elif claude_dir=$(physical_dir "$home/.claude"); then
-          printf '%s/plans\n' "${claude_dir%/}"
-        fi ;;
-  esac
-  return 0
-}
+#     That includes a resolver that cannot be sourced: physical_dir is then
+#     undefined, physical_target fails, and the reminder fires.
+GATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=hooks/lib/scratch-roots.sh
+. "$GATE_DIR/lib/scratch-roots.sh" 2>/dev/null || true
 
 # The physical path the target would land at, or failure when it cannot be
 # settled: a relative path, a `.` or `..` component, a target or a missing
@@ -206,7 +178,7 @@ if TARGET=$(physical_target "$FILE_PATH"); then
     case "$TARGET" in
       "$root"/*) exit 0 ;;
     esac
-  done <<<"$(scratch_roots)"
+  done <<<"$(scratch_roots "$SESSION_ID")"
 fi
 
 # Once per session. `set -C` makes the redirect fail when the marker already

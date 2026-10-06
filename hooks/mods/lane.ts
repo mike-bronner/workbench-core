@@ -21,10 +21,15 @@
 //
 // Every unknown reads as unattended, so the rule never fires on a guess.
 //
+// $.workbench.isUnattended() and callerLane() answer from these same functions,
+// so the question rule and every dependent plugin read one lane definition.
+//
 // Pure functions only: the engine follows `$` into no imported function, so the
 // hooks that read the signals live in hooks/register.ts.
 
 import type { PromptOrigin } from 'claude-code'
+
+import type { WorkbenchCallerLane } from '../../types'
 
 // The prompt origins that open a turn a person in an interactive session
 // answers: what they typed or clicked, and a background task's notification. A
@@ -44,3 +49,9 @@ export const isAttendedPrompt = (origin: PromptOrigin, text: string): boolean =>
 
 export const isAttendedSession = (isInteractive: boolean, agent: string | undefined, pipeline: string | undefined): boolean =>
   isInteractive && !agent && pipeline !== '1'
+
+// Who makes a call, from the agentId the call's event carries and the session's
+// CLAUDE_CODE_AGENT. A sub-agent's events carry agentId. A top-level
+// `claude -p --agent` run carries none, and is told apart by CLAUDE_CODE_AGENT.
+export const laneOf = (agentId: string | undefined, agent: string | undefined): WorkbenchCallerLane =>
+  agentId ? 'sub-agent' : agent ? 'top-level-agent' : 'main'

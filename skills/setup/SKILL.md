@@ -1,5 +1,6 @@
 ---
 description: Configure the workbench — agent name, memory paths, MCP server name, the permission safety rails (defaultMode plus deny/ask rules) written to ~/.claude/settings.json, and the shipped output style. Re-run after a plugin update to re-sync the output style. Config lives in the plugin data directory and is read at MCP start time, so plugin updates never clobber settings.
+disable-model-invocation: true
 ---
 
 The user has invoked `/workbench-core:setup`. Walk them through configuring all workbench settings interactively.

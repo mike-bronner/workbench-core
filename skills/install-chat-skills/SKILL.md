@@ -1,6 +1,7 @@
 ---
 name: install-chat-skills
 description: Install the skills of installed workbench-* plugins into the Claude Mac app. Use when the warmup notices say new Chat-installable skills exist, or to re-sync after installing or updating a workbench plugin.
+disable-model-invocation: true
 ---
 
 # Install Chat Skills

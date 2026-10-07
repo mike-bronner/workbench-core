@@ -16,7 +16,7 @@
 // data, or an object of methods, is refused when the module loads ("an
 // interface is an object of methods"). So the slots are a method, and the names
 // are flat: briefSlots, briefCheck, scratchRoots, orchestratorIsOn,
-// isUnattended, callerLane.
+// isUnattended, callerLane, parseShell.
 
 // One slot of the six-slot dispatch brief: the header a brief writes at the
 // start of a line, and what the slot carries. hooks/lib/brief-template.sh holds
@@ -54,6 +54,130 @@ export type WorkbenchCallerLaneArgs = {
   agentId?: string
 }
 
+// What parseShell could not read. Each names the construct, and any of them
+// means the statements may be missing a command bash runs, or may name one
+// wrongly. A caller that must not let an unread command through refuses a
+// line with any unknown.
+//   quote         a quote with no closing quote
+//   substitution  a $( ), backtick, <( ), $(( )), $[ ] or (( )) with no close
+//   heredoc       a heredoc with no terminator line: bash reads the rest of
+//                 the text as its body, and so does the reader
+//   escape        a $'…' escape the reader does not decode (\u, \U, \c, ...)
+//   wrapper       a wrapper option the reader cannot place (isPlaced),
+//                 including one that hands its command to a shell (`sudo -s`,
+//                 `flock <file> -c`)
+//   expansion     a command name from a variable or a substitution (`$X a`)
+//   stdin         a shell with no script reads one from a pipe or a
+//                 here-string (`echo x | sh`, `cat <<EOF | bash`). A heredoc
+//                 piped in, or the here-string, is still read as a script.
+//   depth         scripts nested past four levels, which are not read
+export type WorkbenchShellUnknown = 'quote' | 'substitution' | 'heredoc' | 'escape' | 'wrapper' | 'expansion' | 'stdin' | 'depth'
+
+// One redirect of a statement. A real one is an operator bash reads: `op` is
+// the operator as written (`>`, `>>`, `<`, `<>`, `>|`, `&>`, `&>>`, `>&`,
+// `<&`, `<<<`, `<<`, `<<-`), `fd` the file descriptor written before it, and
+// `target` its target word, quotes removed (a heredoc's delimiter for `<<`).
+// A redirect that is not real is a `>` or `<` that bash reads as text: inside
+// quotes (an awk or sed program), after a backslash, in a heredoc body, in
+// arithmetic, or in a [[ ]] test.
+// Its `op` is that one character, and its `fd` and `target` are empty. A
+// comment is never read at all.
+export type WorkbenchShellRedirect = {
+  op: string
+  fd: string
+  target: string
+  isReal: boolean
+}
+
+// One heredoc of a statement. `body` is its text, as written. `isQuoted` is
+// true when any part of the delimiter was quoted, so bash does not expand the
+// body. `feedsShell` is true when a shell or eval reads the body as a script,
+// directly or through a pipe (`cat <<EOF | bash`): its statements are then in
+// the list, with source `heredoc`. `isTerminated`
+// is false when no line ends the body, and the `heredoc` unknown is set.
+export type WorkbenchShellHeredoc = {
+  delimiter: string
+  body: string
+  isQuoted: boolean
+  stripsTabs: boolean
+  feedsShell: boolean
+  isTerminated: boolean
+}
+
+// Where a statement was read. `line` is the text itself. `substitution` is a
+// $( ), backtick or <( ), or one inside arithmetic. `script` is the script of
+// a shell -c, eval's words, a trap's handler, or a here-string fed to a shell.
+// `heredoc` is a heredoc body that feeds a shell, or a substitution in a body
+// bash expands.
+export type WorkbenchShellSource = 'line' | 'substitution' | 'script' | 'heredoc'
+
+// One simple command of the line. An arithmetic command `(( … ))` is a
+// statement named `((` whose expression is not read as words, when the text
+// reads as arithmetic, and a word after it is a statement of its own. Text
+// that does not read as arithmetic is read as commands. In a `[[ … ]]` test,
+// < and > are words, never redirects. A && || | ( ) there still splits the
+// statement, so no command is hidden in a test, and the test goes on to its
+// ]]. Only a bare `[[` in command position, with no redirect or assignment
+// before it, opens a test, and a ]] right before an operator closes it. A
+// case pattern is read as words, so it may show as arguments or a
+// statement, and its substitutions are statements.
+export type WorkbenchShellStatement = {
+  // Every word, quotes removed, redirects and their targets taken out. `$_`
+  // stands where a substitution stood.
+  words: readonly string[]
+  // The index in words of the command name, past the assignments, keywords
+  // (if then else elif do while until ! { coproc, and the closers } fi done
+  // esac) and wrappers in front of it. -1 when there is none (`x=1`,
+  // `> file`).
+  nameAt: number
+  // The command name: its last path part, lowercased, as macOS finds GIT on
+  // its case-insensitive disk (`/usr/bin/GIT` is `git`). Empty when nameAt is
+  // -1. A name holding `$` is only known at run time, and sets the
+  // `expansion` unknown.
+  name: string
+  // The words after the name, exactly as bash passes them: no flag is joined,
+  // split, normalized or dropped (`-fu`, `+main`, `:old` stay as written).
+  args: readonly string[]
+  // The NAME=value words in front of the name, env's included.
+  assignments: readonly string[]
+  // The wrappers in front of the name, lowercased, in order (`sudo`, `env`).
+  wrappers: readonly string[]
+  // For git and gh, the index in args of the subcommand, past the global
+  // options and their values (`git -C x push` is 2, `gh -R o/r pr merge` is
+  // 2). -1 for any other command, and when there is no subcommand.
+  subcommandAt: number
+  // False when a wrapper option could not be placed, so the name may be an
+  // option's value and the real command later in args. The `wrapper` unknown
+  // is set too.
+  isPlaced: boolean
+  // The indexes in words of every word that holds a $'…' backslash escape.
+  // Bash may decode such a word to any name (`$'\x67it'` is git), so an
+  // escaped name, option or subcommand is possibly anything.
+  escaped: readonly number[]
+  // True when the statement runs whenever the line runs: no && or ||, and no
+  // if, while, until, case, for, select, function or `name()` came before it
+  // in the line. A nested statement takes the value of the one that holds it,
+  // and a trap's handler is never certain.
+  // False is the safe side for a caller that needs certainty.
+  isCertain: boolean
+  redirects: readonly WorkbenchShellRedirect[]
+  heredocs: readonly WorkbenchShellHeredoc[]
+  source: WorkbenchShellSource
+  // How many substitutions, scripts and heredoc bodies hold the statement.
+  depth: number
+}
+
+// The reading of one Bash command line.
+export type WorkbenchShellParse = {
+  // In reading order. A substitution's statements come before the statement
+  // it stands in, a script's right after the statement that runs it, and a
+  // body's after the line of its heredoc.
+  statements: readonly WorkbenchShellStatement[]
+  // What could not be read, sorted, each once. Empty when the reading is
+  // whole.
+  unknowns: readonly WorkbenchShellUnknown[]
+}
+
 export type Workbench = {
   // The six slots, in template order.
   briefSlots: () => Promise<readonly WorkbenchBriefSlot[]>
@@ -89,6 +213,11 @@ export type Workbench = {
   // string, or a failed hook), for the reason isUnattended does: a gate that
   // treats an unknown as `main` stays on, and a nudge treats it otherwise.
   callerLane: (args: WorkbenchCallerLaneArgs) => Promise<WorkbenchCallerLane>
+  // The reading of a Bash command line by hooks/mods/shell.ts, the one shell
+  // reader core's commit gate reads lines through. It reads, and decides
+  // nothing: every rule stays with its caller. What it cannot read is named in
+  // `unknowns`, never left out silently. REJECTS when `line` is not a string.
+  parseShell: (line: string) => Promise<WorkbenchShellParse>
 }
 
 // One main-loop API request: the model that answered, and its cost in US

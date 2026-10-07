@@ -2,7 +2,8 @@
 // command hooks stay registered: the guards move here only after parity.
 //
 //   $.workbench     the noun other plugins build on: the brief, the scratch
-//                   roots, orchestrator mode (types/index.d.ts is its contract)
+//                   roots, orchestrator mode, the lane, the shell reader
+//                   (types/index.d.ts is its contract)
 //   question rule   every question to Mike goes through AskUserQuestion, with
 //                   its context in prose right above the call
 //   request meter   turns, and each API request's cost, on the status line
@@ -23,11 +24,12 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, FsEntry, Register, RenderElement } from 'claude-code'
 
-import type { PaneContent, WorkbenchCallerLane } from '../types'
+import type { PaneContent, WorkbenchCallerLane, WorkbenchShellParse } from '../types'
 import { BRIEF_SLOTS, checkBrief } from './mods/brief'
 import type { Refs } from './mods/commit-approval'
 import { BUNDLE_REFUSAL, approvalAfter, bundlesCommit, dirOf, isCommitPick, readLine, refusalOf } from './mods/commit-approval'
 import { isAttendedPrompt, isAttendedSession, isScheduledFire, laneOf } from './mods/lane'
+import { parseShell } from './mods/shell'
 import {
   REFUSAL,
   STORE_KEY,
@@ -382,6 +384,12 @@ export const register: Register = on => {
         },
         callerLane: async (): Promise<WorkbenchCallerLane> => {
           throw new Error('workbench: the lane is unknown')
+        },
+        // Pure, like briefCheck. What the reader cannot read is in the
+        // answer's unknowns, so only a line that is not a string rejects.
+        parseShell: async (line: string): Promise<WorkbenchShellParse> => {
+          if (typeof line !== 'string') throw new Error('workbench: parseShell reads a string')
+          return parseShell(line)
         },
       },
     }

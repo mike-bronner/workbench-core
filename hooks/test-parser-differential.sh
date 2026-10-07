@@ -80,8 +80,17 @@ verdict() {
 }
 
 # row <guard> <expected> <label> <command>
+#
+# With PARSER_CASES_OUT set, each row's command is also written there as one
+# JSON line, the sandbox path spelled /sandbox so the record is the same on
+# every run. hooks/test-shell-parity.sh reads them, to hold the TypeScript
+# reader (hooks/mods/shell.ts) to shell_parse.py on this same corpus.
 row() {
   local guard="$1" expected="$2" label="$3" command="$4" actual
+  if [ -n "${PARSER_CASES_OUT:-}" ]; then
+    jq -nc --arg label "$guard · $label" --arg command "${command//$SANDBOX//sandbox}" \
+      '{label: $label, command: $command}' >>"$PARSER_CASES_OUT"
+  fi
   actual=$(verdict "$guard" "$command")
   if [ "$actual" = "$expected" ]; then
     PASS=$((PASS + 1)); echo "  ✅ $guard · $label"

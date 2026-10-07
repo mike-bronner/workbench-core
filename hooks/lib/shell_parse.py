@@ -33,6 +33,9 @@ this writing the importers are:
     hooks/test-outbound-prose-guard.sh   (its inline parser imports this file)
     hooks/test-memory-scan-recall.sh     (hooks/lib/scan-query.py)
     hooks/test-shell-parse.sh            (this file's own rules, pinned directly)
+    hooks/test-shell-parity.sh           (holds hooks/mods/shell.ts, the TS reader
+                                          behind $.workbench.parseShell, to this
+                                          file on the differential corpus)
 
 WHAT BELONGS HERE, AND WHAT DOES NOT:
 Only mechanical parsing — tokenising, splitting a line into statements and

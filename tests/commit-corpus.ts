@@ -164,6 +164,49 @@ export const CAUGHT: readonly (readonly [string, Expected])[] = [
   ['git commit -m x && git push', { commits: 1, pushes: 1 }],
   ['git commit -m a; git commit -m b', { commits: 2, pushes: 0 }],
   ['git push && git push --tags', { commits: 0, pushes: 2 }],
+  // Misses the shared reader closed (hooks/mods/shell.ts). A redirect takes
+  // only a real operator, so `|` and `&` after `>&-` still separate.
+  ['echo x >&-|git push', P],
+  ['true 2>&-&git push', P],
+  ['true 2>&-&&git push', P],
+  // A shell reads options before its -c script, `--` included.
+  ["bash -c -- 'git push'", P],
+  ["bash -c -e 'git commit -m x'", C],
+  // Bash removes \` inside backticks before it reads them.
+  ['echo `echo \\`git push\\``', P],
+  // A function body, a coproc, setsid, and a case inside $( ).
+  ['function f { git push; }; f', P],
+  ['coproc git push', P],
+  ['setsid git push', P],
+  ['setsid -f git commit -m x', C],
+  ['echo $(case x in x) git push;; esac)', P],
+  // A ]] right before an operator ends the test.
+  ['[[ a ]]&&git push', P],
+  ['[[ a ]]||git push', P],
+  // A case pattern's substitutions run.
+  ['case x in $(git push)) ;; esac', P],
+  ['case x in `git push`) ;; esac', P],
+  ['case x in ${y:-$(git push)}) ;; esac', P],
+  ['case x in y|$(git push)) ;; esac', P],
+  ['case x in "$(git push)") ;; esac', P],
+  // A word bash does not read as a reserved word opens no case and no test.
+  ['\\case x in|git push', P],
+  ['"case" x in|git push', P],
+  ['c\\ase x in|git push', P],
+  ['> f case x in\ngit push', P],
+  ['<<< x [[ a || git push', P],
+  // A named coprocess runs its body.
+  ['coproc NAME { git push; }', P],
+]
+
+// Lines the gate counts on purpose though bash runs no commit or push: bash
+// 3.2 and zsh reject each as a syntax error, so nothing on it runs. The
+// reader cannot tell a rejected line from a run one, so the gate counts it,
+// to be safe. A port reads these as the gate's choice, never as bash
+// running git.
+export const OVER_COUNTED: readonly (readonly [string, Expected])[] = [
+  // A word after an arithmetic command: bash rejects `(()) printf RAN`.
+  ['(()) git push', P],
 ]
 
 export const LET_THROUGH: readonly string[] = [
@@ -206,4 +249,6 @@ export const LET_THROUGH: readonly string[] = [
   "echo $'\\x67it push'",
   "printf $'%s\\n' 'git commit'",
   "git log --format=$'%s\\t%h'",
+  // A case pattern is text to match, not a command.
+  'case x in git) echo;; esac',
 ]

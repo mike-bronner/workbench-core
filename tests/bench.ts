@@ -45,6 +45,20 @@ export type Bench = {
   // Each tool call that reached the engine, and whether the legacy toggle
   // file existed at that moment: what the bash gates beneath would read.
   calls: { tool: string; legacyExists: boolean }[]
+  // Each tool call that reached the engine, its input whole.
+  inputs: Record<string, unknown>[]
+  // The label Mike picks in each AskUserQuestion dialog: every question of the
+  // call is answered with it. Undefined dismisses the dialog.
+  pick?: string
+  // More fields of the dialog's result, such as afkTimeoutMs.
+  dialog: Record<string, unknown>
+  // The repository `git -C <dir> rev-parse` reads, by directory: HEAD, and
+  // what @{push} points at. A directory not here, or a field left out, makes
+  // git fail, as outside a repository or with no push target.
+  repos: Record<string, { head?: string; pushed?: string }>
+  // What each Bash call that reaches the engine does, such as moving a repo's
+  // HEAD as a commit would, and whether it reports an error.
+  onBash?: (command: string) => { isError?: boolean } | void
   clock: MockClock
 }
 
@@ -78,11 +92,15 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     runs: [],
     scripts: {},
     calls: [],
+    inputs: [],
+    dialog: {},
+    repos: {},
     clock: mock.clock(on, { now: START }),
   }
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.end', ($, e) => ({ sessionId: e.sessionId }))
   on('session.id', () => ({ value: sessionId }))
+  on('session.cwd', () => ({ value: '/repo' }))
   on('prompt.submit', ($, e) => ({ text: e.text }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
   on('command.register', ($, e) => {
@@ -139,6 +157,11 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
       b.afterRm?.()
       return { value: ran('') }
     }
+    if (e.argv[0] === 'git' && e.argv[1] === '-C' && e.argv[3] === 'rev-parse') {
+      const repo = b.repos[e.argv[2] ?? '']
+      const value = e.argv[e.argv.length - 1] === 'HEAD' ? repo?.head : repo?.pushed
+      return { value: value === undefined ? { ...ran(''), exitCode: 1 } : ran(`${value}\n`) }
+    }
     const name = (e.argv[1] ?? '').split('/').pop() ?? ''
     const script = b.scripts[name]
     if (script === undefined) throw new Error(`no script ${name}`)
@@ -159,8 +182,19 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
   on('tool.call', ($, e) => {
     // What the gates' `[ -f ] && [ ! -L ]` reads: a regular file, no link.
     b.calls.push({ tool: e.tool, legacyExists: b.files.has(LEGACY) && !b.links.has(LEGACY) })
+    b.inputs.push({ ...e })
+    if (e.tool === 'AskUserQuestion') {
+      if (b.pick === undefined) throw new Error('dismissed')
+      const pick = b.pick
+      const answers = Object.fromEntries(e.questions.map(question => [question.question, pick]))
+      return { result: { questions: e.questions, answers, ...b.dialog } as never }
+    }
+    if (e.tool === 'Bash' && b.onBash?.(e.command)?.isError) return { isError: true, result: 'exit 1', text: 'exit 1' }
     return { result: {} as never }
   })
+  // No message holds a call here, so the question rule lets every
+  // AskUserQuestion through: tests/question-rule.test.ts covers the rule.
+  on('session.messages', () => ({ value: [] }) as never)
   return b
 }
 

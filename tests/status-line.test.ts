@@ -11,10 +11,10 @@ const NOTICE_FILE = '# Warmup notices\n\n_Written by session-warmup.sh at startu
 const SETTLE = 3000
 
 describe('AC5: memory-status and the toggle run as commands, with no model turn', () => {
-  test('the three commands are registered at session start', async ($, on) => {
+  test('the four commands are registered at session start', async ($, on) => {
     const b = bench(on)
     await $.session.start(start())
-    expect(b.registered).toEqual(['orchestrator', 'memory-status', 'notices'])
+    expect(b.registered).toEqual(['orchestrator', 'memory-status', 'notices', 'process-pending-summaries'])
   })
 
   test('/memory-status runs the script and shows its output in a pane, and returns nothing for the model', async ($, on) => {

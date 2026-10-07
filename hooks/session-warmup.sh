@@ -770,11 +770,10 @@ if [ "$SOURCE" != "compact" ]; then
 those.** The drain is bounded per session start, so a large backlog clears over
 several sessions rather than all at once.
 
-**To clear the rest now, run \`/workbench-core:process-pending-summaries\`.**
-Do NOT block the session — the skill dispatches agents and returns immediately.
+**To clear the rest now, run \`/process-pending-summaries\`.** The command
+spawns detached writers and returns at once, with no model turn.
 
-If the skill is unavailable, note the pending summaries and move on. The
-remainder is picked up by subsequent session starts automatically.
+Otherwise the remainder is picked up by later session starts automatically.
 NOTICE
     printf '\n'
   fi

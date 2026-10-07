@@ -48,9 +48,8 @@
 # it, because the branch belongs beside the path it qualifies. A slot of its own,
 # or a Constraints: bullet, would separate the two.
 #
-# A bare absolute path stays fully valid. Most dispatches settle nothing, and
-# skills/process-pending-summaries dispatches into the memory vault, where no
-# branch applies.
+# A bare absolute path stays fully valid. Most dispatches settle nothing, and a
+# dispatch into the memory vault has no branch to name.
 #
 # This is documented meaning only. The gate greps the headers below and never
 # reads slot content, so both shapes already pass and no pattern changed here.

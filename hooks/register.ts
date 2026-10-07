@@ -8,8 +8,12 @@
 //   request meter   turns, and each API request's cost, on the status line
 //   status line     beside the meter: memory health, orchestrator mode, reply
 //                   rows, learnings due for compaction, warmup notices
-//   commands        /orchestrator, /memory-status and /notices, answered here
-//                   with no model turn
+//   commands        /orchestrator, /memory-status, /notices and
+//                   /process-pending-summaries, answered here with no model turn
+//   commit approval in Mike's session, one "Commit it" pick in AskUserQuestion,
+//                   asked alone, allows one commit and the push of that commit
+//   vault writes    the memory MCP's write, edit and append get a vault-relative
+//                   path, valid frontmatter on a new note, and path links
 //
 // The logic is pure and lives in mods/. Every hook that touches `$` lives in
 // this file, because the engine follows `$` into no imported function, and a
@@ -21,7 +25,9 @@ import type { EngineInterface, FsEntry, Register, RenderElement } from 'claude-c
 
 import type { PaneContent, WorkbenchCallerLane } from '../types'
 import { BRIEF_SLOTS, checkBrief } from './mods/brief'
-import { isAttendedPrompt, isAttendedSession, laneOf } from './mods/lane'
+import type { Refs } from './mods/commit-approval'
+import { BUNDLE_REFUSAL, approvalAfter, bundlesCommit, dirOf, isCommitPick, readLine, refusalOf } from './mods/commit-approval'
+import { isAttendedPrompt, isAttendedSession, isScheduledFire, laneOf } from './mods/lane'
 import {
   REFUSAL,
   STORE_KEY,
@@ -45,14 +51,44 @@ import {
   hasContextBefore,
   proseOf,
 } from './mods/question-rule'
+import {
+  NAME as PENDING,
+  OVERWRITE,
+  REFUSAL as PENDING_REFUSAL,
+  SKIP,
+  USAGE as PENDING_USAGE,
+  askOverwrite,
+  outcomeOf,
+  reportOf as pendingReportOf,
+  requestOf,
+} from './mods/pending-summaries'
 import { EMPTY, countRequest, countTurn, statusOf } from './mods/request-meter'
 import { countOf, factsOf, healthOf, learningsAfter, lineOf, noticesOf, rowsOf, skillNameOf } from './mods/status-line'
+import type { VaultTool } from './mods/vault-write'
+import {
+  TEXT_FIELD,
+  fixPath,
+  frontmatterProblems,
+  frontmatterRefusal,
+  isNote,
+  needsRoot,
+  resolvedOf,
+  rewriteLinks,
+  vaultToolOf,
+  wikiTargets,
+} from './mods/vault-write'
 
 const meter = atom({ plugin: 'workbench-core', key: 'meter' } as const, EMPTY)
 // Whether a person opened the current turn, so the question rule applies.
 const turnAttended = atom({ plugin: 'workbench-core', key: 'turnAttended' } as const, false)
 // Whether the question rule already re-prompted in the current turn.
 const reprompted = atom({ plugin: 'workbench-core', key: 'reprompted' } as const, false)
+// Where Mike's last "Commit it" pick stands: unused, used by its commit with
+// the push left, or used up. Any prompt ends an unused pick, and Mike's own
+// prompt ends the push left too.
+const commitApproval = atom({ plugin: 'workbench-core', key: 'commitApproval' } as const, 'none')
+// Whether a schedule opened the current turn, so a commit in it is not gated.
+const turnScheduled = atom({ plugin: 'workbench-core', key: 'turnScheduled' } as const, false)
 const learnings = atom({ plugin: 'workbench-core', key: 'learnings' } as const, {})
 const replyRows = atom({ plugin: 'workbench-core', key: 'replyRows' } as const, null)
 const notices = atom({ plugin: 'workbench-core', key: 'notices' } as const, [])
@@ -69,6 +105,11 @@ const COMMANDS = [
   { name: 'orchestrator', description: 'Orchestrator mode for this session: on, off, or status', argumentHint: '[on|off|status]' },
   { name: 'memory-status', description: "The shared memory server's facts, in a pane" },
   { name: 'notices', description: 'The warmup notices from this session start, in a pane' },
+  {
+    name: PENDING,
+    description: 'Dispatch summary-writers for the pending session summaries, or for one session by id',
+    argumentHint: '[<session-id> [--overwrite]]',
+  },
 ] as const
 const OURS: ReadonlySet<string> = new Set(COMMANDS.map(command => command.name))
 // How long after session start the first memory probe and the first notices
@@ -219,6 +260,101 @@ async function showPane($: EngineInterface, content: PaneContent): Promise<void>
   await $.ui.open({ id: PANE, title: content.title })
 }
 
+// Whether the commit approval rule applies to a call: the main loop of an
+// interactive session, in any turn but a scheduled one. It reads the session
+// and the lane, never the question rule's turn reading: a peer, channel, SDK or
+// plugin turn in Mike's session is gated, because it carries outside text and
+// a deny, unlike a re-prompt, cannot loop. The exemptions are the lanes that
+// commit unattended by design:
+//   - a session nobody sits at (`claude -p`, the SDK, a top-level --agent run,
+//     WORKBENCH_DEV_TEAM_PIPELINE=1), from session.start; unknown before it,
+//     which is read as attended, the gate's side
+//   - the pipeline's flag, read here as well, so no lane answer can gate it
+//   - a sub-agent or top-level agent, from $.workbench.callerLane; a rejection
+//     is read as `main`, the gate's side
+//   - a turn a schedule opened (the origin, or the `<scheduled-task ` wrapper)
+async function isCommitGated($: EngineInterface, sessionAttended: boolean | undefined, agentId: string | undefined): Promise<boolean> {
+  if (sessionAttended === false || (await $.env.get('WORKBENCH_DEV_TEAM_PIPELINE')) === '1') return false
+  const lane = await $.workbench.callerLane(agentId === undefined ? {} : { agentId }).catch((): WorkbenchCallerLane => 'main')
+  if (lane !== 'main') return false
+  return !(await read($, turnScheduled))
+}
+
+// HEAD and the push target of the repository at `dir`, each undefined when git
+// cannot say. Read with $.process.run, which runs git with repo hooks off.
+async function refsOf($: EngineInterface, dir: string): Promise<Refs> {
+  const ref = (name: string) =>
+    $.process
+      .run(['git', '-C', dir, 'rev-parse', '--verify', '--quiet', name], { timeoutMs: 10_000 })
+      .then(({ exitCode, stdout }) => (exitCode === 0 && stdout.trim() !== '' ? stdout.trim() : undefined), () => undefined)
+  return { head: await ref('HEAD'), pushed: await ref('@{push}') }
+}
+
+type VaultCall = Record<string, unknown> & { path?: unknown }
+
+// The vault write checks on one memory MCP call: the call to pass on, fixed
+// where it needed fixing, or the refusal. scripts/vault-resolve.sh runs only
+// when the call needs the vault root or holds a [[link]]. When it cannot run,
+// an absolute path is refused and every link is left as written.
+async function checkVaultWrite($: EngineInterface, e: VaultCall, tool: VaultTool): Promise<{ deny: string } | { call: VaultCall }> {
+  const { path } = e
+  if (typeof path !== 'string') return { call: e }
+  const field = TEXT_FIELD[tool]
+  const text = typeof e[field] === 'string' ? (e[field] as string) : undefined
+  const targets = text !== undefined && isNote(path) ? wikiTargets(text) : []
+  const createsNote = isNote(path) && (tool === 'write' || (tool === 'append' && e.create_if_missing === true))
+  const facts =
+    needsRoot(path) || targets.length > 0 || (tool === 'append' && createsNote)
+      ? resolvedOf(
+          await $.process
+            .run(['bash', `${$.plugin.root}/scripts/vault-resolve.sh`, ...targets], { timeoutMs: 10_000 })
+            .then(({ stdout }) => stdout, () => ''),
+        )
+      : resolvedOf('')
+  const fixed = fixPath(path, facts.root, await $.env.get('HOME'))
+  if ('refusal' in fixed) return { deny: fixed.refusal }
+  // A write replaces the whole note, frontmatter included. An append creates
+  // one only where none is, and a note it cannot see is taken as new.
+  const isNew =
+    tool === 'write' ||
+    (createsNote && (facts.root === undefined || !(await $.fs.exists(`${facts.root}/${fixed.path}`).catch(() => false))))
+  if (createsNote && isNew) {
+    const problems = frontmatterProblems(tool === 'write' ? e.frontmatter : undefined, text)
+    if (problems.length > 0) return { deny: frontmatterRefusal(problems) }
+  }
+  const linked = text !== undefined && facts.paths.size > 0 ? rewriteLinks(text, facts.paths) : text
+  if (fixed.path === path && linked === text) return { call: e }
+  return { call: { ...e, path: fixed.path, ...(linked !== text ? { [field]: linked } : {}) } }
+}
+
+// /process-pending-summaries: the script's outcome, asking Mike before a
+// summary that exists is replaced, and reported in a toast.
+async function processPendingSummaries($: EngineInterface, args: string): Promise<void> {
+  const request = requestOf(args)
+  if (request === undefined) {
+    $.ui.toast(PENDING_USAGE)
+    return
+  }
+  const run = async (argv: readonly string[]) =>
+    outcomeOf(
+      await $.process
+        .run(['bash', `${$.plugin.root}/scripts/process-pending-summaries.sh`, ...argv], { timeoutMs: 60_000 })
+        .then(({ stdout }) => stdout, () => ''),
+    )
+  const { sid } = request
+  let outcome = await run(sid === undefined ? [] : request.overwrite ? [sid, '--overwrite'] : [sid])
+  if (outcome.result === 'exists' && sid !== undefined) {
+    // A dismissed dialog, or a run with nobody to ask, keeps the summary.
+    const answer = await $.ui.ask(askOverwrite(sid), { options: [SKIP, OVERWRITE], header: 'Summary' }).catch(() => SKIP)
+    if (answer !== OVERWRITE) {
+      $.ui.toast(`Kept the existing summary for session ${sid}.`)
+      return
+    }
+    outcome = await run([sid, '--overwrite'])
+  }
+  $.ui.toast(pendingReportOf(outcome, sid), { timeoutMs: 10_000 })
+}
+
 export const register: Register = on => {
   // Set at every load, because a reload runs session.start again. Undefined
   // until then: the question rule reads it as unattended, and the noun rejects.
@@ -302,10 +438,16 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // A prompt folded into a running turn carries turnId and opens no turn.
+  // A prompt folded into a running turn carries turnId and opens no turn. Any
+  // prompt, of any origin and folded or not, ends a "Commit it" pick not yet
+  // used for a commit: a peer, channel, plugin, SDK, schedule or task message
+  // carries outside text that must not use it. Only Mike's own prompt ends the
+  // push left by a commit he approved.
   on('prompt.submit', async ($, e, next) => {
+    await update($, commitApproval, approval => (isPersonOrigin(e.origin) || approval === 'commit' ? 'none' : approval))
     if (e.turnId === undefined) {
       await update($, turnAttended, () => isAttendedPrompt(e.origin, e.text))
+      await update($, turnScheduled, () => e.origin.kind === 'scheduled-trigger' || isScheduledFire(e.text))
       await update($, reprompted, () => false)
     }
     return next(e)
@@ -335,12 +477,49 @@ export const register: Register = on => {
   })
 
   on('tool.call', async ($, e, next) => {
-    // The question rule. A call no message holds (another plugin's
-    // $.ui.ask) is let through: there is no message to read the context from.
     if (e.tool === 'AskUserQuestion') {
-      if (e.agentId !== undefined || sessionAttended !== true || !(await read($, turnAttended))) return next(e)
-      const messages = await $.session.messages({ as: 'api' })
-      return hasContextBefore(messages, e.tool_use_id) === false ? { deny: REFUSAL_REASON } : next(e)
+      // The commit approval rule: the commit question is asked alone, and a
+      // "Commit it" pick is what approves the commit.
+      const isGated = await isCommitGated($, sessionAttended, e.agentId)
+      if (isGated && bundlesCommit(e.questions)) return { deny: BUNDLE_REFUSAL }
+      // The question rule. A call no message holds (another plugin's
+      // $.ui.ask) is let through: there is no message to read the context from.
+      if (e.agentId === undefined && sessionAttended === true && (await read($, turnAttended))) {
+        const messages = await $.session.messages({ as: 'api' })
+        if (hasContextBefore(messages, e.tool_use_id) === false) return { deny: REFUSAL_REASON }
+      }
+      const result = await next(e)
+      if (isGated && result.deny === undefined && isCommitPick(e.questions, result.result)) await update($, commitApproval, () => 'commit')
+      return result
+    }
+    // The commit approval rule: one "Commit it" pick allows one commit, then
+    // the push of that commit. A command that only mentions git, such as a grep
+    // for the word, is not one. Whether the commit and the push landed is read
+    // from the repository the line runs in, before and after it, and from its
+    // exit status: the pick is kept only when HEAD did not move and the line
+    // reported an error. A background run cannot be watched, so it is taken
+    // as landed.
+    if (e.tool === 'Bash') {
+      const { writes, dir: steps } = readLine(e.command)
+      if (writes.commits + writes.pushes === 0 || !(await isCommitGated($, sessionAttended, e.agentId))) return next(e)
+      const refusal = refusalOf(writes, await read($, commitApproval))
+      if (refusal !== undefined) return { deny: refusal }
+      const dir = dirOf(steps, await $.session.cwd(), await $.env.get('HOME'))
+      const before = dir === undefined ? undefined : await refsOf($, dir)
+      const result = await next(e)
+      if (result.deny !== undefined) return result
+      const output = result.result as { backgroundTaskId?: unknown } | undefined
+      const isBackground = e.run_in_background === true || output?.backgroundTaskId !== undefined
+      const after = dir === undefined || isBackground ? undefined : await refsOf($, dir)
+      await update($, commitApproval, () => approvalAfter(writes, before, after, result.isError === true))
+      return result
+    }
+    // The vault write checks, in every lane: a sub-agent or a summary-writer
+    // writes the same vault.
+    const vaultTool = vaultToolOf(e.tool)
+    if (vaultTool !== undefined) {
+      const checked = await checkVaultWrite($, e as VaultCall, vaultTool)
+      return 'deny' in checked ? checked : next(checked.call as typeof e)
     }
     // The calls the bash gates judge read the legacy file next, so it is put
     // back in line with the mode Mike chose first. A file the model wrote to
@@ -389,6 +568,11 @@ export const register: Register = on => {
       $.ui.toast(reportOf(isOn))
       return {}
     }
+    if (e.command === PENDING) {
+      if (!isPersonOrigin(e.origin)) return { text: PENDING_REFUSAL }
+      await processPendingSummaries($, e.args)
+      return {}
+    }
     if (e.command === 'memory-status') {
       const { stdout, stderr } = await $.process.run(['bash', `${$.plugin.root}/scripts/memory-status.sh`], { timeoutMs: 30_000 })
       await showPane($, { title: 'Memory status', text: `\`\`\`\n${stdout || stderr}\n\`\`\`` })
@@ -431,12 +615,13 @@ export const register: Register = on => {
     return result
   })
 
-  // A /clear starts the conversation over, so the meter and the reply rows
-  // start over with it.
+  // A /clear starts the conversation over, so the meter, the reply rows and a
+  // "Commit it" pick start over with it.
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') {
       await update($, meter, () => EMPTY)
       await update($, replyRows, () => null)
+      await update($, commitApproval, () => 'none')
       await drawStatus($)
     }
     return next(e)

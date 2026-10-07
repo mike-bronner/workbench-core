@@ -19,7 +19,6 @@ GATE="$HOOKS_DIR/agent-dispatch-gate.sh"
 HOOKS_JSON="$HOOKS_DIR/hooks.json"
 DELEGATION="$HOOKS_DIR/delegation-gate.sh"
 TOGGLE="$HOOKS_DIR/mods/orchestrator.ts"  # /orchestrator, in hooks/register.ts
-SUMMARY_SKILL="$HOOKS_DIR/../skills/process-pending-summaries/SKILL.md"
 README="$HOOKS_DIR/../README.md"
 PASS=0
 FAIL=0
@@ -232,7 +231,7 @@ assert_contains "and the refusal asks for Workdir:" \
 # prose still name the old slot when explaining the rename, which the README
 # does. An unanchored match would forbid documenting the migration at all.
 # `Repo sweep:` is a pipeline dispatch shape, not a slot, so it is excluded.
-for f in "$README" "$SUMMARY_SKILL"; do
+for f in "$README"; do
   if grep -nE '^[[:space:]]*Repo:' "$f" 2>/dev/null | grep -qv 'Repo sweep:'; then
     FAIL=$((FAIL + 1)); echo "  ❌ stale Repo: slot header still in $(basename "$f")"
   else
@@ -740,42 +739,6 @@ for token in "WORKBENCH_ORCHESTRATOR_STATE_DIR" ".claude-workbench/orchestrator-
   assert_grep "toggle command uses $token"  "$token" "$TOGGLE"
 done
 assert_grep "dispatch gate honours WORKBENCH_ORCHESTRATOR=0" 'WORKBENCH_ORCHESTRATOR:-' "$GATE"
-
-echo "core's own summary-writer dispatch is a real brief, not an exemption:"
-# The brief is EXTRACTED from the skill that sends it, never retyped here. If
-# the skill drops a slot, this goes red, which is the only thing standing
-# between core's memory pipeline and a silent denial now that the sentinel is
-# gone.
-SUMMARY_BRIEF="$(awk '/^  prompt: \|$/{f=1;next} f&&/^```$/{exit} f{sub(/^    /,"");print}' \
-  "$SUMMARY_SKILL")"
-if [ -n "$SUMMARY_BRIEF" ]; then
-  PASS=$((PASS + 1)); echo "  ✅ the skill's dispatch prompt is extractable"
-else
-  FAIL=$((FAIL + 1)); echo "  ❌ could not extract the skill's dispatch prompt"
-fi
-# Placeholders substituted the way the skill instructs, so what is judged is what
-# actually gets dispatched.
-SUMMARY_REAL="${SUMMARY_BRIEF//\{MEMORY_PATH\}//Users/mike/Documents/Claude/Memory}"
-SUMMARY_REAL="${SUMMARY_REAL//\{session_id\}/d640e864-4bed-4e3c-8b35-85d9e4c79588}"
-SUMMARY_REAL="${SUMMARY_REAL//\{marker_path\}//Users/mike/.claude-memory-cache/pending-summaries/d640e864.json}"
-SUMMARY_REAL="${SUMMARY_REAL//\{log_path\}//Users/mike/Documents/Claude/Memory/sessions/2026-08-19/d640e864.log.md}"
-SUMMARY_REAL="${SUMMARY_REAL//\{transcript_path\}//Users/mike/.claude/projects/x/d640e864.jsonl}"
-run_prompt "the skill's brief passes the gate unaided" "$SUMMARY_REAL" silent
-# The receiving agent parses its inputs from labeled lines and aborts on a
-# mismatch, so each label has to survive into the brief. Burying session_id in
-# the Goal prose would pass the gate and break the agent.
-for label in "session_id:" "marker_path:" "log_path:" "transcript_path:"; do
-  assert_contains "the brief carries a labeled $label" "$SUMMARY_REAL" "$label"
-done
-# ...and it passes because it carries the slots, not because of where it starts.
-run_prompt "the skill's brief minus a slot is refused" \
-  "$(printf '%s\n' "$SUMMARY_REAL" | grep -v '^Goal:')" deny
-assert_missing "no unsubstituted placeholder remains" "$SUMMARY_REAL" "{"
-assert_missing "the skill no longer emits the sentinel" "$(cat "$SUMMARY_SKILL")" \
-  'Process pending session summary.'
-# Workdir: carries the vault root, and the skill resolves it through the repo's
-# existing single source of truth rather than hardcoding a path.
-assert_grep "the skill resolves the vault via memory-env" 'lib/memory-env.sh' "$SUMMARY_SKILL"
 
 echo "the shared definition is the only place the slots are written:"
 # The drift guard. The gate greps patterns from hooks/lib/brief-template.sh and

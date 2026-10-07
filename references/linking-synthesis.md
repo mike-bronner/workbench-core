@@ -21,7 +21,10 @@ The vault was converted from `[[wikilinks]]` to this form on 2026-09-01 (7,620
 links, graph preserved exactly). The server still resolves wikilinks, so old
 ones are not broken — but **write markdown links from now on**. They render as
 real links on GitHub, which wikilinks do not, and the vault is synced to a git
-remote where that matters.
+remote where that matters. The hooks module rewrites a `[[target]]` in a
+memory MCP write, edit or append to a path link when the target names exactly
+one note, and leaves it as written when it does not. That rewrite is a safety
+net for the case it can resolve. Write the path link yourself.
 
 - **Always write a leading slash.** The path is resolved from the vault root.
   Without it the link resolves relative to the *source note's own folder*, so

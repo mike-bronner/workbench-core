@@ -63,14 +63,26 @@ because a rule with no incident attached gets relaxed later.
 ## Required frontmatter
 
 The vault enforces two required fields: `name` and `type`. Every document
-must have both.
+must have both, and `type` takes one value from the fixed list below.
 
 ```yaml
 ---
 name: "Short descriptive title"
-type: session|decision|topic|identity|project|insight|skill-learnings|index|maintenance
+type: session|decision|topic|identity|project|insight|skill-learnings|index|maintenance|infrastructure|feedback|reference|proposal|learnings
 ---
 ```
+
+The list holds every type a workbench skill or agent writes. The hooks module
+checks it at write time (`hooks/mods/vault-write.ts`): a memory MCP `write`, or
+an `append` that creates a note, is refused when `name` is missing or empty or
+`type` is not on the list, and the refusal names the field. A type added here
+is added to `TYPES` in that file in the same change.
+
+The same check fixes two things rather than refuse them. A path that starts
+with `memory/`, or an absolute path inside the vault, is made vault-relative.
+A `[[name]]` link whose target names exactly one note is rewritten to a
+root-absolute path link (see `linking-synthesis.md`), and one that does not is
+left as written. An absolute path outside the vault is refused.
 
 ## Common indexed fields
 

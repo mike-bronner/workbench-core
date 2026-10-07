@@ -588,9 +588,10 @@ else
   FAIL=$((FAIL + 1)); echo "  ❌ markerless old log survived"
 fi
 
-echo "pending-summary notice — uses the workbench-core namespace:"
-assert_contains "drain command namespaced correctly" "$(notices)" "/workbench-core:process-pending-summaries"
-assert_missing  "no stale pre-rename namespace"      "$(notices)" "\`/workbench:process-pending-summaries\`"
+echo "pending-summary notice — names the command, not the retired skill:"
+assert_contains "drain command named"          "$(notices)" "\`/process-pending-summaries\`"
+assert_missing  "no retired skill name"        "$(notices)" "/workbench-core:process-pending-summaries"
+assert_missing  "no stale pre-rename namespace" "$(notices)" "\`/workbench:process-pending-summaries\`"
 rm -f "$SANDBOX/cache/pending-summaries/aaaa1111-protected.json" "$PROTECTED_LOG"
 
 echo "pending listing — capped at count + 3 oldest:"

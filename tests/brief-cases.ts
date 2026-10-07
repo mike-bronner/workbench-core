@@ -553,19 +553,5 @@ export const GATE_CASES = [
     "prompt": "Workdir: /Users/mike/Developer/workbench-core\nGoal: Make the credential guard stop matching .env by substring.\nContext: The guard matches .env anywhere in the raw command text, so any command\nmentioning a path containing .envrc trips it. Three false positives in one day.\nConstraints: none\nAcceptance:\n- AC1: A path containing .envrc passes the guard.\n- AC2: A read of .env is still refused.\nDone when: The guard rejects .envrc and still catches .env, with a test per case.\ncomposer update crossbibleinc/bible-models",
     "isComplete": true,
     "missing": []
-  },
-  {
-    "name": "the skill's brief passes the gate unaided",
-    "prompt": "Workdir: /Users/mike/Documents/Claude/Memory\nGoal: Write the narrative summary for session d640e864-4bed-4e3c-8b35-85d9e4c79588 into the memory vault, promote any decisions it earns, and clear its pending marker.\nContext: A Claude Code session ended and its raw log was dumped to disk, but no summary exists yet. You cannot derive these values, so they are given:\nsession_id: d640e864-4bed-4e3c-8b35-85d9e4c79588\nmarker_path: /Users/mike/.claude-memory-cache/pending-summaries/d640e864.json\nlog_path: /Users/mike/Documents/Claude/Memory/sessions/2026-08-19/d640e864.log.md\ntranscript_path: /Users/mike/.claude/projects/x/d640e864.jsonl\nThe log is a 7-day cache inside the vault. The transcript is the original Claude Code JSONL and lives about 30 days. A missing log therefore means the cache expired, never that the session is lost.\nConstraints:\n- Summarize from transcript_path whenever log_path no longer exists. Never report a pruned log as an unrecoverable session.\n- Follow your agent definition for the summary format and for the bar a decision must clear before promotion.\n- You receive no follow-up messages. Work from this brief alone and stop when the marker is gone.\nAcceptance:\n- AC1: The summary is written from the log, or from the transcript when the log is gone.\n- AC2: A decision is promoted only when it clears the bar in your agent definition.\n- AC3: The marker is removed only after the summary is written.\nDone when: The summary note exists in the vault, any promoted decisions are written, and /Users/mike/.claude-memory-cache/pending-summaries/d640e864.json no longer exists.",
-    "isComplete": true,
-    "missing": []
-  },
-  {
-    "name": "the skill's brief minus a slot is refused",
-    "prompt": "Workdir: /Users/mike/Documents/Claude/Memory\nContext: A Claude Code session ended and its raw log was dumped to disk, but no summary exists yet. You cannot derive these values, so they are given:\nsession_id: d640e864-4bed-4e3c-8b35-85d9e4c79588\nmarker_path: /Users/mike/.claude-memory-cache/pending-summaries/d640e864.json\nlog_path: /Users/mike/Documents/Claude/Memory/sessions/2026-08-19/d640e864.log.md\ntranscript_path: /Users/mike/.claude/projects/x/d640e864.jsonl\nThe log is a 7-day cache inside the vault. The transcript is the original Claude Code JSONL and lives about 30 days. A missing log therefore means the cache expired, never that the session is lost.\nConstraints:\n- Summarize from transcript_path whenever log_path no longer exists. Never report a pruned log as an unrecoverable session.\n- Follow your agent definition for the summary format and for the bar a decision must clear before promotion.\n- You receive no follow-up messages. Work from this brief alone and stop when the marker is gone.\nAcceptance:\n- AC1: The summary is written from the log, or from the transcript when the log is gone.\n- AC2: A decision is promoted only when it clears the bar in your agent definition.\n- AC3: The marker is removed only after the summary is written.\nDone when: The summary note exists in the vault, any promoted decisions are written, and /Users/mike/.claude-memory-cache/pending-summaries/d640e864.json no longer exists.",
-    "isComplete": false,
-    "missing": [
-      "Goal:"
-    ]
   }
 ]

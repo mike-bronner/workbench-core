@@ -124,6 +124,14 @@ declare module 'claude-code' {
       turnAttended: boolean
       // Whether the question rule already re-prompted in the current turn.
       reprompted: boolean
+      // Where Mike's last "Commit it" pick stands: `commit` while it is unused,
+      // `push` once its commit ran and the push of that commit is left, `none`
+      // once used up. Any prompt ends `commit`, and only Mike's own prompt
+      // ends `push` (hooks/mods/commit-approval.ts).
+      commitApproval: 'none' | 'commit' | 'push'
+      // Whether a schedule opened the current turn: the scheduled-trigger
+      // origin, or the `<scheduled-task ` wrapper. The commit rule skips it.
+      turnScheduled: boolean
       // When this session first started, in ms. A reload keeps it.
       startedAt: number
       // The mtime of the warmup notices file last shown, in ms.

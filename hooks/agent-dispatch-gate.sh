@@ -219,10 +219,10 @@ printf '%s' "$PROMPT" | grep -q "[^$WS]" || exit 0
 #     THERE IS NO THIRD SHAPE. core's own summary-writer dispatch used to be
 #     exempted by a "Process pending session summary." sentinel. That was a
 #     bypass string in an enforcement path: it patched the caller's problem
-#     inside the enforcer, and any prompt could wear it. The caller now sends a
-#     real six-slot brief (skills/process-pending-summaries/SKILL.md) and
-#     passes on its own merits, so the sentinel is gone rather than merely
-#     unused.
+#     inside the enforcer, and any prompt could wear it. The sentinel is gone.
+#     Core no longer dispatches summary-writers through the Agent tool at all:
+#     /process-pending-summaries spawns them detached, as the warmup does, so
+#     no core dispatch reaches this gate.
 NONBLANK=$(printf '%s' "$PROMPT" | grep -c "[^$WS]")
 if [ "${NONBLANK:-0}" -eq 1 ]; then
   printf '%s' "$PROMPT" | grep -qE "^[$WS]*Item ID:[$WS]*[0-9]+[$WS]*$" && exit 0

@@ -96,17 +96,101 @@ the marker, and exit. Never write summary files with Bash.
 ' "$1" "$2" "$3" "$4" "$MEMORY_PATH"
 }
 
+# How long a claim on a marker stands. A writer finishes well inside it, and a
+# writer that died leaves its marker claimable again once it passes.
+SUMMARY_CLAIM_TTL_MIN=60
+
+# summary_dispatch_claim_dir <marker_path>
+#
+# Where the claim on a marker lives: a directory named for it under .claims/
+# beside the markers, so no `*.json` listing of the markers ever sees it.
+summary_dispatch_claim_dir() {
+  printf '%s/.claims/%s' "$(dirname "$1")" "$(basename "$1")"
+}
+
+# _summary_dispatch_claim_stale <marker_path> <claim_dir>
+#
+# True when the claim no longer holds its marker: the marker is gone (its
+# writer finished), the marker is newer than the claim (session-log.sh wrote a
+# new marker for a later segment), or the claim is past the TTL.
+_summary_dispatch_claim_stale() {
+  [ ! -e "$1" ] || [ "$1" -nt "$2" ] \
+    || [ -n "$(find "$2" -maxdepth 0 -mmin +"$SUMMARY_CLAIM_TTL_MIN" 2>/dev/null)" ]
+}
+
+# _summary_dispatch_drop_stale <marker_path> <claim_dir> [retake]
+#
+# Removes a stale claim, and with `retake` claims the marker in its place.
+# Checking, removing and re-creating are three steps, so they run under a
+# second mkdir lock (<claim>.takeover), and the claim is checked again once the
+# lock is held. Without that, two callers that both saw the claim stale could
+# both remove it, and the second would remove the first one's fresh claim. A
+# caller that does not get the lock gets nothing. True when this caller holds
+# the claim (retake), or removed it.
+_summary_dispatch_drop_stale() {
+  local marker="$1" claim="$2" retake="${3:-}" lock="$2.takeover" won=1
+  mkdir "$lock" 2>/dev/null || return 1
+  if [ -d "$claim" ] && _summary_dispatch_claim_stale "$marker" "$claim"; then
+    rmdir "$claim" 2>/dev/null
+    if [ -n "$retake" ]; then
+      mkdir "$claim" 2>/dev/null && won=0
+    else
+      won=0
+    fi
+  fi
+  rmdir "$lock" 2>/dev/null
+  return "$won"
+}
+
+# summary_dispatch_claim <marker_path>
+#
+# Claims a marker for one writer. mkdir is the atomic test-and-set, so of two
+# spawns on one marker, only one gets it, even from two sessions starting at
+# once. The writer never releases a claim: it deletes the marker, and the
+# claim then goes stale (_summary_dispatch_claim_stale). A stale claim is taken
+# over under its takeover lock. True when this caller holds the claim.
+summary_dispatch_claim() {
+  local marker="$1" claim
+  claim="$(summary_dispatch_claim_dir "$marker")"
+  mkdir -p "$(dirname "$claim")" 2>/dev/null || return 1
+  mkdir "$claim" 2>/dev/null && return 0
+  _summary_dispatch_drop_stale "$marker" "$claim" retake
+}
+
+# summary_dispatch_sweep_claims <pending_dir>
+#
+# Removes the claims nobody needs, each under its takeover lock as above, and
+# any takeover lock a caller that died left behind for over a minute. Only
+# empty directories go.
+summary_dispatch_sweep_claims() {
+  local dir="$1/.claims" claim
+  [ -d "$dir" ] || return 0
+  find "$dir" -mindepth 1 -maxdepth 1 -type d -name '*.takeover' -mmin +1 -exec rmdir {} + 2>/dev/null
+  for claim in "$dir"/*.json; do
+    [ -d "$claim" ] || continue
+    _summary_dispatch_drop_stale "$1/$(basename "$claim")" "$claim"
+  done
+  return 0
+}
+
 # summary_dispatch_spawn <session_id> <marker_path> <log_path> [transcript_path]
 #
-# Spawns one detached writer and returns immediately. Returns non-zero without
+# Spawns one detached writer and returns immediately. Returns 1 without
 # spawning when NEITHER source is readable — the writer cannot produce a summary
 # from nothing, and such a marker would otherwise spin forever on every session
-# start. A readable transcript is enough on its own.
+# start. A readable transcript is enough on its own. Returns 2 without spawning
+# when another spawn holds the marker's claim (summary_dispatch_claim), so two
+# writers never run on one session.
 summary_dispatch_spawn() {
   local session_id="$1" marker_path="$2" log_path="$3" transcript_path="${4:-}"
   local model errlog
 
   summary_dispatch_readable "$log_path" "$transcript_path" || return 1
+  if ! summary_dispatch_claim "$marker_path"; then
+    printf '%s claimed marker=%s sid=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$marker_path" "$session_id" \
+      >> "$(summary_dispatch_logfile)" 2>/dev/null || true
+    return 2
+  fi
 
   model="$(summary_dispatch_model)"
   errlog="$(summary_dispatch_logfile)"

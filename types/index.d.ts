@@ -235,6 +235,39 @@ export type MeterState = {
   last: RequestCost | null
 }
 
+// One main-loop API request on the cache meter: its number in the session,
+// from 1, and its cache read, cache creation and uncached input tokens.
+export type CacheRequest = {
+  n: number
+  read: number
+  creation: number
+  input: number
+}
+
+// One creation spike on the cache meter: a request past the first that
+// created more of the cache than it read. `sections` names the system-prompt
+// sections that changed since the last reading, in prompt order, then those
+// that went away. Empty when none changed. Null when the prompt could not be
+// read, so nothing is claimed about it.
+export type ChurnEvent = {
+  n: number
+  read: number
+  creation: number
+  sections: string[] | null
+}
+
+// The cache meter's record (hooks/mods/cache-meter.ts).
+export type CacheState = {
+  // How many main-loop requests the session made.
+  count: number
+  // The latest requests, oldest first, at most 500 of them.
+  requests: CacheRequest[]
+  churn: ChurnEvent[]
+  // Each system-prompt section's hash at the last reading, by section id.
+  // Null until the first reading.
+  hashes: Record<string, string> | null
+}
+
 // What the workbench pane shows: its title and its markdown.
 export type PaneContent = {
   title: string
@@ -249,6 +282,8 @@ declare module 'claude-code' {
   interface PluginState {
     'workbench-core': {
       meter: MeterState
+      // Each request's cache read against its creation, and the spikes.
+      cache: CacheState
       // Whether a person opened the current turn, so the question rule applies.
       turnAttended: boolean
       // Whether the question rule already re-prompted in the current turn.

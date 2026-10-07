@@ -657,6 +657,7 @@ make_marker() {
 
 reset_drain() {
   rm -f "$SANDBOX/cache/pending-summaries"/*.json 2>/dev/null
+  rm -rf "$SANDBOX/cache/pending-summaries/.claims" 2>/dev/null
   rm -rf "$DRAIN_LOGDIR" "$DRAIN_TRANSCRIPTDIR" "$SANDBOX/cache/summary-drain.lock" 2>/dev/null
   rm -f "$SANDBOX/cache/summary-drain.stamp" "$SANDBOX/cache/summary-dispatch-errors.log" 2>/dev/null
 }
@@ -719,7 +720,10 @@ assert_contains "first start drains"              "$OUT" "DISPATCH sid=cool-1"
 OUT=$(run_drain startup "WORKBENCH_DRAIN_BATCH=1")
 assert_missing  "second start inside cooldown is suppressed" "$OUT" "DISPATCH sid="
 # ...and lifting the cooldown lets it through again, proving the suppression was
-# the cooldown and not some unrelated failure to dispatch.
+# the cooldown and not some unrelated failure to dispatch. The first writer's
+# claim on cool-1 (lib/summary-dispatch.sh) would still refuse a second writer,
+# so it is let go first, as a stale claim would be.
+rm -rf "$SANDBOX/cache/pending-summaries/.claims"
 OUT=$(run_drain startup "WORKBENCH_DRAIN_BATCH=1 WORKBENCH_DRAIN_COOLDOWN_MIN=0")
 assert_contains "cooldown of 0 drains again"      "$OUT" "DISPATCH sid=cool-1"
 

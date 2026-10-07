@@ -1,6 +1,7 @@
 ---
 description: Periodic health-and-repair pass over the memory vault — rescue files skipped for missing frontmatter, repair broken links, conservatively connect orphans, repair vault-index drift, flag duplicates for human review, and write an audit report. Run monthly via the scheduled-tasks MCP, or manually any time.
 disable-model-invocation: true
+context: fork
 ---
 
 The user (or a scheduled task) has invoked `/workbench-core:memory-lint`. Perform a lint pass over the markdown memory vault served by the `memory` MCP: gather health signals, apply bounded repairs, write an audit report, and re-verify.

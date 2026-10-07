@@ -1,6 +1,6 @@
 ---
 name: intake
-description: The task-intake routine for an interactive session. Run it before the first piece of work on any task that ends in a work product (a change, a file, a document, a plan to act on). It states the goal, gathers context, interviews the user through AskUserQuestion only about gaps the prompt, the repo, and the vault cannot fill, writes acceptance criteria, shows them in an intake block, then drafts three options from different angles, grades each against every criterion, and recommends one. Skip it for trivial asks and for pure questions that produce no work product. Sub-agents, the Index pipeline, and scheduled ticks never interview.
+description: The task-intake routine for an interactive session. It sets the goal, asks about gaps through AskUserQuestion, writes acceptance criteria, and grades three options. Run it before the first work on a task that ends in a work product (a change, file, document, or plan). Skip it for trivial asks and for pure questions. Sub-agents and scheduled runs never interview.
 ---
 
 # Intake: goal, context, criteria, options

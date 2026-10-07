@@ -70,18 +70,10 @@ Show the current value of each field (from the existing config, or the hardcoded
 Before reading or writing anything, migrate the pre-rename data directory:
 
 ```bash
-NEW_DIR="$HOME/.claude/plugins/data/workbench-core-claude-workbench"
-OLD_DIR="$HOME/.claude/plugins/data/workbench-claude-workbench"
-
-if [ -d "$OLD_DIR" ] && [ ! -d "$NEW_DIR" ]; then
-  mv "$OLD_DIR" "$NEW_DIR"
-elif [ -d "$OLD_DIR" ] && [ -d "$NEW_DIR" ]; then
-  # Both exist — new wins. Archive the old dir so we don't look at it again.
-  mv "$OLD_DIR" "${OLD_DIR}.legacy-$(date +%Y%m%d)"
-fi
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup-config.sh" migrate
 ```
 
-Tell the user if a migration happened.
+It moves `~/.claude/plugins/data/workbench-claude-workbench` to the new path. When both directories exist, the new one wins and the old one is archived with a `.legacy-<date>` suffix. It prints a line only when it moved something. Tell the user if it did.
 
 ## Step 1 — Collect values
 
@@ -100,41 +92,18 @@ After all fields, show the assembled config JSON and ask "Save this configuratio
 
 ## Step 2 — Write config (merge, never clobber)
 
-`config.json` may already hold keys this skill doesn't manage (`persona`, `output_style`, future additions). **Read-modify-write with `jq`** so those survive — do NOT overwrite the file wholesale:
+`config.json` may already hold keys this skill doesn't manage (`persona`, `output_style`, future additions). The script merges the collected values onto the existing object, so those survive. It writes `memory_port` only when it differs from the 8765 default, and it deletes `identity_files`, which configured the retired soul and profile files:
 
 ```bash
-CONFIG_DIR="$HOME/.claude/plugins/data/workbench-core-claude-workbench"
-CONFIG_FILE="$CONFIG_DIR/config.json"
-mkdir -p "$CONFIG_DIR"
-[ -f "$CONFIG_FILE" ] || echo '{}' > "$CONFIG_FILE"
-
-# Merge the collected values onto the existing object (existing keys not listed
-# here — e.g. persona/output_style — are preserved untouched). Only include
-# memory_port when it differs from the 8765 default, to keep config minimal.
-# identity_files is deleted: it configured the retired soul and profile files,
-# and nothing reads it any more.
-tmp="$(mktemp)"
-jq \
-  --arg agent_name        "$AGENT_NAME" \
-  --arg memory_path       "$MEMORY_PATH" \
-  --arg memory_cache      "$MEMORY_CACHE" \
-  --arg mcp_name          "$MCP_NAME" \
-  --arg summary_model     "$SUMMARY_MODEL" \
-  --argjson auto_summarize "$AUTO_SUMMARIZE" \
-  --argjson memory_port   "$MEMORY_PORT" \
-  '
-  .agent_name = $agent_name
-  | .memory_path = $memory_path
-  | .memory_cache = $memory_cache
-  | .memory_mcp_server_name = $mcp_name
-  | .summary_model = $summary_model
-  | .auto_summarize = $auto_summarize
-  | del(.identity_files)
-  | if $memory_port == 8765 then del(.memory_port) else .memory_port = $memory_port end
-  ' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup-config.sh" write-config \
+  --agent-name "$AGENT_NAME" --memory-path "$MEMORY_PATH" --memory-cache "$MEMORY_CACHE" \
+  --mcp-name "$MCP_NAME" --summary-model "$SUMMARY_MODEL" \
+  --auto-summarize "$AUTO_SUMMARIZE" --memory-port "$MEMORY_PORT"
 ```
 
-Running this twice with the same answers produces a byte-identical file (idempotent).
+`--auto-summarize` takes `true` or `false`. The script refuses a value a field cannot take, and a `config.json` that is not a JSON object, and writes nothing then. Relay its message and ask again.
+
+Running it twice with the same answers produces a byte-identical file (idempotent).
 
 `persona` and `output_style` are written by Step 2f — they record which persona is active. Don't hand-edit them; the merge above never touches them. They're absent until a persona is installed.
 
@@ -154,44 +123,17 @@ Running this twice with the same answers produces a byte-identical file (idempot
 
 > **Required — do not skip.** `plugin.json` interpolates `${WORKBENCH_MEMORY_TOKEN}` into the `Authorization` header, so **without this step Claude Code rejects the memory MCP outright** with `Invalid MCP server config for "memory": Missing environment variables: WORKBENCH_MEMORY_TOKEN`, and no server is ever started. That presents as memory being broken rather than unconfigured.
 
-The shared HTTP server authenticates with a per-install **bearer token**, and the MCP client reads the port + token from `~/.claude/settings.json` `.env` (the only channel that reaches the host's config parse — a hook can't). Provision both with **zero user involvement**, idempotently:
+The shared HTTP server authenticates with a per-install **bearer token**, and the MCP client reads the port + token from `~/.claude/settings.json` `.env` (the only channel that reaches the host's config parse — a hook can't). Provision both with **zero user involvement**, idempotently. Pass the `memory_cache` and `memory_port` from Step 1:
 
 ```bash
-CACHE_PATH="$MEMORY_CACHE"   # the resolved memory_cache from Step 1
-TOKEN_FILE="$CACHE_PATH/server.token"
-SETTINGS="${WORKBENCH_SETTINGS_FILE:-$HOME/.claude/settings.json}"
-
-mkdir -p "$CACHE_PATH"
-chmod 700 "$CACHE_PATH" 2>/dev/null || true
-
-# Mint the token ONCE — reuse an existing one so re-running setup is a no-op
-# and doesn't rotate a token the running server is already using.
-if [ ! -s "$TOKEN_FILE" ]; then
-  ( umask 077; openssl rand -hex 32 > "$TOKEN_FILE" )
-fi
-chmod 600 "$TOKEN_FILE"
-TOKEN="$(cat "$TOKEN_FILE")"
-
-# Merge WORKBENCH_MEMORY_TOKEN (and WORKBENCH_MEMORY_PORT when non-default) into
-# settings.json .env, preserving every other setting. Handle the file being
-# absent. Then lock the file down (it now holds a secret).
-mkdir -p "$(dirname "$SETTINGS")"
-[ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
-tmp="$(mktemp)"
-jq \
-  --arg token "$TOKEN" \
-  --argjson port "$MEMORY_PORT" \
-  '
-  .env = (.env // {})
-  | .env.WORKBENCH_MEMORY_TOKEN = $token
-  | if $port == 8765 then (.env | del(.WORKBENCH_MEMORY_PORT)) as $e | .env = $e
-    else .env.WORKBENCH_MEMORY_PORT = ($port|tostring) end
-  ' "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
-chmod 600 "$SETTINGS"
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup-config.sh" provision-token \
+  --memory-cache "$MEMORY_CACHE" --memory-port "$MEMORY_PORT"
 ```
 
+It mints `{memory_cache}/server.token` (`0600`, in a `0700` directory) when there is none, merges `WORKBENCH_MEMORY_TOKEN` (and `WORKBENCH_MEMORY_PORT` when non-default) into `settings.json` `.env`, keeps every other setting, and locks `settings.json` to `0600`, because it now holds a secret. A `settings.json` that is not a JSON object is refused and left alone.
+
 Notes:
-- **Idempotent:** the token is minted once and reused; the `jq` merge is a no-op when values already match.
+- **Idempotent:** the token is minted once and reused, and the merge is a no-op when the values already match.
 - **Non-default port only:** `WORKBENCH_MEMORY_PORT` is written only when it isn't `8765`, the default baked into `plugin.json`'s URL.
 - **Restart required:** settings.json `.env` is read at Claude Code launch, so the token/port reach the MCP client on the **next restart**, not the next session. Step 6 says so.
 - **Self-heal:** if the token file is ever lost, the supervisor re-mints one at next start; re-running setup re-syncs settings.json to it.
@@ -263,21 +205,10 @@ If the user wants to edit the lists, point them at `~/.claude/settings.json` `pe
 Then check for five ask entries an older setup installed and this one no longer ships. While they sit in `settings.json` they keep prompting and override the scope guard's permit, and the merge cannot remove them:
 
 ```bash
-SETTINGS="${WORKBENCH_SETTINGS_FILE:-$HOME/.claude/settings.json}"
-SCOPED=$(jq -r '[.permissions.ask[]? | select(
-  . == "Bash(rm -rf:*)" or . == "Bash(git clean -fd:*)" or
-  . == "Bash(git reset --hard:*)" or . == "Bash(git stash clear:*)" or
-  . == "Bash(git stash drop:*)")] | length' "$SETTINGS" 2>/dev/null || echo 0)
-if [ "$SCOPED" = "0" ]; then
-  echo "✅ No leftover scope-able entries in permissions.ask."
-  echo "   hooks/destructive-scope-guard.sh is the only layer gating those verbs — it permits what resolves inside the project or a scratch root, and denies everything else, including what it cannot resolve."
-else
-  echo "⚠  $SCOPED leftover scope-able entr(ies) in permissions.ask, from a setup run before they were dropped."
-  echo "   They prompt regardless of where the command acts, and a matching ask rule still prompts even when a PreToolUse hook returned \"allow\" — so the guard's permit cannot show through while they are there."
-  echo "   This merge cannot remove them: it only ever adds. Delete them BY HAND from permissions.ask in:"
-  echo "     $SETTINGS"
-fi
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup-config.sh" leftover-asks
 ```
+
+Relay its report. When it finds any, the user deletes them by hand from `permissions.ask`.
 
 Finally, confirm the effective classifier rules with `claude auto-mode config`, which prints the four lists with `"$defaults"` expanded in place. The literal `"$defaults"` must stay in `autoMode.allow`: without it the whole built-in soft-deny list is replaced. `permissions.sh` restores it when it is missing, so never hand-edit it out.
 
@@ -326,128 +257,13 @@ Show what it costs and what it buys, then ask with AskUserQuestion:
 
 If they decline, skip the rest of this step. Nothing is written.
 
-### 2e.2 — Size the payload BEFORE creating anything
+### 2e.2 to 2e.6 — Size, ignore, remote, config, first push
 
-⚠️ **The footgun.** `memory-env.sh` sets `MARKDOWN_VAULT_MCP_EXCLUDE="sessions/**/*.log.md"`,
-which keeps raw transcripts out of the **search index**. It does nothing about **git**. On a
-mature vault the transcripts are the overwhelming majority of the bytes — measured 2026-09-01 on
-a real vault: **425 MB total, 15.2 MB once `sessions/` is excluded**, with an 11 MB single
-`.log.md`. Enable sync without a `.gitignore` and the first push sends all of it to the remote,
-permanently, in history.
+Read `${CLAUDE_PLUGIN_ROOT}/skills/setup/references/git-sync.md` and follow its steps in order. It measures the vault before anything is created, writes the `.gitignore` before `git init`, sets up the remote and its authentication, writes `memory_git_repo_url`, and leaves the first upload to the user. Three of its rules hold whatever else happens:
 
-Measure the actual vault before proposing a remote — never quote the numbers above as if they
-were this user's:
-
-```bash
-M="$MEMORY_PATH"
-tot() { find "$M" -type f "$@" -exec stat -f%z {} + 2>/dev/null | awk '{s+=$1} END {printf "%.1f MB", s/1048576}'; }
-echo "everything:      $(tot)"
-echo "without sessions: $(tot ! -path "$M/sessions/*")"
-```
-
-Report both numbers to the user. If the excluded figure is still above ~100 MB, stop and show
-`du -sh "$M"/* | sort -rh | head` so they can decide what else to exclude before anything is
-committed.
-
-### 2e.3 — Write the `.gitignore` first, before `git init`
-
-Order matters: the ignore file must exist before the first `git add`, or the transcripts land in
-history and only a rewrite removes them.
-
-A **denylist**, deliberately — it mirrors `MARKDOWN_VAULT_MCP_EXCLUDE` so index and git share one
-mental model, and a memory folder the user creates later syncs by default. An allowlist would
-silently fail to sync new content, and a memory that never reaches the other machine gives no
-signal that it is missing.
-
-Write `{memory_path}/.gitignore`, preserving any lines already there:
-
-```gitignore
-# Raw session transcripts — excluded from the search index by
-# MARKDOWN_VAULT_MCP_EXCLUDE, and far too large to sync. Keep them machine-local.
-sessions/**/*.log.md
-
-# Bulk session exports.
-archive/**/*.zip
-
-# macOS / editor junk.
-.DS_Store
-*.swp
-```
-
-Then confirm the ignore actually bites, *before* committing:
-
-```bash
-git -C "$MEMORY_PATH" init -q
-git -C "$MEMORY_PATH" add -A
-git -C "$MEMORY_PATH" diff --cached --name-only | wc -l          # files that WOULD be committed
-git -C "$MEMORY_PATH" diff --cached --name-only | grep -c '\.log\.md$'   # MUST be 0
-```
-
-If that last count is not `0`, the ignore is wrong — fix it and re-stage. Do not commit.
-
-### 2e.4 — Remote and authentication
-
-Ask which auth the user wants, with AskUserQuestion, and branch:
-
-- **SSH** — remote of the form `git@github.com:<user>/<repo>.git`. Uses the existing SSH agent.
-  **No credential is prompted for, stored, or written by this skill.** Prefer it when the user
-  already pushes to GitHub over SSH.
-- **HTTPS + token** — remote of the form `https://github.com/<user>/<repo>.git`, plus a personal
-  access token with `repo` scope.
-
-🛑 **Never ask the user to paste a token into the chat, and never read one out of a file into
-your context.** Have them place it themselves, then verify only that it is non-empty:
-
-```bash
-# The user runs this; you do not.
-#   tmp=$(mktemp) && jq '.env.WORKBENCH_MEMORY_GIT_TOKEN = "<paste-token>"' ~/.claude/settings.json > "$tmp" && mv "$tmp" ~/.claude/settings.json && chmod 600 ~/.claude/settings.json
-jq -e '(.env.WORKBENCH_MEMORY_GIT_TOKEN // "") | length > 0' ~/.claude/settings.json >/dev/null \
-  && echo "token present" || echo "token NOT set"
-```
-
-The token belongs in `settings.json` `.env`, not `config.json` — `config.json` is plain-text
-plugin data, and `memory-env.sh` reads the environment first for exactly this reason. It falls
-back to `.memory_git_token` in `config.json`; treat that fallback as legacy and do not write it.
-
-**The remote must already exist and must be private.** This skill does not create repositories —
-a vault holds personal and possibly entrusted material, and repo creation with a visibility flag
-is not a decision to make on someone's behalf. Have the user create an empty private repo and
-give you the URL. Verify it is reachable and private before writing any config:
-
-```bash
-gh repo view <owner>/<repo> --json visibility,isEmpty 2>&1
-```
-
-If `visibility` is not `PRIVATE`, stop and say so plainly. Do not proceed.
-
-### 2e.5 — Write the config
-
-Merge onto `config.json` with the same read-modify-write discipline as Step 2 — never clobber:
-
-```bash
-tmp="$(mktemp)"
-jq --arg url "$GIT_REPO_URL" '.memory_git_repo_url = $url' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
-```
-
-Optionally also set `memory_git_commit_name` / `memory_git_commit_email` if the user wants
-vault commits attributed differently from their global git identity. Leave
-`memory_git_pull_interval_s` (120) and `memory_git_push_delay_s` (30) alone unless asked —
-`memory-env.sh` already tightens both from the server's defaults for interactive use, and
-`memory_git_lfs` is deliberately `false` for a vault of small markdown files.
-
-### 2e.6 — First push is the user's call
-
-Present the staged file count and the measured size, then let them run it. Pushing a personal
-vault to a remote is outward-facing and effectively irreversible once history exists:
-
-```bash
-git -C "$MEMORY_PATH" commit -qm "chore: 🎉 Seed memory vault." && \
-git -C "$MEMORY_PATH" remote add origin "$GIT_REPO_URL" && \
-git -C "$MEMORY_PATH" push -u origin main
-```
-
-Confirm afterwards that the server picked it up — the sync loop only starts on the next server
-launch, which means the **relaunch in Step 6**, not merely a new session.
+- **Ignore the raw transcripts first.** `sessions/**/*.log.md` goes in `{memory_path}/.gitignore` before the first `git add`. `MARKDOWN_VAULT_MCP_EXCLUDE` keeps them out of the search index only, and on a mature vault they are most of its bytes.
+- 🛑 **Never ask the user to paste a token into the chat, and never read one out of a file into your context.** The user places an HTTPS token in `settings.json` `.env` themselves.
+- **The remote must already exist and must be private.** This skill creates no repository, and stops when the remote is not `PRIVATE`.
 
 ## Step 2f — Install the shipped output style
 
@@ -505,18 +321,11 @@ Set it only when the key is absent. A value already there is the user's own choi
 leaves it alone:
 
 ```bash
-SETTINGS="${WORKBENCH_SETTINGS_FILE:-$HOME/.claude/settings.json}"
-mkdir -p "$(dirname "$SETTINGS")"
-[ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
-if jq -e 'type == "object"' "$SETTINGS" >/dev/null 2>&1; then
-  tmp="$(mktemp)"
-  jq '.env = (.env // {}) | .env.MAX_MCP_OUTPUT_TOKENS = (.env.MAX_MCP_OUTPUT_TOKENS // "15000")' \
-    "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
-  chmod 600 "$SETTINGS"
-else
-  echo "settings.json is not a JSON object; left it alone. Set env.MAX_MCP_OUTPUT_TOKENS by hand."
-fi
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup-config.sh" cap-mcp-output
 ```
+
+It prints the value in force. When `settings.json` is not a JSON object, it changes nothing and
+says to set `env.MAX_MCP_OUTPUT_TOKENS` by hand. Relay that.
 
 - **Idempotent:** the merge is a no-op when the key exists, whatever its value.
 - **Restart required:** `settings.json` `.env` is read at launch, like the token in Step 2b.

@@ -62,6 +62,8 @@ _cfg() { [ -f "$CONFIG_FILE" ] && jq -r "$1 // empty" "$CONFIG_FILE" 2>/dev/null
 . "$HOOKS_DIR/lib/summary-dispatch.sh"
 
 PENDING="$CACHE_PATH/pending-summaries"
+# A claim whose writer is done, or past its TTL, no longer holds its marker.
+summary_dispatch_sweep_claims "$PENDING"
 SID="${1:-}"
 
 if [ -n "$SID" ]; then

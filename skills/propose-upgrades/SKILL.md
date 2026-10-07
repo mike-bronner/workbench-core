@@ -1,5 +1,5 @@
 ---
-description: Turn a decision-quality evaluation into concrete proposals — corrections to existing memories and new process recordings — then walk human sign-off and apply only what's approved. Gears 3+4 ("Propose" + "Sign-off") of the decision-quality learning loop; consumes /workbench-core:evaluate-decisions output. Run manually any time.
+description: Turn the latest decision-quality report into proposed memory corrections and process notes, and apply only what the user signs off. Use after evaluate-decisions, and in the nightly decision-quality run.
 ---
 
 The user has invoked `/workbench-core:propose-upgrades`. Read the latest evaluation **learnings report** and turn each finding into a concrete **proposal** — a correction to an existing memory/rule, or a new process recording — written into a review digest. Then walk **sign-off**: in phase 1, **every proposal needs the user's explicit approval** (no auto-accept). Apply only the approved ones; log the rejected ones so they never resurface.

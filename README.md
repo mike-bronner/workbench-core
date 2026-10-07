@@ -181,14 +181,15 @@ core/
 ├── hooks/
 │   ├── hooks.json              — hook → script bindings, and the hooks module
 │   ├── register.ts             — the hooks module (a mod): $.workbench, question rule, request meter,
-│   │                             status line, commit approval, vault write checks, /orchestrator,
-│   │                             /memory-status, /notices, /process-pending-summaries
+│   │                             cache meter, status line, commit approval, vault write checks,
+│   │                             the warmup's deferred half, /orchestrator, /memory-status, /notices,
+│   │                             /process-pending-summaries
 │   ├── mods/                   — the module's pure logic: brief, lane, orchestrator, question-rule,
-│   │                             request-meter, status-line, commit-approval, vault-write,
+│   │                             request-meter, cache-meter, status-line, commit-approval, vault-write,
 │   │                             pending-summaries, shell (the shell reader behind parseShell)
 │   ├── session-log.sh          — raw log capture + summary-writer dispatch (not at SessionEnd)
 │   ├── session-warmup.sh       — memory and scratch rules + retention cleanup + dead-marker sweep +
-│   │                             session reconciler + summary drain
+│   │                             session reconciler; summary drain + Chat-skill scan run deferred
 │   ├── skill-learnings.sh      — PreToolUse(Skill): hand a skill its vault learnings file
 │   ├── mcp-memory.sh           — stdio launcher, retained but unwired (see Memory server transport)
 │   ├── memory-server-up.sh     — shared-HTTP SessionStart kicker (disabled; retained for re-enable)
@@ -227,7 +228,8 @@ core/
 │   └── vault-conventions.md    — paths, frontmatter rules, write conventions, the vault-git rule
 ├── skills/
 │   ├── compact-learnings/      — review, compact, and integrate skill learnings
-│   ├── setup/                  — configure agent name, paths, MCP settings
+│   ├── setup/                  — configure agent name, paths, MCP settings (references/git-sync.md:
+│   │                             the opt-in vault sync steps)
 │   ├── evaluate-decisions/     — grade recorded decisions/memories → learnings report (REPS gear 2)
 │   ├── propose-upgrades/       — learnings → reviewed proposals → apply on sign-off (REPS gears 3+4)
 │   ├── log-now/                — dump + narrate the current session inline
@@ -245,6 +247,7 @@ core/
 │   ├── install-chat-skills.sh  — package + install skills into Claude Chat
 │   ├── install.sh              — install the shipped output style
 │   ├── permissions.sh          — merge the shipped permission rails into settings.json
+│   ├── setup-config.sh         — setup's fixed merges: legacy migrate, config.json, token, MCP output cap
 │   ├── memory-status.sh        — report the shared memory server's facts (/memory-status)
 │   ├── memory-health.sh        — the probe's one status word, for the status line
 │   ├── learnings-count.sh      — a skill's learnings entry count, for the status line
@@ -261,7 +264,7 @@ These hooks fire across the session lifecycle and on each turn:
 
 | Hook | Script | Purpose |
 |------|--------|---------|
-| `SessionStart` | `hooks/session-warmup.sh` | Memory and scratch rules, retention cleanup, dead-marker sweep, session reconciler, pending-summary drain, housekeeping notices (written to a file, not injected) |
+| `SessionStart` | `hooks/session-warmup.sh --defer` | Memory and scratch rules, retention cleanup, dead-marker sweep, session reconciler, housekeeping notices (written to a file, not injected). The pending-summary drain and the Chat-skill scan run after it, from the [hooks module](#the-hooks-module), so they no longer hold up the start |
 | `PostToolUse` | `hooks/memory-scan-recall.sh` | Mid-turn recall — search the vault with a repo scan's own query and inject hits beside the scan's results (matcher `Grep\|Bash`), **once per session** per memory, sharing that bound with `memory-recall.sh` |
 | `PreCompact` | `hooks/session-log.sh` | Dump raw log checkpoint, spawn summary-writer |
 | `PostCompact` | `hooks/session-warmup.sh` | Re-inject the memory and scratch rules after context compression |
@@ -718,6 +721,8 @@ A child process started as the parent CLI exits is killed during teardown. `nohu
 
 So `mode=final` writes the marker and stops. The next session start drains it, where the parent is alive by definition. Work triggered at process death cannot be made to outlive the process by backgrounding it harder.
 
+**One writer per marker.** `summary_dispatch_spawn` (`hooks/lib/summary-dispatch.sh`) claims each marker before it spawns, with an atomic `mkdir` of `pending-summaries/.claims/<marker>`. A second spawn on a claimed marker spawns nothing and logs a `claimed` line, so two sessions draining at once never start two writers on one session. The writer never releases the claim: it deletes the marker, and the next drain or `/process-pending-summaries` sweeps a claim whose marker is gone. A claim older than 60 minutes, or older than its marker (a later segment's), is taken over.
+
 The drain is bounded (`WORKBENCH_DRAIN_BATCH`, default 3) and rate-limited (`WORKBENCH_DRAIN_COOLDOWN_MIN`, default 5) so a large backlog clears over several sessions instead of forking a swarm at one session start. It takes the **oldest** markers first: the retention sweep refuses to delete any raw log that still has a marker, so draining newest-first would pin the oldest logs on disk indefinitely. Writer stdout and stderr go to `{memory_cache}/summary-dispatch-errors.log` — the original dispatch discarded both to `/dev/null`, which is why a two-week outage went unnoticed.
 
 **To drain more now, Mike types `/process-pending-summaries`.** The [hooks module](#the-hooks-module) answers it with no model turn: `scripts/process-pending-summaries.sh` spawns detached writers through the same `hooks/lib/summary-dispatch.sh` helper. It takes up to 10 live markers, oldest `marked_at` first, counts the dead ones and leaves them alone, and reports dispatched, live remaining, dead, and total in a toast. `/process-pending-summaries <session-id>` summarizes one session, and writes its marker first when there is none. When that session already has a summary, the command asks through the AskUserQuestion dialog whether to overwrite it, with "Skip" first, and a dismissed dialog keeps it. `--overwrite` after the id skips the question. Only a prompt Mike sends runs the command. It replaced the `process-pending-summaries` skill, which spent a model turn on the same steps and dispatched its writers as in-session sub-agents.
@@ -796,10 +801,14 @@ The warmup injects the memory-routing and destructive-command rules on **every**
 
 | Source | When | What happens |
 |--------|------|--------------|
-| `startup` | Fresh session | Full warmup: retention cleanup + rules + dead-marker sweep + reconciler + pending-summary drain + notices refresh |
-| `resume` | Reconnecting | Rules + dead-marker sweep + reconciler + pending-summary drain + notices refresh |
+| `startup` | Fresh session | Full warmup: retention cleanup + rules + dead-marker sweep + reconciler + notices refresh. Then, deferred: pending-summary drain + Chat-skill scan |
+| `resume` | Reconnecting | Rules + dead-marker sweep + reconciler + notices refresh. Then, deferred: pending-summary drain |
 | `clear` | After `/clear` | Rules + notices refresh |
 | `compact` | After compression | Rules only (via PostCompact hook) |
+
+**Two parts, so the drain and the scan do not hold up the start.** The SessionStart hook runs `session-warmup.sh --defer`, which does everything above except the pending-summary drain and the Chat-skill scan. The [hooks module](#the-hooks-module) wraps the SessionStart hooks (`classic.SessionStart`). Once they are done, it runs `session-warmup.sh --deferred` in the background, with the source and session id on stdin. That run does only the drain and the scan, prints nothing the model reads, and adds the Chat-skill notice to the notices file the first part wrote. It runs in every lane the warmup drains in, unattended runs included, and keeps the warmup's skip guards. With no argument, or one it does not know, the script still does the whole warmup in one run.
+
+**When the deferred run does not happen.** The hooks module may not load (a load error, an older CLI, `allowManagedModsOnly`), and a short `claude -p` can exit and kill the deferred run partway. So each `--defer` run writes a `warmup-deferred.started` stamp in the memory cache as its last step. Each `--deferred` run adds its PID and start time to that stamp as its first step, and writes a matching `warmup-deferred.done` stamp as its last. A run still going looks like a killed one by the stamps alone, so a `--defer` run leaves the previous start's run alone while its PID is alive and it is under 120 s old, the time the hooks module gives it. A `--defer` run that finds the previous start's run unfinished and not running does the drain and the Chat-skill scan inline, as a whole run would, and a later deferred run does not add the Chat notice twice. The drain's cooldown stamp names the run and session that wrote it. When the unfinished deferred run wrote it, the inline drain ignores the cooldown. A stamp an inline drain wrote holds, so starts with no hooks module still keep the cooldown. A run killed inside the drain also leaves the drain's lock, so for that lock's minute a start drains nothing and the markers wait. Measured in a sandbox with six drainable markers and twelve new Chat skills, the blocking part went from about 390 to 450 ms to about 180 to 215 ms. The deferred part takes about 300 ms in the background. `hooks/test-session-warmup-deferred.sh` and `tests/deferred-start.test.ts` cover the split.
 
 It injects no persona file and no behavioural rule. The persona is the output style, which is system-prompt tier and survives compaction on its own.
 
@@ -861,11 +870,12 @@ The setting is a **backstop, not a substitute** for servers capping their own ou
 
 - **The `$.workbench` noun.** See [The $.workbench noun](#the-workbench-noun).
 - **Commands that cost no model turn.** `/orchestrator [on|off|status]` (see [Delegation gate](#delegation-gate)), `/memory-status`, which runs `scripts/memory-status.sh` and shows its report in a pane, `/notices`, which shows the [warmup notices](#housekeeping-notices--for-mike-not-the-model) in the same pane, and `/process-pending-summaries [<session-id> [--overwrite]]` (see [Why SessionEnd does not spawn](#why-sessionend-does-not-spawn)). They replace the `orchestrator`, `memory-status` and `process-pending-summaries` skills. A command answers through a toast, the status line, or the pane, and returns no text, because a command's text is a transcript row the model reads.
-- **The status line.** After the request meter: the memory server's health from the identity-checked probe (`mem UP`, every minute), orchestrator mode (`orch on`), the rows the last reply takes at 80 columns against the output style's budget of about 40 (`rows 38/40`, a meter only: nothing re-prompts on it), each skill whose learnings file is past 30 entries, and the warmup notices outstanding. A fact not known yet is left out. For example: `T14 · $0.21/req · 3.4× first │ mem UP · orch on · rows 38/40`.
+- **The status line.** After the request meter: the latest request's cache hit share (`cache 97%`) and, once a spike named a changed section, the count of such spikes (`churn 1`), then the memory server's health from the identity-checked probe (`mem UP`, every minute), orchestrator mode (`orch on`), the rows the last reply takes at 80 columns against the output style's budget of about 40 (`rows 38/40`, a meter only: nothing re-prompts on it), each skill whose learnings file is past 30 entries, and the warmup notices outstanding. A fact not known yet is left out. For example: `T14 · $0.21/req · 3.4× first │ cache 97% · mem UP · orch on · rows 38/40`.
 - **The question rule.** See [Question delivery](#question-delivery-the-rule-in-the-style-the-enforcement-in-the-mod).
 - **Commit approval.** See [Commit approval](#commit-approval-the-pick-is-checked).
 - **Vault write checks.** See [Vault write checks](#vault-write-checks).
 - **The request meter.** The status line shows the turns since session start and the latest API request's cost against the session's first API request's, for example `T14 · $0.21/req · 3.4× first`. A request is one main-loop model request (one `turn.step`), priced from the usage the API reported for that response alone. T counts completed main-loop turns. A sub-agent's requests and turns are left out. The first request is the baseline and never moves. When it has no price the line says `first unpriced`, and when it cost $0 the line says `first $0`, rather than comparing against a later request. A step that got no response reported no cost, so it is not a request. Each request is priced from its uncached input, cache reads, cache writes, and output, at the list price of the model that answered (`hooks/mods/request-meter.ts`). A cache write is priced at 2 times input, the 1-hour rate, because the engine's usage does not split writes by TTL. Claude Code's transcripts do. Across 400 of Mike's transcripts, every main-loop write since 2026-09-01 was a 1-hour write, and at that rate a probe matched the engine's own cost ledger to the cent. The rate is not universal: 0.5% of messages, from two desktop sessions in July and August, wrote 5-minute caches. In a session like those, the write share of `$/req` reads up to 60% high. A model with no price shows `unpriced` and no figure. The line updates after every request and every turn, is drawn again after a reload, and starts over on `/clear`. The figures change every turn, so they live on the status line and never in the system prompt, where they would re-bill the cached prefix.
+- **The cache meter and its churn view.** Every main-loop request is recorded with its cache read against its cache creation and its uncached input, as the API reported them for that response (`hooks/mods/cache-meter.ts`). The status line shows the latest request's hit share. A request past the first that creates more of the cache than it reads, and at least 1,024 tokens, is a creation spike. At the first request the module reads the system prompt with `$.prompt.compose()` and hashes each section. It reads it again on every request that created cache, so a change that cost no spike is not blamed on a later one, and it skips requests that only read the cache. At a spike, the sections whose hash changed since the last reading are the churn: a toast names them (`Prompt cache churn at request 14: system-prompt section env_info_simple changed, and 41,200 tokens were cached again.`), and the status line counts such spikes. A spike with no changed section is an expired cache, a compaction or a large tool result, so it is recorded and not shown. A sub-agent's requests are left out. The module only reads the prompt: it hooks no `prompt.*` event, so nothing it measures can enter the system prompt. In a session a person sits at, the record is written to `~/.claude-workbench/cache-meter/<session-id>.json` after each request (the latest 500 requests, each with its hit share, and every spike), so a change can be measured before and after. The startup warmup deletes records older than 7 days. The meter starts over on `/clear`.
 
 Every hook that touches `$` lives in `register.ts`, because the engine follows `$` into no imported function, and a plugin registers each event once, so where several features share an event, one hook branches. The logic is pure and lives in `hooks/mods/`, and `types/index.d.ts` declares the `$.workbench` noun and the values the module keeps in `$.state`.
 
@@ -909,7 +919,7 @@ Each statement is one simple command, and carries:
 
 **It holds to `shell_parse.py` on the bash guards' corpus.** `hooks/test-shell-parity.sh` runs `hooks/test-parser-differential.sh` with a recorder on, reads every command through `shell_parse.py` as the guards do, and writes the readings into `tests/shell-cases.ts`. It fails while the committed fixture is stale, and when `jq` is missing, since it then cannot check the fixture. `tests/shell.test.ts` holds `parseShell` to every case. Two kinds of case differ, and the test names each one with its reason. An unterminated heredoc is read as bash reads it, as a body with the `heredoc` unknown set, so a fail-closed guard refuses the whole line. `shell_parse.py` reads those lines as commands. And `env -i` is read past its option, which closes `shell_parse.py`'s known `env -i` gap.
 
-**Testing it.** `claude plugin test <repo>` runs `tests/*.test.ts` against the engine's own test kit, and `claude plugin validate <repo>` checks the manifest and what the module hooks and calls. A shell alias that puts an option before `plugin` makes the CLI refuse both, so call the binary with `command claude`. The engine lays the API's type declarations into `.claude-plugin/types/` (ignored) when it loads this folder through `--plugin-dir`, and `tsconfig.json` extends the tsconfig it lays there. To type-check without a load, point a scratch tsconfig at the `types/claude-code.d.ts` that the `plugin-authoring` skill writes.
+**Testing it.** `claude plugin test <repo>` runs `tests/*.test.ts` against the engine's own test kit, and `claude plugin validate <repo>` checks the manifest and what the module hooks and calls. A shell alias that puts an option before `plugin` makes the CLI refuse both, so call the binary with `command claude`. The engine lays the API's type declarations into `.claude-plugin/types/` (ignored) when it loads this folder through `--plugin-dir`, and `tsconfig.json` extends the tsconfig it lays there. To type-check without a load, point a scratch tsconfig at the `types/claude-code.d.ts` that the `plugin-authoring` skill writes. CI's `plugin-tests` job runs both on a pinned CLI from npm. They need no account. It runs no `tsc`, because the types are laid only by a session, and a session needs one.
 
 ### Question delivery: the rule in the style, the enforcement in the mod
 
@@ -1213,7 +1223,13 @@ Runs on every `startup` warmup:
 | `/workbench-core:intake` | The task-intake routine for an interactive session — goal, context, an interview limited to real gaps, acceptance criteria shown before work starts, and three options from different angles graded against every criterion. See [Task intake](#task-intake) |
 | `/workbench-core:cross-session-messaging` | The protocol for messaging another Claude Code session — when to reach out, what a message carries, the receive-side rule that keeps a human in the loop, and which sends a sub-agent may make. Paired with the [peer message gate](#peer-message-gate) |
 
-**Only the user starts most of them.** `setup`, `log-now`, `compact-learnings`, `memory-lint`, and `install-chat-skills` carry `disable-model-invocation: true`, which takes each one out of the skill listing the model reads in every session. A slash command at the start of a prompt still runs them, the monthly `/workbench-core:memory-lint` task included. `evaluate-decisions` and `propose-upgrades` stay in the listing, because the nightly decision-quality task asks the model to run them in prose.
+**Only the user starts most of them.** `setup`, `log-now`, `compact-learnings`, `memory-lint`, and `install-chat-skills` carry `disable-model-invocation: true`, which takes each one out of the skill listing the model reads in every session. A slash command at the start of a prompt still runs them, the monthly `/workbench-core:memory-lint` task included. `evaluate-decisions` and `propose-upgrades` stay in the listing, because the nightly decision-quality task asks the model to run them in prose. Every listed description is sent in every session, so each is kept short and still says when to use the skill: the four listed descriptions total 963 bytes, down from 1,560.
+
+**The batch skills run in a forked context.** `memory-lint` and `evaluate-decisions` carry `context: fork`, so a run's tool calls and reads stay in a sub-agent, and only its report comes back to the session. `compact-learnings` does not fork, by Mike's decision, for the same reason as `propose-upgrades`: it asks about each entry through `AskUserQuestion` and hands integration to Dr. Watson, and a forked sub-agent can do neither. `propose-upgrades` does not fork, because it walks the user's sign-off.
+
+**`/workbench-core:install-chat-skills` runs its script as it loads.** The skill injects the output of `scripts/install-chat-skills.sh` with `` !`…` `` and pre-approves exactly that command in `allowed-tools`, so the install costs no tool turn and no permission prompt. The model only reports what the script did.
+
+**`/workbench-core:setup` keeps the steps that need the model.** Its fixed merges run through `scripts/setup-config.sh`: the legacy config migration, the `config.json` merge, the bearer token, the leftover ask-rule check, and the MCP output cap. `hooks/test-setup-config.sh` covers each. The opt-in git-sync steps are in `skills/setup/references/git-sync.md`, which setup reads only when the user opts in.
 
 `/orchestrator`, `/memory-status`, `/notices`, and `/process-pending-summaries` are commands of the [hooks module](#the-hooks-module), not skills.
 
@@ -1233,9 +1249,9 @@ The following skills can be installed into Claude Chat (Mac app):
 Click to install: `/workbench-core:install-chat-skills`
 ```
 
-The detection runs once per session start (`source: startup` only) and uses a state-file mtime fast-path — when nothing has changed since the last run, the check is a single stat. The cold path triggers only after `claude plugin install/update` actually changes `installed_plugins.json`.
+The detection runs once per session start (`source: startup` only), in the warmup's deferred part, after the session start is done. It uses a state-file mtime fast-path — when nothing has changed since the last run, the check is a single stat. The cold path triggers only after `claude plugin install/update` actually changes `installed_plugins.json`.
 
-The slash command (`/workbench-core:install-chat-skills`) packages each eligible skill via `skill-creator`'s `package_skill.py`, opens the resulting `.skill` files with the Mac app, and updates `~/.claude-workbench/chat-skills-state.json` so the notice clears. Requires the `skill-creator@claude-plugins-official` plugin (the script will tell you to install it if missing).
+The slash command (`/workbench-core:install-chat-skills`) runs the install script as the skill loads. The script packages each eligible skill via `skill-creator`'s `package_skill.py`, opens the resulting `.skill` files with the Mac app, and updates `~/.claude-workbench/chat-skills-state.json` so the notice clears. Requires the `skill-creator@claude-plugins-official` plugin (the script will tell you to install it if missing).
 
 The notice persists until the user installs — if you ignore it once, it'll appear again on the next session start. Skipping a skill in the install dialog has the same effect.
 

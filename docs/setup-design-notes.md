@@ -1,7 +1,9 @@
 # Setup design notes
 
 Why `/workbench-core:setup` does what it does. The skill at
-`skills/setup/SKILL.md` carries the steps. This file carries the reasons and the
+`skills/setup/SKILL.md` carries the steps, `scripts/setup-config.sh` runs its
+fixed merges, and `skills/setup/references/git-sync.md` holds the opt-in git-sync
+steps. This file carries the reasons and the
 history behind them, so the skill stays short enough to follow and nobody
 "improves" a step without knowing why it is shaped that way.
 

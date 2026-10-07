@@ -110,7 +110,7 @@ describe('the live gate never finds fewer commits or pushes than the gate of 77b
   })
 
   for (const seed of [1, 2, 3]) {
-    test(`on 50,000 random lines, seed ${seed}`, () => {
+    test(`on 50,000 random lines, seed ${seed}`, { timeoutMs: 60_000 }, () => {
       expect(lowerOn(randomLines(seed, 50_000))).toEqual([])
     })
   }

@@ -1,5 +1,6 @@
 ---
-description: Grade recorded decisions and memory entries for decision quality — correctness against outcomes, accuracy/efficiency/speed, consistency/recurrence, and missing process — and write a learnings report. Gear 2 ("Evaluate") of the decision-quality learning loop; feeds /workbench-core:propose-upgrades. Run manually any time.
+description: Grade recorded decisions and memories for decision quality, and write the learnings report propose-upgrades reads. Use when asked to evaluate decisions, and in the nightly decision-quality run.
+context: fork
 ---
 
 The user has invoked `/workbench-core:evaluate-decisions`. Read the recently recorded **decisions** and **memory entries** in the vault and grade their *decision quality*, then write a **learnings report** that the Propose gear turns into concrete corrections. This skill **only reads the corpus and writes one report** — it never edits a decision or memory, and it never proposes or applies a fix (that is `propose-upgrades`' job).

@@ -13,6 +13,26 @@
 #   clear   → rules + notices refresh
 #   compact → rules only
 #
+# The drain and the Chat-skill scan need not hold up the start. One argument
+# splits the run in two (hooks/hooks.json, hooks/register.ts):
+#   (none)      the whole warmup in one run, as above
+#   --defer     the SessionStart hook: all of it but the drain and the scan
+#   --deferred  hooks/register.ts, once SessionStart is done: only the drain
+#               and the scan. It prints nothing for the model, and adds the
+#               scan's notice to the notices file the --defer run wrote.
+# Any other argument runs the whole warmup, so a typo never skips work.
+#
+# The deferred run can fail to happen: the hooks module did not load (a load
+# error, an older CLI, allowManagedModsOnly), or a short `claude -p` exited and
+# killed it partway. So a --defer run notes this start in a "started" stamp as
+# its last step. A --deferred run adds its PID and start time to that stamp as
+# its first step, and writes a matching "done" stamp as its last. A --defer run
+# that finds the previous start's deferred run unfinished, and not running
+# either, does the drain and the scan inline, as a whole run would. The
+# drain's cooldown stamp names the run and the session that wrote it. When
+# that unfinished deferred run wrote it, the inline drain ignores the cooldown.
+# A stamp an inline drain wrote holds, so starts with no hooks module keep it.
+#
 # The injected payload is BYTE-STABLE by construction: all volatile housekeeping
 # state goes to ~/.claude-workbench/warmup-notices.md, which the model is never
 # told to read. hooks/register.ts brings the notices to Mike: a toast naming
@@ -99,6 +119,22 @@ if [ -n "$PAYLOAD" ] && command -v jq >/dev/null 2>&1; then
   CURRENT_SID=$(printf '%s' "$PAYLOAD" | jq -r '.session_id // empty' 2>/dev/null)
 fi
 CURRENT_SID="${CURRENT_SID:-}"
+
+DEFERRED_FALLBACK=0
+# Which part of the warmup this run does: all, blocking or deferred (header).
+case "${1:-}" in
+  --defer) WARMUP_PART="blocking" ;;
+  --deferred) WARMUP_PART="deferred" ;;
+  *) WARMUP_PART="all" ;;
+esac
+# Set below, never from the environment: whether the drain skips its cooldown.
+DRAIN_IGNORE_COOLDOWN=0
+# The deferred run's two stamps, each holding the session id (header).
+DEFERRED_STARTED="$CACHE_PATH/warmup-deferred.started"
+DEFERRED_DONE="$CACHE_PATH/warmup-deferred.done"
+
+# Mike's notices: rewritten by every run but a deferred one, which adds to it.
+NOTICES_FILE="$HOME/.claude-workbench/warmup-notices.md"
 
 # ──────────── Persistent file management (function defs) ────────────
 # These functions manage files that persist on disk across sessions. Defined
@@ -192,6 +228,128 @@ detect_chat_skill_changes() {
       printf -- '- `%s` (from `%s`)\n' "$skill_name" "$plugin_name"
     done
     printf '\nClick to install: `/workbench-core:install-chat-skills`\n\n'
+  fi
+}
+
+add_chat_skill_notice() {
+  # The deferred run's half of the notices: the Chat-skill notice, added to the
+  # file the --defer run wrote. It takes the place of "No outstanding notices."
+  # when that is all the file says, and goes after the notices there otherwise.
+  # The file is replaced whole through a temporary file beside it, so a reader
+  # never sees half of it. With no notices file yet, it writes one.
+  local chat tmp
+  chat="$(detect_chat_skill_changes)"
+  [ -n "$chat" ] || return 0
+  # A --defer run that fell back to the scan already wrote this notice.
+  grep -qF '## 📦 New Chat-installable skills' "$NOTICES_FILE" 2>/dev/null && return 0
+  mkdir -p "$(dirname "$NOTICES_FILE")" 2>/dev/null || return 0
+  tmp="$(mktemp "$NOTICES_FILE.XXXXXX" 2>/dev/null)" || return 0
+  {
+    if [ -f "$NOTICES_FILE" ]; then
+      grep -vx 'No outstanding notices\.' "$NOTICES_FILE"
+    else
+      printf '# Warmup notices\n\n'
+      printf '_Written by session-warmup.sh at %s session start. Rewritten every run._\n\n' "$SOURCE"
+    fi
+    printf '%s\n' "$chat"
+  } > "$tmp" 2>/dev/null && mv -f "$tmp" "$NOTICES_FILE" 2>/dev/null || rm -f "$tmp"
+}
+
+# ──────────── Pending-summary drain (function def) ────────────
+# THE DRAIN EMITS NOTHING in production. In a full run it goes before the
+# notices section on purpose: it is an action, not a report, and the warmup
+# payload must stay byte-stable. (Under WORKBENCH_DISPATCH_DRY_RUN the shared spawn helper prints
+# its resolved invocation to stdout so tests can assert it — that variable is set
+# only by hooks/test-*.sh and never in production.)
+#
+# session-log.sh no longer dispatches on SessionEnd — a child spawned as the
+# parent exits is killed during teardown, which silently stranded 968 markers.
+# Draining here is the other half of that fix: at session start the parent is
+# alive by definition and stays alive, so a detached writer survives to finish.
+#
+# Only startup and resume. `clear` fires mid-session, which already drained at
+# its own startup, and `compact` is excluded for the same reason the notices
+# block excludes it — do not pile work onto a context that was just shed.
+#
+# A bounded batch, not the whole directory. At the default of 3 per session a
+# backlog drains steadily without turning a session start into a fork bomb, and
+# each writer finishes well inside a normal session's lifetime. OLDEST first:
+# the startup log-retention sweep refuses to delete any raw log that still has a
+# marker, so the oldest markers are the ones pinning old logs on disk. Draining
+# newest-first would let them pin indefinitely.
+#
+# Called for startup and resume: inline in a full run, and from the deferred
+# run (--deferred) that hooks/register.ts starts once SessionStart is done.
+drain_pending_summaries() {
+  summary_dispatch_sweep_claims "$PENDING_SUMMARIES_DIR"
+  DRAIN_BATCH="${WORKBENCH_DRAIN_BATCH:-3}"
+  DRAIN_COOLDOWN_MIN="${WORKBENCH_DRAIN_COOLDOWN_MIN:-5}"
+  DRAIN_LOCK="$CACHE_PATH/summary-drain.lock"
+  DRAIN_STAMP="$CACHE_PATH/summary-drain.stamp"
+
+  if [ "$DRAIN_BATCH" -gt 0 ] 2>/dev/null && command -v jq >/dev/null 2>&1 \
+     && summary_dispatch_enabled; then
+    # Break a lock left by a session that died mid-drain. The critical section
+    # below is a few spawns long, so anything older than a minute is debris.
+    if [ -d "$DRAIN_LOCK" ] && [ -z "$(find "$DRAIN_LOCK" -mmin -1 2>/dev/null)" ]; then
+      rmdir "$DRAIN_LOCK" 2>/dev/null || true
+    fi
+
+    # mkdir is the atomic test-and-set. It guards the stamp check below, so two
+    # sessions starting at the same instant cannot both read a stale stamp and
+    # both spawn a batch. Released as soon as the spawns are away — the writers
+    # are detached and outlive it.
+    if mkdir "$DRAIN_LOCK" 2>/dev/null; then
+      # Cooldown: rapid successive session starts (a crash loop, a burst of
+      # scripted launches) must not multiply the batch size. A cooldown of 0
+      # disables the window outright — checked explicitly rather than leaning on
+      # `find -mmin -0`, whose BSD rounding makes it match or miss depending on
+      # sub-minute timing.
+      if [ "$DRAIN_IGNORE_COOLDOWN" != "1" ] \
+         && [ "$DRAIN_COOLDOWN_MIN" -gt 0 ] 2>/dev/null \
+         && [ -f "$DRAIN_STAMP" ] \
+         && [ -n "$(find "$DRAIN_STAMP" -mmin "-$DRAIN_COOLDOWN_MIN" 2>/dev/null)" ]; then
+        : # still cooling down
+      else
+        # Which run drained, for which session: the --defer fallback reads it.
+        printf '%s %s\n' "$WARMUP_PART" "${CURRENT_SID:-unknown}" > "$DRAIN_STAMP" 2>/dev/null || true
+        local DRAINED=0
+        while IFS= read -r marker; do
+          [ "$DRAINED" -ge "$DRAIN_BATCH" ] && break
+          [ -f "$marker" ] || continue
+          DRAIN_SID="$(jq -r '.session_id // empty' "$marker" 2>/dev/null)"
+          DRAIN_LOG="$(jq -r '.log_path // empty' "$marker" 2>/dev/null)"
+          DRAIN_TRANSCRIPT="$(jq -r '.transcript_path // empty' "$marker" 2>/dev/null)"
+          # Fail closed on a marker we cannot act on. A malformed marker, or one
+          # whose log AND transcript are both gone, would otherwise be retried on
+          # every session start forever, permanently consuming batch slots that
+          # the drainable markers behind it need. The dead-marker sweep, which
+          # runs before the drain, has already deleted the empty and
+          # both-sources-gone ones, so what still lands here is a marker the
+          # sweep could not read with certainty.
+          #
+          # A missing log alone is NOT that case. The log is a 7-day vault cache
+          # and the transcript is the ~30-day original, so a pruned log is a
+          # cache miss the writer recovers from (agents/summary-writer.md step
+          # 2). Refusing on the log alone made this gate stricter than the agent
+          # it gates: on 2026-09-18 it rejected 778 of 779 markers, 503 of which
+          # still had a readable transcript. Transcript retention is the real
+          # deadline, and those 503 were expiring against it untouched.
+          if [ -z "$DRAIN_SID" ] \
+             || ! summary_dispatch_readable "$DRAIN_LOG" "$DRAIN_TRANSCRIPT"; then
+            printf '%s undrainable marker=%s sid=%s log=%s transcript=%s\n' \
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$marker" "${DRAIN_SID:-?}" \
+              "${DRAIN_LOG:-?}" "${DRAIN_TRANSCRIPT:-?}" \
+              >> "$(summary_dispatch_logfile)" 2>/dev/null || true
+            continue
+          fi
+          if summary_dispatch_spawn "$DRAIN_SID" "$marker" "$DRAIN_LOG" "$DRAIN_TRANSCRIPT"; then
+            DRAINED=$((DRAINED + 1))
+          fi
+        done <<< "$(ls -tr "$PENDING_SUMMARIES_DIR"/*.json 2>/dev/null)"
+      fi
+      rmdir "$DRAIN_LOCK" 2>/dev/null || true
+    fi
   fi
 }
 
@@ -369,6 +527,50 @@ if [ -n "${CLAUDE_CODE_AGENT:-}" ]; then
   exit 0
 fi
 
+# ──────────── The deferred run: drain and Chat-skill scan only ────────────
+# It runs after the --defer run finished, so the reconciler has already turned
+# dead sessions into markers, and the notices file is this start's. Nothing it
+# prints reaches the model: hooks/register.ts drops its output.
+if [ "$WARMUP_PART" = "deferred" ]; then
+  # Its first step: the "started" stamp gains this run's PID and start time, so
+  # a start that comes while it runs can tell it is alive (the fallback below).
+  mkdir -p "$CACHE_PATH" 2>/dev/null
+  printf '%s %s %s\n' "${CURRENT_SID:-unknown}" "$$" "$(date +%s)" > "$DEFERRED_STARTED.$$" 2>/dev/null \
+    && mv -f "$DEFERRED_STARTED.$$" "$DEFERRED_STARTED" 2>/dev/null
+  if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
+    drain_pending_summaries
+  fi
+  [ "$SOURCE" = "startup" ] && add_chat_skill_notice
+  mkdir -p "$CACHE_PATH" 2>/dev/null
+  printf '%s\n' "${CURRENT_SID:-unknown}" > "$DEFERRED_DONE" 2>/dev/null
+  exit 0
+fi
+
+# ──────────── The --defer run's fallback ────────────
+# The previous start's deferred run never finished when its "started" stamp
+# names a session the "done" stamp does not. It may still be running: then its
+# PID is alive and its start is under DEFERRED_TIMEOUT_S old, the time
+# hooks/register.ts gives it (DEFERRED_TIMEOUT_MS). A live run is left to
+# finish, so its drain is never repeated. Otherwise it was killed, or never
+# started, and this run drains and scans inline (header).
+DEFERRED_TIMEOUT_S=120
+deferred_is_live() {
+  local pid="$1" since="$2"
+  [[ "$pid" =~ ^[0-9]+$ ]] && [[ "$since" =~ ^[0-9]+$ ]] || return 1
+  [ $(( $(date +%s) - since )) -lt "$DEFERRED_TIMEOUT_S" ] && kill -0 "$pid" 2>/dev/null
+}
+if [ "$WARMUP_PART" = "blocking" ] && { [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; } \
+   && [ -f "$DEFERRED_STARTED" ]; then
+  read -r STARTED_SID STARTED_PID STARTED_AT < "$DEFERRED_STARTED" 2>/dev/null
+  if [ "${STARTED_SID:-}" != "$(cat "$DEFERRED_DONE" 2>/dev/null)" ] \
+     && ! deferred_is_live "${STARTED_PID:-}" "${STARTED_AT:-}"; then
+    WARMUP_PART="all"
+    DEFERRED_FALLBACK=1
+    [ "$(cat "$CACHE_PATH/summary-drain.stamp" 2>/dev/null)" = "deferred ${STARTED_SID:-}" ] \
+      && DRAIN_IGNORE_COOLDOWN=1
+  fi
+fi
+
 # ──────────── CLAUDE.md + retired system-overrides (startup only) ────────────
 # These files persist on disk, so there is no need to regenerate on
 # compact/resume. The system-overrides stub is read by the CLI before the
@@ -428,6 +630,11 @@ if [ "$SOURCE" = "startup" ]; then
 
   # Legacy summary-writer logs — no longer generated, clean up any remaining.
   find "$CACHE_PATH" -name "summary-writer-*.log" -delete 2>/dev/null
+
+  # hooks/register.ts's cache meter keeps one record file per session. A week
+  # covers the before-and-after a change is measured on.
+  CACHE_METER_DIR="$HOME/.claude-workbench/cache-meter"
+  [ -d "$CACHE_METER_DIR" ] && find "$CACHE_METER_DIR" -name "*.json" -mtime +7 -delete 2>/dev/null
 fi
 
 # ──────────── Memory server health check (startup only) ────────────
@@ -596,94 +803,10 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
 fi
 
 # ──────────── Pending-summary drain (startup + resume) ────────────
-# THIS BLOCK EMITS NOTHING in production. It runs before the notices section on
-# purpose: it is an action, not a report, and the warmup payload must stay
-# byte-stable. (Under WORKBENCH_DISPATCH_DRY_RUN the shared spawn helper prints
-# its resolved invocation to stdout so tests can assert it — that variable is set
-# only by hooks/test-*.sh and never in production.)
-#
-# session-log.sh no longer dispatches on SessionEnd — a child spawned as the
-# parent exits is killed during teardown, which silently stranded 968 markers.
-# Draining here is the other half of that fix: at session start the parent is
-# alive by definition and stays alive, so a detached writer survives to finish.
-#
-# Only startup and resume. `clear` fires mid-session, which already drained at
-# its own startup, and `compact` is excluded for the same reason the notices
-# block excludes it — do not pile work onto a context that was just shed.
-#
-# A bounded batch, not the whole directory. At the default of 3 per session a
-# backlog drains steadily without turning a session start into a fork bomb, and
-# each writer finishes well inside a normal session's lifetime. OLDEST first:
-# the startup log-retention sweep refuses to delete any raw log that still has a
-# marker, so the oldest markers are the ones pinning old logs on disk. Draining
-# newest-first would let them pin indefinitely.
-if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
-  DRAIN_BATCH="${WORKBENCH_DRAIN_BATCH:-3}"
-  DRAIN_COOLDOWN_MIN="${WORKBENCH_DRAIN_COOLDOWN_MIN:-5}"
-  DRAIN_LOCK="$CACHE_PATH/summary-drain.lock"
-  DRAIN_STAMP="$CACHE_PATH/summary-drain.stamp"
-
-  if [ "$DRAIN_BATCH" -gt 0 ] 2>/dev/null && command -v jq >/dev/null 2>&1 \
-     && summary_dispatch_enabled; then
-    # Break a lock left by a session that died mid-drain. The critical section
-    # below is a few spawns long, so anything older than a minute is debris.
-    if [ -d "$DRAIN_LOCK" ] && [ -z "$(find "$DRAIN_LOCK" -mmin -1 2>/dev/null)" ]; then
-      rmdir "$DRAIN_LOCK" 2>/dev/null || true
-    fi
-
-    # mkdir is the atomic test-and-set. It guards the stamp check below, so two
-    # sessions starting at the same instant cannot both read a stale stamp and
-    # both spawn a batch. Released as soon as the spawns are away — the writers
-    # are detached and outlive it.
-    if mkdir "$DRAIN_LOCK" 2>/dev/null; then
-      # Cooldown: rapid successive session starts (a crash loop, a burst of
-      # scripted launches) must not multiply the batch size. A cooldown of 0
-      # disables the window outright — checked explicitly rather than leaning on
-      # `find -mmin -0`, whose BSD rounding makes it match or miss depending on
-      # sub-minute timing.
-      if [ "$DRAIN_COOLDOWN_MIN" -gt 0 ] 2>/dev/null \
-         && [ -f "$DRAIN_STAMP" ] \
-         && [ -n "$(find "$DRAIN_STAMP" -mmin "-$DRAIN_COOLDOWN_MIN" 2>/dev/null)" ]; then
-        : # still cooling down
-      else
-        : > "$DRAIN_STAMP" 2>/dev/null || true
-        DRAINED=0
-        while IFS= read -r marker; do
-          [ "$DRAINED" -ge "$DRAIN_BATCH" ] && break
-          [ -f "$marker" ] || continue
-          DRAIN_SID="$(jq -r '.session_id // empty' "$marker" 2>/dev/null)"
-          DRAIN_LOG="$(jq -r '.log_path // empty' "$marker" 2>/dev/null)"
-          DRAIN_TRANSCRIPT="$(jq -r '.transcript_path // empty' "$marker" 2>/dev/null)"
-          # Fail closed on a marker we cannot act on. A malformed marker, or one
-          # whose log AND transcript are both gone, would otherwise be retried on
-          # every session start forever, permanently consuming batch slots that
-          # the drainable markers behind it need. The sweep above has already
-          # deleted the empty and both-sources-gone ones, so what still lands
-          # here is a marker the sweep could not read with certainty.
-          #
-          # A missing log alone is NOT that case. The log is a 7-day vault cache
-          # and the transcript is the ~30-day original, so a pruned log is a
-          # cache miss the writer recovers from (agents/summary-writer.md step
-          # 2). Refusing on the log alone made this gate stricter than the agent
-          # it gates: on 2026-09-18 it rejected 778 of 779 markers, 503 of which
-          # still had a readable transcript. Transcript retention is the real
-          # deadline, and those 503 were expiring against it untouched.
-          if [ -z "$DRAIN_SID" ] \
-             || ! summary_dispatch_readable "$DRAIN_LOG" "$DRAIN_TRANSCRIPT"; then
-            printf '%s undrainable marker=%s sid=%s log=%s transcript=%s\n' \
-              "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$marker" "${DRAIN_SID:-?}" \
-              "${DRAIN_LOG:-?}" "${DRAIN_TRANSCRIPT:-?}" \
-              >> "$(summary_dispatch_logfile)" 2>/dev/null || true
-            continue
-          fi
-          if summary_dispatch_spawn "$DRAIN_SID" "$marker" "$DRAIN_LOG" "$DRAIN_TRANSCRIPT"; then
-            DRAINED=$((DRAINED + 1))
-          fi
-        done <<< "$(ls -tr "$PENDING_SUMMARIES_DIR"/*.json 2>/dev/null)"
-      fi
-      rmdir "$DRAIN_LOCK" 2>/dev/null || true
-    fi
-  fi
+# drain_pending_summaries, above, says what it does. A --defer run leaves it to
+# the deferred run, so it no longer holds up the session start.
+if [ "$WARMUP_PART" = "all" ] && { [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; }; then
+  drain_pending_summaries
 fi
 
 # ──────────── VOLATILE NOTICES — written to a file, never injected ────────────
@@ -826,7 +949,8 @@ done
 # Detect new or updated skills in workbench-* plugins that haven't been
 # installed into Claude Chat yet. Cheap fast-path via state-file mtime
 # comparison — only does real work when plugins have actually changed.
-if [ "$SOURCE" = "startup" ]; then
+# A --defer run leaves it to the deferred run (add_chat_skill_notice).
+if [ "$SOURCE" = "startup" ] && [ "$WARMUP_PART" = "all" ]; then
   detect_chat_skill_changes
 fi
 }
@@ -835,7 +959,6 @@ fi
 # is nothing to report, so a stale notice from a previous session can never
 # masquerade as current. A write failure is not fatal: warmup never breaks a
 # session, and the status line then shows no notices.
-NOTICES_FILE="$HOME/.claude-workbench/warmup-notices.md"
 NOTICES="$(collect_warmup_notices)"
 if mkdir -p "$(dirname "$NOTICES_FILE")" 2>/dev/null; then
   {
@@ -847,6 +970,14 @@ if mkdir -p "$(dirname "$NOTICES_FILE")" 2>/dev/null; then
       printf 'No outstanding notices.\n'
     fi
   } > "$NOTICES_FILE" 2>/dev/null
+fi
+
+# The --defer run's last step: this start's "started" stamp (header). The
+# deferred run that hooks/register.ts starts next writes the matching "done".
+if { [ "$WARMUP_PART" = "blocking" ] || [ "${DEFERRED_FALLBACK:-0}" = "1" ]; } \
+   && { [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; }; then
+  mkdir -p "$CACHE_PATH" 2>/dev/null
+  printf '%s\n' "${CURRENT_SID:-unknown}" > "$DEFERRED_STARTED" 2>/dev/null
 fi
 
 exit 0

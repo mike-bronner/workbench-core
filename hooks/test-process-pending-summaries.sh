@@ -22,7 +22,7 @@ mkdir -p "$VAULT/sessions/2026-10-01" "$PENDING" "$HOMEDIR/.claude/projects/p"
 drive() {  # drive [args...] -> the script's stdout
   HOME="$HOMEDIR" WORKBENCH_MEMORY_PATH="$VAULT" WORKBENCH_MEMORY_CACHE="$CACHE" \
     WORKBENCH_CONFIG_FILE="$SANDBOX/none.json" WORKBENCH_DISPATCH_DRY_RUN=1 \
-    CLAUDE_CONFIG_DIR= bash "$SCRIPT" "$@"
+    CLAUDE_CONFIG_DIR='' bash "$SCRIPT" "$@"
 }
 result() { printf '%s\n' "$1" | grep '^result='; }
 dispatched() { printf '%s\n' "$1" | sed -n 's/^DISPATCH sid=//p' | paste -sd ' ' -; }
@@ -60,7 +60,7 @@ assert_eq "oldest live first, dead ones skipped" "$(dispatched "$OUT")" \
   "transcript-only live-01 live-02 live-03 live-04 live-05 live-06 live-07 live-08 live-09"
 assert_contains "a transcript-only marker passes its transcript" "$OUT" "DISPATCH transcript=$HOMEDIR/.claude/projects/p/transcript-only.jsonl"
 assert_contains "the writer runs from the vault" "$OUT" "DISPATCH cwd=$VAULT"
-assert_eq "dead markers are left alone" "$(ls "$PENDING" | grep -c dead)" "2"
+assert_eq "dead markers are left alone" "$(find "$PENDING" -maxdepth 1 -name '*dead*' | grep -c .)" "2"
 
 echo "a marker with no marked_at sorts by its mtime:"
 rm -f "$PENDING"/*.json
@@ -84,7 +84,11 @@ printf 'summary\n' > "$VAULT/sessions/2026-10-01/one.summary.md"
 OUT="$(drive one)"
 assert_eq "an existing summary is not replaced" "$(result "$OUT")" "result=exists summary=$VAULT/sessions/2026-10-01/one.summary.md"
 assert_eq "and nothing is dispatched" "$(dispatched "$OUT")" ""
-assert_eq "--overwrite replaces it" "$(result "$(drive one --overwrite)")" "result=dispatched"
+# The first writer holds the marker's claim until it deletes the marker, so a
+# second writer never runs on one session (lib/summary-dispatch.sh).
+assert_eq "a second dispatch while the first holds the marker is refused" "$(result "$(drive one --overwrite)")" "result=failed"
+rm -f "$PENDING/one.json"
+assert_eq "--overwrite replaces it once the first writer is done" "$(result "$(drive one --overwrite)")" "result=dispatched"
 
 echo "a missing prerequisite is named:"
 mkdir -p "$SANDBOX/bin"

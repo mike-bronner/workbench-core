@@ -7,6 +7,8 @@
 //   question rule   every question to Mike goes through AskUserQuestion, with
 //                   its context in prose right above the call
 //   request meter   turns, and each API request's cost, on the status line
+//   cache meter     each request's cache read against its cache creation, and
+//                   the system-prompt section that changed at a creation spike
 //   status line     beside the meter: memory health, orchestrator mode, reply
 //                   rows, learnings due for compaction, warmup notices
 //   commands        /orchestrator, /memory-status, /notices and
@@ -15,6 +17,8 @@
 //                   asked alone, allows one commit and the push of that commit
 //   vault writes    the memory MCP's write, edit and append get a vault-relative
 //                   path, valid frontmatter on a new note, and path links
+//   deferred start  the warmup's pending-summary drain and Chat-skill scan,
+//                   started once the SessionStart hooks are done
 //
 // The logic is pure and lives in mods/. Every hook that touches `$` lives in
 // this file, because the engine follows `$` into no imported function, and a
@@ -22,10 +26,23 @@
 // hook branches where several features share the event.
 
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, FsEntry, Register, RenderElement } from 'claude-code'
+import type { EngineInterface, FsEntry, Register, RenderElement, TurnUsage } from 'claude-code'
 
-import type { PaneContent, WorkbenchCallerLane, WorkbenchShellParse } from '../types'
+import type { CacheState, ChurnEvent, PaneContent, WorkbenchCallerLane, WorkbenchShellParse } from '../types'
 import { BRIEF_SLOTS, checkBrief } from './mods/brief'
+import {
+  EMPTY_CACHE,
+  cacheFactsOf,
+  cacheRequestOf,
+  changedSections,
+  churnText,
+  countCache,
+  hashesOf,
+  isSpike,
+  recordFileOf,
+  recordOf,
+  withChurn,
+} from './mods/cache-meter'
 import type { Refs } from './mods/commit-approval'
 import { BUNDLE_REFUSAL, approvalAfter, bundlesCommit, dirOf, isCommitPick, readLine, refusalOf } from './mods/commit-approval'
 import { isAttendedPrompt, isAttendedSession, isScheduledFire, laneOf } from './mods/lane'
@@ -81,6 +98,7 @@ import {
 } from './mods/vault-write'
 
 const meter = atom({ plugin: 'workbench-core', key: 'meter' } as const, EMPTY)
+const cache = atom({ plugin: 'workbench-core', key: 'cache' } as const, EMPTY_CACHE)
 // Whether a person opened the current turn, so the question rule applies.
 const turnAttended = atom({ plugin: 'workbench-core', key: 'turnAttended' } as const, false)
 // Whether the question rule already re-prompted in the current turn.
@@ -125,6 +143,12 @@ const NOTICES_LATE_MS = 20_000
 // session's, so it is not shown here.
 const NOTICES_WINDOW_MS = 120_000
 const PROBE_EVERY_MS = 60_000
+// The warmup's deferred half starts as soon as the SessionStart hooks are done,
+// and may take this long: a few detached spawns and a scan of the plugins.
+// session-warmup.sh's DEFERRED_TIMEOUT_S states the same figure: a deferred
+// run older than it is taken as dead.
+const DEFERRED_MS = 0
+const DEFERRED_TIMEOUT_MS = 120_000
 
 // Whether a finished reply leaves a question for Mike in prose. A classifier
 // that fails, or answers with neither label, falls back to the deterministic
@@ -161,7 +185,7 @@ async function drawStatus($: EngineInterface): Promise<void> {
     notices: await read($, notices),
   })
   const isMetered = figures.turns > 0 || figures.first !== null
-  const line = lineOf(isMetered ? statusOf(figures) : undefined, facts)
+  const line = lineOf(isMetered ? statusOf(figures) : undefined, [...cacheFactsOf(await read($, cache)), ...facts])
   if (line === undefined && !hasDrawn) return
   hasDrawn = true
   $.ui.status(line)
@@ -329,6 +353,42 @@ async function checkVaultWrite($: EngineInterface, e: VaultCall, tool: VaultTool
   return { call: { ...e, path: fixed.path, ...(linked !== text ? { [field]: linked } : {}) } }
 }
 
+// One main-loop request on the cache meter. The system prompt is read on the
+// first request, for the baseline, and on every request that created cache:
+// at a creation spike, to name the sections that changed since the last
+// reading, and on any other, so a change that cost no spike is not blamed on a
+// later one. A request that only read the cache could not follow a prompt
+// change, so it is not read then. A prompt that cannot be read names none, and
+// the next reading compares with the last one that could. Only
+// a spike that names a section is shown, and only to a person at the session;
+// the record file is kept for those sessions, for measuring a change.
+async function meterCache($: EngineInterface, usage: TurnUsage, isAttended: boolean): Promise<void> {
+  const before = await read($, cache)
+  const request = cacheRequestOf(before.count + 1, usage)
+  let state: CacheState = countCache(before, request)
+  if (request.n === 1 || request.creation > 0) {
+    const hashes = await $.prompt.compose().then(({ sections }) => hashesOf(sections), () => null)
+    if (isSpike(request)) {
+      const sections = hashes === null || before.hashes === null ? null : changedSections(before.hashes, hashes)
+      const event: ChurnEvent = { n: request.n, read: request.read, creation: request.creation, sections }
+      state = withChurn(state, event)
+      if (isAttended && sections !== null && sections.length > 0) $.ui.toast(churnText(event), { timeoutMs: 10_000 })
+    }
+    if (hashes !== null) state = { ...state, hashes }
+  }
+  await update($, cache, () => state)
+  if (!isAttended) return
+  const home = await $.env.get('HOME')
+  const file = home === undefined ? undefined : recordFileOf(home, await $.session.id())
+  if (file !== undefined) await $.fs.write(file, recordOf(state)).catch(() => undefined)
+}
+
+// The warmup's deferred half (hooks/session-warmup.sh --deferred): the
+// pending-summary drain and the Chat-skill scan. Its output reaches nobody.
+async function deferredWarmup($: EngineInterface, payload: string): Promise<void> {
+  await $.process.run(['bash', `${$.plugin.root}/hooks/session-warmup.sh`, '--deferred'], { stdin: payload, timeoutMs: DEFERRED_TIMEOUT_MS })
+}
+
 // /process-pending-summaries: the script's outcome, asking Mike before a
 // summary that exists is replaced, and reported in a toast.
 async function processPendingSummaries($: EngineInterface, args: string): Promise<void> {
@@ -444,6 +504,25 @@ export const register: Register = on => {
       })
     }
     return next(e)
+  })
+
+  // The SessionStart settings hooks run beneath this one, so once next(e) is
+  // back, session-warmup.sh --defer has reconciled dead sessions and written
+  // this start's notices. The drain and the Chat-skill scan it left out then
+  // run in the background, in every lane the warmup drains in, as it did.
+  // Then a person's session reads the notices again, so a Chat-skill notice
+  // reaches the status line without waiting for the next probe.
+  on('classic.SessionStart', async ($, e, next) => {
+    const result = await next(e)
+    if (e.source === 'startup' || e.source === 'resume') {
+      const payload = JSON.stringify({ source: e.source, session_id: e.session_id })
+      $.clock.after(DEFERRED_MS, () => {
+        void deferredWarmup($, payload)
+          .then(() => (sessionAttended === true ? deliverNotices($) : undefined))
+          .catch(() => undefined)
+      })
+    }
+    return result
   })
 
   // A prompt folded into a running turn carries turnId and opens no turn. Any
@@ -606,6 +685,7 @@ export const register: Register = on => {
     const usage = result.usage
     if (e.agentId === undefined && usage !== null) {
       await update($, meter, state => countRequest(state, usage))
+      await meterCache($, usage, sessionAttended === true).catch(() => undefined)
       await drawStatus($)
     }
     return result
@@ -623,11 +703,12 @@ export const register: Register = on => {
     return result
   })
 
-  // A /clear starts the conversation over, so the meter, the reply rows and a
+  // A /clear starts the conversation over, so the meters, the reply rows and a
   // "Commit it" pick start over with it.
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') {
       await update($, meter, () => EMPTY)
+      await update($, cache, () => EMPTY_CACHE)
       await update($, replyRows, () => null)
       await update($, commitApproval, () => 'none')
       await drawStatus($)

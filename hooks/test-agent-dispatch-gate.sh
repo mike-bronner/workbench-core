@@ -231,13 +231,11 @@ assert_contains "and the refusal asks for Workdir:" \
 # prose still name the old slot when explaining the rename, which the README
 # does. An unanchored match would forbid documenting the migration at all.
 # `Repo sweep:` is a pipeline dispatch shape, not a slot, so it is excluded.
-for f in "$README"; do
-  if grep -nE '^[[:space:]]*Repo:' "$f" 2>/dev/null | grep -qv 'Repo sweep:'; then
-    FAIL=$((FAIL + 1)); echo "  ❌ stale Repo: slot header still in $(basename "$f")"
-  else
-    PASS=$((PASS + 1)); echo "  ✅ no stale Repo: slot header in $(basename "$f")"
-  fi
-done
+if grep -nE '^[[:space:]]*Repo:' "$README" 2>/dev/null | grep -qv 'Repo sweep:'; then
+  FAIL=$((FAIL + 1)); echo "  ❌ stale Repo: slot header still in $(basename "$README")"
+else
+  PASS=$((PASS + 1)); echo "  ✅ no stale Repo: slot header in $(basename "$README")"
+fi
 # The gate is covered more strictly further down: a test asserts it restates NO
 # slot header inline at all, derived from the shared definition, so it cannot
 # carry a stale one by construction.

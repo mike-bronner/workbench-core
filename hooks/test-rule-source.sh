@@ -113,6 +113,14 @@ has "rule 11 says only what the reader needs to act" 'Say only what they need to
 has "rule 11 asks for short paragraphs and plain words" 'short paragraphs and plain words'
 has "rule 11 bans restated context"                 'Do not restate context'
 has "rule 11 aims at one pass"                      'get the point in one pass'
+# A reader sees only the text in front of them. Mike set this on 2026-10-07:
+# outward prose never points at a plan, a scratchpad file, or a vault note for
+# content, and hooks/outbound-prose-guard.sh refuses a gh body that does.
+has "rule 11 restates what the reader needs"        'The reader sees only that text, so restate in it what they need'
+has "rule 11 bans pointing at an unseen file"       'Never point at a file they cannot open from where they read, such as a plan, a scratchpad file, or a vault note'
+has "rule 11 keeps a path the reader acts on"       'A path may still appear as a location the reader acts on, such as a file the change edits or a command to run'
+has "rule 11 never lets a path stand in for content" 'It never stands in for content the reader needs to understand the point'
+has "rule 11 covers commit bodies and messages"     'a commit body and a message to another session'
 # Rule 12 is the screen budget. Mike reads at 80 by 50, and a reply that
 # outruns the screen scrolls away the very text a decision depends on.
 has "rule 12 fits a reply on one screen"            '12\. \*\*Fit a terminal reply on one screen'
@@ -123,6 +131,9 @@ has "rule 12 asks right after the context appears"  'Ask each question right aft
 has "rule 12 does not hold the question for the end" 'Do not hold it for the end of the reply and restate that context there'
 has "rule 12 lets a verdict still close the reply"  'A verdict with no question can still close the reply'
 has "rule 12 bans pointing at text not restated"    'Never refer to earlier text that the reply does not restate'
+has "rule 12 bans pointing at an unseen file"       'Never point at a file for content the reply does not show'
+has "rule 12 shows a proposed commit message"       'Show a proposed commit message or body in the reply itself, not the name of the scratch file that holds it'
+has "rule 12 keeps a path Mike acts on"             'A path still fits as a location Mike acts on'
 has "the table habit is stated"                     'three or more comparable items in a table'
 has "the caveat habit is stated, and is not a hedge" 'honest caveat.{0,80}It is not a hedge'
 has "the synthesis habit is stated"                 'Synthesize sub-agent output'

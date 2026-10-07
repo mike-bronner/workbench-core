@@ -155,6 +155,149 @@ assert_allowed "a heredoc gh never reads, beside a clean --body" \
   run_bash "$(lines "gh pr comment 1 --body 'Fixed it.' <<'EOF'" 'Not posted — ever.' 'EOF')"
 
 echo
+echo "a body that points at a file the reader cannot open is refused:"
+# Mike set this on 2026-10-07. The reader of a pull request, an issue, or a
+# comment sees only that text, so a path to a plan, a scratchpad file, or a
+# vault note stands in for content they never get. Each family has a fixture
+# of its own, so dropping one pattern from the checker turns one case red.
+assert_blocked "a plan file, through a heredoc" \
+  run_bash "$(lines "gh pr create --title t --body-file - <<'EOF'" 'Fixed the loader. The full plan is at `~/.claude/plans/loader.md`.' 'EOF')"
+assert_names   "the block names the file-pointer rule" "file-pointer"
+assert_names   "the reason says to restate the substance" "Restate the substance"
+printf 'Fixed the loader.\n\nThe details are in scratchpad/pr-body.md.\n' > "$SANDBOX/bare-scratch.md"
+assert_blocked "a bare scratchpad path, through --body-file" \
+  run_bash "gh pr edit 1 --body-file $SANDBOX/bare-scratch.md"
+assert_names   "the --body-file block names the file-pointer rule" "file-pointer"
+assert_blocked "the persistent scratchpad, through --body" \
+  run_bash "gh issue comment 5 --body 'Fixed it. Notes in ~/Developer/scratchpad/loader-notes.md.'"
+assert_blocked "a session scratchpad, through a here-string" \
+  run_bash "gh pr comment 1 --body-file - <<< 'Fixed it. See /private/tmp/claude-503/-Users-mike-x/abc/scratchpad/notes.md.'"
+# The guard resolves the vault root through memory-env.sh, which honors
+# WORKBENCH_MEMORY_PATH. Each vault case pins that root, so no case passes on
+# the strength of this machine's own configured vault.
+CUSTOM_VAULT="$SANDBOX/custom-vault"
+mkdir -p "$CUSTOM_VAULT/decisions" "$CUSTOM_VAULT/feedback" "$CUSTOM_VAULT/insights"
+# A root that cannot be listed, so the checker falls back to the known folders.
+NO_VAULT="$SANDBOX/no-vault"
+# A listed root with one folder the known set lacks, and none it holds.
+ODD_VAULT="$SANDBOX/odd-vault"
+mkdir -p "$ODD_VAULT/notebook"
+run_bash_vault() {  # run_bash_vault <vault root> <command>
+  WORKBENCH_MEMORY_PATH="$1" run_bash "$2"
+}
+assert_blocked "a vault note named in prose, under a listed root" \
+  run_bash_vault "$CUSTOM_VAULT" "gh issue create --title t --body 'Per vault note decisions/2026-10-07-loader.md, the form reads stored values.'"
+assert_blocked "a vault note named in prose, when the root cannot be listed" \
+  run_bash_vault "$NO_VAULT" "gh issue create --title t --body 'Per vault note feedback/loader.md, the form reads stored values.'"
+assert_blocked "a vault note in a folder only the listed root has" \
+  run_bash_vault "$ODD_VAULT" "gh pr comment 1 --body 'Per vault note notebook/loader.md, it reads stored values.'"
+assert_allowed "a known folder the listed root does not have" \
+  run_bash_vault "$ODD_VAULT" "gh pr comment 1 --body 'Per vault note decisions/loader.md, it reads stored values.'"
+assert_blocked "a vault note under the default root" \
+  run_bash_vault "$CUSTOM_VAULT" "gh pr comment 1 --body 'Fixed it, as /Users/mike/Documents/Claude/Memory/feedback/loader.md asks.'"
+assert_blocked "a vault note under a configured vault root" \
+  run_bash_vault "$CUSTOM_VAULT" "gh pr comment 1 --body 'Fixed it. Background in $CUSTOM_VAULT/insights/loader.md.'"
+assert_blocked "a bare session path in inline code" \
+  run_bash "gh pr comment 1 --body 'Fixed it. See \`/private/tmp/claude-503/x/abc/scratchpad/notes.md\`.'"
+assert_blocked "an inline-code span that starts with a path, not a command" \
+  run_bash "gh pr comment 1 --body 'Fixed it. Run \`~/Developer/scratchpad/fix.sh --all\`.'"
+assert_blocked "a plan file in a board MCP comment" \
+  run_mcp 'mcp__the-index__add_comment' '{"item_id":"PVTI_x","body":"Bounced. The punch list is in ~/.claude/plans/review.md."}'
+assert_blocked "a plan file as a file:// link" \
+  run_bash "gh pr comment 1 --body 'Fixed it. [Plan](file:///Users/mike/.claude/plans/x.md).'"
+assert_blocked "a scratchpad path in a gh api body" \
+  run_bash "gh api repos/o/r/issues/1/comments -f body='Fixed it. Draft at ~/Developer/scratchpad/draft.md.'"
+
+echo
+echo "a path the reader acts on, a URL, or a code path still passes:"
+# The other direction, and the one that carries the weight. The guard runs on
+# every gh call, so a repository path a pull request edits must never block.
+REPO_BODY='Fixed the loader in `hooks/lib/prose-check.py` and `src/scratchpad/view.ts`.
+
+Run `bash hooks/test-outbound-prose-guard.sh` to check it. The plan is at https://github.com/o/r/blob/main/.claude/plans/loader.md and in docs/decisions/loader.md.'
+assert_allowed "repository paths, a command, and URLs, through a heredoc" \
+  run_bash "$(lines "gh pr create --title t --body-file - <<'EOF'" "$REPO_BODY" 'EOF')"
+printf '%s\n' "$REPO_BODY" > "$SANDBOX/repo-paths.md"
+assert_allowed "repository paths, a command, and URLs, through --body-file" \
+  run_bash "gh pr edit 1 --body-file $SANDBOX/repo-paths.md"
+assert_allowed "a scratch root named as a place, not a file" \
+  run_bash "gh pr comment 1 --body 'Scratch now goes in \`~/Developer/scratchpad\`, and plans stay in ~/.claude/plans/.'"
+assert_allowed "the word vault beside a repository path" \
+  run_bash "gh pr comment 1 --body 'The vault hooks/vault-git-guard.sh refuses git writes.'"
+# "Vault" is also HashiCorp's secret store, and markdown-vault-mcp has repo
+# folders that hold vault notes. A path after the word counts only when its
+# first folder is one of the vault's own, under a listed root and the fallback.
+for root in "$CUSTOM_VAULT" "$NO_VAULT"; do
+  for body in 'Store the token in Vault at secret/data/myapp.' \
+              'Uses HashiCorp Vault under secret/app.' \
+              'Vault: kv/prod holds the key.' \
+              'vault: config/vault.php changed' \
+              'The vault notes in tests/fixtures/ now load.' \
+              'Fixes the vault note at docs/example.md'; do
+    assert_allowed "\"$body\" (${root##*/})" \
+      run_bash_vault "$root" "gh pr comment 1 --body '$body'"
+  done
+done
+# A command in inline code is a location the reader acts on, even when its
+# arguments name a scratch location. Rule 11 allows it, and README says so.
+assert_allowed "a mktemp command into the scratchpad" \
+  run_bash "gh pr comment 1 --body 'Make scratch with \`mktemp -d ~/Developer/scratchpad/holmes.XXXXXX\`.'"
+assert_allowed "a script command writing to the scratchpad" \
+  run_bash "gh pr comment 1 --body 'Run \`bash scripts/x.sh ~/Developer/scratchpad/out\` to see it.'"
+assert_allowed "a command naming a session scratchpad" \
+  run_bash "gh pr comment 1 --body 'Run \`ls /private/tmp/claude-503/x/abc/scratchpad/out\` to see it.'"
+assert_allowed "a mktemp command into a session scratchpad" \
+  run_bash "gh pr comment 1 --body 'Make scratch with \`mktemp -d /private/tmp/claude-503/x/abc/scratchpad/watson.XXXXXX\`.'"
+assert_allowed "git -C into a scratchpad clone" \
+  run_bash "gh pr comment 1 --body 'Check it with \`git -C ~/Developer/scratchpad/x status\`.'"
+
+echo
+echo "a command span is exempt only for a listed command and a scratch place:"
+# The exemption first took any word followed by a space, so each case below
+# passed. The first four are Holmes's round 2 rows. The last three each break
+# one condition alone: an unlisted first word, a markdown file, a plan path.
+assert_blocked "cat on a plan file" \
+  run_bash "gh pr comment 1 --body 'Context: \`cat ~/.claude/plans/x.md\`.'"
+assert_blocked "an unlisted word before a scratchpad markdown file" \
+  run_bash "gh pr comment 1 --body 'Context: \`see ~/Developer/scratchpad/notes.md\`.'"
+assert_blocked "a sentence in inline code" \
+  run_bash "gh pr comment 1 --body 'Context: \`the plan is at ~/.claude/plans/x.md\`.'"
+assert_blocked "open on a vault note" \
+  run_bash_vault "$CUSTOM_VAULT" "gh pr comment 1 --body 'Context: \`open ~/Documents/Claude/Memory/decisions/x.md\`.'"
+assert_blocked "an unlisted word before a scratchpad folder" \
+  run_bash "gh pr comment 1 --body 'Context: \`see ~/Developer/scratchpad/notes\`.'"
+assert_blocked "a listed command on a scratchpad markdown file" \
+  run_bash "gh pr comment 1 --body 'Context: \`cat ~/Developer/scratchpad/notes.md\`.'"
+assert_blocked "a listed command on a plan path with no .md" \
+  run_bash "gh pr comment 1 --body 'Context: \`ls ~/.claude/plans/loader\`.'"
+assert_blocked "a listed command on a vault path with no .md" \
+  run_bash_vault "$CUSTOM_VAULT" "gh pr comment 1 --body 'Context: \`ls $CUSTOM_VAULT/insights/loader\`.'"
+# Round 3: only a command that creates or writes the place it names is exempt.
+# A reading command points at content, so each of these goes red if a reading
+# command rejoins the list or the markdown test loses a spelling.
+assert_blocked "cat on a scratchpad text file" \
+  run_bash "gh pr comment 1 --body 'Context: \`cat ~/Developer/scratchpad/notes.txt\`.'"
+assert_blocked "tail on a background task's output" \
+  run_bash "gh pr comment 1 --body 'Context: \`tail /private/tmp/claude-503/p/s/tasks/x.output\`.'"
+assert_blocked "a writing command on a .markdown file" \
+  run_bash "gh pr comment 1 --body 'Context: \`touch ~/Developer/scratchpad/notes.markdown\`.'"
+assert_blocked "a writing command on notes.md with a full stop" \
+  run_bash "gh pr comment 1 --body 'Context: \`touch ~/Developer/scratchpad/notes.md.\`'"
+assert_blocked "a shell running a script that is itself scratch" \
+  run_bash "gh pr comment 1 --body 'Context: \`bash ~/Developer/scratchpad/run.sh\`.'"
+assert_blocked "git without -C on a scratchpad path" \
+  run_bash "gh pr comment 1 --body 'Context: \`git log ~/Developer/scratchpad/x\`.'"
+mkdir -p "$SANDBOX/scratchpad"
+printf '%s\n' "$CLEAN" > "$SANDBOX/scratchpad/pr-body.md"
+assert_allowed "a clean body read from a scratchpad file" \
+  run_bash "gh pr create --title t --body-file $SANDBOX/scratchpad/pr-body.md"
+printf 'Fixed it.\n\n```\nError: cannot read /private/tmp/claude-503/x/abc/scratchpad/out.log\n```\n' > "$SANDBOX/fenced-log.md"
+assert_allowed "a session path quoted inside a fenced log" \
+  run_bash "gh pr comment 1 --body-file $SANDBOX/fenced-log.md"
+assert_allowed "a pointer inside an HTML comment no reader sees" \
+  run_bash "gh pr comment 1 --body 'Fixed it. <!-- draft: scratchpad/pr-body.md -->'"
+
+echo
 echo "identifier fields in an MCP payload are not prose:"
 assert_allowed "an id-only payload" \
   run_mcp 'mcp__the-index__move' '{"item_id":"PVTI_x","status":"In Review","url":"https://x.test/a;b"}'

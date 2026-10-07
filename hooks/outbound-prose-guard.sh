@@ -11,9 +11,12 @@
 #
 # This guard closes that gap for the artifacts other people read: `gh` pull
 # request, issue, and release prose, the same prose sent through `gh api`, and
-# the same text posted through a project board MCP. It checks only the em dash and the semicolon (hooks/lib/prose-check.py).
-# Density, sentence length, and whether a body is a debugging journal are
-# judgement calls the output style states, and a deny on them breeds workarounds.
+# the same text posted through a project board MCP. It checks the em dash, the
+# semicolon, and a path to a plan, a scratchpad file, or a vault note that stands
+# in for content the reader cannot open (hooks/lib/prose-check.py). The path
+# check reads what a body says, never which tool sent it. Density, sentence
+# length, and whether a body is a debugging journal are judgement calls the
+# output style states, and a deny on them breeds workarounds.
 #
 # Scope: outbound artifacts only. Terminal replies are NOT checked, and cannot
 # usefully be. A Stop hook fires after the reply has already been displayed, so
@@ -275,7 +278,14 @@ elif tool.startswith("mcp__"):
 PROSE_WS=$' \t\n\r\v\f'
 [[ $PROSE == *[!$PROSE_WS]* ]] || exit 0
 
-FINDINGS=$(printf '%s' "$PROSE" | python3 "$CHECKER" 2>/dev/null)
+# The vault root, so a pointer at a note under a configured vault is caught too.
+# The checker always knows the default root, so a failed lookup costs nothing.
+VAULT=""
+if . "$LIB_DIR/memory-env.sh" 2>/dev/null; then
+  VAULT=$(memory_resolve_memory_path 2>/dev/null)
+fi
+
+FINDINGS=$(printf '%s' "$PROSE" | python3 "$CHECKER" "$VAULT" 2>/dev/null)
 [ -n "$FINDINGS" ] || exit 0
 
 {

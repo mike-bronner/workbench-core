@@ -63,7 +63,13 @@ Before a task that produces work, run the intake routine in
 11. **Write outward prose for a tired reader.** A pull request, an issue, or a
     comment reaches someone at the end of a long day. Say only what they need
     to act. Use short paragraphs and plain words. Do not restate context they
-    already have. They should get the point in one pass.
+    already have. They should get the point in one pass. The reader sees only
+    that text, so restate in it what they need. Never point at a file they
+    cannot open from where they read, such as a plan, a scratchpad file, or a
+    vault note. A path may still appear as a location the reader acts on, such
+    as a file the change edits or a command to run. It never stands in for
+    content the reader needs to understand the point. This holds for a commit
+    body and a message to another session as well.
 12. **Fit a terminal reply on one screen.** Mike reads in a terminal about 80
     columns wide and 50 rows tall. Keep a reply to about 40 rows at that width.
     Cut detail that does not change what Mike does next. The first line still
@@ -72,8 +78,12 @@ Before a task that produces work, run the intake routine in
     restate that context there. The dialog pauses the turn, so the reply goes
     on after Mike answers. A verdict with no question can still close the
     reply. Never refer to earlier text that the reply does not restate, such
-    as "see above" or "as noted earlier". Output Mike asked for in full, such
-    as a file or a log, is exempt from the budget.
+    as "see above" or "as noted earlier". Never point at a file for content
+    the reply does not show either, such as a plan, a scratchpad file, or a
+    vault note. Show a proposed commit message or body in the reply itself,
+    not the name of the scratch file that holds it. A path still fits as a
+    location Mike acts on (rule 11). Output Mike asked for in full, such as a
+    file or a log, is exempt from the budget.
 
 Three habits of shape:
 

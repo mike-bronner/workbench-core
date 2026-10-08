@@ -38,7 +38,11 @@ const DEV_TEAM = '/cache/workbench-dev-team/0.52.0'
 const BUJO = '/cache/workbench-bujo/0.3.0'
 const DEV_TEAM_TEXT = '## Dev-team delegation\n\nDevelopment goes to Dr. Watson.\n'
 const BUJO_TEXT = '## BuJo routing\n\n- Daily log entries belong in the vault.\n'
-const DAY = 86_400_000
+// One minute before midnight UTC, so a two-minute move changes the date. A
+// move of a whole day would fire the module's one-minute probe 1,440 times on
+// the mock clock, which took seconds and timed out on CI's runner.
+const BEFORE_MIDNIGHT = Date.UTC(2026, 8, 21, 23, 59)
+const PAST_MIDNIGHT_MS = 120_000
 // The facts a test composes the prompt for, as the engine would for a request.
 const COMPOSE = { model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['terminal' as const], tools: [], outputStyle: null, traits: [] }
 
@@ -56,7 +60,7 @@ type Engine = { files: Map<string, string>; clock: MockClock }
 // section, as the engine's environment section does, so a date change moves a
 // session section and never a shared one.
 function engine(on: On, env: Record<string, string> = {}): Engine {
-  const g: Engine = { files: new Map(), clock: mock.clock(on, { now: 1_790_000_000_000 }) }
+  const g: Engine = { files: new Map(), clock: mock.clock(on, { now: BEFORE_MIDNIGHT }) }
   g.files.set(INSTALLED, INSTALLED_JSON)
   g.files.set(`${DEV_TEAM}/session-warmup.md`, DEV_TEAM_TEXT)
   g.files.set(`${BUJO}/session-warmup.md`, BUJO_TEXT)
@@ -96,7 +100,7 @@ const ids = (sections: readonly PromptComposeSection[]): string[] => sections.ma
 const subagentStart = (agentType: string) => ({ hook_event_name: 'SubagentStart' as const, agent_id: 'a1', agent_type: agentType })
 
 describe('AC1: the workbench rules are shared sections, byte-identical across a reload, a notices change and a date change', () => {
-  test('every shared section keeps its bytes, and only a session section moves', async ($, on) => {
+  test('every shared section keeps its bytes, and only a session section moves', { timeoutMs: 60_000 }, async ($, on) => {
     const g = engine(on)
     await $.session.start(start(true))
     const before = (await $.prompt.compose(COMPOSE)).sections
@@ -106,7 +110,7 @@ describe('AC1: the workbench rules are shared sections, byte-identical across a 
     // A notices change: another start rewrote the notices file.
     g.files.set(NOTICES, '# Warmup notices\n\n## ⚠ Pending session summaries (7)\n')
     // A date change: the clock moves past midnight.
-    await g.clock.advance(DAY)
+    await g.clock.advance(PAST_MIDNIGHT_MS)
     const after = (await $.prompt.compose(COMPOSE)).sections
     expect(shared(after)).toEqual(shared(before))
     expect(ids(after)).toEqual(ids(before))

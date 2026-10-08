@@ -139,9 +139,9 @@ The persona shipped today is `clear`. It defines a writing standard rather than 
 
 ### Execution-aware skills
 
-Any skill can carry a persistent learnings file at `{memory_path}/skills/{skill-name}.learnings.md`: corrections, failures and confirmed approaches from past runs. When the Skill tool is about to run, `hooks/skill-learnings.sh` looks for that file. If it exists, the hook hands its text to the model as `additionalContext`, with the rule for adding to it. If it does not, the hook stays silent and costs nothing.
+Any skill can carry a persistent learnings file at `{memory_path}/skills/{skill-name}.learnings.md`: corrections, failures and confirmed approaches from past runs. When a skill runs, the [hooks module](#the-hooks-module) looks for that file in its `skill.prompt` hook (`hooks/mods/learnings.ts`). If it exists, its text is merged into the end of the text the skill expands to, with the rule for adding to it. If it does not, the skill's text is left as it is, at no cost. The merge is one block, the same bytes for the same file, and no row of its own. It replaced `hooks/skill-learnings.sh`, which handed the file over as `additionalContext` beside the Skill call. It runs in every lane, unattended ones included, because the learnings are part of the skill's instructions.
 
-It applies to **any** skill — workbench skills, third-party plugin skills, your own personal skills — keyed by the bare skill name, so `workbench-core:memory-lint` and `memory-lint` share one file. A file too large for one hook message is pointed at rather than truncated, and the model reads it whole through the memory MCP. Delete a specific learnings file to reset that skill's accumulated state.
+It applies to **any** skill — workbench skills, third-party plugin skills, your own personal skills — keyed by the bare skill name, so `workbench-core:memory-lint` and `memory-lint` share one file. A file past 9,000 characters is named rather than merged, and the model reads it whole through the memory MCP. Delete a specific learnings file to reset that skill's accumulated state.
 
 This used to be prose: the warmup told every session to read `identity/skills-protocol.md`, and nine skills restated it in their first line. The one limit it stated, 30 entries, was checked by nobody, and one learnings file reached 86 entries and 68 KB.
 
@@ -182,22 +182,20 @@ core/
 │   ├── hooks.json              — hook → script bindings, and the hooks module
 │   ├── register.ts             — the hooks module (a mod): $.workbench, question rule, request meter,
 │   │                             cache meter, status line, commit approval, vault write checks,
-│   │                             the warmup's deferred half, /orchestrator, /memory-status, /notices,
-│   │                             /process-pending-summaries
+│   │                             the warmup's deferred half, the per-turn log checkpoint, memory
+│   │                             capture, recall, skill learnings, the intake nudge, /orchestrator,
+│   │                             /memory-status, /notices, /process-pending-summaries
 │   ├── mods/                   — the module's pure logic: brief, lane, orchestrator, question-rule,
 │   │                             request-meter, cache-meter, status-line, commit-approval, vault-write,
-│   │                             pending-summaries, shell (the shell reader behind parseShell)
-│   ├── session-log.sh          — raw log capture + summary-writer dispatch (not at SessionEnd)
+│   │                             pending-summaries, shell (the shell reader behind parseShell),
+│   │                             checkpoint, capture, recall, learnings, intake
+│   ├── session-log.sh          — raw log capture + summary-writer dispatch (not at SessionEnd or per turn)
 │   ├── session-warmup.sh       — memory and scratch rules + retention cleanup + dead-marker sweep +
 │   │                             session reconciler; summary drain + Chat-skill scan run deferred
-│   ├── skill-learnings.sh      — PreToolUse(Skill): hand a skill its vault learnings file
 │   ├── mcp-memory.sh           — stdio launcher, retained but unwired (see Memory server transport)
 │   ├── memory-server-up.sh     — shared-HTTP SessionStart kicker (disabled; retained for re-enable)
 │   ├── memory-server-spawn.sh  — shared-HTTP detached supervisor (disabled; retained)
 │   ├── memory-server-down.sh   — shared-HTTP manual stop (disabled; retained)
-│   ├── memory-capture-stop.sh  — Stop: make the live session write its findings before context is shed
-│   ├── memory-recall.sh        — UserPromptSubmit: inject relevant memory READS (recall)
-│   ├── memory-scan-recall.sh   — PostToolUse: recall mid-turn, using a repo scan's own query
 │   ├── outbound-prose-guard.sh — PreToolUse: check gh + board-MCP prose against the output style
 │   ├── credential-guard.sh     — PreToolUse: block reads of ~/.ssh, ~/.aws, ~/.gnupg, and .env files
 │   ├── destructive-database-guard.sh — PreToolUse: block Artisan resets, dropdb, and destructive SQL
@@ -207,13 +205,13 @@ core/
 │   ├── provisioning-guard.sh   — PreToolUse: block worktree and database creation, on all four surfaces
 │   ├── delegation-gate.sh      — PreToolUse: allow main-agent Write/NotebookEdit, remind once per session to delegate
 │   ├── agent-dispatch-gate.sh  — PreToolUse: deny a main-agent Agent dispatch that skips the six-slot brief
-│   ├── intake-nudge.sh         — PreToolUse(Edit): remind the main agent once per task to show its intake block (never denies)
 │   ├── peer-message-gate.sh    — PreToolUse: deny a sub-agent SendMessage to anything but main or its own children
 │   ├── lib/brief-template.sh   — the ONE definition of the six-slot brief (gate + deny message read it)
 │   ├── lib/scratch-roots.sh    — the scratch-root resolver (the delegation gate and $.workbench share it)
 │   ├── lib/                    — sourceable libs: memory-env / -probe / -vacuum / -install, summary-dispatch,
-│   │                             session-reconcile (start-up reconciler + dead-marker sweep), prose-check,
-│   │                             memory-recall-core (levers both recall hooks share), scan-query (a scan's own query),
+│   │                             session-reconcile (start-up reconciler + dead-marker sweep), dir-lock
+│   │                             (mkdir locks a crashed holder cannot block for good), prose-check,
+│   │                             scan-query (a scan's own query, for the module's scan recall),
 │   │                             shell_parse (shared tokeniser), destructive-db-check, vault-git-check,
 │   │                             provisioning-check, destructive-scope-check
 │   └── fixtures/               — test fixtures (fake-server stub, no real server)
@@ -252,7 +250,8 @@ core/
 │   ├── memory-health.sh        — the probe's one status word, for the status line
 │   ├── learnings-count.sh      — a skill's learnings entry count, for the status line
 │   ├── vault-resolve.sh        — the vault root and [[link]] targets, for the vault write checks
-│   └── process-pending-summaries.sh — the drain and the one-session run (/process-pending-summaries)
+│   ├── process-pending-summaries.sh — the drain and the one-session run (/process-pending-summaries)
+│   └── release-summary-marker.sh — the summary-writer's last step: delete its marker unless a later turn rewrote it
 └── README.md
 ```
 
@@ -260,21 +259,17 @@ core/
 
 ### Session lifecycle
 
-These hooks fire across the session lifecycle and on each turn:
+These hooks fire across the session lifecycle and on each turn. The memory work that runs on every turn (the log checkpoint, memory capture, recall, skill learnings and the intake nudge) lives in the [hooks module](#the-hooks-module) instead:
 
 | Hook | Script | Purpose |
 |------|--------|---------|
 | `SessionStart` | `hooks/session-warmup.sh --defer` | Memory and scratch rules, retention cleanup, dead-marker sweep, session reconciler, housekeeping notices (written to a file, not injected). The pending-summary drain and the Chat-skill scan run after it, from the [hooks module](#the-hooks-module), so they no longer hold up the start |
-| `PostToolUse` | `hooks/memory-scan-recall.sh` | Mid-turn recall — search the vault with a repo scan's own query and inject hits beside the scan's results (matcher `Grep\|Bash`), **once per session** per memory, sharing that bound with `memory-recall.sh` |
 | `PreCompact` | `hooks/session-log.sh` | Dump raw log checkpoint, spawn summary-writer |
 | `PostCompact` | `hooks/session-warmup.sh` | Re-inject the memory and scratch rules after context compression |
 | `SessionEnd` | `hooks/session-log.sh` | Dump final log segment and write the pending-summary marker, with the SessionEnd `reason` — **no writer is spawned here** (see [Why SessionEnd does not spawn](#why-sessionend-does-not-spawn)) |
-| `Stop` | `hooks/memory-capture-stop.sh` | Early in a session, then rarely, block the stop and have the live session write its durable findings to the vault — see [Pre-shed capture](#pre-shed-capture) |
-| `UserPromptSubmit` | `hooks/memory-recall.sh` | Proactive recall — search the vault with the prompt and inject relevant memories, **once per session** per memory (memory **reads**) |
 | `PreToolUse` | `hooks/outbound-prose-guard.sh` | Check prose leaving the machine against the output style's mechanical rules — see [Outbound prose guard](#outbound-prose-guard) |
 | `PreToolUse` | `hooks/delegation-gate.sh` | Allow `Write`/`NotebookEdit` from the main agent, with a reminder once per session to delegate whole-file work. Never denies — see [Delegation gate](#delegation-gate) |
 | `PreToolUse` | `hooks/agent-dispatch-gate.sh` | Deny an `Agent` dispatch from the main agent unless its prompt uses the six-slot brief — see [Agent dispatch gate](#agent-dispatch-gate) |
-| `PreToolUse` | `hooks/intake-nudge.sh` | On the first `Edit` of a task with no intake block on screen, remind the main agent to run the intake routine. Never denies — see [Task intake](#task-intake) |
 | `PreToolUse` | `hooks/peer-message-gate.sh` | Deny a `SendMessage` from a sub-agent to anything but its own orchestrator or its own children — see [Peer message gate](#peer-message-gate) |
 
 ### How a gate speaks
@@ -426,16 +421,16 @@ Tests: `hooks/test-agent-dispatch-gate.sh` (195 cases: every allow branch indepe
 
 **The skill decides when intake applies, and no hook does.** Trivial asks and pure questions skip it. Sub-agents take their brief as the intake, and the Index pipeline and scheduled ticks never interview. The [agent dispatch gate](#agent-dispatch-gate) carries the criteria across a handoff in its `Acceptance:` slot.
 
-**`hooks/intake-nudge.sh` is a reminder, and it never denies.** On the first `Edit` of a task, it looks for a Markdown heading naming "Intake" in the assistant's text. If there is none, it attaches one line of `additionalContext` pointing at the skill, and the edit goes ahead untouched. A deny here would be a judgement-call deny, which is what f18a2f9 removed because it breeds workarounds.
+**The intake nudge is a reminder, and it never denies.** The [hooks module](#the-hooks-module) carries it (`hooks/mods/intake.ts`). On the first `Edit` of a task in the main loop, it looks for a Markdown heading naming "Intake" in the assistant's text. If there is none, one line rides the Edit's result, pointing at the skill, and the edit goes ahead untouched. A deny here would be a judgement-call deny, which is what f18a2f9 removed because it breeds workarounds. It replaced `hooks/intake-nudge.sh`, which read the transcript file and kept a state file per session.
 
-- **A task is the latest human prompt.** Claude Code stamps those records `"origin":{"kind":"human"}`. Tool results, sub-agent hand-backs, and task notifications carry no such stamp, so none of them opens a new task. That field is undocumented Claude Code behaviour, checked against 400 recent transcripts on 2026-09-29. If a CLI release renames or drops it, the hook finds no prompt and goes silent, with no error anywhere. Re-check it after an upgrade if the nudge stops appearing.
-- **Once per task.** The prompt's id is kept in `~/.claude-workbench/intake-nudge/<session_id>`, so later edits on the same prompt are silent. Files older than three days are swept, like the sibling state directories.
-- **An approved intake counts.** A block that closed the turn before the prompt (the agent showed it, asked "proceed?", and got "yes") keeps the nudge quiet. A Stop hook that wakes the agent after that question, such as the memory capture checkpoint, does not reopen the turn: tool calls after it leave the closing text alone. A block from the start of an earlier task does not count.
+- **A task is the latest prompt Mike sends**, typed or through Remote Control (origin `composer` or `bridge`). Tool results, sub-agent hand-backs and task notifications open no task.
+- **Once per task.** The module counts tasks in `$.state`, and checks each one once, on its first `Edit`.
+- **An approved intake counts.** A block that closed the turn before the prompt (the agent showed it, asked "proceed?", and got "yes") keeps the nudge quiet. The reply after the last tool call before the prompt is that closing text. A block from the start of an earlier task does not count.
 - **Only assistant text counts.** An `Edit` whose new text contains an intake heading is not an intake block.
-- **Lanes that never see it:** sub-agents and `claude -p --agent` runs (by `agent_id` and `agent_type`, as the delegation gate reads them), and scheduled ticks (the current prompt opens with the `<scheduled-task>` wrapper). Only the current prompt decides, so a typed task later in a session that began as a tick is nudged like any other.
-- **Every failure is silence.** A missing `jq`, an unreadable transcript, or state that cannot be written all exit with no output. Unwritable state stays silent rather than nudging on every edit.
+- **Lanes that never see it:** sub-agents, and every lane `$.workbench.isUnattended` names: a `claude -p` or SDK session, a top-level `--agent` run, the dev-team pipeline, and a turn a schedule, a peer, a channel or a plugin opened.
+- **A failure is silence.** A messages read that fails gives no nudge.
 
-Tests: `hooks/test-intake.sh` (the skill's routine pinned step by step, including the gap test and the written distinctness check; the output style pointing at the skill without restating it; the skill's own block silencing the hook; and the nudge's once-per-task, approved-intake (including a Stop hook wake before the answer), lane, scope, retention, and failure cases, plus an assertion that no output of the suite carries a permission decision).
+Tests: `hooks/test-intake.sh` (the skill's routine pinned step by step, including the gap test and the written distinctness check; the output style pointing at the skill without restating it; and the skill's own block opening under a heading that names Intake). `tests/learnings-intake.test.ts` (the nudge: once per task, an approved intake, the lanes, a refused or sub-agent Edit, and the heading rule).
 
 ### Peer message gate
 
@@ -688,32 +683,40 @@ Tests: `hooks/test-provisioning-guard.sh` (210 cases), weighted towards the allo
 ### Logging pipeline
 
 ```
-Session event (PreCompact / SessionEnd / manual / reconcile)
+Session event (each main-loop turn / PreCompact / SessionEnd / manual / reconcile)
     ↓
-hooks/session-log.sh
+hooks/session-log.sh   (holds the session's lock from the checkpoint read to its write)
     ├── Load per-session checkpoint (where did I leave off?)
     ├── Extract new JSONL segment from transcript
     ├── Append to rolling log: sessions/YYYY-MM-DD/{session-id}.log.md
     ├── Update checkpoint
     ├── Write pending-summary marker
     └── Spawn background summary-writer (sonnet, detached)
-        — PreCompact and manual ONLY; mode=final and mode=reconcile stop at the marker
+        — PreCompact and manual ONLY; mode=turn, mode=final and mode=reconcile stop at the marker
 
 Next session start
     ↓
 hooks/session-warmup.sh
     ├── Sweep: delete markers no writer can use (0-byte, or log and transcript both gone)
     ├── Reconcile: log sessions that never got a usable SessionEnd (mode=reconcile)
-    └── Drain: spawn a writer for the N oldest markers (default 3)
+    └── Drain: spawn a writer for the N oldest markers of sessions not live (default 3)
             ↓
         summary-writer agent
             ├── Read the rolling log
             ├── Write narrative .summary.md to vault
             ├── Promote decisions (if bar is met)
-            └── Delete the marker
+            └── Release the marker (deleted only if no later turn rewrote it)
 ```
 
-One rolling log file per session. Checkpoint and final segments are appended to the same file. Later writer runs overwrite earlier summaries with the most complete picture.
+One rolling log file per session. Turn, checkpoint and final segments are appended to the same file. Later writer runs overwrite earlier summaries with the most complete picture.
+
+#### The log is written as the session runs
+
+SessionEnd does not fire on a reboot or a kill, the `Stop` hook does not fire on an interrupted turn, and every SessionEnd hook shares one 1.5 s budget. On 2026-10-05 a reboot lost nine sessions that way. So the [hooks module](#the-hooks-module) runs `session-log.sh` with `WORKBENCH_LOG_MODE=turn` after each main-loop turn, answered, interrupted (Ctrl-C, an SDK interrupt) or failed, in the background, so the turn waits for nothing (`hooks/mods/checkpoint.ts`). It runs it again at `session.end`, in mode `final`, inside what is left of the exit budget: that event fires on exit, Ctrl-C Ctrl-C, Ctrl-D, SIGINT, SIGHUP and SIGTERM, where the settings SessionEnd hook may not run. When the settings hook did run, it ran first, and the module's run finds nothing new. A sub-agent's turn is in its parent's transcript, so it writes nothing of its own. The transcript path comes from the SessionStart payload, and a checkpoint never copies a transcript whose name is not the session id. Only SIGKILL and a reboot still go unlogged, and the start-up reconciler below recovers both from the last checkpoint.
+
+**One checkpoint, three writers, no line logged twice.** The turn checkpoint, the SessionEnd hook and the start-up reconciler all go through `session-log.sh`, so they share `log-checkpoints/<sid>.json` and its `next_line`. The script holds `log-checkpoints/<sid>.lock` (an atomic `mkdir`, `hooks/lib/dir-lock.sh`) from the checkpoint read to the checkpoint write, so two writers that overlap never copy the same lines. A writer that cannot take the lock exits quietly: the holder is copying the same lines, and anything past its snapshot is left for the next writer or the reconciler. `mode=final` waits about 0.2 s for it, a small share of the exit budget, and every other mode about a second. A lock older than a minute is a crashed writer's. It is broken under a second lock, `<sid>.lock.takeover`, and checked again under it, so two writers that both saw it stale never both take it. A takeover lock left by a breaker killed in its few milliseconds is broken the same way after a minute, under `<sid>.lock.takeover.takeover`, so it blocks nothing for good. The chain stops at three levels. **A kill mid-write is rolled back.** Before it appends, a write records the log's size in the checkpoint (`pending_size`) with `next_line` unmoved, and clears it after. The next writer that finds it cuts the log back to that size and copies the segment again, so a kill between the append and the checkpoint leaves no torn segment and no line twice. A turn checkpoint writes the marker like every log write, and dispatches no writer: a writer per turn would summarize the same session over and over. The session id must be letters, digits, `_` and `-`, since it names the log, the checkpoint, the lock and the marker. `hooks/test-session-log.sh` covers a turn followed by SessionEnd, the lock step by step, fifteen rounds of six writers breaking one stale lock, the short wait at exit, and kills during an append and during a log's creation. `hooks/test-session-reconcile.sh` covers a turn checkpoint, a crash, and the reconciler run after it.
+
+**The drain skips a live session.** A running session keeps a marker queued, from its last turn. A writer started on it would summarize half a session. The drain reads the live-session registry the reconciler reads and leaves those markers for a later start. When it cannot read the registry whole (no registry, or a live pid file with no session id), some running session is unknown. It still skips every id it did read, and also skips any marker whose log or transcript was written within the reconciler's quiet period (`WORKBENCH_RECONCILE_QUIET_MIN`, default 30 minutes).
 
 #### Why SessionEnd does not spawn
 
@@ -721,11 +724,13 @@ A child process started as the parent CLI exits is killed during teardown. `nohu
 
 So `mode=final` writes the marker and stops. The next session start drains it, where the parent is alive by definition. Work triggered at process death cannot be made to outlive the process by backgrounding it harder.
 
-**One writer per marker.** `summary_dispatch_spawn` (`hooks/lib/summary-dispatch.sh`) claims each marker before it spawns, with an atomic `mkdir` of `pending-summaries/.claims/<marker>`. A second spawn on a claimed marker spawns nothing and logs a `claimed` line, so two sessions draining at once never start two writers on one session. The writer never releases the claim: it deletes the marker, and the next drain or `/process-pending-summaries` sweeps a claim whose marker is gone. A claim older than 60 minutes, or older than its marker (a later segment's), is taken over.
+**One writer per marker.** `summary_dispatch_spawn` (`hooks/lib/summary-dispatch.sh`) claims each marker before it spawns, with an atomic `mkdir` of `pending-summaries/.claims/<marker>`. A second spawn on a claimed marker spawns nothing and logs a `claimed` line, so two sessions draining at once never start two writers on one session. The writer never releases the claim: it releases the marker, and the next drain or `/process-pending-summaries` sweeps a claim whose marker is gone. A claim older than 60 minutes, or older than its marker (a later segment's), is taken over, under a `<claim>.takeover` lock taken with `hooks/lib/dir-lock.sh`: a takeover lock a killed caller left behind is itself broken after a minute, under the same check-again rule.
+
+**A writer deletes its marker only if no later turn rewrote it.** A writer started at PreCompact can still be running when the session goes on, and every turn rewrites the marker. If the writer deleted it, and the last turn's checkpoint had already copied every line (so SessionEnd writes no new marker), the later turns would never be summarized. So the writer notes the marker's `marked_at` when it starts, and its last step runs `scripts/release-summary-marker.sh` with that value, whose absolute path the dispatch prompt gives it. The script takes the session's log lock, `log-checkpoints/<sid>.lock` (`hooks/lib/dir-lock.sh`), the lock `session-log.sh` writes the marker under, and deletes the marker in place only while it still holds that `marked_at`. A rewritten marker stays for the next drain. While a log writer holds the lock, the marker is kept and reported busy. A kill leaves only the lock, which goes stale and is broken. It deletes only a regular file named `<session-id>.json` in the configured pending folder, resolved as `session-log.sh` resolves it, with every symbolic link in the folder's path resolved first. It refuses a `marked_at` that is not empty or a UTC time (`YYYY-MM-DDTHH:MM:SSZ`), so the writer's command line carries no other text. `hooks/test-release-summary-marker.sh` covers it: a marker that a real turn checkpoint rewrites mid-run survives, a held lock keeps the marker, a stale one is broken, and a lookalike folder, a linked parent leading elsewhere and a malformed `marked_at` are refused.
 
 The drain is bounded (`WORKBENCH_DRAIN_BATCH`, default 3) and rate-limited (`WORKBENCH_DRAIN_COOLDOWN_MIN`, default 5) so a large backlog clears over several sessions instead of forking a swarm at one session start. It takes the **oldest** markers first: the retention sweep refuses to delete any raw log that still has a marker, so draining newest-first would pin the oldest logs on disk indefinitely. Writer stdout and stderr go to `{memory_cache}/summary-dispatch-errors.log` — the original dispatch discarded both to `/dev/null`, which is why a two-week outage went unnoticed.
 
-**To drain more now, Mike types `/process-pending-summaries`.** The [hooks module](#the-hooks-module) answers it with no model turn: `scripts/process-pending-summaries.sh` spawns detached writers through the same `hooks/lib/summary-dispatch.sh` helper. It takes up to 10 live markers, oldest `marked_at` first, counts the dead ones and leaves them alone, and reports dispatched, live remaining, dead, and total in a toast. `/process-pending-summaries <session-id>` summarizes one session, and writes its marker first when there is none. When that session already has a summary, the command asks through the AskUserQuestion dialog whether to overwrite it, with "Skip" first, and a dismissed dialog keeps it. `--overwrite` after the id skips the question. Only a prompt Mike sends runs the command. It replaced the `process-pending-summaries` skill, which spent a model turn on the same steps and dispatched its writers as in-session sub-agents.
+**To drain more now, Mike types `/process-pending-summaries`.** The [hooks module](#the-hooks-module) answers it with no model turn: `scripts/process-pending-summaries.sh` spawns detached writers through the same `hooks/lib/summary-dispatch.sh` helper. It takes up to 10 live markers, oldest `marked_at` first, counts the dead ones and leaves them alone, and reports dispatched, live remaining, dead, and total in a toast. `/process-pending-summaries <session-id>` summarizes one session, and writes its marker first when there is none. **It asks nothing:** vault work is never a question for Mike. When the session already has a summary, the script redoes it only when the log is newer than the summary, because only then does the log hold segments the summary has not seen. A summary as new as its log is reported as kept. With the log pruned, the transcript stands in for it. `--overwrite` after the id forces a run. A marker another writer holds is reported as busy, not as a failure: that writer is summarizing the session now. Only a prompt Mike sends runs the command. It replaced the `process-pending-summaries` skill, which spent a model turn on the same steps and dispatched its writers as in-session sub-agents.
 
 #### A marker has two sources, and either one is enough
 
@@ -760,17 +765,17 @@ SessionEnd runs inside Claude Code's exit budget, and a hook still copying when 
 
 ### Pre-shed capture
 
-The logging pipeline above always produces a narrative summary, and that summary is always a **reconstruction**. The summary-writer reads a raw JSONL transcript with no lived context, and its own definition forbids it from padding a thin reconstruction into a confident one. The curated output — a decision with the alternatives it rejected, a root cause, a correction to how the agent works — exists only inside the session that formed it, and until now nothing asked that session for it unless the human did.
+The logging pipeline above always produces a narrative summary, and that summary is always a **reconstruction**. The summary-writer reads a raw JSONL transcript with no lived context, and its own definition forbids it from padding a thin reconstruction into a confident one. The curated output — a decision with the alternatives it rejected, a root cause, a correction to how the agent works — exists only inside the session that formed it.
 
-`hooks/memory-capture-stop.sh` asks. When it fires, it exits 2 with the capture instruction on stderr, and Claude Code wakes the model with that instruction as a new turn, after the reply the user has already seen. The instruction explicitly permits writing nothing: a forced turn with no escape manufactures a memory to justify itself, which is worse than no memory at all.
+**The [hooks module](#the-hooks-module) asks a fork of the session for it, with no turn shown and no question** (`hooks/mods/capture.ts`). Vault work must never prompt Mike or show him a turn (vault: `feedback/memory-vault-activity-fully-transparent`). On a capture turn, `$.model.fork` asks one tool-less question over the session's own transcript, served from the prompt cache: list the durable findings the vault lacks, as JSON, or answer `NONE`. Nobody sees the answer. The module checks each note and writes it through `$.mcp.call` on the memory server in core's manifest. A toast names each note saved, and nothing shows when none is. The question allows `NONE` and says it is the expected answer: a manufactured memory is worse than none.
 
-The hook is registered with `asyncRewake`, and that is what keeps the checkpoint to one line for the user. A synchronous `decision: block` would show the user the whole reason as "Stop hook feedback", because a synchronous `Stop` hook has no field that only the model reads. With `asyncRewake`, the model gets `rewakeMessage` plus stderr, and the user sees only `rewakeSummary`: "💾 Memory capture checkpoint (automatic, not from the user)." These three fields are marked internal in the CLI's hook schema and are not documented. They were read from the 2.1.284 CLI and not measured live, so check the checkpoint still fires after a Claude Code upgrade.
+It replaced `hooks/memory-capture-stop.sh`, an `asyncRewake` Stop hook that woke the model with a new turn after the reply. That turn showed in Mike's session as "💾 Memory capture checkpoint", and it cost a whole model turn each time.
 
-The instruction itself is the header line plus one line. That line points at the warmup's Memory routing capture rule for the detail. On its own, it still gives the model permission to write nothing, a one-line reply, and "Do not ask first".
+**The reply is model output, so it decides no path.** Each note needs a type (`decision`, `insight`, `feedback` or `project`), a kebab-case slug, a name, a one-sentence summary and a body, and the module builds the path from the type's folder, the date and the slug (`decisions/2026-10-07-<slug>.md`). A note that fails any check is dropped, and a name or summary with a line break fails. At most 3 are written per capture. **Nothing is written over or twice.** A search on the note's name skips it when the vault holds a note with the same name or slug, or one both retrievers rank first for it (another session may have saved it). The score rule reads only a hybrid search's scores (hits labelled `semantic` or `hybrid`): a vault with no embeddings answers with keyword hits, whose BM25 scores are far above any fusion score, and those are matched by name and slug alone. Each skip writes one line to the debug log, naming the note and the reason, so the share of captures held back can be measured. Then a read of its path must answer the server's definite "Document not found": any other answer, an error included, skips the note. `$.mcp.call` passes no `tool.call` hook of the module, so each write goes through the same [vault write checks](#vault-write-checks) a model's write gets, `[[link]]` rewrite included, and the question asks for path links in the first place. A later capture's question names the notes earlier ones wrote, so they are not repeated.
 
-**It is the backstop behind the warmup's capture rule, not a periodic reminder**, and that is what sets its timing. A per-turn `UserPromptSubmit` capture nudge used to sit in front of it. That nudge was retired on 2026-09-27: it fired on sub-agent hand-backs and task notifications as well as typed prompts, and restated warmup text at a measured ~180k tokens in three days. A backstop has to fire at least once per session to be one at all, so the **first** fire matters far more than the repeat. It lands on turn 5 (`WORKBENCH_CAPTURE_STOP_FIRST`) and then settles onto a sparse 40 (`WORKBENCH_CAPTURE_STOP_INTERVAL`), which exists only to catch findings that crystallize late in a long session. Measured over 467 transcripts of this project:
+**It is the backstop behind the warmup's capture rule, not a periodic reminder**, and that is what sets its timing. A backstop has to fire at least once per session to be one at all, so the **first** capture matters far more than the repeat. It runs on the 5th main-loop turn (`WORKBENCH_CAPTURE_STOP_FIRST`) and then every 40th (`WORKBENCH_CAPTURE_STOP_INTERVAL`), which exists only to catch findings that crystallize late in a long session. An interrupted turn counts, a refused or failed one does not. Measured over 467 transcripts of this project:
 
-| First fire | Sessions reached |
+| First capture | Sessions reached |
 |---|---|
 | turn 5 | 411 of 467 (88%) |
 | turn 9 | 55% |
@@ -778,22 +783,19 @@ The instruction itself is the header line plus one line. That line points at the
 
 A flat interval of 20 would therefore have captured nothing in 84% of sessions. Both numbers are estimates from one project's history, so both are independently overridable.
 
-**It is not tuned to beat compaction.** Exactly one of those 467 sessions ever compacted. The real context-loss events here are quit and `/clear`, and neither gives any warning a hook can read — the `Stop` payload carries no context-pressure field, so "fire when the shed is near" is unavailable at any price.
+**It is not tuned to beat compaction.** Exactly one of those 467 sessions ever compacted. The real context-loss events here are quit and `/clear`, and neither gives any warning a hook can read.
 
-Six things switch it off, and each closes a real failure:
+These switch it off, and each closes a real failure:
 
 | Condition | Why |
 |---|---|
-| `stop_hook_active` is true | That flag means our own wake is already being served. Firing inside it is an infinite loop. Anything but a definite `false` counts as active. |
-| It is the first turn end after a fire | That turn is the one our own wake caused. This guard holds at any interval, even if the CLI does not set `stop_hook_active` on the wake. |
-| `agent_id` is present | A sub-agent's findings belong to the session that dispatched it, which gets its own turn ends. |
+| A sub-agent's turn | A sub-agent's findings belong to the session that dispatched it, which gets its own turns. |
 | `WORKBENCH_SUMMARY_WRITER=1` | The background writer's whole job is one summary from a log it was handed. |
-| `WORKBENCH_DEV_TEAM_PIPELINE=1` | An unattended dev-team agent. In `claude -p` a fired checkpoint makes the capture reply the run's final output, which is what the dispatcher logs as the agent's report. |
-| The session is a scheduled tick | A Stop payload carries no prompt, so the hook reads the transcript's first user record and looks for the `<scheduled-task …>` wrapper (`hooks/lib/scheduled-origin.sh`, shared with `memory-scan-recall.sh`). It reads it only on a turn that would fire. An unattended tick writing memories about its own routing is the noise the vault does not want. |
+| An unattended session (`claude -p`, the SDK, a top-level `--agent` run, `WORKBENCH_DEV_TEAM_PIPELINE=1`) | Nobody is present to judge what got written. |
+| A turn a schedule opened | An unattended tick writing memories about its own routing is the noise the vault does not want. |
+| `WORKBENCH_CAPTURE_STOP=0` or `WORKBENCH_MEMORY_NUDGE=0` | The kill switches the old hook honoured. |
 
-**Why `Stop`, and not `PreCompact`.** Only two events can make a live model act: `UserPromptSubmit` (via `additionalContext` on the next human turn) and `Stop` (via `decision: block`, or an `asyncRewake` wake). `PreCompact` is not one of them — measured against the shipped CLI (2.1.277), its executor reads each hook's stdout and its blocked/succeeded state and nothing else, and no model turn is open there to run a tool in. A PreCompact hook can block compaction or say nothing, and neither writes a memory. Stop is the right event anyway: compaction happens between turns, so the last Stop before one is the last moment the session still holds everything it is about to shed.
-
-**A hard quit is not covered, and cannot be.** `SessionEnd` runs after the model can no longer act — the same reason it cannot dispatch a summary-writer. Those sessions still get the background summary; they just do not get the curated pass.
+`/clear` starts the count over. `tests/capture.test.ts` covers the policy, the checks on the reply, and each lane, and `hooks/test-memory-module-hooks.sh` pins that no Stop or `asyncRewake` hook is registered.
 
 ### What the warmup injects
 
@@ -866,16 +868,20 @@ The setting is a **backstop, not a substitute** for servers capping their own ou
 
 ### The hooks module
 
-`hooks/hooks.json` names one hooks module beside its command hooks: `hooks/register.ts`, a Claude Code mod of function hooks. The command hooks all stay registered. The guards move to the module only after parity, gated on the mods API settling, because it is early access. The module carries these features:
+`hooks/hooks.json` names one hooks module beside its command hooks: `hooks/register.ts`, a Claude Code mod of function hooks. The guards stay command hooks, and move to the module only after parity, gated on the mods API settling, because it is early access. The memory hooks that ran on every turn moved into the module, and their command hooks are gone (`hooks/test-memory-module-hooks.sh` pins that). The module carries these features:
 
 - **The `$.workbench` noun.** See [The $.workbench noun](#the-workbench-noun).
+- **The per-turn log checkpoint.** `session-log.sh` after each main-loop turn and at session end, SIGHUP and SIGTERM included. See [The log is written as the session runs](#the-log-is-written-as-the-session-runs).
+- **Memory capture with no turn.** A fork of the session lists its durable findings, and the module writes them to the vault. See [Pre-shed capture](#pre-shed-capture).
+- **Recall.** Filtered vault hits beside a prompt or a content search. See [Recall](#recall-filtered-at-the-tail-never-in-the-system-prompt).
+- **Skill learnings and the intake nudge.** See [Execution-aware skills](#execution-aware-skills) and [Task intake](#task-intake).
 - **Commands that cost no model turn.** `/orchestrator [on|off|status]` (see [Delegation gate](#delegation-gate)), `/memory-status`, which runs `scripts/memory-status.sh` and shows its report in a pane, `/notices`, which shows the [warmup notices](#housekeeping-notices--for-mike-not-the-model) in the same pane, and `/process-pending-summaries [<session-id> [--overwrite]]` (see [Why SessionEnd does not spawn](#why-sessionend-does-not-spawn)). They replace the `orchestrator`, `memory-status` and `process-pending-summaries` skills. A command answers through a toast, the status line, or the pane, and returns no text, because a command's text is a transcript row the model reads.
 - **The status line.** After the request meter: the latest request's cache hit share (`cache 97%`) and, once a spike named a changed section, the count of such spikes (`churn 1`), then the memory server's health from the identity-checked probe (`mem UP`, every minute), orchestrator mode (`orch on`), the rows the last reply takes at 80 columns against the output style's budget of about 40 (`rows 38/40`, a meter only: nothing re-prompts on it), each skill whose learnings file is past 30 entries, and the warmup notices outstanding. A fact not known yet is left out. For example: `T14 · $0.21/req · 3.4× first │ cache 97% · mem UP · orch on · rows 38/40`.
 - **The question rule.** See [Question delivery](#question-delivery-the-rule-in-the-style-the-enforcement-in-the-mod).
 - **Commit approval.** See [Commit approval](#commit-approval-the-pick-is-checked).
 - **Vault write checks.** See [Vault write checks](#vault-write-checks).
 - **The request meter.** The status line shows the turns since session start and the latest API request's cost against the session's first API request's, for example `T14 · $0.21/req · 3.4× first`. A request is one main-loop model request (one `turn.step`), priced from the usage the API reported for that response alone. T counts completed main-loop turns. A sub-agent's requests and turns are left out. The first request is the baseline and never moves. When it has no price the line says `first unpriced`, and when it cost $0 the line says `first $0`, rather than comparing against a later request. A step that got no response reported no cost, so it is not a request. Each request is priced from its uncached input, cache reads, cache writes, and output, at the list price of the model that answered (`hooks/mods/request-meter.ts`). A cache write is priced at 2 times input, the 1-hour rate, because the engine's usage does not split writes by TTL. Claude Code's transcripts do. Across 400 of Mike's transcripts, every main-loop write since 2026-09-01 was a 1-hour write, and at that rate a probe matched the engine's own cost ledger to the cent. The rate is not universal: 0.5% of messages, from two desktop sessions in July and August, wrote 5-minute caches. In a session like those, the write share of `$/req` reads up to 60% high. A model with no price shows `unpriced` and no figure. The line updates after every request and every turn, is drawn again after a reload, and starts over on `/clear`. The figures change every turn, so they live on the status line and never in the system prompt, where they would re-bill the cached prefix.
-- **The cache meter and its churn view.** Every main-loop request is recorded with its cache read against its cache creation and its uncached input, as the API reported them for that response (`hooks/mods/cache-meter.ts`). The status line shows the latest request's hit share. A request past the first that creates more of the cache than it reads, and at least 1,024 tokens, is a creation spike. At the first request the module reads the system prompt with `$.prompt.compose()` and hashes each section. It reads it again on every request that created cache, so a change that cost no spike is not blamed on a later one, and it skips requests that only read the cache. At a spike, the sections whose hash changed since the last reading are the churn: a toast names them (`Prompt cache churn at request 14: system-prompt section env_info_simple changed, and 41,200 tokens were cached again.`), and the status line counts such spikes. A spike with no changed section is an expired cache, a compaction or a large tool result, so it is recorded and not shown. A sub-agent's requests are left out. The module only reads the prompt: it hooks no `prompt.*` event, so nothing it measures can enter the system prompt. In a session a person sits at, the record is written to `~/.claude-workbench/cache-meter/<session-id>.json` after each request (the latest 500 requests, each with its hit share, and every spike), so a change can be measured before and after. The startup warmup deletes records older than 7 days. The meter starts over on `/clear`.
+- **The cache meter and its churn view.** Every main-loop request is recorded with its cache read against its cache creation and its uncached input, as the API reported them for that response (`hooks/mods/cache-meter.ts`). The status line shows the latest request's hit share. A request past the first that creates more of the cache than it reads, and at least 1,024 tokens, is a creation spike. At the first request the module reads the system prompt with `$.prompt.compose()` and hashes each section. One reading costs 0 to 1 ms: measured on 2026-10-07 with 21 readings in a headless `--plugin-dir` run, of a prompt with 11 sections and about 9.1k characters. The test kit has no engine beneath `prompt.compose`, so it cannot time one. It reads it again on every request that created cache, so a change that cost no spike is not blamed on a later one, and it skips requests that only read the cache. At a spike, the sections whose hash changed since the last reading are the churn: a toast names them (`Prompt cache churn at request 14: system-prompt section env_info_simple changed, and 41,200 tokens were cached again.`), and the status line counts such spikes. A spike with no changed section is an expired cache, a compaction or a large tool result, so it is recorded and not shown. A sub-agent's requests are left out. The module only reads the prompt: it hooks no `prompt.*` event, so nothing it measures can enter the system prompt. In a session a person sits at, the record is written to `~/.claude-workbench/cache-meter/<session-id>.json` after each request (the latest 500 requests, each with its hit share, and every spike), so a change can be measured before and after. The startup warmup deletes records older than 7 days. The meter starts over on `/clear`.
 
 Every hook that touches `$` lives in `register.ts`, because the engine follows `$` into no imported function, and a plugin registers each event once, so where several features share an event, one hook branches. The logic is pure and lives in `hooks/mods/`, and `types/index.d.ts` declares the `$.workbench` noun and the values the module keeps in `$.state`.
 
@@ -930,7 +936,7 @@ The [hooks module](#the-hooks-module) enforces the two halves, in an attended ma
 - **A reply that leaves a question in prose gets one correction turn.** A `classic.Stop` hook blocks the stop, and its reason tells the model to re-ask through the tool. Code fences, inline code, quoted lines, and double-quoted spans are stripped first, so a question shown rather than asked never counts. A reply with no question mark and no asking phrase ("let me know", "should I") is let stand with no model call. The rest goes to `$.model.classify`, which tells a question for Mike from a rhetorical one. If the classifier fails, or answers with neither label, the reply counts as asking when its last line ends on a question mark.
 - **An `AskUserQuestion` call with no prose immediately before it is refused**, with a reason that says to write the context first. Thinking blocks do not count as context, because Mike never sees them. A call no message holds, such as another plugin's `$.ui.ask`, is let through.
 
-**It fires at most once per turn.** The engine's `stop_hook_active` flag and a per-turn flag in `$.state` both stop a second re-prompt. A synchronous block from another Stop hook stands alone. The memory checkpoint is not one: it is an `asyncRewake` hook, so it runs in the background after the stop and never shows as a block. A turn the rule re-prompts can therefore also get a checkpoint wake afterwards. That wake arrives with `stop_hook_active` set, so its own stop is never re-prompted.
+**It fires at most once per turn.** The engine's `stop_hook_active` flag and a per-turn flag in `$.state` both stop a second re-prompt. A synchronous block from another Stop hook stands alone. An `asyncRewake` Stop hook of another plugin runs in the background after the stop and never shows as a block. A turn the rule re-prompts can therefore also get such a wake afterwards. That wake arrives with `stop_hook_active` set, so its own stop is never re-prompted. The memory capture checkpoint opens no turn at all: it is a fork ([Pre-shed capture](#pre-shed-capture)).
 
 **It applies where a person in an interactive session opened the turn:** a typed prompt, a Remote Control message, an auto-continuation, or a background task's notification. A notification turn is where a commit question or a relayed result gets asked. **It never fires where nobody can answer:** a `claude -p` run, a top-level `--agent` run (`CLAUDE_CODE_AGENT`), a process with `WORKBENCH_DEV_TEAM_PIPELINE=1`, a turn a scheduled task or a peer opened, and any sub-agent. A re-prompt there would loop, because nobody can answer the dialog.
 
@@ -1159,24 +1165,29 @@ The default pull interval is deliberately tighter than upstream's, and `git_lfs`
 
 The vault is the **canonical durable memory store**. Claude Code's harness also injects per-project memory instructions every session (save to `~/.claude/projects/<encoded-cwd>/memory/` + a `MEMORY.md` index) — left alone, sessions scatter memory files there that the vault can't search. The session warmup neutralizes that channel into a router: it injects a `## Memory routing` rule at every session start (saves go to the vault via the memory MCP `write` tool with vault frontmatter; recall is vault `search`, not directory reads, with the mode left to the server, it runs *before* a repo scan rather than after, and its query is built from the task rather than from the prompt's wording), and on startup it writes a self-healing router stub to the current project's `MEMORY.md` (canonical template: `references/memory-routing-stub.md`). A `MEMORY.md` without the router marker is never overwritten — the warmup flags it for human migration instead. Keep the store singular: don't install competing memory MCP servers alongside the vault.
 
-**Why the routing block states when recall happens and what to search for, not just where.** `memory-recall.sh` can only ever search the prompt, because that is the only text a `UserPromptSubmit` hook receives. It runs on every prompt that passes its substance gate, not only the opening one. The routing text claimed "only the opening prompt" until 2026-09-27, and that was never true. Two rules follow, and the routing block (plus its router-stub twin) is the floor for both:
+**Why the routing block states when recall happens and what to search for, not just where.** Prompt recall can only ever search the prompt, because that is the text it receives. It runs on every prompt that passes its substance gate, not only the opening one. The routing text claimed "only the opening prompt" until 2026-09-27, and that was never true. Two rules follow, and the routing block (plus its router-stub twin) is the floor for both:
 
-- **When.** Search the vault *before* scanning the repo, and again whenever the task turns up something the prompt never named. `memory-scan-recall.sh` now covers part of that second case automatically (below), but only where a scan carries an extractable query — the rule remains the floor.
+- **When.** Search the vault *before* scanning the repo, and again whenever the task turns up something the prompt never named. Scan recall covers part of that second case automatically (below), but only where a scan carries an extractable query — the rule remains the floor.
 - **What.** Build the query from the *task* — the convention, format, procedure, tool, or error you are about to produce or decide — not from the prompt's wording. This is the half with the measurement behind it: replaying "go ahead and push and create a release" against the live vault left `skills/release.learnings.md` — the note carrying the release-title rule — outside the top 8, while "release title naming convention", the query the task implies, put it in the top 5 (5th when first measured, 3rd on re-measure 2026-09-14 — ranks drift as the vault grows, the gap between the two queries does not). The agent's advantage over auto-recall is asking the better question, and a rule that says only *when* leaves that on the table.
 
-**No per-turn reminder restates them any more.** `memory-recall-nudge.sh` and `memory-capture-nudge.sh` used to, on `UserPromptSubmit`. Both were removed on 2026-09-27. They fired on sub-agent hand-backs and task notifications as well as typed prompts, restated warmup text at a measured ~180k tokens in three days, and repeated the false opening-prompt claim. The routing block is re-injected after every compaction, and `memory-capture-stop.sh` stays as the capture backstop.
+**No per-turn reminder restates them any more.** `memory-recall-nudge.sh` and `memory-capture-nudge.sh` used to, on `UserPromptSubmit`. Both were removed on 2026-09-27. They fired on sub-agent hand-backs and task notifications as well as typed prompts, restated warmup text at a measured ~180k tokens in three days, and repeated the false opening-prompt claim. The routing block is re-injected after every compaction, and the capture checkpoint stays as the capture backstop ([Pre-shed capture](#pre-shed-capture)).
 
 **The routing block names no search mode.** The server's default is `auto`: hybrid when the vault has embeddings, keyword when it does not. `hooks/memory-search-mode.sh` used to force `hybrid` onto every agent search, on the premise that the server defaulted to keyword. That premise went stale, and forcing hybrid broke the keyword fallback on a vault with no embeddings, so the hook was removed on 2026-09-27.
 
-#### Mid-turn recall, on a scan's own query
+#### Recall: filtered, at the tail, never in the system prompt
 
-The routing block is prose, and prose asks the agent to remember. `hooks/memory-scan-recall.sh` is the mechanism: a `PostToolUse` hook that reads the query out of a content search the agent is **already running**, searches the vault with it, and injects any fresh hits beside that scan's results, in the same turn. A topic the opening prompt never named surfaces its memory at the moment the agent goes looking for it.
+The [hooks module](#the-hooks-module) recalls on two triggers (`hooks/mods/recall.ts`): each prompt Mike sends, and each content search the agent runs through Bash in the main loop. It replaced `hooks/memory-recall.sh` (`UserPromptSubmit`) and `hooks/memory-scan-recall.sh` (`PostToolUse`). In the Phase 0 spike those cost about 850 tokens and 1.6 s per prompt, and none of their sampled hits was used. Recall now searches through `$.mcp.call` on the memory server in core's manifest, where the bash hooks started the `markdown-vault-mcp` CLI at about 1 s a call. Each hit then passes four filters:
 
-**It is not a classifier, and that is the whole safety argument.** It never judges whether a search is worthwhile — it piggybacks on a scan already happening and reuses that scan's own query, so there is no precision-and-recall figure to degrade. What the matcher and `lib/scan-query.py` decide is narrower and purely structural: does this tool call *carry* a query. No query means "there is none here", never "this one is not worth it". `memory-recall.sh` stays the unconditional floor on every prompt, so a scan this hook misses costs one missed extra and never removes the mechanism — the safe shape, not the gating one.
+1. **A score threshold.** The server fuses a keyword rank and a semantic rank (reciprocal rank fusion, k = 60). One retriever's top hit scores just under 1/61 (0.0158 to 0.0164 measured), and a hit both retrievers rank near the top scores 0.02 to 0.035. On the live vault every hit is labelled `semantic`, whichever retrievers ranked it, so the label cannot tell them apart and the score must. A prompt keeps the top hits of either retriever (0.015), and the classifier judges them. A scan, which fires far more often, keeps only hits both retrievers rank (0.02): that is what the old scan hook's label gate meant to require, and with this server it dropped every hit.
+2. **The note types worth recalling**: decision, insight, topic, feedback, reference, project, skill-learnings and recurring-issue. A session summary and the dated `learnings` evaluation are left out.
+3. **A per-session dedupe set** in `$.state`: a note is shown once per session, on either trigger, and a scan query is searched once. `/clear` starts both over.
+4. **A relevance pass.** `$.model.classify` labels each hit `relevant` or `unrelated` against the prompt or the scan's query. Only a definite `unrelated` drops a hit. A classifier that fails, or answers after 2.5 s, falls back to the hits the first three filters kept, so a slow classifier never costs a recall.
 
-**Why the matcher is `Grep|Bash` and not `Grep|Glob`.** `Grep`'s `pattern` is the scan's query verbatim, which is the strongest extraction available. `Bash` is not a fallback: `Grep` and `Glob` are not granted to every agent, and in the session that commissioned this hook the agent had neither, so every repo scan it ran went through `Bash` and a `Grep`-only matcher would have fired zero times. Under `Bash`, only content searchers are read (`rg`, `grep`, `git grep`, `ag`, `ack`), by argument **slot** rather than substring via the shared `lib/shell_parse.py` tokeniser — so `git log --grep=` and `npm test` carry no query and nothing fires. `Glob` is deliberately **out**: its pattern is a path expression, so it names a filename shape rather than a topic (`**/*.test.ts` carries nothing; `src/**/*.ts` carries two words of noise). `find -name` and `fd` are out under `Bash` for the same reason.
+Each hit's title, type, summary and path are the vault's text, so each is cut to one line and capped before it is shown. The hits that pass go to the model as **one compact block at the tail**: beside the prompt (`prompt.submit` context), or beside the search's result (`tool.call` context). Nothing per-turn enters the system prompt, so the cached prefix is never re-billed for it. At most two hits ride a prompt and one rides a scan. The figures for each recall (hits kept, about how many tokens, how many milliseconds, and whether the classifier fell back) go to the debug log, never to the model.
 
-**Cost is what shapes every lever.** Measured 2026-09-14: each `PostToolUse` fire persists **two** transcript records (`hook_success` + `hook_additional_context`), nothing evicts them, and a realistic vault-hit payload implies ~500–600 bytes persisted **per fire**. That is the same accumulation property `UserPromptSubmit` has, and a per-turn nudge was removed from this codebase once already for exactly it. A tool call is far more frequent than a turn, so four levers bound it, and three filters keep a fire from being noise: per-session dedup on the **memory path**, sharing one seen-file with `memory-recall.sh` so the bound is the number of distinct relevant memories *across both hooks*; per-session dedup on the **query**, so a repeated scan costs no subprocess; a top-K of **1**, against `memory-recall.sh`'s 2; and a scheduled-task guard, since an unattended tick has no human to serve and its fresh-per-tick `session_id` defeats both dedup levers. The filters were added on 2026-09-27, when most hits turned out to be noise at about 1.6 s a query. A search that reads **stdin** is skipped, because `git diff | grep -E "real|allow|deny"` filters output rather than researching a topic. A **single plain word** is skipped, because `grep -rn scheduled` names no topic; a camelCase identifier still counts. And a hit has to be **ranked by both retrievers** (`search_type` of `hybrid`): the CLI's `score` is a rank-fusion value that does not separate a good query from a junk one, and every hit for the junk queries measured that day was semantic-only. A `Bash` call that names no content searcher also exits before Python starts. The shared levers live in `lib/memory-recall-core.sh` — one copy, two callers, because each was tuned against an incident and a second implementation would drift from that tuning invisibly.
+**Who gets it.** A turn a person opened in an attended session: never a sub-agent, and never a lane `$.workbench.isUnattended` names (a `claude -p` or SDK session, a top-level `--agent` run, the dev-team pipeline, a schedule, a peer). A prompt is searched when it is at least 16 characters, not a slash command, not a scheduled tick, and not an acknowledgement such as "yes" or "go ahead". Each prompt search stamps `~/.claude-workbench/memory-recall/last-attempt`, which the warmup's recall liveness check reads.
+
+**A scan is read, never judged.** Under Bash, only content searchers are read (`rg`, `grep`, `git grep`, `ag`, `ack`), by argument **slot** rather than substring, through `hooks/lib/scan-query.py` and the shared `lib/shell_parse.py` tokeniser. So `git log --grep=` and `npm test` carry no query. A path search (`find -name`, `fd`, `ls`) names a filename shape, not a topic, and is left out. A search that reads stdin filters output (`git diff | grep -E "real|allow|deny"`) and is left out. A single plain word is too thin, a camelCase identifier is not. A Bash call that names no content searcher never starts Python. This CLI has no `Grep` tool, so Bash is the one trigger. `hooks/test-scan-query.sh` covers the extraction, and `tests/recall.test.ts` the rest.
 
 #### Wiki layer and vault index
 
@@ -1233,7 +1244,7 @@ Runs on every `startup` warmup:
 
 `/orchestrator`, `/memory-status`, `/notices`, and `/process-pending-summaries` are commands of the [hooks module](#the-hooks-module), not skills.
 
-Every skill is **execution-aware** without saying so: `hooks/skill-learnings.sh` hands it its `skills/{name}.learnings.md` file from the vault when it runs (see [Execution-aware skills](#execution-aware-skills)).
+Every skill is **execution-aware** without saying so: the hooks module merges its `skills/{name}.learnings.md` file from the vault into its text when it runs (see [Execution-aware skills](#execution-aware-skills)).
 
 ### Cross-surface skill installation
 
@@ -1275,17 +1286,12 @@ All config values can be overridden via environment variables for testing:
 | `WORKBENCH_SKIP_LOG` | Set to `1` to skip logging (used by summary-writer) |
 | `WORKBENCH_SKIP_WARMUP` | Set to `1` to skip warmup (used by summary-writer) |
 | `WORKBENCH_MCP_SERVER_NAME` | `memory_mcp_server_name` |
-| `WORKBENCH_MEMORY_RECALL` | Set to `0` to disable proactive vault recall. Reaches **both** injecting hooks — `memory-recall.sh` and `memory-scan-recall.sh` |
-| `WORKBENCH_MEMORY_RECALL_LIMIT` | Max memories the recall hook injects per turn (default `2`) |
-| `WORKBENCH_MEMORY_RECALL_STATE` | Per-session seen-paths state dir (default `~/.claude-workbench/memory-recall`). Shared by both recall hooks on purpose: one seen-file is what bounds a memory to one injection per session across the pair |
-| `WORKBENCH_MEMORY_SCAN_RECALL` | Set to `0` to disable mid-turn scan recall (`memory-scan-recall.sh`) while leaving prompt recall on |
-| `WORKBENCH_MEMORY_SCAN_RECALL_LIMIT` | Max memories that hook injects per fire (default `1` — it fires per tool call, not per turn) |
-| `WORKBENCH_MEMORY_SCAN_RECALL_MIN_CHARS` | Min length of an extracted query, spaces not counted, before the vault is searched (default `6`) |
-| `WORKBENCH_MEMORY_SCAN_RECALL_TYPES` | Eligible frontmatter types for that hook (same default and same rule as `WORKBENCH_MEMORY_RECALL_TYPES`) |
-| `WORKBENCH_MEMORY_RECALL_TYPES` | Comma-separated frontmatter types eligible for injection (default `decision,insight,topic,feedback,reference,project,skill-learnings,recurring-issue`; empty disables the filter). A type belongs when a note of that type asserts something still true that should change what the agent does next — which is why `session` summaries and the dated `learnings` evaluation snapshots are excluded |
-| `WORKBENCH_CAPTURE_STOP` | Set to `0` to disable [pre-shed capture](#pre-shed-capture) (`memory-capture-stop.sh`). `WORKBENCH_MEMORY_NUDGE=0` also disables it — the older family kill switch, still honoured |
-| `WORKBENCH_CAPTURE_STOP_FIRST` | Turn end of the **first** capture block (default `5`). The number that decides whether the backstop fires at all: at 5 it reaches 88% of this project's sessions, at 21 it reaches 16% |
-| `WORKBENCH_CAPTURE_STOP_INTERVAL` | Turn ends between **later** capture blocks (default `40`). Sparse on purpose: a block buys a whole extra model turn. Independent of `_FIRST` so either can be retuned alone |
+| `WORKBENCH_MEMORY_RECALL` | Set to `0` to disable vault recall, on prompts and on content searches both |
+| `WORKBENCH_MEMORY_RECALL_STATE` | Where prompt recall stamps `last-attempt` for the warmup's recall liveness check (default `~/.claude-workbench/memory-recall`) |
+| `WORKBENCH_MEMORY_SCAN_RECALL` | Set to `0` to disable recall on content searches while leaving prompt recall on |
+| `WORKBENCH_CAPTURE_STOP` | Set to `0` to disable [pre-shed capture](#pre-shed-capture). `WORKBENCH_MEMORY_NUDGE=0` also disables it — the older family kill switch, still honoured |
+| `WORKBENCH_CAPTURE_STOP_FIRST` | Main-loop turn of the **first** capture (default `5`). The number that decides whether the backstop fires at all: at 5 it reaches 88% of this project's sessions, at 21 it reaches 16% |
+| `WORKBENCH_CAPTURE_STOP_INTERVAL` | Turns between **later** captures (default `40`). Sparse on purpose: each one is a fork of the whole session. Independent of `_FIRST` so either can be retuned alone |
 | `WORKBENCH_SETTINGS_FILE` | `~/.claude/settings.json` path (used by `install.sh` and `permissions.sh` for testing) |
 | `WORKBENCH_OUTPUT_STYLES_DIR` | `~/.claude/output-styles` path (used by `install.sh` for testing) |
 | `WORKBENCH_MEMORY_GIT_REPO_URL` | Vault git remote; unset disables cross-machine sync entirely |

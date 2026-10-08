@@ -19,6 +19,14 @@
 //                   path, valid frontmatter on a new note, and path links
 //   deferred start  the warmup's pending-summary drain and Chat-skill scan,
 //                   started once the SessionStart hooks are done
+//   log checkpoint  hooks/session-log.sh after each main-loop turn, interrupted
+//                   ones included, and at session end, SIGHUP and SIGTERM too
+//   memory capture  the live session's durable findings, asked of a fork and
+//                   written to the vault, with no turn shown and no question
+//   recall          vault hits for a prompt or a content search, filtered and
+//                   injected at the tail, never into the system prompt
+//   learnings       a skill's vault learnings, merged into its text
+//   intake nudge    the first Edit of a task with no intake block on screen
 //
 // The logic is pure and lives in mods/. Every hook that touches `$` lives in
 // this file, because the engine follows `$` into no imported function, and a
@@ -26,10 +34,35 @@
 // hook branches where several features share the event.
 
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, FsEntry, Register, RenderElement, TurnUsage } from 'claude-code'
+import type { EngineInterface, FsEntry, Register, RenderElement, ToolCallResult, TurnUsage } from 'claude-code'
 
 import type { CacheState, ChurnEvent, PaneContent, WorkbenchCallerLane, WorkbenchShellParse } from '../types'
 import { BRIEF_SLOTS, checkBrief } from './mods/brief'
+import type { CaptureNote } from './mods/capture'
+import { FIRST, REPEAT, capturePrompt, duplicateOf, isCaptureDue, isNotFound, notesOf, savedText, thresholdOf } from './mods/capture'
+import type { CheckpointMode } from './mods/checkpoint'
+import { checkpointRequest, endTimeoutOf } from './mods/checkpoint'
+import { NUDGE, intakeShown } from './mods/intake'
+import { learningsPath, withLearnings } from './mods/learnings'
+import type { Hit } from './mods/recall'
+import {
+  CLASSIFY_TIMEOUT_MS,
+  FETCH_FACTOR,
+  LABELS as RELEVANCE_LABELS,
+  PROMPT_LIMIT,
+  PROMPT_MIN_SCORE,
+  SCAN_LIMIT,
+  SCAN_MIN_SCORE,
+  blockOf,
+  candidatesOf,
+  hitsOf,
+  mayScan,
+  promptQuery,
+  relevanceText,
+  relevantOf,
+  scanQuery,
+  tokensOf,
+} from './mods/recall'
 import {
   EMPTY_CACHE,
   cacheFactsOf,
@@ -70,17 +103,7 @@ import {
   hasContextBefore,
   proseOf,
 } from './mods/question-rule'
-import {
-  NAME as PENDING,
-  OVERWRITE,
-  REFUSAL as PENDING_REFUSAL,
-  SKIP,
-  USAGE as PENDING_USAGE,
-  askOverwrite,
-  outcomeOf,
-  reportOf as pendingReportOf,
-  requestOf,
-} from './mods/pending-summaries'
+import { NAME as PENDING, REFUSAL as PENDING_REFUSAL, USAGE as PENDING_USAGE, outcomeOf, reportOf as pendingReportOf, requestOf } from './mods/pending-summaries'
 import { EMPTY, countRequest, countTurn, statusOf } from './mods/request-meter'
 import { countOf, factsOf, healthOf, learningsAfter, lineOf, noticesOf, rowsOf, skillNameOf } from './mods/status-line'
 import type { VaultTool } from './mods/vault-write'
@@ -113,6 +136,10 @@ const learnings = atom({ plugin: 'workbench-core', key: 'learnings' } as const, 
 const replyRows = atom({ plugin: 'workbench-core', key: 'replyRows' } as const, null)
 const notices = atom({ plugin: 'workbench-core', key: 'notices' } as const, [])
 const pane = atom({ plugin: 'workbench-core', key: 'pane' } as const, { title: '', text: '' })
+const capture = atom({ plugin: 'workbench-core', key: 'capture' } as const, { turns: 0, hasFired: false, written: [] })
+const recall = atom({ plugin: 'workbench-core', key: 'recall' } as const, { seen: [], queries: [] })
+const intake = atom({ plugin: 'workbench-core', key: 'intake' } as const, { task: 0, checked: 0 })
+const TRANSCRIPT = { plugin: 'workbench-core', key: 'transcriptPath' } as const
 // Unset until known: a status entry for a fact not known yet is left out.
 const ORCHESTRATOR_ON = { plugin: 'workbench-core', key: 'orchestratorOn' } as const
 const MEMORY_HEALTH = { plugin: 'workbench-core', key: 'memoryHealth' } as const
@@ -389,32 +416,185 @@ async function deferredWarmup($: EngineInterface, payload: string): Promise<void
   await $.process.run(['bash', `${$.plugin.root}/hooks/session-warmup.sh`, '--deferred'], { stdin: payload, timeoutMs: DEFERRED_TIMEOUT_MS })
 }
 
-// /process-pending-summaries: the script's outcome, asking Mike before a
-// summary that exists is replaced, and reported in a toast.
+// /process-pending-summaries: the script's outcome, reported in a toast. It
+// asks nothing: the script decides whether a summary is redone.
 async function processPendingSummaries($: EngineInterface, args: string): Promise<void> {
   const request = requestOf(args)
   if (request === undefined) {
     $.ui.toast(PENDING_USAGE)
     return
   }
-  const run = async (argv: readonly string[]) =>
-    outcomeOf(
-      await $.process
-        .run(['bash', `${$.plugin.root}/scripts/process-pending-summaries.sh`, ...argv], { timeoutMs: 60_000 })
-        .then(({ stdout }) => stdout, () => ''),
-    )
   const { sid } = request
-  let outcome = await run(sid === undefined ? [] : request.overwrite ? [sid, '--overwrite'] : [sid])
-  if (outcome.result === 'exists' && sid !== undefined) {
-    // A dismissed dialog, or a run with nobody to ask, keeps the summary.
-    const answer = await $.ui.ask(askOverwrite(sid), { options: [SKIP, OVERWRITE], header: 'Summary' }).catch(() => SKIP)
-    if (answer !== OVERWRITE) {
-      $.ui.toast(`Kept the existing summary for session ${sid}.`)
-      return
-    }
-    outcome = await run([sid, '--overwrite'])
-  }
+  const argv = sid === undefined ? [] : request.overwrite ? [sid, '--overwrite'] : [sid]
+  const outcome = outcomeOf(
+    await $.process
+      .run(['bash', `${$.plugin.root}/scripts/process-pending-summaries.sh`, ...argv], { timeoutMs: 60_000 })
+      .then(({ stdout }) => stdout, () => ''),
+  )
   $.ui.toast(pendingReportOf(outcome, sid), { timeoutMs: 10_000 })
+}
+
+// The memory server's name as $.mcp.call takes it: core's own manifest server,
+// connected on first use. Kept for the module's life; a reload asks again.
+let memoryServerName: string | undefined
+async function memoryServer($: EngineInterface): Promise<string> {
+  if (memoryServerName !== undefined) return memoryServerName
+  const connected = await $.mcp.connect('memory')
+  if (!connected.isConnected) throw new Error(`memory: ${connected.message}`)
+  memoryServerName = connected.server
+  return memoryServerName
+}
+
+// One log checkpoint through hooks/session-log.sh (hooks/mods/checkpoint.ts).
+// A session whose transcript is unknown, or names another session, is left to
+// the settings hooks and the start-up reconciler.
+async function checkpointLog($: EngineInterface, sessionId: string, mode: CheckpointMode, reason: string | undefined, timeoutMs: number): Promise<void> {
+  const { value: transcript } = await $.state.get(TRANSCRIPT)
+  const request = checkpointRequest(sessionId, transcript, mode, reason)
+  if (request === undefined) return
+  await $.process.run(['bash', `${$.plugin.root}/hooks/session-log.sh`], { ...request, timeoutMs })
+}
+
+// The memory capture checkpoint (hooks/mods/capture.ts): a fork of the session
+// lists what it learned, and each note that passes the checks is written
+// through the memory MCP. No turn is shown and nothing is asked. Mike sees one
+// toast when a note is saved, and nothing when none is.
+//
+// $.mcp.call passes no tool.call hook of this module, so each write goes
+// through checkVaultWrite here: the vault write checks a model's write gets,
+// [[link]] rewrite included. A note is written only when the vault holds
+// nothing like it: a search on its name finds no duplicate (another session
+// may have saved it), and a read of its path answers a definite "not found".
+// Any other answer, an error included, skips the note.
+async function captureNote($: EngineInterface, server: string, note: CaptureNote): Promise<boolean> {
+  const found = await $.mcp.call(server, 'search', { query: note.frontmatter.name, limit: 3 })
+  if (found.isError) return false
+  const duplicate = duplicateOf(note, hitsOf(found.content))
+  if (duplicate !== undefined) {
+    // One line per skip, so the share of captures held back can be measured.
+    $.ui.log(`workbench capture: skipped "${note.frontmatter.name}" (${duplicate})`, { to: 'debug' })
+    return false
+  }
+  if (!isNotFound(await $.mcp.call(server, 'read', { path: note.path }))) return false
+  const checked = await checkVaultWrite($, { path: note.path, content: note.content, frontmatter: note.frontmatter }, 'write')
+  if ('deny' in checked) return false
+  return !(await $.mcp.call(server, 'write', checked.call)).isError
+}
+
+async function captureMemory($: EngineInterface): Promise<void> {
+  const reply = await $.model.fork({ prompt: capturePrompt((await read($, capture)).written) })
+  if (!reply.isAnswered) return
+  const date = new Date(await $.clock.now()).toISOString().slice(0, 10)
+  const notes = notesOf(reply.text, date).filter(note => frontmatterProblems(note.frontmatter, note.content).length === 0)
+  if (notes.length === 0) return
+  const server = await memoryServer($)
+  const written: string[] = []
+  for (const note of notes) {
+    if (await captureNote($, server, note).catch(() => false)) written.push(note.path)
+  }
+  if (written.length === 0) return
+  await update($, capture, state => ({ ...state, written: [...state.written, ...written] }))
+  $.ui.toast(savedText(written), { timeoutMs: 10_000 })
+}
+
+// Whether this session counts turns toward a capture: a session a person sits
+// at, in a turn no schedule opened, with the old hook's switches honoured
+// (WORKBENCH_CAPTURE_STOP=0 and WORKBENCH_MEMORY_NUDGE=0 turn it off), and
+// never in a summary-writer.
+async function isCaptureOn($: EngineInterface, sessionAttended: boolean | undefined): Promise<boolean> {
+  if (sessionAttended !== true || (await read($, turnScheduled))) return false
+  if ((await $.env.get('WORKBENCH_CAPTURE_STOP')) === '0' || (await $.env.get('WORKBENCH_MEMORY_NUDGE')) === '0') return false
+  return (await $.env.get('WORKBENCH_SUMMARY_WRITER')) !== '1'
+}
+
+// The relevance labels for `hits`, one each, or undefined when the classifier
+// failed or ran past CLASSIFY_TIMEOUT_MS: the caller then keeps every hit.
+async function labelsOf($: EngineInterface, task: string, hits: readonly Hit[]): Promise<(string | undefined)[] | undefined> {
+  const pass = Promise.all(hits.map(hit => $.model.classify(relevanceText(task, hit), RELEVANCE_LABELS))).catch(() => undefined)
+  const timeout = $.clock.sleep(CLASSIFY_TIMEOUT_MS).then(
+    () => undefined,
+    () => undefined,
+  )
+  return Promise.race([pass, timeout])
+}
+
+// One recall (hooks/mods/recall.ts): the vault search through the memory MCP,
+// the threshold, the types and the session's dedupe set, then the relevance
+// pass. The hits it shows join the dedupe set. Its figures go to the debug log.
+async function recallBlock($: EngineInterface, query: string, limit: number, minScore: number, scan?: string): Promise<string | undefined> {
+  const started = await $.clock.now()
+  const server = await memoryServer($)
+  const found = await $.mcp.call(server, 'search', { query, limit: limit * FETCH_FACTOR })
+  if (found.isError) return undefined
+  const candidates = candidatesOf(hitsOf(found.content), (await read($, recall)).seen, limit, minScore)
+  if (candidates.length === 0) return undefined
+  const labels = await labelsOf($, scan ?? query, candidates)
+  const kept = labels === undefined ? candidates : relevantOf(candidates, labels)
+  if (kept.length === 0) return undefined
+  await update($, recall, state => ({ ...state, seen: [...state.seen, ...kept.map(hit => hit.path)] }))
+  const block = blockOf(kept, scan)
+  const ms = (await $.clock.now()) - started
+  const fallback = labels === undefined ? ', classifier fallback' : ''
+  $.ui.log(`workbench recall: ${kept.length} of ${candidates.length} hits, about ${tokensOf(block)} tokens, ${ms} ms${fallback}`, { to: 'debug' })
+  return block
+}
+
+// Whether recall and the nudges stay out: a lane nobody answers in, as
+// $.workbench.isUnattended reads it, or a lane it cannot read.
+const isQuiet = ($: EngineInterface): Promise<boolean> => $.workbench.isUnattended().catch(() => true)
+
+// Recall on a prompt: a new turn a person opened, with a query worth a search.
+// The search attempt is stamped where session-warmup.sh's recall liveness
+// check reads it, as hooks/memory-recall.sh did.
+async function promptRecall($: EngineInterface, text: string): Promise<string | undefined> {
+  if ((await $.env.get('WORKBENCH_MEMORY_RECALL')) === '0' || (await isQuiet($))) return undefined
+  const query = promptQuery(text)
+  if (query === undefined) return undefined
+  const home = await $.env.get('HOME')
+  const stateDir = (await $.env.get('WORKBENCH_MEMORY_RECALL_STATE')) || (home ? `${home}/.claude-workbench/memory-recall` : undefined)
+  const now = Math.floor((await $.clock.now()) / 1000)
+  if (stateDir !== undefined) await $.fs.write(`${stateDir}/last-attempt`, `${now}\n`).catch(() => undefined)
+  return recallBlock($, query, PROMPT_LIMIT, PROMPT_MIN_SCORE)
+}
+
+// Recall on a content search in the main loop (grep, rg, ag, ack, git grep in
+// a Bash call; this CLI has no Grep tool): the search's own query, read by
+// hooks/lib/scan-query.py, once per query per session.
+async function scanRecall($: EngineInterface, tool: 'Bash', raw: string): Promise<string | undefined> {
+  if ((await $.env.get('WORKBENCH_MEMORY_RECALL')) === '0' || (await $.env.get('WORKBENCH_MEMORY_SCAN_RECALL')) === '0') return undefined
+  if (!mayScan(raw) || (await isQuiet($))) return undefined
+  const { stdout } = await $.process.run(['python3', `${$.plugin.root}/hooks/lib/scan-query.py`, tool], { stdin: raw, timeoutMs: 5_000 })
+  const query = scanQuery(stdout)
+  if (query === undefined || (await read($, recall)).queries.includes(query)) return undefined
+  await update($, recall, state => ({ ...state, queries: [...state.queries, query] }))
+  return recallBlock($, query, SCAN_LIMIT, SCAN_MIN_SCORE, query)
+}
+
+// A tool's result with recall's block beside it, when the call was a main-loop
+// content search with something to recall. A refused or failed call gets none.
+async function withScanRecall<R extends ToolCallResult>($: EngineInterface, tool: 'Bash', raw: unknown, agentId: string | undefined, result: R): Promise<R> {
+  if (agentId !== undefined || typeof raw !== 'string' || result.deny !== undefined || result.isError === true) return result
+  const block = await scanRecall($, tool, raw).catch(() => undefined)
+  return block === undefined ? result : { ...result, context: [...(result.context ?? []), block] }
+}
+
+// The intake nudge (hooks/mods/intake.ts): checked once per task, on the
+// task's first Edit in the main loop, and only in a lane a person answers.
+async function isIntakeDue($: EngineInterface, sessionAttended: boolean | undefined): Promise<boolean> {
+  if (sessionAttended !== true || (await isQuiet($))) return false
+  const { task, checked } = await read($, intake)
+  if (task === 0 || checked === task) return false
+  await update($, intake, state => ({ ...state, checked: task }))
+  return !intakeShown(await $.session.messages())
+}
+
+// The vault root, from scripts/vault-resolve.sh: read once per load.
+let vaultRootMemo: string | undefined
+async function vaultRoot($: EngineInterface): Promise<string | undefined> {
+  if (vaultRootMemo !== undefined) return vaultRootMemo
+  const { stdout } = await $.process.run(['bash', `${$.plugin.root}/scripts/vault-resolve.sh`], { timeoutMs: 10_000 })
+  vaultRootMemo = resolvedOf(stdout).root
+  return vaultRootMemo
 }
 
 export const register: Register = on => {
@@ -513,6 +693,9 @@ export const register: Register = on => {
   // Then a person's session reads the notices again, so a Chat-skill notice
   // reaches the status line without waiting for the next probe.
   on('classic.SessionStart', async ($, e, next) => {
+    // The transcript the log checkpoint copies from. Every source sets it,
+    // `clear` too, which starts a new transcript under a new session id.
+    if (typeof e.transcript_path === 'string' && e.transcript_path !== '') await $.state.set(TRANSCRIPT, e.transcript_path)
     const result = await next(e)
     if (e.source === 'startup' || e.source === 'resume') {
       const payload = JSON.stringify({ source: e.source, session_id: e.session_id })
@@ -530,24 +713,25 @@ export const register: Register = on => {
   // used for a commit: a peer, channel, plugin, SDK, schedule or task message
   // carries outside text that must not use it. Only Mike's own prompt ends the
   // push left by a commit he approved.
+  //
+  // A prompt Mike sends starts a task, for the intake nudge. A new turn a
+  // person opened gets recall's block beside the prompt, at the tail.
   on('prompt.submit', async ($, e, next) => {
     await update($, commitApproval, approval => (isPersonOrigin(e.origin) || approval === 'commit' ? 'none' : approval))
-    if (e.turnId === undefined) {
-      await update($, turnAttended, () => isAttendedPrompt(e.origin, e.text))
-      await update($, turnScheduled, () => e.origin.kind === 'scheduled-trigger' || isScheduledFire(e.text))
-      await update($, reprompted, () => false)
-    }
-    return next(e)
+    if (isPersonOrigin(e.origin) && !isScheduledFire(e.text)) await update($, intake, state => ({ ...state, task: state.task + 1 }))
+    if (e.turnId !== undefined) return next(e)
+    await update($, turnAttended, () => isAttendedPrompt(e.origin, e.text))
+    await update($, turnScheduled, () => e.origin.kind === 'scheduled-trigger' || isScheduledFire(e.text))
+    await update($, reprompted, () => false)
+    const block = await promptRecall($, e.text).catch(() => undefined)
+    return next(block === undefined ? e : { ...e, context: [...(e.context ?? []), block] })
   })
 
   // One correction turn at most: the engine's stop_hook_active flag, and the
   // per-turn flag the next prompt clears. A synchronous block from a Stop hook
   // beneath, such as another plugin's, stands alone, so two re-prompts never
-  // stack. The memory checkpoint is not one: hooks.json registers it with
-  // asyncRewake, so it runs in the background after this chain has settled and
-  // never shows here as a block. A turn this hook re-prompts can therefore
-  // also get a checkpoint wake later. That wake arrives with stop_hook_active
-  // set, so its own stop is never re-prompted.
+  // stack. The memory capture checkpoint opens no turn and blocks no stop: it
+  // is a fork in turn.complete below.
   on('classic.Stop', async ($, e, next) => {
     const result = await next(e)
     const isOurs =
@@ -586,9 +770,12 @@ export const register: Register = on => {
     // exit status: the pick is kept only when HEAD did not move and the line
     // reported an error. A background run cannot be watched, so it is taken
     // as landed.
+    // A content search in the main loop gets recall's block beside its result.
     if (e.tool === 'Bash') {
       const { writes, dir: steps } = readLine(e.command)
-      if (writes.commits + writes.pushes === 0 || !(await isCommitGated($, sessionAttended, e.agentId))) return next(e)
+      if (writes.commits + writes.pushes === 0 || !(await isCommitGated($, sessionAttended, e.agentId))) {
+        return withScanRecall($, 'Bash', e.command, e.agentId, await next(e))
+      }
       const refusal = refusalOf(writes, await read($, commitApproval))
       if (refusal !== undefined) return { deny: refusal }
       const dir = dirOf(steps, await $.session.cwd(), await $.env.get('HOME'))
@@ -621,8 +808,15 @@ export const register: Register = on => {
         .catch(() => undefined)
       return next(e)
     }
+    // The intake nudge rides the result of the task's first Edit. It never
+    // denies.
+    if (e.tool === 'Edit' && e.agentId === undefined) {
+      const result = await next(e)
+      if (result.deny !== undefined || !(await isIntakeDue($, sessionAttended).catch(() => false))) return result
+      return { ...result, context: [...(result.context ?? []), NUDGE] }
+    }
     // A learnings file past the limit goes on the status line, after the
-    // skill has its learnings: hooks/skill-learnings.sh hands them over.
+    // skill has its learnings: the skill.prompt hook below merges them in.
     if (e.tool === 'Skill') {
       const result = await next(e)
       const name = skillNameOf(e.skill)
@@ -691,26 +885,68 @@ export const register: Register = on => {
     return result
   })
 
+  // A skill's vault learnings, merged into the text it expands to (hooks/mods/
+  // learnings.ts), in every lane: they are part of the skill's instructions.
+  // The same file gives the same bytes. No file, or no vault, leaves the text
+  // as it was.
+  on('skill.prompt', async ($, e, next) => {
+    const result = await next(e)
+    const name = skillNameOf(e.skill)
+    if (name === undefined) return result
+    try {
+      const root = await vaultRoot($)
+      const file = root === undefined ? undefined : `${root}/${learningsPath(name)}`
+      if (file === undefined || !(await $.fs.exists(file))) return result
+      return { ...result, text: withLearnings(result.text, name, await $.fs.read(file)) }
+    } catch {
+      return result
+    }
+  })
+
   // T counts completed main-loop turns, and rows measures the reply that
-  // ended the turn.
+  // ended the turn. Each main-loop turn, answered or interrupted, checkpoints
+  // the session log, in the background: an overlapping run waits on
+  // session-log.sh's lock. A sub-agent's turn is in its parent's transcript.
+  // It also counts toward the memory capture, which runs as a fork.
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
     if (e.agentId === undefined) {
       await update($, meter, countTurn)
       if (e.reason !== 'refusal') await update($, replyRows, () => rowsOf(e.answer))
       await drawStatus($)
+      void $.session
+        .id()
+        .then(id => checkpointLog($, id, 'turn', undefined, 30_000))
+        .catch(() => undefined)
+      if ((e.reason === 'answer' || e.reason === 'aborted') && (await isCaptureOn($, sessionAttended))) {
+        const first = thresholdOf(await $.env.get('WORKBENCH_CAPTURE_STOP_FIRST'), FIRST)
+        const repeat = thresholdOf(await $.env.get('WORKBENCH_CAPTURE_STOP_INTERVAL'), REPEAT)
+        const { turns, hasFired } = await read($, capture)
+        const isDue = isCaptureDue(turns + 1, hasFired, first, repeat)
+        await update($, capture, state => (isDue ? { ...state, turns: 0, hasFired: true } : { ...state, turns: turns + 1 }))
+        if (isDue) void captureMemory($).catch(() => undefined)
+      }
     }
     return result
   })
 
-  // A /clear starts the conversation over, so the meters, the reply rows and a
-  // "Commit it" pick start over with it.
+  // Every exit checkpoints the session log, inside what is left of the exit
+  // budget: SIGHUP and SIGTERM fire this, where the settings SessionEnd hook
+  // may not run. When it did run, it ran first, and this finds nothing new.
+  // A /clear starts the conversation over, so the meters, the reply rows, a
+  // "Commit it" pick, the capture count, recall's dedupe set and the intake
+  // task start over with it.
   on('session.end', async ($, e, next) => {
+    const timeoutMs = endTimeoutOf(next.budget.remainingMs)
+    if (timeoutMs !== undefined) await checkpointLog($, e.sessionId, 'final', e.reason, timeoutMs).catch(() => undefined)
     if (e.reason === 'clear') {
       await update($, meter, () => EMPTY)
       await update($, cache, () => EMPTY_CACHE)
       await update($, replyRows, () => null)
       await update($, commitApproval, () => 'none')
+      await update($, capture, () => ({ turns: 0, hasFired: false, written: [] }))
+      await update($, recall, () => ({ seen: [], queries: [] }))
+      await update($, intake, () => ({ task: 0, checked: 0 }))
       await drawStatus($)
     }
     return next(e)

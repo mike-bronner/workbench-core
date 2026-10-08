@@ -29,6 +29,10 @@ trap 'rm -rf "$SANDBOX"' EXIT
 # files the warmup used to inject. They stay on disk, as they may in a real vault,
 # so every "not injected" assertion below is made with the file present.
 mkdir -p "$SANDBOX/home" "$SANDBOX/memory/identity" "$SANDBOX/cache"
+# An empty live-session registry: no session is live. The drain skips live
+# sessions, and when it cannot read the registry it also holds back markers
+# written in the last 30 minutes, which every marker here is.
+mkdir -p "$SANDBOX/home/.claude/sessions"
 printf 'SOULHOT-CANARY soul rules\n' > "$SANDBOX/memory/identity/soul-hot.md"
 printf 'PROFILE-CANARY user facts\n' > "$SANDBOX/memory/identity/profile.md"
 printf 'SKILLSPROTO-CANARY skill learnings\n' > "$SANDBOX/memory/identity/skills-protocol.md"
@@ -115,8 +119,8 @@ NOTICES_FILE="$SANDBOX/home/.claude-workbench/warmup-notices.md"
 notices() { cat "$NOTICES_FILE" 2>/dev/null; }
 
 # The retired persona files and the skills-protocol pointer, asserted absent on
-# every source. The output style is the only persona, and hooks/skill-learnings.sh
-# hands each skill its own learnings, so none of the three has a reader left.
+# every source. The output style is the only persona, and the hooks module merges
+# each skill's own learnings into its text, so none of the three has a reader left.
 assert_no_persona() {  # assert_no_persona <source-label> <output>
   assert_missing "$1: no soul file injected"        "$2" "SOULHOT-CANARY"
   assert_missing "$1: no profile injected"          "$2" "PROFILE-CANARY"
@@ -134,8 +138,8 @@ assert_missing  "no guardrails payload injected"   "$OUT" "## Guardrails"
 # Memory capture is standing authorization. The guardrails payload used to carry
 # that exemption, so the routing block now states it on its own.
 assert_contains "memory capture needs no confirmation" "$OUT" "a memory-capture write needs no options round and no confirmation"
-# The recall-ORDERING rule has no hook that can carry it in full — memory-recall.sh
-# only ever sees the main session's prompts, and memory-scan-recall.sh only fires
+# The recall-ORDERING rule has no hook that can carry it in full — prompt recall
+# only ever sees the main session's prompts, and scan recall only fires
 # on a file search that carries an extractable query — so the injected routing
 # block is the only
 # thing that carries the whole rule, and these are the only assertions that prove
@@ -146,7 +150,7 @@ assert_contains "memory capture needs no confirmation" "$OUT" "a memory-capture 
 assert_contains "routing block orders recall first"     "$OUT" "Recall comes FIRST"
 assert_contains "recall precedes the repo scan"         "$OUT" "BEFORE you scan the repo"
 assert_contains "the ordering rule carries its reason"  "$OUT" "Auto-recall searches only the wording of each prompt and the patterns of your file searches"
-# memory-recall.sh runs on every substantive prompt, so a claim that auto-recall
+# Prompt recall runs on every substantive prompt, so a claim that auto-recall
 # saw only the opening prompt is false. It shipped in this block until 2026-09-27.
 assert_missing  "no claim that recall saw only the opening prompt" "$OUT" "opening prompt"
 assert_contains "recall still routes to the vault"      "$OUT" "Recall = vault \`search\`, not directory reads."

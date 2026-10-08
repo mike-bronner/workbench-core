@@ -31,7 +31,7 @@ this writing the importers are:
     hooks/test-destructive-scope-guard.sh
     hooks/test-credential-guard.sh
     hooks/test-outbound-prose-guard.sh   (its inline parser imports this file)
-    hooks/test-memory-scan-recall.sh     (hooks/lib/scan-query.py)
+    hooks/test-scan-query.sh             (hooks/lib/scan-query.py)
     hooks/test-shell-parse.sh            (this file's own rules, pinned directly)
     hooks/test-shell-parity.sh           (holds hooks/mods/shell.ts, the TS reader
                                           behind $.workbench.parseShell, to this

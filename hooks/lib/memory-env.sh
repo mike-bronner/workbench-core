@@ -54,7 +54,7 @@ memory_resolve_cache_path() {
 # memory_resolve_memory_path: echo the vault root (override → config.json →
 # default), the same precedence memory_load_env applies to MEMORY_PATH. For a
 # caller that needs the vault location alone and none of the server env —
-# hooks/skill-learnings.sh reads a skill's learnings file from it.
+# scripts/learnings-count.sh and scripts/vault-resolve.sh read the vault from it.
 memory_resolve_memory_path() {
   local config_file vault
   config_file="$(memory_resolve_config_file)"

@@ -80,15 +80,42 @@ assert_eq "its writer is the one dispatched" "$(dispatched "$OUT")" "one"
 assert_eq "a marker is written in session-log's shape" \
   "$(jq -r '[.session_id, .mode, .event, (.marked_at | test("^[0-9]{4}-"))] | join(" ")' "$PENDING/one.json")" \
   "one manual ProcessPendingSummaries true"
-printf 'summary\n' > "$VAULT/sessions/2026-10-01/one.summary.md"
+# The script decides by itself whether a summary is redone, and asks nobody:
+# only a log newer than its summary holds segments the summary has not seen.
+LOGF="$VAULT/sessions/2026-10-01/one.log.md"
+SUMF="$VAULT/sessions/2026-10-01/one.summary.md"
+printf 'summary\n' > "$SUMF"
+touch -t 202601010000 "$LOGF"
 OUT="$(drive one)"
-assert_eq "an existing summary is not replaced" "$(result "$OUT")" "result=exists summary=$VAULT/sessions/2026-10-01/one.summary.md"
+assert_eq "a summary newer than its log is current, and kept" "$(result "$OUT")" "result=current summary=$SUMF"
 assert_eq "and nothing is dispatched" "$(dispatched "$OUT")" ""
+touch -t 202601010000 "$SUMF"
+touch -t 202601010000 "$LOGF"
+assert_eq "a summary as old as its log is current too" "$(result "$(drive one)")" "result=current summary=$SUMF"
+touch -t 202601020000 "$LOGF"
 # The first writer holds the marker's claim until it deletes the marker, so a
-# second writer never runs on one session (lib/summary-dispatch.sh).
-assert_eq "a second dispatch while the first holds the marker is refused" "$(result "$(drive one --overwrite)")" "result=failed"
+# second writer never runs on one session (lib/summary-dispatch.sh). That is a
+# writer at work, not a failure, and it is reported as busy.
+OUT="$(drive one)"
+assert_eq "a log newer than its summary, while another writer holds the marker, is busy" "$(result "$OUT")" "result=busy"
+assert_eq "and a busy marker dispatches nothing" "$(dispatched "$OUT")" ""
 rm -f "$PENDING/one.json"
-assert_eq "--overwrite replaces it once the first writer is done" "$(result "$(drive one --overwrite)")" "result=dispatched"
+OUT="$(drive one)"
+assert_eq "a log newer than its summary is summarized again" "$(result "$OUT")" "result=dispatched"
+assert_eq "by one writer for that session" "$(dispatched "$OUT")" "one"
+rm -f "$PENDING/one.json"
+touch -t 202601030000 "$SUMF"
+assert_eq "--overwrite still forces a current summary" "$(result "$(drive one --overwrite)")" "result=dispatched"
+
+echo "with the log pruned, the transcript stands in for it:"
+rm -f "$PENDING/one.json"
+printf 'summary\n' > "$VAULT/sessions/2026-10-01/two.summary.md"
+touch -t 202601030000 "$VAULT/sessions/2026-10-01/two.summary.md"
+printf '{}\n' > "$HOMEDIR/.claude/projects/p/two.jsonl"
+touch -t 202601020000 "$HOMEDIR/.claude/projects/p/two.jsonl"
+assert_eq "a transcript older than the summary is current" "$(result "$(drive two)")" "result=current summary=$VAULT/sessions/2026-10-01/two.summary.md"
+touch -t 202601040000 "$HOMEDIR/.claude/projects/p/two.jsonl"
+assert_eq "a transcript newer than the summary is summarized again" "$(result "$(drive two)")" "result=dispatched"
 
 echo "a missing prerequisite is named:"
 mkdir -p "$SANDBOX/bin"

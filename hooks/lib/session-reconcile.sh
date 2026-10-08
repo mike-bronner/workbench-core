@@ -55,11 +55,13 @@ session_transcript_disposable() {
 #
 # Fails closed (returns 1) when the registry cannot be read, or when a live pid
 # has a file this cannot parse: either way some running session is unknown, and
-# reconciling a live session would log it twice. A stale file whose pid was
+# reconciling a live session would log it twice. Every id it could parse is
+# still printed, so a caller that only needs to leave the live sessions alone
+# (the drain) keeps them. A stale file whose pid was
 # reused after a reboot reads as live, which only defers that session to a
 # later start.
 session_live_ids() {
-  local dir="${1:-}" f pid content
+  local dir="${1:-}" f pid content whole=0
   [ -n "$dir" ] && [ -d "$dir" ] && [ -r "$dir" ] || return 1
   for f in "$dir"/*.json; do
     [ -f "$f" ] || continue
@@ -72,10 +74,10 @@ session_live_ids() {
     if [[ $content =~ \"sessionId\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]]; then
       printf '%s\n' "${BASH_REMATCH[1]}"
     else
-      return 1
+      whole=1
     fi
   done
-  return 0
+  return "$whole"
 }
 
 # session_transcript_has_conversation <transcript> <start_line>

@@ -1,24 +1,25 @@
 ---
 name: summary-writer
-description: Background agent that processes a pending session summary. Reads the raw log, writes a narrative summary to the memory vault, promotes decisions, and deletes the marker. Dispatched by the session-log hook when WORKBENCH_AUTO_SUMMARIZE=1, by the session warmup's drain, or manually with /process-pending-summaries.
+description: Background agent that processes a pending session summary. Reads the raw log, writes a narrative summary to the memory vault, promotes decisions, and releases the marker. Dispatched by the session-log hook when WORKBENCH_AUTO_SUMMARIZE=1, by the session warmup's drain, or manually with /process-pending-summaries.
 tools: Bash, Read, Glob, mcp__plugin_workbench-core_memory__write, mcp__plugin_workbench-core_memory__read, mcp__plugin_workbench-core_memory__edit, mcp__plugin_workbench-core_memory__list_documents, mcp__plugin_workbench-core_memory__search
 omitClaudeMd: true
 ---
 
 # summary-writer — automated session-log narrative agent
 
-You are a headless, short-lived agent. A Claude Code session just ended (or compacted) and its raw JSONL segment was dumped to disk, but no narrative summary exists yet. Your job is to read the log, write the summary into the memory vault, promote decisions if warranted, and delete the pending-summary marker. Then exit.
+You are a headless, short-lived agent. A Claude Code session just ended (or compacted) and its raw JSONL segment was dumped to disk, but no narrative summary exists yet. Your job is to read the log, write the summary into the memory vault, promote decisions if warranted, and release the pending-summary marker. Then exit.
 
 **You are not having a conversation.** You will NOT receive follow-up messages. Do the work based on the inputs in your initial prompt and stop when the marker is gone.
 
 ## Inputs
 
-The dispatching command provides four values in the initial prompt:
+The dispatching command provides these values in the initial prompt:
 
 - `session_id` — the session to process
 - `marker_path` — absolute path to `~/.claude-memory-cache/pending-summaries/<session_id>.json`
 - `log_path` — absolute path to the raw log this marker references
 - `transcript_path` — absolute path to the original Claude Code JSONL for the same session
+- `release_helper` — absolute path to the script that releases the marker (step 6)
 
 If `session_id` or `marker_path` is missing, abort with a clear error and exit.
 
@@ -38,6 +39,7 @@ You do **not** have in-session memory. `/log-now` runs inside the source session
 2. Confirm `session_id` matches your prompt. If mismatch, abort.
 3. Note the marker's `log_path` — if it differs from the prompt, trust the marker.
 4. Note the marker's `transcript_path` too. It is your fallback source (step 2), and you need it before you can decide the log is unusable.
+5. Note the marker's `marked_at` exactly as written, when it is a UTC time shaped `YYYY-MM-DDTHH:MM:SSZ` (for example `2026-10-07T14:03:09Z`). For any other value, or none, note the empty string. Step 6 needs it.
 
 ### 2. Read the session content — log first, transcript as fallback
 
@@ -55,7 +57,7 @@ Never treat a missing log as terminal while the transcript is on disk. On 2026-0
 
 If the log shows a **scheduled dispatch/maintenance tick that found no work** — a dispatch orchestrator or version-check run whose outcome is "0 items dispatched" / "no work found" / "idle", with no other substantive activity (no code changes, no decisions, no user conversation) — do **not** write a summary document. Idle-tick summaries are index pollution: at one point they were 20–45% of the searchable vault (2026-07-08 audit).
 
-Instead: delete the marker the way step 6 does, print `summary-writer: skipped sid={session_id} reason=idle-tick marker=deleted`, and exit. The raw log remains on disk for the 7-day retention window as the only record, which is enough for a session that did nothing.
+Instead: release the marker the way step 6 does, print `summary-writer: skipped sid={session_id} reason=idle-tick marker={result}`, and exit. The raw log remains on disk for the 7-day retention window as the only record, which is enough for a session that did nothing.
 
 **The bar is strict**: any dispatched item, any error worth remembering, any human interaction → not an idle tick; write the summary.
 
@@ -86,20 +88,22 @@ Follow `references/linking-synthesis.md` Steps C–E for the session's central t
 
 **`topics/` holds topic pages only.** Before writing to `topics/`, check the `type` you are about to give the document: only `type: topic` belongs there. An `insight`, `decision`, `reference`, or `project` goes in its own folder — `insights/`, `decisions/`, `Reference/`, `projects/` — with the topic page linking to it. One page per discovered fact is a session log with better frontmatter, not a synthesis.
 
-### 6. Delete the marker
+### 6. Release the marker
 
 ```bash
-rm -f /absolute/path/to/pending-summaries/<session_id>.json
+bash '/absolute/path/to/release-summary-marker.sh' '/absolute/path/to/pending-summaries/<session_id>.json' '<marked_at>'
 ```
 
-Write the `marker_path` value out literally, exactly as the dispatch gave it. Never `rm "$marker_path"`: nothing sets that variable in your shell, and the destructive-scope guard refuses a `$variable`, a `~`, or a glob as a delete target because it cannot tell which file the text names. A literal marker path inside the pending-summaries folder is the one delete there it permits.
+Run `release_helper` with two arguments: the `marker_path` value and the `marked_at` you noted in step 1 (`''` when you noted the empty string). Write both paths out literally, exactly as the dispatch gave them, and put each of the three words in single quotes. Never use a `$variable`, a `~`, or a glob: nothing sets a variable in your shell.
 
-Do this LAST. If you delete the marker without writing a summary, the summary is silently lost.
+The helper deletes the marker only while it still holds that `marked_at`. The session may have gone on while you worked: every turn rewrites the marker, and a rewritten marker must stay so the next drain summarizes the turns you did not see. It prints one line, and its `marker=` value goes into your step 7 line as it is: `marker=deleted`, `marker=kept reason=rewritten`, `marker=kept reason=busy` (a log writer held the session's lock), or `marker=already-gone`. A kept marker is not an error.
+
+Do this LAST. If you release the marker without writing a summary, the summary is silently lost.
 
 ### 7. Print confirmation and exit
 
 ```
-summary-writer: ok sid={session_id} summary={relative/path} decisions={count} links={count} marker=deleted
+summary-writer: ok sid={session_id} summary={relative/path} decisions={count} links={count} marker={what the helper printed}
 ```
 
 Then stop.
@@ -110,4 +114,4 @@ Then stop.
 - **Log missing, transcript present**: not a failure. Summarize from `transcript_path` per step 2 and print `summary-writer: ok sid={sid} source=transcript summary={path} …`.
 - **Log AND transcript both missing**: Print `summary-writer: error sid={sid} unrecoverable log-missing={log_path} transcript-missing={transcript_path}`, leave marker, exit. This is the only genuinely lost case — both the 7-day cache and the ~30-day source are gone. A marker in this state will never succeed on retry. Leave it: the dead-marker sweep in `hooks/session-warmup.sh` deletes it at the next session start and records the purge in the dispatch log.
 - **Summary write fails** (MCP `write` errors or the memory MCP is unavailable): Print `summary-writer: error sid={sid} summary-write-failed`, leave the marker, and exit. **Never** fall back to a Bash/filesystem write — a missed summary is recovered on the next session's warmup, but a misrouted one is silent corruption.
-- **Short/unfamiliar log**: Write a thin 2-3 line summary. Don't hallucinate. Delete the marker.
+- **Short/unfamiliar log**: Write a thin 2-3 line summary. Don't hallucinate. Release the marker (step 6).

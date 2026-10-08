@@ -280,6 +280,18 @@ add_chat_skill_notice() {
 #
 # Called for startup and resume: inline in a full run, and from the deferred
 # run (--deferred) that hooks/register.ts starts once SessionStart is done.
+# drain_recently_written <minutes> <path>...: true when any of the paths that
+# exist was written within the last <minutes>.
+drain_recently_written() {
+  local minutes="$1" f
+  shift
+  for f in "$@"; do
+    [ -n "$f" ] && [ -e "$f" ] || continue
+    [ -n "$(find "$f" -maxdepth 0 -mmin "-$minutes" 2>/dev/null)" ] && return 0
+  done
+  return 1
+}
+
 drain_pending_summaries() {
   summary_dispatch_sweep_claims "$PENDING_SUMMARIES_DIR"
   DRAIN_BATCH="${WORKBENCH_DRAIN_BATCH:-3}"
@@ -313,7 +325,25 @@ drain_pending_summaries() {
       else
         # Which run drained, for which session: the --defer fallback reads it.
         printf '%s %s\n' "$WARMUP_PART" "${CURRENT_SID:-unknown}" > "$DRAIN_STAMP" 2>/dev/null || true
-        local DRAINED=0
+        local DRAINED=0 LIVE_SIDS="" LIVE_WHOLE=1 NL=$'\n'
+        local QUIET="${WORKBENCH_RECONCILE_QUIET_MIN:-30}"
+        case "$QUIET" in ''|*[!0-9]*) QUIET=30 ;; esac
+        # A live session's marker waits. The hooks module checkpoints every
+        # turn (session-log.sh mode=turn), so a running session keeps a marker
+        # queued. A writer started on it now would summarize half a session
+        # (its release of the marker keeps one a later turn rewrote:
+        # scripts/release-summary-marker.sh). The session's own
+        # SessionEnd, or the reconciler after a crash, leaves the marker that a
+        # later start drains.
+        #
+        # The live sessions come from the registry the reconciler reads. When it
+        # cannot be read whole (no registry, or a live pid file with no session
+        # id in it), some running session is unknown. The ids that did parse
+        # are still skipped, and so is any marker whose log or transcript was
+        # written within the reconciler's quiet period
+        # (WORKBENCH_RECONCILE_QUIET_MIN, default 30 minutes): its session may
+        # be the unknown one.
+        LIVE_SIDS="$(session_live_ids "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions")" || LIVE_WHOLE=0
         while IFS= read -r marker; do
           [ "$DRAINED" -ge "$DRAIN_BATCH" ] && break
           [ -f "$marker" ] || continue
@@ -335,6 +365,10 @@ drain_pending_summaries() {
           # it gates: on 2026-09-18 it rejected 778 of 779 markers, 503 of which
           # still had a readable transcript. Transcript retention is the real
           # deadline, and those 503 were expiring against it untouched.
+          case "$NL$LIVE_SIDS$NL" in *"$NL$DRAIN_SID$NL"*) [ -n "$DRAIN_SID" ] && continue ;; esac
+          if [ "$LIVE_WHOLE" = 0 ] && drain_recently_written "$QUIET" "$DRAIN_LOG" "$DRAIN_TRANSCRIPT"; then
+            continue
+          fi
           if [ -z "$DRAIN_SID" ] \
              || ! summary_dispatch_readable "$DRAIN_LOG" "$DRAIN_TRANSCRIPT"; then
             printf '%s undrainable marker=%s sid=%s log=%s transcript=%s\n' \
@@ -686,8 +720,8 @@ fi
 # active output style, which is system-prompt tier and survives compaction.
 # No persona file is injected either: the shipped persona is that output style,
 # so the soul and profile files this block used to load had no writer left.
-# Skill learnings are not pointed at from here. hooks/skill-learnings.sh hands
-# each skill its own learnings file when the Skill tool runs.
+# Skill learnings are not pointed at from here. The hooks module merges each
+# skill's own learnings file into its text (hooks/mods/learnings.ts).
 
 # APPEND-ONLY INVARIANT (cache-prefix stability). Everything printed from the
 # top of this script through the end of the rules payload below must be
@@ -703,22 +737,22 @@ fi
 
 # Memory routing — countermand the harness's per-project memory instructions.
 # Re-injected on every source so the rule survives compaction. This is the
-# always-on FLOOR for the capture rule. hooks/memory-capture-stop.sh (Stop) is
-# its backstop. A per-turn UserPromptSubmit capture nudge used to sit between
+# always-on FLOOR for the capture rule. The hooks module's capture checkpoint
+# (hooks/mods/capture.ts) is its backstop, and asks a fork, not the session. A per-turn UserPromptSubmit capture nudge used to sit between
 # the two. It was retired on 2026-09-27, because it also fired on sub-agent
 # hand-backs and task notifications and restated this block at a measured
 # ~180k tokens in three days.
 #
 # It is also the floor for the two recall rules — WHEN to search and WHAT to
-# search for. hooks/memory-recall.sh searches each substantive PROMPT of the main
+# search for. The hooks module's recall searches each substantive PROMPT of the main
 # session, and nothing else, and that is not only a coverage gap. The throttles
 # it needs for context cost (prompt-only input, turn-start only, 2 hits,
 # per-session dedup, a substance gate) mean a topic a scan uncovers mid-task
-# never reaches it. hooks/memory-scan-recall.sh (PostToolUse) catches PART of
+# never reaches it. Its scan recall, on a Bash content search, catches PART of
 # that — the file searches that carry an extractable query — but only those, so
 # the floor below still has to carry the rule in full. (Until 2026-09-27 the
 # bullet below claimed auto-recall saw only the OPENING prompt. That was never
-# true: memory-recall.sh runs on every prompt that passes its substance gate.)
+# true: prompt recall runs on every prompt that passes its substance gate.)
 # And even on a prompt, the prompt's own wording is a WEAKER query than the
 # one the agent can form from the task. Measured: "go ahead and push and create a
 # release" left skills/release.learnings.md — which carries the release-title
@@ -850,7 +884,8 @@ if [ "$SOURCE" = "startup" ] && [ "${PWD#"$MEMORY_PATH"}" = "$PWD" ]; then
 fi
 
 # ──────────── Recall-hook liveness check (startup only) ────────────
-# memory-recall.sh stamps last-attempt on every substantive prompt. A stamp
+# The hooks module's prompt recall (hooks/register.ts, promptRecall) stamps
+# last-attempt on every substantive prompt. A stamp
 # that exists but is >48h old means the hook stopped firing — a silent recall
 # death is otherwise invisible. No stamp at all = fresh install; stay quiet.
 if [ "$SOURCE" = "startup" ]; then

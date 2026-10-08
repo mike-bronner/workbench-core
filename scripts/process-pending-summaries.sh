@@ -14,9 +14,12 @@
 #     result=invalid-id                    the id holds more than letters,
 #                                          digits and -
 #     result=unrecoverable                 no log and no transcript
-#     result=exists summary=<path>         a summary is there already, and
+#     result=current summary=<path>        the summary is newer than the log,
+#                                          so there is nothing to redo, and
 #                                          --overwrite was not given
 #     result=dispatched                    one writer is running
+#     result=busy                          another writer holds the marker's
+#                                          claim and is summarizing it now
 #     result=failed                        the spawn refused
 #   either
 #     result=unavailable reason=<what>     jq or claude is missing
@@ -32,8 +35,13 @@
 # for the 2026-07-18 deadlock, when every run picked 10 dead markers.
 #
 # ONE SESSION. With no marker, one is written in the shape hooks/session-log.sh
-# writes, so the writer has its usual input. An existing summary is never
-# replaced without --overwrite: the hook asks Mike first.
+# writes, so the writer has its usual input. Nobody is asked whether to replace
+# an existing summary: the script decides. The log grows by a segment at every
+# turn, compaction and exit, and a summary is written from the whole log, so a
+# log newer than its summary holds segments the summary has not seen, and the
+# session is summarized again. A summary as new as its log, or newer, is
+# current and stays. With the log pruned, the transcript stands in for it.
+# --overwrite still forces a run.
 #
 # Under WORKBENCH_DISPATCH_DRY_RUN=1 (tests only) the spawn helper prints its
 # resolved invocation instead of spawning, and claude need not be installed.
@@ -73,7 +81,10 @@ if [ -n "$SID" ]; then
   SUMMARY="$(find "$MEMORY_PATH/sessions" -maxdepth 2 -name "$SID.summary.md" 2>/dev/null | head -1)"
   TRANSCRIPT="$(find "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" -maxdepth 2 -name "$SID.jsonl" 2>/dev/null | head -1)"
   [ -n "$LOG" ] || [ -n "$TRANSCRIPT" ] || say 'result=unrecoverable'
-  [ -n "$SUMMARY" ] && [ "${2:-}" != --overwrite ] && say "result=exists summary=$SUMMARY"
+  SOURCE="${LOG:-$TRANSCRIPT}"
+  if [ -n "$SUMMARY" ] && [ "${2:-}" != --overwrite ] && ! [ "$SOURCE" -nt "$SUMMARY" ]; then
+    say "result=current summary=$SUMMARY"
+  fi
   if [ ! -f "$MARKER" ]; then
     mkdir -p "$PENDING"
     jq -n --arg sid "$SID" --arg t "$TRANSCRIPT" --arg l "$LOG" \
@@ -81,9 +92,13 @@ if [ -n "$SID" ]; then
       '{session_id:$sid, transcript_path:$t, log_path:$l, mode:"manual", event:"ProcessPendingSummaries", marked_at:$at}' \
       > "$MARKER" || say 'result=failed'
   fi
-  if summary_dispatch_spawn "$SID" "$MARKER" "$LOG" "$TRANSCRIPT"; then
-    say 'result=dispatched'
-  fi
+  # summary_dispatch_spawn returns 2 when another writer's claim holds the
+  # marker: that writer is summarizing the session now, which is no failure.
+  summary_dispatch_spawn "$SID" "$MARKER" "$LOG" "$TRANSCRIPT"
+  case $? in
+    0) say 'result=dispatched' ;;
+    2) say 'result=busy' ;;
+  esac
   say 'result=failed'
 fi
 

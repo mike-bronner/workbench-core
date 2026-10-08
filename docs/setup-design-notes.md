@@ -190,8 +190,8 @@ All of it was retired together. No soul or profile file existed, and the only
 shipped persona is the output style, so the warmup code and the setup fields had
 no reader. `references/guardrails.md` survived only as the interview rubric, and
 kept drifting from the output style. The skills protocol moved into
-`hooks/skill-learnings.sh`, which hands each skill its own learnings file when
-the Skill tool runs. A file past 30 entries shows on the status line.
+the hooks module, which merges each skill's own learnings file into the skill's
+text (`hooks/mods/learnings.ts`). A file past 30 entries shows on the status line.
 
 A config written before the retirement may still hold `identity_files`. Setup's
 Step 2 merge deletes the key, and the warmup ignores it either way.

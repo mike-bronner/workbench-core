@@ -184,7 +184,7 @@ fi
 # Once per session. `set -C` makes the redirect fail when the marker already
 # exists, and the create is atomic, so exactly one write per session wins the
 # reminder. One file per session, swept after 3 days like the sibling state
-# dirs (intake-nudge.sh, memory-scan-recall.sh).
+# dirs.
 [ -n "${HOME:-}" ] || exit 0
 MARK_DIR="$HOME/.claude-workbench/delegation-reminder"
 mkdir -p "$MARK_DIR" 2>/dev/null || exit 0

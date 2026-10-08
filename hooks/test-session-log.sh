@@ -299,5 +299,219 @@ assert_contains "the guard permits deleting that same marker" \
   "$(printf '%s' "$GUARD_OUT" | jq -r '.hookSpecificOutput.permissionDecision // "neutral"')" "allow"
 
 echo
+echo "mode=turn — the hooks module's per-turn checkpoint shares one checkpoint with SessionEnd:"
+# hooks/register.ts runs this script with WORKBENCH_LOG_MODE=turn after every
+# main-loop turn, answered or interrupted, and at session.end with
+# hook_event_name SessionEnd. Each transcript line must reach the log exactly
+# once, whichever writer gets to it.
+CP_DIR="$SANDBOX/cache/log-checkpoints"
+log_run() { # <WORKBENCH_LOG_MODE or ""> <sid> <transcript> [event] [reason]
+  local mode="$1" sid="$2" tr="$3" event="${4:-TurnComplete}" reason="${5:-}"
+  jq -nc --arg s "$sid" --arg t "$tr" --arg e "$event" --arg r "$reason" \
+    '{session_id:$s, transcript_path:$t, hook_event_name:$e} + (if $r == "" then {} else {reason:$r} end)' | \
+    env HOME="$SANDBOX/home" PATH="$SANDBOX/bin:$PATH" \
+      WORKBENCH_MEMORY_PATH="$SANDBOX/memory" WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
+      WORKBENCH_DISPATCH_DRY_RUN=1 WORKBENCH_AUTO_SUMMARIZE=1 \
+      ${mode:+WORKBENCH_LOG_MODE=$mode} bash "$LOG_HOOK" 2>/dev/null
+}
+# once <desc> <log> <first> <last> <prefix>: lines <prefix>-<first>..<last> each
+# appear exactly once in the log.
+once() {
+  local desc="$1" log="$2" i n bad=""
+  for i in $(seq "$3" "$4"); do
+    n=$(grep -cF "\"$5-$i\"" "$log" 2>/dev/null)
+    [ "$n" = 1 ] || bad="$bad $5-$i:$n"
+  done
+  if [ -z "$bad" ]; then PASS=$((PASS + 1)); echo "  ✅ $desc"; else FAIL=$((FAIL + 1)); echo "  ❌ $desc —$bad"; fi
+}
+lines() { local i; for i in $(seq "$2" "$3"); do printf '{"type":"user","line":"%s-%s"}\n' "$1" "$i"; done; }
+next_line() { jq -r '.next_line' "$CP_DIR/$1.json" 2>/dev/null; }
+eq() { if [ "$2" = "$3" ]; then PASS=$((PASS + 1)); echo "  ✅ $1"; else FAIL=$((FAIL + 1)); echo "  ❌ $1 — got '$2', want '$3'"; fi; }
+
+TT="$SANDBOX/turns.jsonl"
+lines t 1 3 > "$TT"
+OUT=$(log_run turn sid-turn "$TT")
+TLOG="$(jq -r '.last_log_file' "$CP_DIR/sid-turn.json" 2>/dev/null)"
+assert_file "a turn checkpoint writes the session's log" "$TLOG"
+once "each line of the first turn is logged once" "$TLOG" 1 3 t
+eq "the checkpoint moves past the last line" "$(next_line sid-turn)" 4
+eq "the checkpoint names the mode" "$(jq -r '.last_log_mode' "$CP_DIR/sid-turn.json")" turn
+assert_file "a turn checkpoint queues the session's marker" "$SANDBOX/cache/pending-summaries/sid-turn.json"
+eq "the marker names the mode" "$(jq -r '.mode' "$SANDBOX/cache/pending-summaries/sid-turn.json")" turn
+assert_missing "a turn checkpoint never dispatches a writer" "$OUT" "DISPATCH"
+assert_no_file "the lock is released" "$CP_DIR/sid-turn.lock/."
+
+lines t 4 5 >> "$TT"
+log_run turn sid-turn "$TT" >/dev/null
+once "the second turn appends only its own lines" "$TLOG" 1 5 t
+eq "into the same log file" "$(jq -r '.last_log_file' "$CP_DIR/sid-turn.json")" "$TLOG"
+eq "two segments, one per turn" "$(grep -c '^## Segment: turn' "$TLOG")" 2
+
+echo "a turn checkpoint followed by SessionEnd logs nothing twice:"
+BEFORE="$(wc -l < "$TLOG")"
+log_run "" sid-turn "$TT" SessionEnd prompt_input_exit >/dev/null
+eq "SessionEnd with nothing new leaves the log alone" "$(wc -l < "$TLOG")" "$BEFORE"
+eq "and the checkpoint where it was" "$(next_line sid-turn)" 6
+lines t 6 7 >> "$TT"
+log_run "" sid-turn "$TT" SessionEnd other >/dev/null
+once "SessionEnd logs only the lines after the last turn" "$TLOG" 1 7 t
+eq "as a final segment" "$(grep -c '^## Segment: final' "$TLOG")" 1
+eq "the checkpoint moves past them" "$(next_line sid-turn)" 8
+
+echo "the per-session lock serializes the writers:"
+TL="$SANDBOX/locked.jsonl"
+lines l 1 2 > "$TL"
+log_run turn sid-lock "$TL" >/dev/null
+lines l 3 4 >> "$TL"
+mkdir "$CP_DIR/sid-lock.lock"
+START_S=$SECONDS
+log_run turn sid-lock "$TL" >/dev/null
+eq "a writer that cannot take the lock gives up without writing" "$(next_line sid-lock)" 3
+eq "within the exit budget" "$([ $((SECONDS - START_S)) -le 2 ] && echo yes)" yes
+eq "and leaves the holder's lock alone" "$([ -d "$CP_DIR/sid-lock.lock" ] && echo held)" held
+touch -t 202601010000 "$CP_DIR/sid-lock.lock"
+log_run turn sid-lock "$TL" >/dev/null
+once "a lock left by a crashed writer is broken, and the lines are logged once" \
+  "$(jq -r '.last_log_file' "$CP_DIR/sid-lock.json")" 1 4 l
+
+echo "two writers at once still log each line once:"
+TC="$SANDBOX/concurrent.jsonl"
+lines c 1 400 > "$TC"
+for round in 1 2 3; do
+  log_run turn sid-conc "$TC" >/dev/null &
+  log_run "" sid-conc "$TC" SessionEnd other >/dev/null &
+  wait
+  lines c $((round * 100 + 301)) $((round * 100 + 400)) >> "$TC"
+done
+log_run turn sid-conc "$TC" >/dev/null
+once "turn and SessionEnd racing, three rounds" "$(jq -r '.last_log_file' "$CP_DIR/sid-conc.json")" 1 700 c
+
+echo "a stale lock broken by many writers at once is held by one:"
+# Breaking a crashed writer's lock is a check and a remove. Two writers that
+# both see it stale must not both remove it, or the second removes the lock the
+# first just took and both copy the same lines.
+TS="$SANDBOX/stale-race.jsonl"
+: > "$TS"
+n=0
+for round in $(seq 1 15); do
+  lines s $((n + 1)) $((n + 40)) >> "$TS"
+  n=$((n + 40))
+  mkdir -p "$CP_DIR/sid-stale.lock"
+  touch -t 202601010000 "$CP_DIR/sid-stale.lock"
+  for _ in 1 2 3 4 5 6; do log_run turn sid-stale "$TS" >/dev/null & done
+  wait
+  # A writer that lost the race gives up, so the lines it would have copied
+  # are left for the next one.
+  log_run turn sid-stale "$TS" >/dev/null
+done
+once "fifteen rounds of six writers breaking one stale lock" "$(jq -r '.last_log_file' "$CP_DIR/sid-stale.json")" 1 "$n" s
+assert_no_file "no lock is left behind" "$CP_DIR/sid-stale.lock"
+assert_no_file "no takeover lock is left behind" "$CP_DIR/sid-stale.lock.takeover"
+
+echo "the stale break, step by step (hooks/lib/dir-lock.sh):"
+# The race above is too narrow to hit by timing alone, so each interleaving is
+# driven here directly.
+# shellcheck source=hooks/lib/dir-lock.sh
+. "$(dirname "$LOG_HOOK")/lib/dir-lock.sh"
+L="$SANDBOX/locks/step.lock"
+mkdir -p "$SANDBOX/locks"
+took() { if "$@"; then echo took; else echo refused; fi; }
+fresh() { [ -d "$1" ] && ! dir_lock_is_stale "$1" && echo fresh; }
+old() { touch -t 202601010000 "$1"; }
+mkdir "$L"
+eq "a writer that saw the lock stale, after another took it fresh, does not take it" "$(took dir_lock_take_stale "$L")" refused
+eq "and the fresh lock stays" "$(fresh "$L")" fresh
+old "$L"
+mkdir "$L.takeover"
+eq "a writer whose fresh takeover another holds does not take it" "$(took dir_lock_take_stale "$L")" refused
+eq "and the stale lock is left for that writer" "$(dir_lock_is_stale "$L" && echo stale)" stale
+rmdir "$L.takeover"
+eq "the one writer under the takeover takes the stale lock" "$(took dir_lock_take_stale "$L")" took
+eq "and holds it fresh" "$(fresh "$L")" fresh
+eq "the takeover is released" "$([ -e "$L.takeover" ] && echo held || echo released)" released
+eq "a fresh lock held by another is not acquired" "$(took dir_lock_acquire "$L" 2)" refused
+rmdir "$L"
+eq "a free lock is acquired" "$(took dir_lock_acquire "$L" 2)" took
+
+echo "a takeover lock its breaker left behind blocks nothing for good:"
+# A breaker killed in its few milliseconds leaves <lock>.takeover. One older
+# than a minute is broken the same way, under <lock>.takeover.takeover.
+old "$L"
+mkdir "$L.takeover"
+old "$L.takeover"
+eq "a stale lock behind a stale takeover is taken" "$(took dir_lock_acquire "$L" 2)" took
+eq "and held fresh" "$(fresh "$L")" fresh
+eq "with no takeover lock left at any level" "$(find "$SANDBOX/locks" -name 'step.lock.takeover*' | grep -c .)" 0
+mkdir "$L.takeover"
+old "$L.takeover"
+eq "a stale takeover beside a fresh lock does not unlock it" "$(took dir_lock_take_stale "$L")" refused
+eq "the fresh lock stays" "$(fresh "$L")" fresh
+eq "and the stale takeover is cleared on the way" "$([ -e "$L.takeover" ] && echo left || echo cleared)" cleared
+rmdir "$L"
+old "$(mkdir -p "$L" && echo "$L")"
+mkdir "$L.takeover" "$L.takeover.takeover"
+old "$L.takeover"
+eq "a stale takeover whose own takeover is held fresh is not broken" "$(took dir_lock_take_stale "$L")" refused
+eq "and the stale lock waits" "$(dir_lock_is_stale "$L" && echo stale)" stale
+rmdir "$L.takeover.takeover" "$L.takeover" "$L"
+
+echo "SessionEnd waits for the lock only briefly, inside the exit budget:"
+TF="$SANDBOX/final-wait.jsonl"
+lines f 1 2 > "$TF"
+log_run turn sid-final "$TF" >/dev/null
+lines f 3 3 >> "$TF"
+mkdir "$CP_DIR/sid-final.lock"
+T0=$(python3 -c 'import time; print(time.time())')
+log_run "" sid-final "$TF" SessionEnd other >/dev/null
+T1=$(python3 -c 'import time; print(time.time())')
+eq "mode=final gives up within about 0.2 s" "$(python3 -c "print('yes' if $T1 - $T0 < 0.6 else 'no')")" yes
+eq "and writes nothing, leaving the lines to the reconciler" "$(next_line sid-final)" 3
+rmdir "$CP_DIR/sid-final.lock"
+
+echo "a write a kill cut short is rolled back, never doubled or torn:"
+# Each write records the log's size before it appends. A checkpoint still
+# holding that size means the append may have run, in part or in full, and
+# next_line never moved. The next writer cuts the log back and copies again.
+TK="$SANDBOX/killed.jsonl"
+lines k 1 3 > "$TK"
+log_run turn sid-kill "$TK" >/dev/null
+KLOG="$(jq -r '.last_log_file' "$CP_DIR/sid-kill.json")"
+lines k 4 6 >> "$TK"
+pending_at() { # <sid> <log>: the checkpoint as a killed write leaves it
+  jq --argjson s "$(wc -c < "$2" | tr -d ' ')" '. + {pending_size: $s}' "$CP_DIR/$1.json" > "$CP_DIR/$1.json.x" \
+    && mv "$CP_DIR/$1.json.x" "$CP_DIR/$1.json"
+}
+pending_at sid-kill "$KLOG"
+printf '\n---\n\n## Segment: turn (lines 4–6)\n\n```jsonl\n' >> "$KLOG"
+sed -n '4,6p' "$TK" >> "$KLOG"
+printf '\n```\n' >> "$KLOG"
+log_run turn sid-kill "$TK" >/dev/null
+once "a kill after the whole append: each line once" "$KLOG" 1 6 k
+eq "the checkpoint is clean again" "$(jq -r 'has("pending_size")' "$CP_DIR/sid-kill.json")" false
+eq "two segments in the log, not three" "$(grep -c '^## Segment:' "$KLOG")" 2
+lines k 7 9 >> "$TK"
+pending_at sid-kill "$KLOG"
+printf '\n---\n\n## Segment: turn (lines 7–9)\n\n```jsonl\n{"type":"user","li' >> "$KLOG"
+log_run "" sid-kill "$TK" SessionEnd other >/dev/null
+once "a kill in the middle of the append: no torn line, each line once" "$KLOG" 1 9 k
+eq "and no fragment of the torn write" "$(grep -c '"li$' "$KLOG")" 0
+TN="$SANDBOX/killed-new.jsonl"
+lines n 1 2 > "$TN"
+NLOG="$SANDBOX/memory/sessions/2026-01-01/sid-kill-new.log.md"
+mkdir -p "$(dirname "$NLOG")"
+printf -- '---\nname: "Session log' > "$NLOG"
+jq -n --arg l "$NLOG" '{session_id:"sid-kill-new", next_line:1, last_log_file:$l, pending_size:0}' > "$CP_DIR/sid-kill-new.json"
+log_run turn sid-kill-new "$TN" >/dev/null
+NEWLOG="$(jq -r '.last_log_file' "$CP_DIR/sid-kill-new.json")"
+once "a kill while the first write created the log: written again whole" "$NEWLOG" 1 2 n
+eq "with its frontmatter" "$(head -1 "$NEWLOG")" "---"
+eq "and the torn first file is gone" "$([ -e "$NLOG" ] && [ "$NLOG" != "$NEWLOG" ] && echo left || echo gone)" gone
+
+echo "a session id that could leave the folders writes nothing:"
+log_run turn '../escape' "$TT" >/dev/null
+assert_no_file "no checkpoint outside the folder" "$SANDBOX/cache/escape.json"
+eq "and no lock either" "$(find "$SANDBOX/cache" -name '*escape*' | grep -c .)" 0
+
+echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

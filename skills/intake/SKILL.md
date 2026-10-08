@@ -32,9 +32,9 @@ current intake ("yes", "go with B") is not a new task.
   it is cheap to redo: a typo fix, a rename you were given, a command to run.
 - A pure question that produces no work product. Answer it.
 
-You decide that threshold, not a hook. `hooks/intake-nudge.sh` reminds you once,
-on the first inline `Edit` of a task with no intake block on screen. It never
-blocks the edit. If the task was trivial, carry on.
+You decide that threshold, not a hook. The workbench hooks module reminds you
+once, on the first inline `Edit` of a task with no intake block on screen. It
+never blocks the edit. If the task was trivial, carry on.
 
 **Other lanes never interview**, because no human is there to answer:
 
@@ -101,7 +101,7 @@ Keep the block to about 12 rows at 80 columns, so it leaves room on Mike's
 screen for what follows it. Give each criterion one line. Put in the context
 only the facts that shape the work and the guesses he may need to correct.
 
-Keep the heading. `hooks/intake-nudge.sh` looks for a Markdown heading that
+Keep the heading. The reminder looks for a Markdown heading that
 names "Intake" in your replies, and stays quiet when it finds one.
 
 ### 6. Three options, each from a different angle

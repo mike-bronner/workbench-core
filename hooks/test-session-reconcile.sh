@@ -503,6 +503,90 @@ OUT_WORK=$(run_warmup)
 assert_path     "work was done"                              "$PENDING/sid-quiet-out.json"
 assert_eq       "stdout is identical with and without work"  "$OUT_WORK" "$OUT_EMPTY"
 
+echo "a turn checkpoint, then a crash — the reconciler logs only what the turns did not:"
+# The hooks module checkpoints every main-loop turn through session-log.sh in
+# mode=turn (hooks/register.ts). A crash after a turn leaves the lines written
+# since then. The reconciler reads the same checkpoint, so it logs those lines
+# and no line the turn already logged.
+reset
+register "$$" "sid-current"
+TT="$PROJ/sid-turned.jsonl"
+{
+  printf '{"type":"user","sessionId":"sid-turned","n":1}\n'
+  printf '{"type":"assistant","sessionId":"sid-turned","n":2}\n'
+} > "$TT"
+printf '{"session_id":"sid-turned","transcript_path":"%s","hook_event_name":"TurnComplete"}' "$TT" | \
+  env HOME="$SANDBOX/home" PATH="$SANDBOX/bin:$PATH" WORKBENCH_MEMORY_PATH="$MEM" \
+    WORKBENCH_MEMORY_CACHE="$CACHE" WORKBENCH_LOG_MODE=turn bash "$HOOKS_DIR/session-log.sh" 2>/dev/null
+age "$CP/sid-turned.json" 125
+{
+  printf '{"type":"user","sessionId":"sid-turned","n":3}\n'
+  printf '{"type":"assistant","sessionId":"sid-turned","n":4}\n'
+} >> "$TT"
+age "$TT" 120
+run_warmup >/dev/null
+LOG=$(log_of sid-turned)
+for n in 1 2 3 4; do
+  assert_eq "line $n is in the log once" "$(grep -c "\"n\":$n}" "$LOG" 2>/dev/null)" 1
+done
+assert_eq "one segment from the turn" "$(grep -c '^## Segment: turn' "$LOG" 2>/dev/null)" 1
+assert_eq "one from the reconciler, for lines 3 and 4" "$(grep -c '^## Segment: reconcile (lines 3–4' "$LOG" 2>/dev/null)" 1
+assert_eq "the checkpoint moves past the last line" "$(jq -r '.next_line' "$CP/sid-turned.json")" 5
+run_warmup >/dev/null
+assert_eq "a second start logs nothing again" "$(grep -c '^## Segment:' "$LOG" 2>/dev/null)" 2
+
+echo "the drain leaves a live session's marker for later:"
+# A turn checkpoint keeps a running session's marker queued. A writer started
+# on it would summarize half a session, and its rm of the marker could delete
+# the one the next turn writes.
+reset
+register "$$" "sid-live"
+mkdir -p "$PENDING" "$MEM/sessions/2026-10-07"
+for s in sid-live sid-done; do
+  printf 'log\n' > "$MEM/sessions/2026-10-07/$s.log.md"
+  jq -n --arg s "$s" --arg l "$MEM/sessions/2026-10-07/$s.log.md" \
+    '{session_id:$s, log_path:$l, transcript_path:"", mode:"turn"}' > "$PENDING/$s.json"
+done
+OUT=$(run_warmup startup WORKBENCH_AUTO_SUMMARIZE=1)
+assert_contains "the ended session is drained" "$OUT" "DISPATCH sid=sid-done"
+assert_missing  "the live session is not"      "$OUT" "DISPATCH sid=sid-live"
+assert_path     "and its marker stays"         "$PENDING/sid-live.json"
+echo "a registry the drain cannot read whole: it keeps the ids it read, and skips what was written recently:"
+# One live pid file names no session, so some running session is unknown. The
+# drain still skips the ids it parsed, and also skips any marker whose log or
+# transcript was written within the quiet period: that one may be the unknown
+# session. An older one is drained.
+reset
+register "$$" "sid-live"
+printf '{"pid":%s,"kind":"interactive"}' "$PPID" > "$REG/$PPID.json"
+mkdir -p "$PENDING" "$MEM/sessions/2026-10-07"
+for s in sid-live sid-recent sid-old; do
+  printf 'log\n' > "$MEM/sessions/2026-10-07/$s.log.md"
+  jq -n --arg s "$s" --arg l "$MEM/sessions/2026-10-07/$s.log.md" \
+    '{session_id:$s, log_path:$l, transcript_path:"", mode:"turn"}' > "$PENDING/$s.json"
+done
+age "$MEM/sessions/2026-10-07/sid-live.log.md" 120
+age "$MEM/sessions/2026-10-07/sid-old.log.md" 120
+OUT=$(run_warmup startup WORKBENCH_AUTO_SUMMARIZE=1)
+assert_missing  "an id it parsed is still skipped, however old its log" "$OUT" "DISPATCH sid=sid-live"
+assert_missing  "a marker written within the quiet period is skipped"   "$OUT" "DISPATCH sid=sid-recent"
+assert_contains "an older one is drained"                               "$OUT" "DISPATCH sid=sid-old"
+mkdir -p "$SANDBOX/claude-noreg"
+OUT=$(run_warmup startup WORKBENCH_AUTO_SUMMARIZE=1 WORKBENCH_DRAIN_COOLDOWN_MIN=0 CLAUDE_CONFIG_DIR="$SANDBOX/claude-noreg")
+assert_missing  "with no registry at all, a recent marker is skipped too" "$OUT" "DISPATCH sid=sid-recent"
+assert_path     "a skipped marker stays for a later start"              "$PENDING/sid-recent.json"
+age "$MEM/sessions/2026-10-07/sid-recent.log.md" 120
+OUT=$(run_warmup startup WORKBENCH_AUTO_SUMMARIZE=1 WORKBENCH_DRAIN_COOLDOWN_MIN=0 CLAUDE_CONFIG_DIR="$SANDBOX/claude-noreg")
+assert_contains "once its log has been quiet that long, a later start drains it" "$OUT" "DISPATCH sid=sid-recent"
+
+echo "session_live_ids keeps the ids it parsed, and still reports the gap:"
+reset
+register "$$" "sid-a"
+printf 'not json' > "$REG/$PPID.json"
+IDS="$(. "$HOOKS_DIR/lib/session-reconcile.sh"; session_live_ids "$REG")"; RC=$?
+assert_eq "the parsed id is printed" "$IDS" "sid-a"
+assert_eq "and the call fails closed for the reconciler" "$RC" 1
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

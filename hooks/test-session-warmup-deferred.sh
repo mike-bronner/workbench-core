@@ -37,6 +37,10 @@ done
 [ -n "$PROBE_PORT" ] || { echo "FATAL: no free TCP port found for the probe" >&2; exit 1; }
 
 HOME_DIR="$SANDBOX/home"
+# An empty live-session registry: no session is live. The drain skips live
+# sessions, and when it cannot read the registry it also holds back markers
+# written in the last 30 minutes, which every marker here is.
+mkdir -p "$HOME_DIR/.claude/sessions"
 NOTICES_FILE="$HOME_DIR/.claude-workbench/warmup-notices.md"
 MARKERS="$SANDBOX/cache/pending-summaries"
 LOGDIR="$SANDBOX/memory/sessions/2026-02-02"
@@ -396,6 +400,36 @@ touch -t 202001010000 "$CLAIM.takeover"
 )
 [ ! -e "$CLAIM.takeover" ] && ok "a takeover lock left for over a minute is swept" || no "a takeover lock left for over a minute is swept"
 assert_contains "and the stale claim can be taken over again" "$(spawn_mid)" "DISPATCH sid=mid"
+
+echo "  a takeover lock a killed caller left blocks the claim for a minute, not for good:"
+# Without a sweep: the next claim breaks the stale takeover itself, under
+# <claim>.takeover.takeover, checked again there (lib/dir-lock.sh).
+touch -t 202001010000 "$CLAIM"
+mkdir "$CLAIM.takeover"
+touch -t 202001010000 "$CLAIM.takeover"
+assert_contains "the stale claim behind a stale takeover is taken over" "$(spawn_mid)" "DISPATCH sid=mid"
+[ -z "$(find "$MARKERS/.claims" -name '*.takeover*')" ] && ok "and no takeover lock is left at any level" || no "and no takeover lock is left at any level"
+touch -t 202001010000 "$CLAIM"
+mkdir "$CLAIM.takeover" "$CLAIM.takeover.takeover"
+touch -t 202001010000 "$CLAIM.takeover"
+assert_missing  "a stale takeover whose own takeover is held fresh is not broken" "$(spawn_mid)" "DISPATCH sid=mid"
+(
+  _cfg() { :; }
+  CACHE_PATH="$SANDBOX/cache"
+  . "$HOOKS_DIR/lib/summary-dispatch.sh"
+  summary_dispatch_sweep_claims "$MARKERS"
+)
+[ -d "$CLAIM.takeover" ] && ok "nor swept while its own takeover is held" || no "nor swept while its own takeover is held"
+rmdir "$CLAIM.takeover.takeover"
+RACES_LOST=0
+for _ in $(seq 1 30); do
+  touch -t 202001010000 "$CLAIM"
+  mkdir -p "$CLAIM.takeover"
+  touch -t 202001010000 "$CLAIM.takeover"
+  WINS=$( { spawn_mid & spawn_mid & spawn_mid & wait; } | grep -c '^DISPATCH sid=mid$')
+  [ "$WINS" = "1" ] || RACES_LOST=$((RACES_LOST + 1))
+done
+check_zero "$RACES_LOST" "in 30 rounds of three callers behind a stale takeover, each round started one writer"
 
 echo "the hooks run the parts:"
 SS=$(jq -r '.hooks.SessionStart[].hooks[].command' "$HOOKS_DIR/hooks.json")

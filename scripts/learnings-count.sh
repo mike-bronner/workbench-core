@@ -9,7 +9,8 @@
 # into model context, with an instruction to tell the user, which spent tokens
 # on every such run to deliver a fact the status line now shows for free.
 #
-# The file is the one hooks/skill-learnings.sh reads: skills/<name>.learnings.md
+# The file is the one the hooks module merges into the skill's text
+# (hooks/mods/learnings.ts): skills/<name>.learnings.md
 # in the memory vault, keyed by the bare skill name, so `workbench-core:x` and
 # `x` are one skill. A name that is empty, starts with a dot, or holds anything
 # but a letter, digit, `.`, `_` or `-` prints nothing, so it cannot leave the

@@ -2,8 +2,8 @@
 #
 # memory-install: resolve (and if needed install) the markdown-vault-mcp server
 # binary, shared by the stdio launcher (mcp-memory.sh), the lazy-start HTTP
-# supervisor (memory-server-spawn.sh), and the per-prompt recall hook
-# (memory-recall.sh).
+# supervisor (memory-server-spawn.sh), and the memory status report
+# (scripts/memory-status.sh).
 #
 # Sourceable and side-effect-free: sourcing only DEFINES functions. Call
 # memory_install_server to do the work; on success it sets SERVER_BIN (a path

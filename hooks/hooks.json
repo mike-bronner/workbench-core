@@ -1,5 +1,7 @@
 {
-  "modules": ["./register.ts"],
+  "modules": [
+    "./register.ts"
+  ],
   "hooks": {
     "PreToolUse": [
       {
@@ -26,15 +28,6 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/agent-dispatch-gate.sh\""
-          }
-        ]
-      },
-      {
-        "matcher": "Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/intake-nudge.sh\""
           }
         ]
       },
@@ -100,15 +93,6 @@
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/peer-message-gate.sh\""
           }
         ]
-      },
-      {
-        "matcher": "Skill",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/skill-learnings.sh\""
-          }
-        ]
       }
     ],
     "SessionStart": [
@@ -122,17 +106,6 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/session-warmup.sh\" --defer"
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Grep|Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-scan-recall.sh\""
           }
         ]
       }
@@ -159,20 +132,6 @@
         ]
       }
     ],
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-capture-stop.sh\"",
-            "asyncRewake": true,
-            "rewakeSummary": "💾 Memory capture checkpoint (automatic, not from the user).",
-            "rewakeMessage": "Memory capture checkpoint from the workbench-core Stop hook:"
-          }
-        ]
-      }
-    ],
     "SessionEnd": [
       {
         "matcher": "",
@@ -184,17 +143,6 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-server-release.sh\""
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/memory-recall.sh\""
           }
         ]
       }

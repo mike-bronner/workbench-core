@@ -5,8 +5,9 @@
 // and reports through a toast.
 //
 // It replaces the process-pending-summaries skill, which spent a model turn to
-// run the same steps. The skill's one question, whether to overwrite a summary
-// that exists, is asked through the engine's AskUserQuestion dialog.
+// run the same steps. It asks nothing: memory-vault work is never Mike's to
+// answer (vault: feedback/memory-vault-activity-fully-transparent). The script
+// redoes a summary only when the session's log is newer than it.
 //
 // Pure functions only: the engine follows `$` into no imported function.
 
@@ -14,12 +15,6 @@ export const NAME = 'process-pending-summaries'
 
 export const REFUSAL = `/${NAME} runs only when Mike types it. A run from a plugin, a schedule or an agent dispatches nothing.`
 export const USAGE = `Usage: /${NAME} [<session-id> [--overwrite]]`
-
-// The overwrite question and its two answers, "Skip" first: replacing a
-// summary loses the one there.
-export const SKIP = 'Skip'
-export const OVERWRITE = 'Overwrite'
-export const askOverwrite = (sid: string): string => `A summary for session ${sid} already exists. Overwrite it?`
 
 export type Request = { sid?: string; overwrite: boolean }
 
@@ -63,6 +58,10 @@ export function reportOf(outcome: Record<string, string>, sid?: string): string 
       return `Session ${sid} has no log and no transcript left, so it cannot be summarized.`
     case 'dispatched':
       return `A summary-writer is running for session ${sid}.`
+    case 'current':
+      return `The summary for session ${sid} is newer than its log, so it was kept.`
+    case 'busy':
+      return `A summary-writer is already summarizing session ${sid}.`
     case 'unavailable':
       return `Summaries cannot be dispatched: ${outcome.reason ?? 'a prerequisite'} is not available.`
     default:

@@ -54,29 +54,38 @@ describe('AC7: pending summaries run from a command, with no model turn', () => 
     expect(b.toasts).toEqual([`A summary-writer is running for session ${SID}.`])
   })
 
-  test('a summary that exists is replaced only after Mike picks Overwrite', async ($, on) => {
+  // Vault work is never Mike's to answer (vault:
+  // feedback/memory-vault-activity-fully-transparent): the script decides
+  // whether a summary is redone, and the command only reports it.
+  test('AC4: a summary the script keeps is reported, with no question and one run', async ($, on) => {
     const b = bench(on)
-    b.scripts[SCRIPT] = argv => (argv.includes('--overwrite') ? 'result=dispatched\n' : 'result=exists summary=/v/sessions/x.summary.md\n')
-    b.pick = 'Overwrite'
+    b.scripts[SCRIPT] = () => 'result=current summary=/v/sessions/x.summary.md\n'
     await $.session.start(start())
     await $.command.run(run('process-pending-summaries', SID))
-    expect(scriptRuns(b)).toEqual([[SID], [SID, '--overwrite']])
-    const dialog = b.inputs.find(input => input.tool === 'AskUserQuestion') as { questions: { question: string; options: { label: string }[] }[] }
-    expect(dialog.questions[0]?.question).toBe(`A summary for session ${SID} already exists. Overwrite it?`)
-    expect(dialog.questions[0]?.options.map(option => option.label)).toEqual(['Skip', 'Overwrite'])
-    expect(b.toasts).toEqual([`A summary-writer is running for session ${SID}.`])
+    expect(scriptRuns(b)).toEqual([[SID]])
+    expect(b.inputs.some(input => input.tool === 'AskUserQuestion')).toBe(false)
+    expect(b.toasts).toEqual([`The summary for session ${SID} is newer than its log, so it was kept.`])
   })
 
-  test('Skip, or a dismissed dialog, keeps the summary and dispatches nothing', async ($, on) => {
+  test('AC4: a marker another writer holds is reported busy, not failed', async ($, on) => {
     const b = bench(on)
-    b.scripts[SCRIPT] = () => 'result=exists summary=/v/sessions/x.summary.md\n'
+    b.scripts[SCRIPT] = () => 'result=busy\n'
     await $.session.start(start())
-    for (const pick of ['Skip', undefined, 'overwrite please']) {
-      b.pick = pick
-      await $.command.run(run('process-pending-summaries', SID))
-    }
-    expect(scriptRuns(b)).toEqual([[SID], [SID], [SID]])
-    expect(b.toasts).toEqual(Array(3).fill(`Kept the existing summary for session ${SID}.`))
+    await $.command.run(run('process-pending-summaries', SID))
+    expect(scriptRuns(b)).toEqual([[SID]])
+    expect(b.toasts).toEqual([`A summary-writer is already summarizing session ${SID}.`])
+    expect(b.toasts[0]).not.toContain('failed')
+  })
+
+  test('AC4: a log newer than its summary dispatches on the one run, with no question', async ($, on) => {
+    const b = bench(on)
+    b.scripts[SCRIPT] = () => 'result=dispatched\n'
+    b.pick = 'Skip'
+    await $.session.start(start())
+    await $.command.run(run('process-pending-summaries', SID))
+    expect(scriptRuns(b)).toEqual([[SID]])
+    expect(b.inputs.some(input => input.tool === 'AskUserQuestion')).toBe(false)
+    expect(b.toasts).toEqual([`A summary-writer is running for session ${SID}.`])
   })
 
   test('--overwrite given up front asks nothing', async ($, on) => {

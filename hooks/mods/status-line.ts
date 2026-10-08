@@ -73,7 +73,7 @@ export function learningsAfter(learnings: Readonly<Record<string, number>>, skil
   return count !== undefined && count > COMPACT_AT ? { ...rest, [skill]: count } : rest
 }
 
-// The bare skill name, as hooks/skill-learnings.sh keys the learnings file:
+// The bare skill name, as the learnings merge keys the learnings file:
 // `workbench-core:memory-lint` and `memory-lint` are one skill. Undefined for
 // a name that could leave the vault's skills folder.
 export function skillNameOf(skill: string): string | undefined {

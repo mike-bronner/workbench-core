@@ -9,6 +9,16 @@
 #   - the `core` plugin's SessionEnd hook  → mode=final
 #   - the /log-now slash command            → mode=manual (WORKBENCH_LOG_MODE=manual)
 #   - the start-up reconciler               → mode=reconcile (WORKBENCH_LOG_MODE=reconcile)
+#   - the hooks module, after each main-loop turn, answered or interrupted
+#                                           → mode=turn (WORKBENCH_LOG_MODE=turn)
+#   - the hooks module's session.end, which also fires on SIGHUP and SIGTERM
+#                                           → mode=final (hook_event_name SessionEnd)
+#
+# Every caller shares one checkpoint per session, log-checkpoints/<sid>.json,
+# and its `next_line`. A per-session lock (below) makes each write read the
+# checkpoint, copy, and advance it as one step, so two callers that overlap (a
+# turn checkpoint and SessionEnd, or the settings SessionEnd and the module's
+# session.end) never copy the same line twice.
 #
 # The reconciler (hooks/lib/session-reconcile.sh, run by session-warmup.sh)
 # feeds this script the sessions that never got a usable SessionEnd: a reboot, a
@@ -60,6 +70,8 @@ CHECKPOINTS_DIR="$CACHE_PATH/log-checkpoints"
 # transcripts are never logged has one copy that both of them read.
 # shellcheck source=hooks/lib/session-reconcile.sh
 . "$HOOKS_DIR/lib/session-reconcile.sh"
+# shellcheck source=hooks/lib/dir-lock.sh
+. "$HOOKS_DIR/lib/dir-lock.sh"
 
 # ──────────── Recursion guard ────────────
 # The dispatch block at the bottom of this script spawns a detached claude
@@ -89,6 +101,9 @@ fi
 SESSION_ID=$(printf '%s' "$PAYLOAD" | jq -r '.session_id // empty' 2>/dev/null)
 TRANSCRIPT=$(printf '%s' "$PAYLOAD" | jq -r '.transcript_path // empty' 2>/dev/null)
 EVENT=$(printf '%s' "$PAYLOAD" | jq -r '.hook_event_name // "SessionEnd"' 2>/dev/null)
+# The id names the log, the checkpoint, the lock and the marker, so it may hold
+# nothing that could leave those folders.
+case "$SESSION_ID" in *[!A-Za-z0-9_-]*) exit 0 ;; esac
 # SessionEnd carries why the session ended (clear, logout, prompt_input_exit,
 # other, and so on). It goes on the marker, so a lost or partial log can be
 # traced to the kind of exit that produced it.
@@ -129,6 +144,26 @@ if [ -z "$MODE" ]; then
   esac
 fi
 
+# ──────────── Per-session lock ────────────
+# Every writer of this session's log holds it from the checkpoint read to the
+# checkpoint write. Without it, two writers read the same `next_line` and both
+# append the same lines: the module's turn checkpoint and SessionEnd can run at
+# once, and so can the settings SessionEnd and the module's session.end. mkdir
+# is the atomic test-and-set. A writer that cannot take it gives up silently:
+# the holder is copying the same lines, and any line past its snapshot is left
+# for the next writer or the start-up reconciler, never lost. mode=final waits
+# about 0.2 s, a small share of the 1.5 s exit budget, so the copy itself still
+# fits. Every other mode waits about a second.
+#
+# A lock older than a minute is a crashed writer's, and is broken without a
+# race: hooks/lib/dir-lock.sh.
+LOCK="$CHECKPOINTS_DIR/${SESSION_ID}.lock"
+mkdir -p "$CHECKPOINTS_DIR" 2>/dev/null || exit 0
+LOCK_TRIES=20
+[ "$MODE" = "final" ] && LOCK_TRIES=4
+dir_lock_acquire "$LOCK" "$LOCK_TRIES" || exit 0
+trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+
 # ──────────── Determine segment bounds ────────────
 START_LINE=1
 EXISTING_LOG=""
@@ -138,8 +173,27 @@ if [ -f "$CHECKPOINT" ]; then
   if [ "$PREV_SID" = "$SESSION_ID" ]; then
     START_LINE=$(jq -r '.next_line // 1' "$CHECKPOINT" 2>/dev/null)
     EXISTING_LOG=$(jq -r '.last_log_file // empty' "$CHECKPOINT" 2>/dev/null)
+    PENDING_SIZE=$(jq -r '.pending_size // empty' "$CHECKPOINT" 2>/dev/null)
   fi
 fi
+# A write a kill cut short is rolled back. Each write records the log's size in
+# the checkpoint (`pending_size`, with `next_line` still at the segment's first
+# line) before it appends, and clears it after. A checkpoint that still holds it
+# means the append may have run in part or in full, with `next_line` never
+# moved: the log is cut back to that size, and the segment is copied again from
+# `next_line`. So a kill at any point leaves no torn segment and logs no line
+# twice. A size of 0 is a log the cut write was creating, and it is removed.
+case "${PENDING_SIZE:-}" in
+  '' | *[!0-9]*) ;;
+  0) [ -n "$EXISTING_LOG" ] && rm -f "$EXISTING_LOG" 2>/dev/null ;;
+  *)
+    if [ -n "$EXISTING_LOG" ] && [ -f "$EXISTING_LOG" ] \
+       && [ "$(wc -c < "$EXISTING_LOG" | tr -d ' ')" -gt "$PENDING_SIZE" ]; then
+      head -c "$PENDING_SIZE" "$EXISTING_LOG" > "$EXISTING_LOG.cut" 2>/dev/null \
+        && mv "$EXISTING_LOG.cut" "$EXISTING_LOG" 2>/dev/null
+    fi
+    ;;
+esac
 # A reconciler run has no SessionEnd payload. A SessionEnd that deferred its
 # copy (below) left its reason in the deferral file, and only the segment it
 # deferred may use it. Every log write deletes the file, so a resumed session's
@@ -165,13 +219,15 @@ fi
 
 NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-# write_checkpoint <next_line> <log_file> — the per-session resume point. Built
-# with jq so a path can never break the JSON.
+# write_checkpoint <next_line> <log_file> [pending_size] — the per-session
+# resume point. Built with jq so a path can never break the JSON. A pending
+# size marks a write under way (see the rollback above).
 write_checkpoint() {
   jq -n --arg sid "$SESSION_ID" --argjson next "$1" --arg log "$2" \
-    --arg mode "$MODE" --arg at "$NOW_ISO" \
+    --arg mode "$MODE" --arg at "$NOW_ISO" --arg pending "${3:-}" \
     '{session_id: $sid, next_line: $next, last_log_file: $log,
-      last_log_mode: $mode, last_logged_at: $at}' \
+      last_log_mode: $mode, last_logged_at: $at}
+     + (if $pending == "" then {} else {pending_size: ($pending | tonumber)} end)' \
     > "$CHECKPOINT.tmp" 2>/dev/null && mv "$CHECKPOINT.tmp" "$CHECKPOINT" 2>/dev/null
 }
 
@@ -222,8 +278,9 @@ copy_segment() {
 }
 
 if [ -n "$EXISTING_LOG" ] && [ -f "$EXISTING_LOG" ]; then
-  # Append to existing log file.
+  # Append to existing log file, its size recorded first for the rollback.
   SEG_FILE="$EXISTING_LOG"
+  write_checkpoint "$START_LINE" "$SEG_FILE" "$(wc -c < "$SEG_FILE" | tr -d ' ')" || exit 0
   {
     printf '\n---\n\n'
     printf '## Segment: %s (lines %s–%s, %s)\n\n' "$MODE" "$START_LINE" "$TOTAL_LINES" "$NOW_ISO"
@@ -237,6 +294,7 @@ else
   SEG_FILE="$SEG_DIR/${SESSION_ID}.log.md"
   mkdir -p "$SEG_DIR" 2>/dev/null || exit 0
   mkdir -p "$CACHE_PATH" "$PENDING_SUMMARIES_DIR" "$CHECKPOINTS_DIR" 2>/dev/null || exit 0
+  write_checkpoint "$START_LINE" "$SEG_FILE" 0 || exit 0
 
   {
     printf -- '---\n'
@@ -312,6 +370,9 @@ jq -n --arg sid "$SESSION_ID" --arg t "$TRANSCRIPT" --arg log "$SEG_FILE" \
 # (write the marker, let the next session start drain it) instead of the one that
 # loses work. mode=reconcile does not dispatch either: it runs inside
 # session-warmup.sh just before the drain, which takes the marker from there.
+# mode=turn does not dispatch: it runs after every turn, and a writer per turn
+# would summarize the same session over and over. Its marker waits for the
+# drain at a later start, which skips a session that is still live.
 case "$MODE" in
   checkpoint|manual)
     if summary_dispatch_enabled; then

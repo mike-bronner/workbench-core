@@ -60,11 +60,13 @@ describe('AC1: a prose question gets one correction turn', () => {
     expect((await $.classic.Stop(stop('Should I push?'))).block).toBeUndefined()
   })
 
-  // The memory checkpoint is an asyncRewake Stop hook (hooks.json). It runs in
-  // the background after the chain settles, so beneath this hook it answers
-  // nothing, and the re-prompt still fires. Its wake comes later, queued with
-  // stop_hook_active set. Here that wake opens a turn from a notification, the
-  // most attended origin it could carry, and its stop is still left alone.
+  // The memory checkpoint was an asyncRewake Stop hook until it became a fork
+  // with no turn (tests/capture.test.ts). Any asyncRewake Stop hook, another
+  // plugin's included, still behaves this way: it runs in the background after
+  // the chain settles, so beneath this hook it answers nothing, and the
+  // re-prompt still fires. Its wake comes later, queued with stop_hook_active
+  // set. Here that wake opens a turn from a notification, the most attended
+  // origin it could carry, and its stop is still left alone.
   test('the asyncRewake memory checkpoint and the re-prompt can share a turn, and its wake is never re-prompted', async ($, on) => {
     const w = world(on, ATTENDED)
     w.label = ASKS_USER

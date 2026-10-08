@@ -11,7 +11,7 @@
 //   turn      The prompt that opened the turn: its origin, and the
 //             `<scheduled-task ` wrapper a scheduled fire carries, since a
 //             desktop scheduled task can run in a session that looks
-//             interactive. hooks/lib/scheduled-origin.sh reads the same wrapper.
+//             interactive.
 //             A task notification counts as attended: in an interactive
 //             session it is where a commit question or a relayed result is
 //             asked, and stop_hook_active already caps its re-prompt at one.

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """scan-query: read a repo scan's own search query out of a tool call.
 
-Used by hooks/memory-scan-recall.sh, which searches the memory vault with
-whatever the agent is already searching the codebase for. This file answers one
+Used by the hooks module's scan recall (hooks/register.ts, scanRecall), which
+searches the memory vault with whatever the agent is already searching the
+codebase for. This file answers one
 question and nothing else: *does this tool call carry a content-search query,
 and what is it?*
 

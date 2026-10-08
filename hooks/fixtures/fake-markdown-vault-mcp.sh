@@ -32,100 +32,18 @@
 #                              hits in the real search payload shape.
 #   FAKE_SEARCH_NOISE=1        prepend a session-summary hit ranked FIRST, to
 #                              exercise the recall hook's curated-type filter.
-#   FAKE_SEARCH_LESSONS=1      (search subcommand only) answer with the four
-#                              lesson-shaped types instead of the canned pair: a
-#                              `learnings` eval snapshot ranked FIRST (which the
-#                              curated-type filter must DROP — it is dated and
-#                              superseded), then one `skill-learnings`, one
-#                              `recurring-issue`, and one `project` hit (which it
-#                              must KEEP). Ranking the excluded type first is what
-#                              makes the assertion discriminating.
 #   FAKE_SEARCH_SHAPE=...      which envelope carries the search hits: "content"
 #                              (default — content[].text bare array), "dual"
 #                              (BOTH content[].text AND structuredContent, like
 #                              the live server — the hook must inject each hit
 #                              once), or "structured" (structuredContent only —
 #                              exercises the hook's fallback branch).
-#                              These SHAPE/SSE/token knobs only apply to `serve`
-#                              — the real CLI `search` subcommand (below) has
-#                              none of that Streamable-HTTP transport ceremony.
-#   FAKE_SEARCH_HANG_SECONDS=N  (search subcommand only) sleep N seconds before
-#                              printing anything — exercises memory-recall.sh's
-#                              watchdog kill-on-timeout path.
-#   FAKE_SEARCH_EXIT_NONZERO=1  (search subcommand only) exit 1 with no stdout —
-#                              simulates a crashed/erroring CLI invocation.
-#   FAKE_SEARCH_TYPE=...       (search subcommand only) the search_type every
-#                              canned hit reports. Default "hybrid", a hit both
-#                              retrievers ranked. "semantic" or "keyword"
-#                              exercises memory-scan-recall.sh's agreement gate.
 #
 # `serve` is a thin bash shim around an inline python3 HTTP server: python3's
 # http.server gives a real bound TCP port that bash /dev/tcp and curl can hit,
-# with none of the real server's heavy dependency closure. `search` is plain
-# bash — it prints a canned JSON array and exits, mirroring the real CLI's
-# one-shot shape exactly (no server, no port).
+# with none of the real server's heavy dependency closure.
 
 set -u
-
-# The real CLI dispatches on a `search` vs `serve` subcommand; this fixture
-# does the same rather than assuming `serve`, so one fixture backs both the
-# per-session-stdio/shared-server test suites (serve) and the recall hook's
-# test suite (search).
-if [ "${1:-}" = "search" ]; then
-  shift            # drop "search"
-  [ "$#" -gt 0 ] && shift  # drop the QUERY positional — the fixture ignores it
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --mode|--limit|--folder|--source-dir) shift 2 ;;
-      *) shift ;;
-    esac
-  done
-
-  if [ "${FAKE_SEARCH_EXIT_NONZERO:-}" = "1" ]; then
-    echo "fake-markdown-vault-mcp: FAKE_SEARCH_EXIT_NONZERO=1 — simulated crash" >&2
-    exit 1
-  fi
-  hang="${FAKE_SEARCH_HANG_SECONDS:-0}"
-  [ "$hang" -gt 0 ] 2>/dev/null && sleep "$hang"
-
-  # Every canned hit carries this search_type. "hybrid" is what the real CLI
-  # reports for a hit both retrievers ranked, "semantic" or "keyword" for a hit
-  # only one of them found.
-  ST="${FAKE_SEARCH_TYPE:-hybrid}"
-
-  if [ "${FAKE_SEARCH_EMPTY:-}" = "1" ]; then
-    echo '[]'
-    exit 0
-  fi
-  if [ "${FAKE_SEARCH_LESSONS:-}" = "1" ]; then
-    cat <<JSON
-[
-  {"path":"learnings/2026-09-02-eval.md","title":"Decision-quality evaluation — 2026-09-02","folder":"learnings","score":0.99,"search_type":"$ST","frontmatter":{"name":"Decision-quality evaluation — 2026-09-02","type":"learnings","summary":"Dated eval snapshot, superseded by the next one — must not be injected."},"sections":[{"heading":null,"content":"snapshot body"}]},
-  {"path":"skills/release.learnings.md","title":"Learnings — release","folder":"skills","score":0.44,"search_type":"$ST","frontmatter":{"name":"Learnings — release","type":"skill-learnings","summary":"Canned skill-learnings hit for the recall hook test."},"sections":[{"heading":null,"content":"release body"}]},
-  {"path":"recurring-issues/2026-08-29-mcp-connection-failure.md","title":"Recurring — MCP connection failure","folder":"recurring-issues","score":0.41,"search_type":"$ST","frontmatter":{"name":"Recurring — MCP connection failure","type":"recurring-issue","summary":"Canned recurring-issue hit for the recall hook test."},"sections":[{"heading":null,"content":"recurrence body"}]},
-  {"path":"projects/canned-recall-project.md","title":"Canned project hit","folder":"projects","score":0.38,"search_type":"$ST","frontmatter":{"name":"Canned project hit","type":"project","summary":"Canned project summary for the recall hook test."},"sections":[{"heading":null,"content":"project body"}]}
-]
-JSON
-    exit 0
-  fi
-  if [ "${FAKE_SEARCH_NOISE:-}" = "1" ]; then
-    cat <<JSON
-[
-  {"path":"sessions/2026-01-01/noise-tick.summary.md","title":"Session summary — dispatch (idle)","folder":"sessions/2026-01-01","score":0.99,"search_type":"$ST","frontmatter":{"name":"Session summary — dispatch (idle)","type":"session","summary":"Noise summary that must not be injected."},"sections":[{"heading":null,"content":"noise body"}]},
-  {"path":"insights/canned-recall-one.md","title":"Canned recall hit one","folder":"insights","score":0.42,"search_type":"$ST","frontmatter":{"name":"Canned recall hit one","type":"insight","summary":"First canned summary for the recall hook test."},"sections":[{"heading":null,"content":"body one"}]},
-  {"path":"decisions/canned-recall-two.md","title":"Canned recall hit two","folder":"decisions","score":0.39,"search_type":"$ST","frontmatter":{"name":"Canned recall hit two","type":"decision","summary":"Second canned summary for the recall hook test."},"sections":[{"heading":null,"content":"body two"}]}
-]
-JSON
-    exit 0
-  fi
-  cat <<JSON
-[
-  {"path":"insights/canned-recall-one.md","title":"Canned recall hit one","folder":"insights","score":0.42,"search_type":"$ST","frontmatter":{"name":"Canned recall hit one","type":"insight","summary":"First canned summary for the recall hook test."},"sections":[{"heading":null,"content":"body one"}]},
-  {"path":"decisions/canned-recall-two.md","title":"Canned recall hit two","folder":"decisions","score":0.39,"search_type":"$ST","frontmatter":{"name":"Canned recall hit two","type":"decision","summary":"Second canned summary for the recall hook test."},"sections":[{"heading":null,"content":"body two"}]}
-]
-JSON
-  exit 0
-fi
 
 # Parse just the flags the supervisor sends; ignore the rest. We only need the
 # port to bind. Accept `serve` as argv[1] like the real CLI.

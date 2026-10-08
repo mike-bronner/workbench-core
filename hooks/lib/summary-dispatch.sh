@@ -19,6 +19,11 @@
 #
 # Sourced, never executed. Callers must have MEMORY_PATH and CACHE_PATH set.
 
+# The takeover lock behind a marker claim (lib/dir-lock.sh), from beside this
+# file, so every caller gets it whatever its own HOOKS_DIR.
+# shellcheck source=hooks/lib/dir-lock.sh
+. "$(dirname "${BASH_SOURCE[0]}")/dir-lock.sh"
+
 # Resolve the model for the writer. Precedence matches every other config read
 # in this plugin: env override → config.json → hardcoded default.
 # Requires the caller to have defined _cfg (both call sites do).
@@ -84,6 +89,7 @@ marker_path: %s
 log_path: %s
 transcript_path: %s
 memory_vault: %s
+release_helper: %s
 
 The log is a 7-day cache inside the vault. The transcript is the original
 Claude Code JSONL and lives about 30 days. A missing log therefore means the
@@ -91,10 +97,16 @@ cache expired, never that the session is lost — summarize from transcript_path
 whenever log_path is gone, and stamp `source: transcript` in the frontmatter.
 
 Follow your agent definition. Write the summary via the memory MCP using a
-vault-relative path (starting with '"'"'sessions/'"'"'), promote any decisions, delete
-the marker, and exit. Never write summary files with Bash.
-' "$1" "$2" "$3" "$4" "$MEMORY_PATH"
+vault-relative path (starting with '"'"'sessions/'"'"'), promote any decisions, release
+the marker with release_helper, and exit. Never write summary files with Bash.
+' "$1" "$2" "$3" "$4" "$MEMORY_PATH" "$SUMMARY_RELEASE_HELPER"
 }
+
+# The script the writer releases its marker with (agents/summary-writer.md,
+# step 6): it deletes the marker only while it still holds the `marked_at` the
+# writer read at its start. Resolved from beside this file, so it is right
+# whatever the caller's working directory.
+SUMMARY_RELEASE_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/release-summary-marker.sh"
 
 # How long a claim on a marker stands. A writer finishes well inside it, and a
 # writer that died leaves its marker claimable again once it passes.
@@ -126,10 +138,13 @@ _summary_dispatch_claim_stale() {
 # lock is held. Without that, two callers that both saw the claim stale could
 # both remove it, and the second would remove the first one's fresh claim. A
 # caller that does not get the lock gets nothing. True when this caller holds
-# the claim (retake), or removed it.
+# the claim (retake), or removed it. The takeover lock is taken with
+# dir_lock_take (lib/dir-lock.sh), so one its holder left behind when killed is
+# itself broken after a minute, under the same check-again rule, and never
+# blocks the claim for good.
 _summary_dispatch_drop_stale() {
   local marker="$1" claim="$2" retake="${3:-}" lock="$2.takeover" won=1
-  mkdir "$lock" 2>/dev/null || return 1
+  dir_lock_take "$lock" || return 1
   if [ -d "$claim" ] && _summary_dispatch_claim_stale "$marker" "$claim"; then
     rmdir "$claim" 2>/dev/null
     if [ -n "$retake" ]; then
@@ -160,12 +175,16 @@ summary_dispatch_claim() {
 # summary_dispatch_sweep_claims <pending_dir>
 #
 # Removes the claims nobody needs, each under its takeover lock as above, and
-# any takeover lock a caller that died left behind for over a minute. Only
-# empty directories go.
+# any takeover lock a caller that died left behind for over a minute. That one
+# is taken over under its own takeover, checked again, then removed
+# (lib/dir-lock.sh), so the sweep never removes a takeover a live caller has
+# just taken. Only empty directories go.
 summary_dispatch_sweep_claims() {
-  local dir="$1/.claims" claim
+  local dir="$1/.claims" claim takeover
   [ -d "$dir" ] || return 0
-  find "$dir" -mindepth 1 -maxdepth 1 -type d -name '*.takeover' -mmin +1 -exec rmdir {} + 2>/dev/null
+  for takeover in "$dir"/*.takeover; do
+    dir_lock_is_stale "$takeover" && dir_lock_take_stale "$takeover" && rmdir "$takeover" 2>/dev/null
+  done
   for claim in "$dir"/*.json; do
     [ -d "$claim" ] || continue
     _summary_dispatch_drop_stale "$1/$(basename "$claim")" "$claim"

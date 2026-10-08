@@ -19,7 +19,7 @@ For threshold-triggered runs, process only the file that triggered it.
 
 ## Step 2 — For each learnings file
 
-Read the file. Count entries the way `hooks/skill-learnings.sh` does: each `## ` heading, and each dated `- **YYYY-MM-DD**` bullet, is one entry.
+Read the file. Count entries the way `scripts/learnings-count.sh` does: each `## ` heading, and each dated `- **YYYY-MM-DD**` bullet, is one entry.
 
 If under 30 entries and this is an unprompted manual run (no specific skill), ask: "Only {N} entries — compact anyway?"
 

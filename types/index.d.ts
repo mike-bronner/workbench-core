@@ -274,6 +274,32 @@ export type PaneContent = {
   text: string
 }
 
+// The memory capture checkpoint's count (hooks/mods/capture.ts).
+export type CaptureState = {
+  // Main-loop turns since session start or the last capture.
+  turns: number
+  // Whether a capture has fired this session: the threshold is REPEAT after.
+  hasFired: boolean
+  // The vault paths the captures of this session wrote.
+  written: string[]
+}
+
+// Recall's per-session dedupe set (hooks/mods/recall.ts).
+export type RecallState = {
+  // The vault paths recall has shown this session. Each is shown once.
+  seen: string[]
+  // The scan queries already searched this session.
+  queries: string[]
+}
+
+// The intake nudge's task count (hooks/mods/intake.ts).
+export type IntakeState = {
+  // The task the last prompt Mike sent started, counted from 1.
+  task: number
+  // The last task the nudge was checked for. Each task is checked once.
+  checked: number
+}
+
 declare module 'claude-code' {
   interface EngineInterface {
     workbench: Workbench
@@ -313,6 +339,12 @@ declare module 'claude-code' {
       notices: string[]
       // What the workbench pane shows.
       pane: PaneContent
+      // The running session's transcript file, from the SessionStart payload.
+      // The per-turn log checkpoint copies from it.
+      transcriptPath: string
+      capture: CaptureState
+      recall: RecallState
+      intake: IntakeState
     }
   }
 }

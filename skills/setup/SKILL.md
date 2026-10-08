@@ -333,6 +333,26 @@ says to set `env.MAX_MCP_OUTPUT_TOKENS` by hand. Relay that.
   purpose. A read past the limit reaches the model as a pointer to the persisted response, which
   it reads from there. Nothing is truncated, so no exemption is needed.
 
+## Step 2h — Take the old workbench block out of CLAUDE.md (default-on)
+
+Up to 0.44, the warmup rewrote `~/.claude/CLAUDE.md` on every session start: a marked block with
+the gates and scratch roots, and one with each sibling plugin's `session-warmup.md`. The hooks
+module now sends those as system-prompt sections, and the warmup no longer writes the file. Take
+the old blocks out, so the user's file holds only the user's own text:
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup-config.sh" unsplice-claude-md
+```
+
+It removes each marked block, marker lines included, and leaves every other line as it was, byte
+for byte. Relay what it prints. When the markers are not one start line then one end line (a
+marker the user quoted, a second end, a start with no end), it changes nothing and says to take
+the block out by hand. Relay that.
+
+- **Idempotent:** a second run finds no block and changes nothing.
+- **Nothing is lost in the meantime.** Until this runs, the hooks module leaves the old block out
+  of what the model reads, so the rules are not sent twice.
+
 ## Step 3 — Deploy the nightly decision-quality task (opt-in)
 
 The decision-quality learning loop (`/workbench-core:evaluate-decisions` → `/workbench-core:propose-upgrades`) can run on a nightly schedule: it grades the decisions and memories recorded that day, writes a learnings report, then holds a **triage of sign-off questions that pauses until you pick it up**. Auto-apply never happens; every proposal waits for your explicit approval.
@@ -385,6 +405,7 @@ Tell the user:
 - MCP env vars will be re-read from config.json on next Claude Code restart
 - The memory server's bearer token was provisioned (and the port, if non-default) into `~/.claude/settings.json`
 - Whether `MAX_MCP_OUTPUT_TOKENS` was set to 15,000, or an existing value was kept (Step 2g)
+- Whether the old workbench block was taken out of `~/.claude/CLAUDE.md`, or there was none (Step 2h)
 - The permission mode that is now set, and how many deny/ask rails were added (the script reports both)
 - Whether git sync was enabled, and if so the remote and the measured synced size (Step 2e)
 - Whether the output style was installed, re-synced, already current, or declined (Step 2f)

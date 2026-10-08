@@ -94,7 +94,7 @@ echo "--defer, the SessionStart hook's part, leaves out the drain and the Chat-s
 reset
 OUT=$(run startup --defer)
 assert_missing  "no writer is dispatched"                 "$OUT" "DISPATCH sid="
-assert_contains "the rules are still injected"            "$OUT" "## Memory routing"
+assert_missing  "no part prints the rules (system prompt)" "$OUT" "Memory routing"
 assert_contains "the pending notice is still written"     "$(notices)" "Pending session summaries (3)"
 assert_missing  "no Chat-skill notice"                    "$(notices)" "New Chat-installable skills"
 DEFER_NOTICES=$(notices)
@@ -183,7 +183,7 @@ echo "an argument it does not know runs the whole warmup, so no work is skipped:
 reset
 OUT=$(run startup --bogus)
 assert_contains "it drains"                               "$OUT" "DISPATCH sid=old"
-assert_contains "it injects the rules"                    "$OUT" "## Memory routing"
+assert_missing  "it prints no rules (system prompt)"      "$OUT" "Memory routing"
 assert_contains "it scans for Chat skills"                "$(notices)" "New Chat-installable skills"
 
 echo "the stamps: --defer notes its start last, --deferred notes it done last:"
@@ -217,7 +217,7 @@ run startup --defer >/dev/null
 OUT=$(run startup --defer)
 assert_contains "the oldest marker is dispatched inline"  "$OUT" "DISPATCH sid=old"
 assert_contains "the Chat-skill notice is written inline" "$(notices)" "New Chat-installable skills"
-assert_contains "the rules are still injected"            "$OUT" "## Memory routing"
+assert_missing  "no part prints the rules (system prompt)" "$OUT" "Memory routing"
 check_stamp "$STARTED" current "it notes its own start again"
 [ "$(grep -c '^## 📦' "$NOTICES_FILE")" = "1" ] && ok "one Chat-skill notice" || no "one Chat-skill notice"
 run startup --deferred >/dev/null

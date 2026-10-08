@@ -6,10 +6,11 @@
 ship a `session-warmup.md` at your plugin root. Do **not** register your own
 `SessionStart` or `PostCompact` hook.
 
-The aggregation mechanism already exists —
-`workbench-core/hooks/session-warmup.sh:collect_session_warmup_contributions()`
-concatenates a `session-warmup.md` from every installed `workbench-*` plugin
-automatically. This document makes it the sanctioned convention.
+The aggregation mechanism already exists: workbench-core's hooks module
+(`hooks/register.ts`, `hooks/mods/prompt-rules.ts`) concatenates a
+`session-warmup.md` from every installed `workbench-*` plugin automatically, and
+sends it as a system-prompt section. This document makes it the sanctioned
+convention.
 
 ---
 
@@ -21,12 +22,13 @@ which have already happened at least once:
 1. **It misses shared fixes.** Core's warmup grew a skip guard for `--agent`
    sub-agent dispatches (`CLAUDE_CODE_AGENT`) in commit `0570c33`. A plugin with
    its own hand-rolled hook never received it, and kept injecting its routing
-   block into every Watson / Holmes / Lestrade dispatch.
+   block into every Watson / Holmes / Lestrade dispatch. Core now also decides
+   which lanes get the contributions, and gives a sub-agent its copy.
 2. **It breaks cache-prefix stability.** See [Ordering](#ordering-the-append-only-invariant).
    Core can only guarantee the invariant for text it controls.
 3. **Ordering is undefined.** Independent hooks on the same event have no
-   guaranteed order relative to core's identity payload, so your block may land
-   before core's payload.
+   guaranteed order relative to core's rules, so your block may land before
+   them.
 
 One aggregated hook fixes all three at once, for every plugin.
 
@@ -41,24 +43,30 @@ One aggregated hook fixes all three at once, for every plugin.
 <installPath>/session-warmup.md          ← your file, plugin root
     │
     ▼
-collect_session_warmup_contributions()   ← concatenated, blank-line separated
+contributionPathsOf / contributionsOf    ← concatenated, blank-line separated
     │
-    ▼
-~/.claude/CLAUDE.md, inside <!-- workbench-warmup:start --> … :end -->
+    ├─▶ the `workbench-core:plugins` system-prompt section (shared scope)
+    └─▶ a sub-agent's context, at SubagentStart
 ```
 
 Mechanics worth knowing:
 
 - **Discovery** is from `installed_plugins.json`, so the file is read from the
   *active cached version* of your plugin — not a checkout. Test by installing.
-- **Placement** is after core's identity block and before any user content in
-  `~/.claude/CLAUDE.md`.
-- **Uninstall is self-healing.** The whole marked region is rebuilt every
-  startup, so removing your plugin removes your contribution. Never edit the
-  region by hand.
+- **Placement** is after core's own rules and memory routing, and before every
+  per-session section of the system prompt.
+- **Lanes.** The main loop, `claude -p` and a top-level `--agent` run get it. A
+  summary-writer does not. A sub-agent gets its parent's copy at its start.
+- **It is read once per load.** Every render in a session gets the same bytes. A
+  plugin update reaches the next session, or the next reload.
+- **Uninstall is self-healing.** Removing your plugin removes your
+  contribution from the next session on.
 - **Missing or unreadable file = skipped**, silently. There is no error path,
   and no need for a guard.
-- **`jq` is required.** Without it the whole collection step no-ops.
+- **Up to 0.44, core spliced the contributions into `~/.claude/CLAUDE.md`**,
+  inside `<!-- workbench-warmup:start -->` … `:end -->`. It no longer writes
+  that file. `/workbench-core:setup` takes the old region out, and until then
+  the hooks module leaves it out of what the model reads.
 
 ---
 
@@ -68,7 +76,7 @@ This is the part that bites.
 
 Anthropic prompt caching matches on an **exact request prefix**. One byte that
 differs between two otherwise identical sessions invalidates the cache for
-everything after it — the identity payload, every other plugin's contribution,
+everything after it — core's rules, every other plugin's contribution,
 the skill body, the tool definitions. A scheduled task firing every 20 minutes
 pays that penalty on every tick. This was the confirmed root cause of a
 dev-team Dispatch orchestrator whose ~36k-token context tail never cached.
@@ -106,16 +114,16 @@ Reference points:
 
 | | Size |
 |---|---|
-| Core's managed `~/.claude/CLAUDE.md` block (gates and scratch roots) | ~1.6 KB |
-| Core's full startup payload (routing + pointers, no soul or profile) | ~3.8 KB |
+| Core's gates and scratch-roots section (`workbench-core:rules`) | ~2.5 KB |
+| Core's memory-routing section (`workbench-core:memory`) | ~2.0 KB |
+| Core's warmup output | 0 |
 | A real observed Dispatch tick's total SessionStart hook output | ~20.9 KB |
 | The 2026-07-08 bloat incident | **57 KB** |
 
-The first two are measured, not estimated: 1,625 and 3,804 bytes on
-2026-09-27, the day core stopped injecting a guardrails payload (4,776 bytes on
-its own). Re-measure rather than re-estimate: run `hooks/session-warmup.sh`
-against a sandbox `HOME` with no soul file, no profile, and a healthy memory
-probe, then `wc -c` its stdout and the managed block it writes.
+The first two are measured, not estimated: 2,525 and 1,970 characters on
+2026-10-08. Re-measure rather than re-estimate: `RULES.length` and
+`MEMORY.length` in `hooks/mods/prompt-rules.ts`, and `wc -c` of the warmup's
+stdout in a sandbox `HOME`, which is empty.
 
 That 57 KB came from one block enumerating every pending-summary marker instead
 of a capped summary. It overflowed the harness's inline preview window and
@@ -171,4 +179,5 @@ blank line between contributions.
 - [ ] Starts at `##`, no frontmatter.
 - [ ] No independent `SessionStart` / `PostCompact` hook in your `hooks.json`.
 - [ ] Verified by installing the plugin and checking the
-      `<!-- workbench-warmup:start -->` region of `~/.claude/CLAUDE.md`.
+      `workbench-core:plugins` section: run `/context`, or ask a session to
+      quote a line of your contribution.

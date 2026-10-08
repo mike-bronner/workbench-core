@@ -130,7 +130,7 @@ case "$TOOL_NAME" in
 esac
 
 # (f) A scratch file or a plan is not file work, so it draws no reminder.
-#     CLAUDE.md and the dev-team git-commit skill tell the main session to write
+#     The dev-team rules and its git-commit skill tell the main session to write
 #     a multi-line commit message or a PR body to a file in the scratchpad and
 #     pass it with `git commit -F`. Plan mode writes the session's plan under
 #     ~/.claude/plans/, the one file it lets the main agent write. While this

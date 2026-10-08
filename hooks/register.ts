@@ -27,6 +27,10 @@
 //                   injected at the tail, never into the system prompt
 //   learnings       a skill's vault learnings, merged into its text
 //   intake nudge    the first Edit of a task with no intake block on screen
+//   prompt rules    the workbench rules as shared system-prompt sections, the
+//                   same bytes in every session, and a sub-agent's copy at its
+//                   start; the harness's memory section and the block an older
+//                   warmup spliced into CLAUDE.md are left out
 //
 // The logic is pure and lives in mods/. Every hook that touches `$` lives in
 // this file, because the engine follows `$` into no imported function, and a
@@ -34,7 +38,7 @@
 // hook branches where several features share the event.
 
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, FsEntry, Register, RenderElement, ToolCallResult, TurnUsage } from 'claude-code'
+import type { EngineInterface, FsEntry, InstructionFile, PromptComposeSection, Register, RenderElement, ToolCallResult, TurnUsage } from 'claude-code'
 
 import type { CacheState, ChurnEvent, PaneContent, WorkbenchCallerLane, WorkbenchShellParse } from '../types'
 import { BRIEF_SLOTS, checkBrief } from './mods/brief'
@@ -44,6 +48,18 @@ import type { CheckpointMode } from './mods/checkpoint'
 import { checkpointRequest, endTimeoutOf } from './mods/checkpoint'
 import { NUDGE, intakeShown } from './mods/intake'
 import { learningsPath, withLearnings } from './mods/learnings'
+import {
+  HARNESS_MEMORY,
+  OMITS_CLAUDE_MD,
+  contributionPathsOf,
+  contributionsOf,
+  promptLaneOf,
+  sectionsFor,
+  splicedBodiesOf,
+  subagentContextOf,
+  withShared,
+  withoutSplice,
+} from './mods/prompt-rules'
 import type { Hit } from './mods/recall'
 import {
   CLASSIFY_TIMEOUT_MS,
@@ -597,6 +613,44 @@ async function vaultRoot($: EngineInterface): Promise<string | undefined> {
   return vaultRootMemo
 }
 
+// The workbench sections for this load (hooks/mods/prompt-rules.ts), read once
+// and kept: every prompt.compose and SubagentStart answers from the one
+// reading, so the bytes cannot change within a load. session.start reads them
+// again, as a reload does. A reading that fails gives the rules alone, the
+// agent lane's set: losing the rules is the worse failure, and a lane that
+// cannot be read may be an unattended one, which gets no memory routing.
+let sectionsMemo: Promise<PromptComposeSection[]> | undefined
+function workbenchSections($: EngineInterface): Promise<PromptComposeSection[]> {
+  sectionsMemo ??= readSections($).catch(() => sectionsFor('agent', undefined))
+  return sectionsMemo
+}
+
+// The lane from the environment, and each sibling plugin's session-warmup.md.
+// A file that cannot be read is left out, and the rules stand without it.
+async function readSections($: EngineInterface): Promise<PromptComposeSection[]> {
+  const lane = promptLaneOf(await $.env.get('WORKBENCH_SKIP_WARMUP'), await $.env.get('CLAUDE_CODE_AGENT'))
+  if (lane === 'none') return []
+  const home = await $.env.get('HOME')
+  const installed = home ? await readIfAny($, `${home}/.claude/plugins/installed_plugins.json`) : undefined
+  const paths = installed === undefined ? [] : contributionPathsOf(installed)
+  const texts: (string | undefined)[] = []
+  for (const path of paths) texts.push(await readIfAny($, path))
+  return sectionsFor(lane, contributionsOf(texts))
+}
+
+const readIfAny = async ($: EngineInterface, path: string): Promise<string | undefined> =>
+  (await $.fs.exists(path).catch(() => false)) ? $.fs.read(path).catch(() => undefined) : undefined
+
+// An instruction file of the user's tier with the block an older warmup
+// spliced into it left out, read against the file on disk. Undefined when the
+// file holds no such block, or the block is not found whole in its text.
+async function unspliced($: EngineInterface, file: InstructionFile): Promise<InstructionFile | undefined> {
+  if (file.kind !== 'user') return undefined
+  const raw = await readIfAny($, file.path)
+  const content = raw === undefined ? file.content : withoutSplice(file.content, splicedBodiesOf(raw))
+  return content === file.content ? undefined : { ...file, content }
+}
+
 export const register: Register = on => {
   // Set at every load, because a reload runs session.start again. Undefined
   // until then: the question rule reads it as unattended, and the noun rejects.
@@ -662,6 +716,7 @@ export const register: Register = on => {
   )
 
   on('session.start', async ($, e, next) => {
+    sectionsMemo = undefined
     agentName = await $.env.get('CLAUDE_CODE_AGENT')
     sessionAttended = isAttendedSession(e.isInteractive, agentName, await $.env.get('WORKBENCH_DEV_TEAM_PIPELINE'))
     const { value: startedAt } = await $.state.get(STARTED_AT)
@@ -901,6 +956,51 @@ export const register: Register = on => {
     } catch {
       return result
     }
+  })
+
+  // The workbench rules (hooks/mods/prompt-rules.ts): shared sections after the
+  // engine's own shared ones, so every shared section stays ahead of every
+  // session one. The answer is the same bytes on every render of the load.
+  on('prompt.compose', async ($, e, next) => {
+    const result = await next(e)
+    const ours = await workbenchSections($)
+    return ours.length === 0 ? result : { sections: withShared(result.sections, ours) }
+  })
+
+  // The harness's memory section, which keeps memories in a per-project folder,
+  // is left out in every lane: the vault is the one store, and the memory
+  // section above routes to it.
+  on('prompt.section', { name: HARNESS_MEMORY }, () => ({ text: null }))
+
+  // The block an older warmup spliced into ~/.claude/CLAUDE.md stays in the
+  // file until setup takes it out, so the first message leaves it out here,
+  // for the main loop and every sub-agent alike. A file that held nothing but
+  // the block is left out whole. The user's own text is never changed.
+  on('prompt.context', async ($, e, next) => {
+    const result = await next(e)
+    const files = result.instructionFiles ?? e.instructionFiles
+    if (files === undefined) return result
+    const kept: InstructionFile[] = []
+    let changed = false
+    for (const file of files) {
+      const stripped = await unspliced($, file).catch(() => undefined)
+      if (stripped === undefined) kept.push(file)
+      else {
+        changed = true
+        if (stripped.content.trim() !== '') kept.push(stripped)
+      }
+    }
+    return changed ? { ...result, instructionFiles: kept } : result
+  })
+
+  // A sub-agent's system prompt is its own, so it gets the rules as context at
+  // its start: its parent's sections, as the CLAUDE.md block and the router
+  // stub reached it before. An agent that leaves CLAUDE.md out gets none.
+  on('classic.SubagentStart', async ($, e, next) => {
+    const result = await next(e)
+    if (OMITS_CLAUDE_MD.has(e.agent_type)) return result
+    const text = subagentContextOf(await workbenchSections($))
+    return text === undefined ? result : { ...result, additionalContext: [...(result.additionalContext ?? []), text] }
   })
 
   // T counts completed main-loop turns, and rows measures the reply that

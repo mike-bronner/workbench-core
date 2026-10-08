@@ -207,11 +207,14 @@ describe('AC5: the cache meter records each request, and a spike names the secti
   test('nothing the meter does changes the system prompt', async ($, on) => {
     const p = probe(on)
     await $.session.start(start(true))
-    const before = (await $.prompt.compose(COMPOSE)).sections
+    // The module's own rule sections (tests/prompt-rules.test.ts) are left out:
+    // what is pinned here is that the meter changes none of the engine's.
+    const engines = (sections: readonly Section[]) => sections.filter(section => !section.id.startsWith('workbench-core:'))
+    const before = engines((await $.prompt.compose(COMPOSE)).sections)
     await request($, p, FIRST)
     p.sections[2] = { id: 'env_info_simple', text: 'Working directory: /elsewhere', scope: 'session' }
     await request($, p, SPIKE)
-    const after = (await $.prompt.compose(COMPOSE)).sections
+    const after = engines((await $.prompt.compose(COMPOSE)).sections)
     expect(before).toEqual([
       { id: 'intro', text: 'You are Claude Code.', scope: 'shared' },
       { id: 'tools', text: 'Use the tools.', scope: 'shared' },

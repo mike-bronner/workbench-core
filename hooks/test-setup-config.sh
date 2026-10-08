@@ -135,6 +135,96 @@ check "a settings.json that is not an object fails" "$RC" "1"
 case "$OUT" in *"by hand"*) ok "and says to set it by hand" ;; *) no "and says to set it by hand" ;; esac
 check "and is left as it was" "$(cat "$SETTINGS")" '"a string"'
 
+echo "unsplice-claude-md (Step 2h):"
+# Every check on a file compares bytes with cmp: $(cat) drops trailing newlines,
+# which is one of the things that must survive.
+CMD_DIR="$SANDBOX/claude-dir"
+CMD="$CMD_DIR/CLAUDE.md"
+EXPECT="$SANDBOX/expected.md"
+TMPD="$SANDBOX/tmpd"
+unsplice() { env HOME="$HOME_DIR" TMPDIR="$TMPD" WORKBENCH_CLAUDE_MD="$CMD" bash "$SCRIPT" unsplice-claude-md; }
+same() { if cmp -s "$1" "$2"; then ok "$3"; else no "$3 — $(cmp "$1" "$2" 2>&1 | head -1)"; fi; }
+reset_cmd() { rm -rf "$CMD_DIR" "$TMPD"; mkdir -p "$CMD_DIR" "$TMPD"; }
+no_temp_left() {
+  if [ -z "$(ls -A "$TMPD")" ] && [ -z "$(find "$CMD_DIR" -name '.claude-md.*')" ]; then ok "$1"; else no "$1 — a temporary file was left"; fi
+}
+
+fresh
+reset_cmd
+printf '%s\n' '<!-- workbench-identity:start -->' '# Workbench gates and scratch roots' '' '| Gate | What it protects |' \
+  '<!-- workbench-identity:end -->' '' '<!-- workbench-warmup:start -->' '## Dev-team delegation' 'DEV-TEAM-CANARY' \
+  '<!-- workbench-warmup:end -->' '' '## My own notes' '' 'USER-PROSE-CANARY' '<!-- my own comment -->' > "$CMD"
+chmod 640 "$CMD"
+INODE_BEFORE=$(ls -i "$CMD" | awk '{print $1}')
+OUT=$(unsplice); RC=$?
+check "a spliced file exits 0" "$RC" "0"
+printf '%s\n' '## My own notes' '' 'USER-PROSE-CANARY' '<!-- my own comment -->' > "$EXPECT"
+same "$CMD" "$EXPECT" "only the user's lines are left, byte for byte"
+case "$OUT" in *"the rest is unchanged"*) ok "it says what it did" ;; *) no "it says what it did — got: $OUT" ;; esac
+check "the file keeps its mode" "$(mode_of "$CMD")" "640"
+[ "$(ls -i "$CMD" | awk '{print $1}')" != "$INODE_BEFORE" ] && ok "a regular file is replaced whole, not written in place" \
+  || no "a regular file is replaced whole, not written in place"
+no_temp_left "no temporary file is left"
+cp "$CMD" "$SANDBOX/before-second.md"
+OUT=$(unsplice); RC=$?
+check "a second run exits 0" "$RC" "0"
+same "$CMD" "$SANDBOX/before-second.md" "and changes nothing"
+case "$OUT" in *"nothing to take out"*) ok "and says there was nothing to take out" ;; *) no "and says there was nothing to take out — got: $OUT" ;; esac
+
+reset_cmd
+printf 'BEFORE\n\n<!-- workbench-identity:start -->\nGATES\n<!-- workbench-identity:end -->\n\nBETWEEN\n\n\n\nstill between\n\n<!-- workbench-warmup:start -->\nDEV\n<!-- workbench-warmup:end -->\n\nAFTER\n```\nx\n\n\n\nx\n```\nno final newline' > "$CMD"
+unsplice >/dev/null
+printf 'BEFORE\n\nBETWEEN\n\n\n\nstill between\n\nAFTER\n```\nx\n\n\n\nx\n```\nno final newline' > "$EXPECT"
+same "$CMD" "$EXPECT" "text before, between and after keeps its blank runs and its missing final newline"
+
+reset_cmd
+printf 'MINE\r\n\r\n<!-- workbench-identity:start -->\r\nGATES\r\n<!-- workbench-identity:end -->\r\n\r\nMORE\r\n' > "$CMD"
+unsplice >/dev/null
+printf 'MINE\r\n\r\nMORE\r\n' > "$EXPECT"
+same "$CMD" "$EXPECT" "a CRLF block is taken out, and the CRLF lines stay CRLF"
+
+reset_cmd
+printf '%s\n' '<!-- workbench-identity:start -->' 'GATES' '<!-- workbench-identity:end -->' > "$CMD"
+OUT=$(unsplice)
+[ ! -e "$CMD" ] && ok "a file that held only the block is removed" || no "a file that held only the block is removed"
+
+reset_cmd
+printf '%s\n' '<!-- workbench-identity:start -->' 'GATES' '<!-- workbench-identity:end -->' > "$SANDBOX/linked.md"
+ln -s "$SANDBOX/linked.md" "$CMD"
+unsplice >/dev/null
+[ -L "$CMD" ] && ok "a link that held only the block is kept" || no "a link that held only the block is kept"
+check "and the file it names is emptied" "$(wc -c < "$SANDBOX/linked.md" | tr -d ' ')" "0"
+no_temp_left "a write through a link leaves no temporary file"
+rm -f "$SANDBOX/linked.md"
+
+refused() { # desc, file content via printf
+  reset_cmd
+  printf "$2" > "$CMD"
+  cp "$CMD" "$SANDBOX/refused-before.md"
+  OUT=$(unsplice 2>&1); RC=$?
+  check "$1 fails" "$RC" "1"
+  same "$CMD" "$SANDBOX/refused-before.md" "$1 leaves the file as it was"
+  case "$OUT" in *"by hand"*) ok "$1 says to take it out by hand" ;; *) no "$1 says to take it out by hand — got: $OUT" ;; esac
+}
+refused "a start marker with no end" 'MINE\n<!-- workbench-warmup:start -->\nDEV-TEAM-CANARY\n'
+refused "a start marker of the user's own, quoted in a fence, before the block" \
+  '```\n<!-- workbench-identity:start -->\n```\n\nMINE-IN-BETWEEN\n\n<!-- workbench-identity:start -->\nGATES\n<!-- workbench-identity:end -->\n'
+refused "a second end marker" '<!-- workbench-identity:start -->\nGATES\n<!-- workbench-identity:end -->\nMINE\n<!-- workbench-identity:end -->\n'
+refused "an end marker before its start" '<!-- workbench-identity:end -->\nMINE\n<!-- workbench-identity:start -->\nGATES\n'
+
+reset_cmd
+OUT=$(unsplice); RC=$?
+check "no CLAUDE.md exits 0" "$RC" "0"
+[ ! -e "$CMD" ] && ok "and creates none" || no "and creates none"
+printf 'USER ONLY\n' > "$CMD"
+cp "$CMD" "$EXPECT"
+unsplice >/dev/null
+same "$CMD" "$EXPECT" "a file with no block is left as it was"
+printf 'Mine names `<!-- workbench-identity:start -->` inline.\n' > "$CMD"
+cp "$CMD" "$EXPECT"
+unsplice >/dev/null
+same "$CMD" "$EXPECT" "a marker quoted inside a line is not a marker"
+
 echo "usage:"
 setup bogus >/dev/null 2>&1; check "an unknown subcommand exits 2" "$?" "2"
 setup >/dev/null 2>&1; check "no subcommand exits 2" "$?" "2"
@@ -142,7 +232,7 @@ setup migrate extra >/dev/null 2>&1; check "an extra argument exits 2" "$?" "2"
 
 echo "the setup skill runs each step through the script:"
 SKILL="$(cd "$(dirname "$0")/.." && pwd)/skills/setup/SKILL.md"
-for sub in migrate write-config provision-token leftover-asks cap-mcp-output; do
+for sub in migrate write-config provision-token leftover-asks cap-mcp-output unsplice-claude-md; do
   grep -q "scripts/setup-config.sh\" $sub" "$SKILL" && ok "setup runs $sub" || no "setup runs $sub"
 done
 grep -qF '${CLAUDE_PLUGIN_ROOT}/skills/setup/references/git-sync.md' "$SKILL" \

@@ -97,7 +97,7 @@ The [hooks module](#the-hooks-module) enforces rule 4 without loading it. Its re
 
 The task-intake routine is not a rule, so it does not live in the output style. It is a procedure, and its one copy is `skills/intake/SKILL.md`. The style carries a one-line pointer to it, and `hooks/test-intake.sh` fails if the style starts restating it. See [Task intake](#task-intake).
 
-The managed `~/.claude/CLAUDE.md` block now carries facts only: the gates, what each protects, and the scratch roots. Sub-agents need those facts, and each gate's deny carries its own recovery text.
+The workbench facts the agents need (the gates, what each protects, the scratch roots, and the memory routing) are not rules of the persona, so they do not live in the output style either. The [hooks module](#the-workbench-rules-in-the-system-prompt) sends them as shared system-prompt sections, and gives a sub-agent that loads CLAUDE.md the same text at its start. Each gate's deny carries its own recovery text. Nothing is written into `~/.claude/CLAUDE.md` any more.
 
 **Retiring the old alias.** If your shell profile has `alias claude='claude --append-system-prompt-file ~/.claude/system-overrides.md'`, the CLI refuses to start when that file is missing. So the warmup never deletes it. It rewrites an existing file to a one-line stub with no rules, never creates one, and posts a startup notice until the file is gone. Finish the retirement in this order:
 
@@ -165,7 +165,7 @@ The `references/` directory contains single-source-of-truth documents shared acr
 | `vault-conventions.md` | summary-writer, log-now | Vault paths, required frontmatter, write vs edit rules |
 | `linking-synthesis.md` | summary-writer, log-now, memory-lint | Link syntax, related-document linking, topic-page synthesis, vault index contract |
 
-References are loaded at execution time via `${CLAUDE_PLUGIN_ROOT}/references/`. The one the warmup reads is `memory-routing-stub.md`, which it copies into the project's `MEMORY.md` router. No rule reference reaches a session: the behavioural rules load from the output style alone (see [Where the behavioural rules load](#where-the-behavioural-rules-load)).
+References are loaded at execution time via `${CLAUDE_PLUGIN_ROOT}/references/`. The warmup reads none of them. No rule reference reaches a session: the behavioural rules load from the output style alone (see [Where the behavioural rules load](#where-the-behavioural-rules-load)).
 
 ## Plugin layout
 
@@ -183,15 +183,16 @@ core/
 │   ├── register.ts             — the hooks module (a mod): $.workbench, question rule, request meter,
 │   │                             cache meter, status line, commit approval, vault write checks,
 │   │                             the warmup's deferred half, the per-turn log checkpoint, memory
-│   │                             capture, recall, skill learnings, the intake nudge, /orchestrator,
-│   │                             /memory-status, /notices, /process-pending-summaries
+│   │                             capture, recall, skill learnings, the intake nudge, the workbench
+│   │                             rules in the system prompt, /orchestrator, /memory-status, /notices,
+│   │                             /process-pending-summaries
 │   ├── mods/                   — the module's pure logic: brief, lane, orchestrator, question-rule,
 │   │                             request-meter, cache-meter, status-line, commit-approval, vault-write,
 │   │                             pending-summaries, shell (the shell reader behind parseShell),
-│   │                             checkpoint, capture, recall, learnings, intake
+│   │                             checkpoint, capture, recall, learnings, intake, prompt-rules
 │   ├── session-log.sh          — raw log capture + summary-writer dispatch (not at SessionEnd or per turn)
-│   ├── session-warmup.sh       — memory and scratch rules + retention cleanup + dead-marker sweep +
-│   │                             session reconciler; summary drain + Chat-skill scan run deferred
+│   ├── session-warmup.sh       — retention cleanup + dead-marker sweep + session reconciler + notices;
+│   │                             summary drain + Chat-skill scan run deferred; prints nothing
 │   ├── mcp-memory.sh           — stdio launcher, retained but unwired (see Memory server transport)
 │   ├── memory-server-up.sh     — shared-HTTP SessionStart kicker (disabled; retained for re-enable)
 │   ├── memory-server-spawn.sh  — shared-HTTP detached supervisor (disabled; retained)
@@ -245,7 +246,7 @@ core/
 │   ├── install-chat-skills.sh  — package + install skills into Claude Chat
 │   ├── install.sh              — install the shipped output style
 │   ├── permissions.sh          — merge the shipped permission rails into settings.json
-│   ├── setup-config.sh         — setup's fixed merges: legacy migrate, config.json, token, MCP output cap
+│   ├── setup-config.sh         — setup's fixed merges: legacy migrate, config.json, token, MCP output cap, CLAUDE.md unsplice
 │   ├── memory-status.sh        — report the shared memory server's facts (/memory-status)
 │   ├── memory-health.sh        — the probe's one status word, for the status line
 │   ├── learnings-count.sh      — a skill's learnings entry count, for the status line
@@ -263,9 +264,9 @@ These hooks fire across the session lifecycle and on each turn. The memory work 
 
 | Hook | Script | Purpose |
 |------|--------|---------|
-| `SessionStart` | `hooks/session-warmup.sh --defer` | Memory and scratch rules, retention cleanup, dead-marker sweep, session reconciler, housekeeping notices (written to a file, not injected). The pending-summary drain and the Chat-skill scan run after it, from the [hooks module](#the-hooks-module), so they no longer hold up the start |
+| `SessionStart` | `hooks/session-warmup.sh --defer` | Retired-file cleanup, retention cleanup, dead-marker sweep, session reconciler, housekeeping notices (written to a file, not injected). The pending-summary drain and the Chat-skill scan run after it, from the [hooks module](#the-hooks-module), so they no longer hold up the start |
 | `PreCompact` | `hooks/session-log.sh` | Dump raw log checkpoint, spawn summary-writer |
-| `PostCompact` | `hooks/session-warmup.sh` | Re-inject the memory and scratch rules after context compression |
+| `PostCompact` | `hooks/session-warmup.sh` | Refresh the housekeeping notices after context compression. The rules are in the system prompt, which survives compaction |
 | `SessionEnd` | `hooks/session-log.sh` | Dump final log segment and write the pending-summary marker, with the SessionEnd `reason` — **no writer is spawned here** (see [Why SessionEnd does not spawn](#why-sessionend-does-not-spawn)) |
 | `PreToolUse` | `hooks/outbound-prose-guard.sh` | Check prose leaving the machine against the output style's mechanical rules — see [Outbound prose guard](#outbound-prose-guard) |
 | `PreToolUse` | `hooks/delegation-gate.sh` | Allow `Write`/`NotebookEdit` from the main agent, with a reminder once per session to delegate whole-file work. Never denies — see [Delegation gate](#delegation-gate) |
@@ -337,7 +338,7 @@ That third row is why `agent_type` alone stays silent: a scheduled `claude -p --
 
 **Only the user switches it.** The command acts only on a run a person started: Enter at the prompt, or the Remote Control bridge. A run from a plugin, the SDK, a schedule, or an agent is refused. The skill that let the model run the toggle is gone, so the model has no command to call. The file is the one door left, so before every main-loop `Write`, `NotebookEdit`, and `Agent` call the module puts the file back in line with the mode the user chose. Plugin hooks run before settings hooks, so a file the model created through `Bash` is removed before either gate reads it. A mode that cannot be read is taken as on. Off is a regular file that is not a symbolic link, in the module and in both gates (`[ -f ] && [ ! -L ]`). Anything else at the path, a directory or a link, is not honoured as off, and the module removes it with `rm -rf --`, which removes that one entry and never follows a link. The entry is listed again before the module writes the file, so a link planted after the removal is never written through. A file already present at session start is honoured, so a session an older build switched off stays off.
 
-**The gate announces itself** in the identity block `hooks/session-warmup.sh` writes into `~/.claude/CLAUDE.md`. Core is excluded from `collect_session_warmup_contributions` by design (see [docs/session-warmup-contributions.md](docs/session-warmup-contributions.md)), so there is no root `session-warmup.md` to carry the notice. The block says the gate never denies, so the model does not read the reminder as a refusal.
+**The gate announces itself** in the gate table of the [workbench rules](#the-workbench-rules-in-the-system-prompt), which reach the main loop as a system-prompt section and a sub-agent at its start. The table says the gate never denies, so the model does not read the reminder as a refusal.
 
 **It fails silent.** Every error path exits 0 with no output: a malformed payload, a missing `jq`, an unreadable state directory, a session id that cannot key the toggle or the marker, or a marker that cannot be written. The write goes ahead either way, so a broken script costs only the reminder. Nothing announces that the reminder has stopped. It is a discipline aid, not a security boundary.
 
@@ -797,16 +798,16 @@ These switch it off, and each closes a real failure:
 
 `/clear` starts the count over. `tests/capture.test.ts` covers the policy, the checks on the reply, and each lane, and `hooks/test-memory-module-hooks.sh` pins that no Stop or `asyncRewake` hook is registered.
 
-### What the warmup injects
+### What the warmup does
 
-The warmup injects the memory-routing and destructive-command rules on **every** source:
+The warmup prints nothing for the model, on any source. The rules it used to print reach the model as [system-prompt sections](#the-workbench-rules-in-the-system-prompt), and every notice goes to the [notices file](#housekeeping-notices--for-mike-not-the-model).
 
 | Source | When | What happens |
 |--------|------|--------------|
-| `startup` | Fresh session | Full warmup: retention cleanup + rules + dead-marker sweep + reconciler + notices refresh. Then, deferred: pending-summary drain + Chat-skill scan |
-| `resume` | Reconnecting | Rules + dead-marker sweep + reconciler + notices refresh. Then, deferred: pending-summary drain |
-| `clear` | After `/clear` | Rules + notices refresh |
-| `compact` | After compression | Rules only (via PostCompact hook) |
+| `startup` | Fresh session | Full warmup: retired-file cleanup + retention cleanup + dead-marker sweep + reconciler + notices refresh. Then, deferred: pending-summary drain + Chat-skill scan |
+| `resume` | Reconnecting | Dead-marker sweep + reconciler + notices refresh. Then, deferred: pending-summary drain |
+| `clear` | After `/clear` | Notices refresh |
+| `compact` | After compression | Notices refresh (via PostCompact hook) |
 
 **Two parts, so the drain and the scan do not hold up the start.** The SessionStart hook runs `session-warmup.sh --defer`, which does everything above except the pending-summary drain and the Chat-skill scan. The [hooks module](#the-hooks-module) wraps the SessionStart hooks (`classic.SessionStart`). Once they are done, it runs `session-warmup.sh --deferred` in the background, with the source and session id on stdin. That run does only the drain and the scan, prints nothing the model reads, and adds the Chat-skill notice to the notices file the first part wrote. It runs in every lane the warmup drains in, unattended runs included, and keeps the warmup's skip guards. With no argument, or one it does not know, the script still does the whole warmup in one run.
 
@@ -814,17 +815,44 @@ The warmup injects the memory-routing and destructive-command rules on **every**
 
 It injects no persona file and no behavioural rule. The persona is the output style, which is system-prompt tier and survives compaction on its own.
 
+**It no longer writes `~/.claude/CLAUDE.md`.** Up to 0.44 it rewrote that file on every start, splicing in the gates, the scratch roots and each sibling plugin's `session-warmup.md`. The rewrite touched the user's own file, and it put about a thousand tokens into the first message, which every session creates afresh. Those now come from the hooks module. `/workbench-core:setup` (Step 2h, `scripts/setup-config.sh unsplice-claude-md`) takes the old marked blocks out of the file and leaves every other line as it was. Until it runs, the hooks module leaves the old block out of what the model reads. **It no longer writes a router stub either.** On startup it removes the `MEMORY.md` an older warmup wrote into the harness's per-project memory folder, when its first line is the stub's marker, and the folder too once it is empty. A `MEMORY.md` without the marker is left alone.
+
+### The workbench rules in the system prompt
+
+The [hooks module](#the-hooks-module) puts the workbench rules into the system prompt as `shared` `prompt.compose` sections (`hooks/mods/prompt-rules.ts`), after the engine's own shared sections and before every session one:
+
+| Section | Holds | Lanes |
+|---|---|---|
+| `workbench-core:rules` | The gate table, the scratch roots, and how the destructive scope guard reads a command | Main loop, `claude -p`, top-level `--agent` |
+| `workbench-core:memory` | The memory routing: the vault is the store, capture without asking, recall first, query the task | Main loop and `claude -p` |
+| `workbench-core:plugins` | Each sibling workbench plugin's `session-warmup.md`, verbatim (see [docs/session-warmup-contributions.md](docs/session-warmup-contributions.md)) | Main loop, `claude -p`, top-level `--agent` |
+
+A summary-writer (`WORKBENCH_SKIP_WARMUP=1`) gets none of them, as it got no CLAUDE.md and no warmup before. Each rule is stated once: the scratch roots were stated twice, and the memory routing three times (the warmup's stdout, the router stub, and the harness's own memory section). The harness's `memory` section, which told the model to keep memories in a per-project folder, is dropped through `prompt.section`, so the vault is the one store.
+
+**Byte-stable by construction.** The sections hold no date, count, version, session id or path read from the machine. Their only inputs are fixed text and the sibling plugins' own files, read once per load, so every render in a session and every session in a lane gets the same bytes. The cache that holds them is read, not created, from the second session on. `tests/prompt-rules.test.ts` composes the prompt across a reload, a notices change and a date change, and every shared section stays byte-identical.
+
+**A sub-agent gets them too.** A sub-agent's system prompt is its own, so `prompt.compose` does not reach it (measured). At `SubagentStart` the module adds its parent lane's sections as context, as the CLAUDE.md block and the router stub reached the sub-agents that load CLAUDE.md. Its copy of the memory routing adds one line saying the vault overrides any per-project memory folder, because its system prompt may still carry the harness's memory section. An agent defined with `omitClaudeMd` never saw the old block, and gets none: the CLI's built-in `Explore`, `Plan`, `web-fetch` and `comment-thread-analyst` (read from CLI 2.1.294's own definitions), and core's summary-writer. No hooks-module API says which types set the flag, so `OMITS_CLAUDE_MD` names them, and `tests/prompt-rules.test.ts` pins the list.
+
+**The old CLAUDE.md block is left out of the first message.** `prompt.context` reads each user-tier instruction file from disk, finds the two marked regions an older warmup wrote, and removes their text from what the model reads. A region is taken only when the file holds exactly one start line and one end line of it, so a marker the user quotes in a code fence leaves it alone. Only the line breaks that touch a cut change. Every other byte is the user's and passes as it was, blank runs and indentation included. The first message is shared with sub-agents, so they lose the duplicate too.
+
+**Measured on 2026-10-08** with the 2.1.293 CLI, `claude -p` on Opus 5.5, with each run's session part cold. The comparison is this change against the commit before it, each loaded through `--plugin-dir`:
+
+- First-request cache creation fell from 22,874 to 18,327 tokens, a cut of 4,547 (20 %). The shared part read from the cache grew from 10,232 to 13,741 tokens, because the rules now sit in it.
+- The whole first request fell from 33,108 to 32,070 tokens.
+- The warmup's model-visible output fell from 1,221 tokens to none.
+- In four sessions the three sections hashed the same each time. The harness `memory` section they replace hashed differently in every session, because it names the per-project memory folder.
+
 ### Housekeeping notices — for Mike, not the model
 
-Warmup output has to be **byte-stable**. Anthropic prompt caching matches on an
-exact request prefix, so a single byte that drifts between otherwise identical
-sessions invalidates the cache for the whole prompt downstream of it — the rules,
-plugin contributions, skill bodies, tool definitions. An unattended scheduled
-task that fires every 20 minutes pays that penalty on every tick.
+Anthropic prompt caching matches on an exact request prefix, so a single byte
+that drifts between otherwise identical sessions invalidates the cache for the
+whole prompt downstream of it. An unattended scheduled task that fires every 20
+minutes pays that penalty on every tick.
 
-So no volatile state is injected into the warmup payload. Pending session
-summaries, misrouted project summaries, recall-hook liveness, new
-Chat-installable skills, a stale output style, and a retired `system-overrides.md` still on disk are all written to:
+So the warmup prints nothing for the model at all. A malformed `config.json`,
+a memory server that is not up, pending session summaries, misrouted project
+summaries, recall-hook liveness, new Chat-installable skills, a stale output
+style, and a retired `system-overrides.md` still on disk are all written to:
 
 ```
 ~/.claude-workbench/warmup-notices.md
@@ -847,8 +875,7 @@ pane. Nothing of it enters model context.
 A constant pointer line used to tell the model to read the file at every session
 start. That cost a `Read` turn in every session, and the notices were never the
 model's to act on: they are summaries the user drains, setup the user re-runs,
-Chat skills the user installs. Its payload line is gone, and the payload is as
-byte-stable without it.
+Chat skills the user installs. Its payload line is gone.
 
 There is deliberately **no** detection of which kind of session this is. No
 signal for a scheduled or headless fire exists at `SessionStart` — the payload
@@ -875,13 +902,14 @@ The setting is a **backstop, not a substitute** for servers capping their own ou
 - **Memory capture with no turn.** A fork of the session lists its durable findings, and the module writes them to the vault. See [Pre-shed capture](#pre-shed-capture).
 - **Recall.** Filtered vault hits beside a prompt or a content search. See [Recall](#recall-filtered-at-the-tail-never-in-the-system-prompt).
 - **Skill learnings and the intake nudge.** See [Execution-aware skills](#execution-aware-skills) and [Task intake](#task-intake).
+- **The workbench rules in the system prompt.** Shared sections with the same bytes in every session, the harness's memory section dropped, and a sub-agent's copy at its start. See [The workbench rules in the system prompt](#the-workbench-rules-in-the-system-prompt).
 - **Commands that cost no model turn.** `/orchestrator [on|off|status]` (see [Delegation gate](#delegation-gate)), `/memory-status`, which runs `scripts/memory-status.sh` and shows its report in a pane, `/notices`, which shows the [warmup notices](#housekeeping-notices--for-mike-not-the-model) in the same pane, and `/process-pending-summaries [<session-id> [--overwrite]]` (see [Why SessionEnd does not spawn](#why-sessionend-does-not-spawn)). They replace the `orchestrator`, `memory-status` and `process-pending-summaries` skills. A command answers through a toast, the status line, or the pane, and returns no text, because a command's text is a transcript row the model reads.
 - **The status line.** After the request meter: the latest request's cache hit share (`cache 97%`) and, once a spike named a changed section, the count of such spikes (`churn 1`), then the memory server's health from the identity-checked probe (`mem UP`, every minute), orchestrator mode (`orch on`), the rows the last reply takes at 80 columns against the output style's budget of about 40 (`rows 38/40`, a meter only: nothing re-prompts on it), each skill whose learnings file is past 30 entries, and the warmup notices outstanding. A fact not known yet is left out. For example: `T14 · $0.21/req · 3.4× first │ cache 97% · mem UP · orch on · rows 38/40`.
 - **The question rule.** See [Question delivery](#question-delivery-the-rule-in-the-style-the-enforcement-in-the-mod).
 - **Commit approval.** See [Commit approval](#commit-approval-the-pick-is-checked).
 - **Vault write checks.** See [Vault write checks](#vault-write-checks).
 - **The request meter.** The status line shows the turns since session start and the latest API request's cost against the session's first API request's, for example `T14 · $0.21/req · 3.4× first`. A request is one main-loop model request (one `turn.step`), priced from the usage the API reported for that response alone. T counts completed main-loop turns. A sub-agent's requests and turns are left out. The first request is the baseline and never moves. When it has no price the line says `first unpriced`, and when it cost $0 the line says `first $0`, rather than comparing against a later request. A step that got no response reported no cost, so it is not a request. Each request is priced from its uncached input, cache reads, cache writes, and output, at the list price of the model that answered (`hooks/mods/request-meter.ts`). A cache write is priced at 2 times input, the 1-hour rate, because the engine's usage does not split writes by TTL. Claude Code's transcripts do. Across 400 of Mike's transcripts, every main-loop write since 2026-09-01 was a 1-hour write, and at that rate a probe matched the engine's own cost ledger to the cent. The rate is not universal: 0.5% of messages, from two desktop sessions in July and August, wrote 5-minute caches. In a session like those, the write share of `$/req` reads up to 60% high. A model with no price shows `unpriced` and no figure. The line updates after every request and every turn, is drawn again after a reload, and starts over on `/clear`. The figures change every turn, so they live on the status line and never in the system prompt, where they would re-bill the cached prefix.
-- **The cache meter and its churn view.** Every main-loop request is recorded with its cache read against its cache creation and its uncached input, as the API reported them for that response (`hooks/mods/cache-meter.ts`). The status line shows the latest request's hit share. A request past the first that creates more of the cache than it reads, and at least 1,024 tokens, is a creation spike. At the first request the module reads the system prompt with `$.prompt.compose()` and hashes each section. One reading costs 0 to 1 ms: measured on 2026-10-07 with 21 readings in a headless `--plugin-dir` run, of a prompt with 11 sections and about 9.1k characters. The test kit has no engine beneath `prompt.compose`, so it cannot time one. It reads it again on every request that created cache, so a change that cost no spike is not blamed on a later one, and it skips requests that only read the cache. At a spike, the sections whose hash changed since the last reading are the churn: a toast names them (`Prompt cache churn at request 14: system-prompt section env_info_simple changed, and 41,200 tokens were cached again.`), and the status line counts such spikes. A spike with no changed section is an expired cache, a compaction or a large tool result, so it is recorded and not shown. A sub-agent's requests are left out. The module only reads the prompt: it hooks no `prompt.*` event, so nothing it measures can enter the system prompt. In a session a person sits at, the record is written to `~/.claude-workbench/cache-meter/<session-id>.json` after each request (the latest 500 requests, each with its hit share, and every spike), so a change can be measured before and after. The startup warmup deletes records older than 7 days. The meter starts over on `/clear`.
+- **The cache meter and its churn view.** Every main-loop request is recorded with its cache read against its cache creation and its uncached input, as the API reported them for that response (`hooks/mods/cache-meter.ts`). The status line shows the latest request's hit share. A request past the first that creates more of the cache than it reads, and at least 1,024 tokens, is a creation spike. At the first request the module reads the system prompt with `$.prompt.compose()` and hashes each section. One reading costs 0 to 1 ms: measured on 2026-10-07 with 21 readings in a headless `--plugin-dir` run, of a prompt with 11 sections and about 9.1k characters. The test kit has no engine beneath `prompt.compose`, so it cannot time one. It reads it again on every request that created cache, so a change that cost no spike is not blamed on a later one, and it skips requests that only read the cache. At a spike, the sections whose hash changed since the last reading are the churn: a toast names them (`Prompt cache churn at request 14: system-prompt section env_info_simple changed, and 41,200 tokens were cached again.`), and the status line counts such spikes. A spike with no changed section is an expired cache, a compaction or a large tool result, so it is recorded and not shown. A sub-agent's requests are left out. The meter only reads the prompt, so nothing it measures can enter it. The module's own sections are fixed text ([The workbench rules in the system prompt](#the-workbench-rules-in-the-system-prompt)), so they never churn. In a session a person sits at, the record is written to `~/.claude-workbench/cache-meter/<session-id>.json` after each request (the latest 500 requests, each with its hit share, and every spike), so a change can be measured before and after. The startup warmup deletes records older than 7 days. The meter starts over on `/clear`.
 
 Every hook that touches `$` lives in `register.ts`, because the engine follows `$` into no imported function, and a plugin registers each event once, so where several features share an event, one hook branches. The logic is pure and lives in `hooks/mods/`, and `types/index.d.ts` declares the `$.workbench` noun and the values the module keeps in `$.state`.
 
@@ -1020,7 +1048,7 @@ The merge is **additive**: entries are added when absent, and existing rules kee
 
 **The fail-closed rule binds the verdict, not the deployment.** A command the guard reads and cannot resolve is denied. A guard that cannot *run* is a broken install rather than an undetermined command, and denying every Bash call because `jq` is missing takes the machine down instead of protecting it — so the payload-reading preconditions exit 0. Everything after the cheap prefilter does not: by then the command is known to name a destructive verb, so a missing `python3` or a missing checker is a destructive command nobody judged, and that denies.
 
-**The instruction half, and why it ships on two channels.** A guard that denies what it cannot read only works well if agents write paths it can read, so `hooks/session-warmup.sh` carries the rule — *twice, because the two channels reach different readers.* A three-line instruction goes to the hook's SessionStart stdout. The managed block the same hook writes into `~/.claude/CLAUDE.md` carries a row naming the guard and a line naming the scratch roots, and leaves the shape rule to the guard's own deny text. Only the second reaches a *sub-agent*: a freshly spawned one starts with that file in its context and with the hook's stdout absent, which was measured by asking one to introspect before its first tool call — and a sub-agent is where a dev-team agent actually runs. Copying the rule into each agent definition instead was rejected: that misses `general-purpose`, `Explore`, `Plan`, and every agent added later, where one managed block reaches all of them at once. `hooks/test-session-warmup.sh` pins the two copies against each other on a string *derived* from one of them, and pins both against the guard's registration in `hooks.json` — retire the guard and the promise the machine makes every sub-agent at startup becomes a lie, which reddens.
+**The instruction half, and how it reaches the agents.** A guard that denies what it cannot read only works well if agents write paths it can read, so the [workbench rules](#the-workbench-rules-in-the-system-prompt) carry the rule once: a row naming the guard, the scratch roots, and the shapes it cannot read. The main loop gets it in the system prompt. A sub-agent's system prompt is its own, so the hooks module adds the same text at `SubagentStart`, which was measured by asking a fresh one to quote it — and a sub-agent is where a dev-team agent actually runs. Copying the rule into each agent definition instead was rejected: that misses `general-purpose` and every agent added later, where one hook reaches all of them at once. The CLI's `Explore` and `Plan` load no CLAUDE.md and never got the rule, and they still do not. It used to be stated twice, in the warmup's stdout and in a block the warmup wrote into `~/.claude/CLAUDE.md`, and the two copies had to be pinned against each other. `hooks/test-session-warmup.sh` now pins that the one copy names the roots once, and pins each gate it names against the hook's registration in `hooks.json` — retire the guard and the promise every agent reads at startup becomes a lie, which reddens.
 
 **The five are gone from `rails.json`, and that is the whole point rather than a loose end.** Leaving them listed would not have been a safety net: the merge is one-way — `permissions.sh` only ever adds — so an entry kept here is an entry restored into `~/.claude/settings.json` at whatever moment somebody next runs setup, silently undoing a deliberate removal. An undo nobody schedules is a hazard, not a protection.
 
@@ -1163,16 +1191,16 @@ The default pull interval is deliberately tighter than upstream's, and `git_lfs`
 
 #### Canonical store & routing
 
-The vault is the **canonical durable memory store**. Claude Code's harness also injects per-project memory instructions every session (save to `~/.claude/projects/<encoded-cwd>/memory/` + a `MEMORY.md` index) — left alone, sessions scatter memory files there that the vault can't search. The session warmup neutralizes that channel into a router: it injects a `## Memory routing` rule at every session start (saves go to the vault via the memory MCP `write` tool with vault frontmatter; recall is vault `search`, not directory reads, with the mode left to the server, it runs *before* a repo scan rather than after, and its query is built from the task rather than from the prompt's wording), and on startup it writes a self-healing router stub to the current project's `MEMORY.md` (canonical template: `references/memory-routing-stub.md`). A `MEMORY.md` without the router marker is never overwritten — the warmup flags it for human migration instead. Keep the store singular: don't install competing memory MCP servers alongside the vault.
+The vault is the **canonical durable memory store**. Claude Code's harness has its own memory section in the system prompt, which tells every session to save to `~/.claude/projects/<encoded-cwd>/memory/` with a `MEMORY.md` index. Left alone, sessions scatter memory files there that the vault can't search. The hooks module drops that section, and states the routing once, in its `workbench-core:memory` system-prompt section (see [The workbench rules in the system prompt](#the-workbench-rules-in-the-system-prompt)): saves go to the vault through the memory MCP `write` tool with vault frontmatter, recall is vault `search`, not directory reads, with the mode left to the server, it runs *before* a repo scan rather than after, and its query is built from the task rather than from the prompt's wording. The warmup used to inject the same rule and write a router stub into the project's `MEMORY.md` as well. It now removes a stub it wrote, and leaves any other `MEMORY.md` alone. Keep the store singular: don't install competing memory MCP servers alongside the vault.
 
-**Why the routing block states when recall happens and what to search for, not just where.** Prompt recall can only ever search the prompt, because that is the text it receives. It runs on every prompt that passes its substance gate, not only the opening one. The routing text claimed "only the opening prompt" until 2026-09-27, and that was never true. Two rules follow, and the routing block (plus its router-stub twin) is the floor for both:
+**Why the routing section states when recall happens and what to search for, not just where.** Prompt recall can only ever search the prompt, because that is the text it receives. It runs on every prompt that passes its substance gate, not only the opening one. The routing text claimed "only the opening prompt" until 2026-09-27, and that was never true. Two rules follow, and the routing section is the floor for both:
 
 - **When.** Search the vault *before* scanning the repo, and again whenever the task turns up something the prompt never named. Scan recall covers part of that second case automatically (below), but only where a scan carries an extractable query — the rule remains the floor.
 - **What.** Build the query from the *task* — the convention, format, procedure, tool, or error you are about to produce or decide — not from the prompt's wording. This is the half with the measurement behind it: replaying "go ahead and push and create a release" against the live vault left `skills/release.learnings.md` — the note carrying the release-title rule — outside the top 8, while "release title naming convention", the query the task implies, put it in the top 5 (5th when first measured, 3rd on re-measure 2026-09-14 — ranks drift as the vault grows, the gap between the two queries does not). The agent's advantage over auto-recall is asking the better question, and a rule that says only *when* leaves that on the table.
 
-**No per-turn reminder restates them any more.** `memory-recall-nudge.sh` and `memory-capture-nudge.sh` used to, on `UserPromptSubmit`. Both were removed on 2026-09-27. They fired on sub-agent hand-backs and task notifications as well as typed prompts, restated warmup text at a measured ~180k tokens in three days, and repeated the false opening-prompt claim. The routing block is re-injected after every compaction, and the capture checkpoint stays as the capture backstop ([Pre-shed capture](#pre-shed-capture)).
+**No per-turn reminder restates them any more.** `memory-recall-nudge.sh` and `memory-capture-nudge.sh` used to, on `UserPromptSubmit`. Both were removed on 2026-09-27. They fired on sub-agent hand-backs and task notifications as well as typed prompts, restated warmup text at a measured ~180k tokens in three days, and repeated the false opening-prompt claim. The routing section is in the system prompt, so it survives every compaction, and the capture checkpoint stays as the capture backstop ([Pre-shed capture](#pre-shed-capture)).
 
-**The routing block names no search mode.** The server's default is `auto`: hybrid when the vault has embeddings, keyword when it does not. `hooks/memory-search-mode.sh` used to force `hybrid` onto every agent search, on the premise that the server defaulted to keyword. That premise went stale, and forcing hybrid broke the keyword fallback on a vault with no embeddings, so the hook was removed on 2026-09-27.
+**The routing section names no search mode.** The server's default is `auto`: hybrid when the vault has embeddings, keyword when it does not. `hooks/memory-search-mode.sh` used to force `hybrid` onto every agent search, on the premise that the server defaulted to keyword. That premise went stale, and forcing hybrid broke the keyword fallback on a vault with no embeddings, so the hook was removed on 2026-09-27.
 
 #### Recall: filtered, at the tail, never in the system prompt
 
@@ -1240,7 +1268,7 @@ Runs on every `startup` warmup:
 
 **`/workbench-core:install-chat-skills` runs its script as it loads.** The skill injects the output of `scripts/install-chat-skills.sh` with `` !`…` `` and pre-approves exactly that command in `allowed-tools`, so the install costs no tool turn and no permission prompt. The model only reports what the script did.
 
-**`/workbench-core:setup` keeps the steps that need the model.** Its fixed merges run through `scripts/setup-config.sh`: the legacy config migration, the `config.json` merge, the bearer token, the leftover ask-rule check, and the MCP output cap. `hooks/test-setup-config.sh` covers each. The opt-in git-sync steps are in `skills/setup/references/git-sync.md`, which setup reads only when the user opts in.
+**`/workbench-core:setup` keeps the steps that need the model.** Its fixed merges run through `scripts/setup-config.sh`: the legacy config migration, the `config.json` merge, the bearer token, the leftover ask-rule check, the MCP output cap, and taking the old workbench block out of `~/.claude/CLAUDE.md`. `hooks/test-setup-config.sh` covers each. The opt-in git-sync steps are in `skills/setup/references/git-sync.md`, which setup reads only when the user opts in.
 
 `/orchestrator`, `/memory-status`, `/notices`, and `/process-pending-summaries` are commands of the [hooks module](#the-hooks-module), not skills.
 

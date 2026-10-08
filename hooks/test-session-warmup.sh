@@ -129,58 +129,38 @@ assert_no_persona() {  # assert_no_persona <source-label> <output>
   assert_missing "$1: no skills-protocol pointer"   "$2" "Skills protocol"
 }
 
-echo "startup — the rules, and no persona file:"
+echo "startup — nothing for the model, and no persona file:"
+# The warmup prints nothing for the model. The memory routing and the destructive
+# commands it printed, and the gates and scratch roots it spliced into
+# ~/.claude/CLAUDE.md, are stated once in hooks/mods/prompt-rules.ts and reach
+# the model as shared system-prompt sections. tests/prompt-rules.test.ts pins
+# every rule this test used to pin here, against that one copy.
 OUT=$(run_warmup startup)
 assert_no_persona startup "$OUT"
-# The behavioural rules load from the output style alone. hooks/test-rule-source.sh
-# proves no rule text reaches stdout; this pins the heading that used to carry it.
+if [ -z "$OUT" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ startup prints nothing for the model"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ startup printed for the model: $(printf '%s' "$OUT" | head -3)"
+fi
 assert_missing  "no guardrails payload injected"   "$OUT" "## Guardrails"
-# Memory capture is standing authorization. The guardrails payload used to carry
-# that exemption, so the routing block now states it on its own.
-assert_contains "memory capture needs no confirmation" "$OUT" "a memory-capture write needs no options round and no confirmation"
-# The recall-ORDERING rule has no hook that can carry it in full — prompt recall
-# only ever sees the main session's prompts, and scan recall only fires
-# on a file search that carries an extractable query — so the injected routing
-# block is the only
-# thing that carries the whole rule, and these are the only assertions that prove
-# it is still there.
-# The where-rule is asserted alongside it because the two answer different
-# questions and a rewrite that collapses them into one bullet loses the answer
-# to "where", which is the older of the two.
-assert_contains "routing block orders recall first"     "$OUT" "Recall comes FIRST"
-assert_contains "recall precedes the repo scan"         "$OUT" "BEFORE you scan the repo"
-assert_contains "the ordering rule carries its reason"  "$OUT" "Auto-recall searches only the wording of each prompt and the patterns of your file searches"
-# Prompt recall runs on every substantive prompt, so a claim that auto-recall
-# saw only the opening prompt is false. It shipped in this block until 2026-09-27.
-assert_missing  "no claim that recall saw only the opening prompt" "$OUT" "opening prompt"
-assert_contains "recall still routes to the vault"      "$OUT" "Recall = vault \`search\`, not directory reads."
-# The server's default mode is "auto", which falls back to keyword on a vault
-# with no embeddings. Naming hybrid here broke that fallback.
-assert_contains "recall leaves the mode to the server"  "$OUT" "Omit \`mode\`: the server picks hybrid when the vault has embeddings"
-assert_missing  "recall does not force hybrid"          "$OUT" "(mode hybrid)"
-# WHEN to search and WHAT to search for are different rules, and the block is
-# the only floor for both. The ordering bullet alone leaves the agent running
-# the prompt's own wording, which is the weaker query and the measured failure:
-# an agent-formed query found a release-naming rule the prompt's wording missed.
-assert_contains "routing block says what to query"      "$OUT" "Build the recall QUERY from the TASK"
-assert_contains "the query rule rejects the prompt's wording" "$OUT" "not from the prompt"
-assert_contains "the query rule carries its reason"     "$OUT" "your advantage over it is asking the better question"
+assert_missing  "no memory routing printed"        "$OUT" "## Memory routing"
+assert_missing  "no destructive commands printed"  "$OUT" "## Destructive commands"
+assert_missing  "no warmup header printed"         "$OUT" "session warmup"
 
 echo "startup — the shared-server health probe reports a server that is not up:"
-# $OUT still holds the startup run above, where nothing is listening on the
-# configured port — so the probe returns DOWN_NONE and the warmup should say the
-# server is starting. This assertion is the inverse of the one it replaced: under
-# per-session stdio there was no external listener to probe, so the notice was
-# pure noise and the block was removed. With the shared HTTP transport restored
-# there IS a listener to speak for, and staying silent about a down server would
-# hide the one failure the user most needs to see.
-assert_contains "reports a server that is not yet up" "$OUT" "Memory server starting"
+# Nothing is listening on the configured port, so the probe returns DOWN_NONE
+# and the warmup says the server is starting. The notice is Mike's, so it goes
+# to the notices file with the rest, and never to the model. Staying silent
+# about a down server would hide the one failure the user most needs to see.
+STARTUP_NOTICES="$(notices)"
+assert_contains "reports a server that is not yet up" "$STARTUP_NOTICES" "Memory server starting"
+assert_missing  "and not to the model"                 "$OUT" "Memory server"
 
 # The other probe branches must stay quiet in this state: a down server is not a
 # port conflict and not a config drift, and conflating them would send the user
 # chasing the wrong fix.
-assert_missing "no port-drift notice when merely down" "$OUT" "Memory server port drift"
-assert_missing "no conflict notice when merely down"   "$OUT" "Memory server port conflict"
+assert_missing "no port-drift notice when merely down" "$STARTUP_NOTICES" "Memory server port drift"
+assert_missing "no conflict notice when merely down"   "$STARTUP_NOTICES" "Memory server port conflict"
 
 # A healthy server must produce NO health notice at all — the common case needs
 # no words. Simulated by pointing the probe at a stub that reports UP.
@@ -190,34 +170,70 @@ cat > "$PROBE_STUB/memory-probe.sh" <<'STUB'
 memory_probe() { echo UP; }
 STUB
 OUT_UP=$(WORKBENCH_PROBE_OVERRIDE="$PROBE_STUB/memory-probe.sh" run_warmup startup)
-assert_missing "healthy server prints no notice" "$OUT_UP" "Memory server"
+assert_missing "healthy server prints no notice" "$(notices)" "Memory server"
+assert_missing "and prints nothing for the model" "$OUT_UP" "Memory server"
 
-echo "startup — the per-project router stub carries the routing rules:"
-# The stub is the SECOND home of the routing rules, and the only one a context
-# that skips this warmup still sees — a sub-agent dispatch exits at the
-# CLAUDE_CODE_AGENT guard, while the harness keeps injecting the project's
-# MEMORY.md. So the ordering rule has to reach the stub too, not just stdout.
-# The path is the one ensure_memory_routing_stub builds: fake HOME, cwd encoded
-# with "/" replaced by "-". The startup runs above wrote it.
-STUB_FILE="$SANDBOX/home/.claude/projects/${PWD//\//-}/memory/MEMORY.md"
-STUB_TEXT=$(cat "$STUB_FILE" 2>/dev/null)
-assert_contains "stub written on startup"              "$STUB_TEXT" "<!-- workbench-memory-router -->"
-assert_contains "stub orders recall first"             "$STUB_TEXT" "**Recall first**"
-assert_contains "stub ordering carries its reason"     "$STUB_TEXT" "Automatic recall searches only the main session's prompts and the patterns of file searches"
-assert_missing  "stub makes no opening-prompt claim"   "$STUB_TEXT" "opening prompt"
-assert_missing  "stub names no retired search-mode hook" "$STUB_TEXT" "memory-search-mode"
-assert_contains "stub leaves the mode to the server"   "$STUB_TEXT" "the server picks hybrid when the vault has embeddings and keyword when it does not"
-# The stub carries BOTH recall rules or the two homes have drifted apart, and a
-# sub-agent — which never runs this warmup — only ever reads the stub.
-assert_contains "stub says what to query"              "$STUB_TEXT" "**Query the task, not the prompt**"
-assert_contains "stub query rule carries its reason"   "$STUB_TEXT" "asking the better question"
-assert_contains "stub still routes recall to the vault" "$STUB_TEXT" "search the vault (\`mcp__plugin_workbench-core_memory__search\`)"
+echo "startup — a malformed config.json is a notice, not model text:"
+BROKEN_HOME="$SANDBOX/broken-config-home"
+mkdir -p "$BROKEN_HOME/.claude/plugins/data/workbench-core-claude-workbench"
+printf '{not json' > "$BROKEN_HOME/.claude/plugins/data/workbench-core-claude-workbench/config.json"
+OUT=$(printf '{"source":"startup"}' | HOME="$BROKEN_HOME" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
+  WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" WORKBENCH_MEMORY_PORT="$PROBE_PORT" \
+  CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" 2>/dev/null)
+assert_contains "the notice names the malformed config" \
+  "$(cat "$BROKEN_HOME/.claude-workbench/warmup-notices.md" 2>/dev/null)" "Malformed config.json"
+assert_missing  "and the model is told nothing"          "$OUT" "Malformed config.json"
 
-echo "clear, compact and resume — the rules again, and still no persona file:"
+echo "startup — the per-project router stub is retired:"
+# The stub restated the memory routing in the harness's per-project memory
+# folder. hooks/register.ts drops the harness's memory section and states the
+# routing once, so the warmup writes no stub, and removes one it wrote before:
+# a MEMORY.md whose first line is the stub's marker. The folder goes too when
+# that leaves it empty. Anything else there is someone else's and stays.
+STUB_DIR="$SANDBOX/home/.claude/projects/${PWD//\//-}/memory"
+STUB_FILE="$STUB_DIR/MEMORY.md"
+assert_no_path "no stub is written on startup" "$STUB_FILE"
+mkdir -p "$STUB_DIR"
+printf '<!-- workbench-memory-router -->\n# Memory routing\n\nThis directory is a router only.\n' > "$STUB_FILE"
+run_warmup compact >/dev/null
+assert_path "compact leaves an old stub for a real start" "$STUB_FILE"
+run_warmup startup >/dev/null
+assert_no_path "startup removes the stub an older warmup wrote" "$STUB_FILE"
+assert_no_path "and the folder it left empty" "$STUB_DIR"
+mkdir -p "$STUB_DIR"
+printf '# My own memory index\nUSER-MEMORY-CANARY\n' > "$STUB_FILE"
+run_warmup startup >/dev/null
+assert_contains "a MEMORY.md without the marker is left as it was" "$(cat "$STUB_FILE" 2>/dev/null)" "USER-MEMORY-CANARY"
+printf '# Notes\n<!-- workbench-memory-router -->\n' > "$STUB_FILE"
+run_warmup startup >/dev/null
+assert_path "a marker that is not the first line is not the stub's" "$STUB_FILE"
+rm -f "$STUB_FILE"
+printf '<!-- workbench-memory-router -->\n' > "$SANDBOX/stub-target.md"
+ln -s "$SANDBOX/stub-target.md" "$STUB_FILE"
+run_warmup startup >/dev/null
+assert_path "a link named MEMORY.md is not removed" "$STUB_FILE"
+rm -f "$STUB_FILE" "$SANDBOX/stub-target.md"
+printf '<!-- workbench-memory-router -->\n' > "$STUB_FILE"
+printf 'mine\n' > "$STUB_DIR/other.md"
+run_warmup startup >/dev/null
+assert_no_path "the stub goes when the folder holds more" "$STUB_FILE"
+assert_path "and the rest of the folder stays" "$STUB_DIR/other.md"
+rm -rf "$SANDBOX/home/.claude/projects"
+if [ -e "$REPO_ROOT/references/memory-routing-stub.md" ]; then
+  FAIL=$((FAIL + 1)); echo "  ❌ the stub template still ships"
+else
+  PASS=$((PASS + 1)); echo "  ✅ the stub template is gone"
+fi
+
+echo "clear, compact and resume — nothing for the model, and still no persona file:"
 for source in clear compact resume; do
   OUT=$(run_warmup "$source")
   assert_no_persona "$source" "$OUT"
-  assert_contains "$source: memory routing injected" "$OUT" "## Memory routing"
+  if [ -z "$OUT" ]; then
+    PASS=$((PASS + 1)); echo "  ✅ $source: prints nothing for the model"
+  else
+    FAIL=$((FAIL + 1)); echo "  ❌ $source: printed for the model: $(printf '%s' "$OUT" | head -3)"
+  fi
 done
 
 echo "agent dispatch — CLAUDE_CODE_AGENT set skips the entire warmup:"
@@ -266,18 +282,14 @@ else
   FAIL=$((FAIL + 1)); echo "  ❌ wrote ~/.claude/system-overrides.md"
 fi
 
-echo "interactive (unset) — persistent-file enforcement still runs:"
+echo "interactive (unset) — the warmup writes no CLAUDE.md:"
 UNSET_HOME="$SANDBOX/unset-home"
 mkdir -p "$UNSET_HOME"
 printf '{"source":"startup"}' | \
   HOME="$UNSET_HOME" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
   WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
   CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" >/dev/null 2>&1
-if [ -f "$UNSET_HOME/.claude/CLAUDE.md" ]; then
-  PASS=$((PASS + 1)); echo "  ✅ writes ~/.claude/CLAUDE.md as before"
-else
-  FAIL=$((FAIL + 1)); echo "  ❌ did not write ~/.claude/CLAUDE.md when unset"
-fi
+assert_no_path "does not create ~/.claude/CLAUDE.md" "$UNSET_HOME/.claude/CLAUDE.md"
 # system-overrides.md is retired. An absent file stays absent, so a user who
 # removed the alias and deleted the file is never handed it back.
 if [ ! -e "$UNSET_HOME/.claude/system-overrides.md" ]; then
@@ -286,45 +298,40 @@ else
   FAIL=$((FAIL + 1)); echo "  ❌ created ~/.claude/system-overrides.md from nothing"
 fi
 
-echo "managed CLAUDE.md block — facts only, and every fact is true:"
-# ~/.claude/CLAUDE.md reaches every sub-agent, so the managed block carries
-# facts and no behavioural rule. hooks/test-rule-source.sh proves no rule text
-# lands here. This section proves the facts are present and match the plugin.
+echo "the user's CLAUDE.md is theirs — a start leaves it byte for byte:"
+# The warmup used to rewrite this file on every start. A block an older warmup
+# left in it stays until setup takes it out (scripts/setup-config.sh
+# unsplice-claude-md, hooks/test-setup-config.sh), and the hooks module leaves
+# it out of what the model reads until then (tests/prompt-rules.test.ts).
 OV_HOME="$SANDBOX/overrides-home"
 mkdir -p "$OV_HOME/.claude"
-printf '## My own notes\n\nUSER-PROSE-CANARY\n' > "$OV_HOME/.claude/CLAUDE.md"
-printf '{"source":"startup"}' | \
-  HOME="$OV_HOME" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
-  WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
-  CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" >/dev/null 2>&1
-OV_CLAUDE="$(cat "$OV_HOME/.claude/CLAUDE.md" 2>/dev/null)"
-# Scoped to the managed block, never to the whole file: ~/.claude/CLAUDE.md also
-# carries the warmup block and the user's own prose below it, and either could
-# satisfy a whole-file grep while the managed block had lost the fact.
-OV_ID_BLOCK=$(awk '
-  $0 == "<!-- workbench-identity:start -->" { inblock=1 }
-  inblock { print }
-  $0 == "<!-- workbench-identity:end -->"   { inblock=0 }
-' "$OV_HOME/.claude/CLAUDE.md" 2>/dev/null)
-assert_contains "block keeps its start marker"         "$OV_CLAUDE" "<!-- workbench-identity:start -->"
-assert_contains "block keeps its end marker"           "$OV_CLAUDE" "<!-- workbench-identity:end -->"
-assert_contains "user prose below the block survives"  "$OV_CLAUDE" "USER-PROSE-CANARY"
-assert_missing  "block no longer lists identity files" "$OV_ID_BLOCK" "## Identity files"
-# The delegation gate is announced here and nowhere else. Core is excluded from
-# collect_session_warmup_contributions by design, so there is no root
-# session-warmup.md to carry it. The gate is advisory since 2026-10-05, and the
-# block must say so, or the model reads every reminder as a refusal.
-assert_contains "block announces the delegation gate"  "$OV_ID_BLOCK" "| Delegation gate |"
-assert_contains "block says the gate never denies"     "$OV_ID_BLOCK" "It never denies: a main-agent \`Write\` or \`NotebookEdit\` goes ahead with a reminder, once per session."
-assert_contains "block names the silent targets"       "$OV_ID_BLOCK" "Plans and scratch roots draw none."
-assert_missing  "block no longer says Write is denied" "$OV_ID_BLOCK" "denied \`Write\`"
-assert_contains "block names the gate's silencer"      "$OV_ID_BLOCK" "The user's \`/orchestrator off\` silences it."
-# Every gate the block names must be a hook this plugin ships AND registers. The
-# list is read from the block, so a renamed or retired hook turns the row red
-# instead of leaving the block telling every sub-agent about a gate that is gone.
-GATE_ROWS=$(printf '%s\n' "$OV_ID_BLOCK" | sed -nE 's/^\| ([A-Z][a-z]* [a-z ]*(gate|guard)) \|.*/\1/p')
+printf '<!-- workbench-identity:start -->\n# Workbench gates and scratch roots\n<!-- workbench-identity:end -->\n\n## My own notes\n\nUSER-PROSE-CANARY\n' > "$OV_HOME/.claude/CLAUDE.md"
+OV_BEFORE="$(cat "$OV_HOME/.claude/CLAUDE.md")"
+for source in startup resume clear compact; do
+  printf '{"source":"%s"}' "$source" | \
+    HOME="$OV_HOME" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
+    WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
+    CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" >/dev/null 2>&1
+done
+if [ "$(cat "$OV_HOME/.claude/CLAUDE.md")" = "$OV_BEFORE" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ the file is unchanged, the old block and the user's prose alike"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ the warmup changed ~/.claude/CLAUDE.md"
+fi
+for retired in collect_session_warmup_contributions ensure_claude_md_enforcement ensure_memory_routing_stub; do
+  assert_missing "the warmup no longer defines $retired" "$(cat "$WARMUP")" "$retired()"
+done
+
+echo "the gates the system prompt names are real:"
+# The gate table is in hooks/mods/prompt-rules.ts, the one copy. The main loop
+# gets it in the system prompt, and a sub-agent that loads CLAUDE.md gets it
+# at SubagentStart. Every gate it names must be a hook this plugin ships AND
+# registers. The list is read from the table, so a renamed or retired hook turns
+# the row red instead of leaving the agents told about a gate that is gone.
+RULES_SRC="$REPO_ROOT/hooks/mods/prompt-rules.ts"
+GATE_ROWS=$(sed -nE 's/^\| ([A-Z][a-z]* [a-z ]*(gate|guard)) \|.*/\1/p' "$RULES_SRC")
 if [ "$(printf '%s\n' "$GATE_ROWS" | grep -c .)" -lt 5 ]; then
-  FAIL=$((FAIL + 1)); echo "  ❌ block names fewer than five gates: $(printf '%s' "$GATE_ROWS" | tr '\n' ',')"
+  FAIL=$((FAIL + 1)); echo "  ❌ the table names fewer than five gates: $(printf '%s' "$GATE_ROWS" | tr '\n' ',')"
 fi
 while IFS= read -r gate; do
   [ -n "$gate" ] || continue
@@ -334,80 +341,43 @@ while IFS= read -r gate; do
   if [ -f "$REPO_ROOT/hooks/$hook" ] && [ "${registered:-0}" -ge 1 ]; then
     PASS=$((PASS + 1)); echo "  ✅ $gate is shipped and registered ($hook)"
   else
-    FAIL=$((FAIL + 1)); echo "  ❌ block names $gate, but $hook is not shipped and registered"
+    FAIL=$((FAIL + 1)); echo "  ❌ the table names $gate, but $hook is not shipped and registered"
   fi
 done <<< "$GATE_ROWS"
+assert_contains "the table names the destructive scope guard" "$GATE_ROWS" "Destructive scope guard"
 
-echo "the destructive scope guard and its roots ride in the managed block:"
-# This block is the ONLY channel that reaches a sub-agent. A freshly spawned one
-# starts with ~/.claude/CLAUDE.md in context and without this hook's stdout, so
-# the stdout copy reaches the main session and nothing else. The block names the
-# guard and the scratch roots. How to satisfy the guard is the deny's job: its
-# reason text names the unreadable shapes and the way through.
-assert_contains "block names the destructive scope guard" "$OV_ID_BLOCK" \
-  "| Destructive scope guard |"
-
-# Pin the instruction against the layer that ENFORCES it, not against a second
-# copy of itself. The block promises these commands run unprompted inside scope,
-# and only hooks/destructive-scope-guard.sh makes that true — retire the guard
-# and the promise becomes a lie the machine now tells every sub-agent at
-# startup. Registration is checked as well as the file, because an unregistered
-# guard is a file that runs never.
-if [ -f "$REPO_ROOT/hooks/destructive-scope-guard.sh" ]; then
-  PASS=$((PASS + 1)); echo "  ✅ the guard the block promises is shipped"
-else
-  FAIL=$((FAIL + 1)); echo "  ❌ block promises a guard this plugin does not ship"
-fi
+# The table promises the destructive commands run unprompted inside scope, and
+# only hooks/destructive-scope-guard.sh makes that true. Registration is checked
+# as well as the file, because an unregistered guard is a file that runs never.
 GUARD_HOOKS=$(jq -r '[.hooks.PreToolUse[].hooks[]
   | select(.command | test("destructive-scope-guard.sh"))] | length' \
   "$REPO_ROOT/hooks/hooks.json" 2>/dev/null)
 if [ "$GUARD_HOOKS" = "1" ]; then
-  PASS=$((PASS + 1)); echo "  ✅ the guard is registered, so the promise holds"
+  PASS=$((PASS + 1)); echo "  ✅ the guard is registered once, so the promise holds"
 else
-  FAIL=$((FAIL + 1)); echo "  ❌ the guard the block promises is not registered once"
+  FAIL=$((FAIL + 1)); echo "  ❌ the guard the table promises is not registered once"
 fi
 
-# The hook carries the rule TWICE — this block for sub-agents, and its own
-# stdout for the main session. Pin them against EACH OTHER on a string DERIVED
-# from one of them rather than on a third literal: two independently written
-# copies let an edit update one and leave the other stating the old roots, which
-# puts an agent back to a hard deny while the suite stays green.
-#
-# A fresh capture, not the $OUT already in scope: the last assignment to it
-# above is the agent-dispatch run, whose entire stdout is deliberately empty.
-#
-# That emptiness speaks for one population only. A headless `claude -p --agent`
-# run — Watson under cron — misses the stdout because the warmup exits at the
-# CLAUDE_CODE_AGENT guard. An in-process Agent-tool sub-agent leaves that
-# variable UNSET (measured) and misses the stdout for an unrelated reason:
-# SessionStart never fires on sub-agent spawn, so the hook does not run at all.
-# The second population is the one that hit the original bug. Neither reads
-# stdout and both load ~/.claude/CLAUDE.md, which is why the rule lives in the
-# managed block and why stdout is pinned beside it rather than instead of it.
-SCRATCH_STDOUT=$(run_warmup startup)
-assert_contains "stdout copy heads its own section" "$SCRATCH_STDOUT" \
-  "## Destructive commands"
-# The root list, lifted out of the stdout copy and required of the block. An
-# empty extraction is a sentinel rather than an empty needle, because `grep -F
-# ""` matches everything and would go green on exactly the drift this catches.
-SCRATCH_ROOTS=$(printf '%s\n' "$SCRATCH_STDOUT" \
-  | sed -n 's/.*\(the session scratchpad[^.]*sandbox\).*/\1/p' | head -1)
-[ -n "$SCRATCH_ROOTS" ] || SCRATCH_ROOTS="<the stdout copy names no scratchpad roots>"
-assert_contains "both copies name the same scratchpad roots" \
-  "$OV_ID_BLOCK" "$SCRATCH_ROOTS"
+echo "the scratch roots are stated once:"
+# They were stated twice, in the CLAUDE.md block and in the warmup's stdout, and
+# the two copies had to be pinned against each other. Now one copy carries them,
+# so the pin is that it says it exactly once.
+SCRATCH_ROOTS='the session scratchpad, `~/Developer/scratchpad`, or a `mktemp -d` sandbox'
+# The source escapes each backtick in its template literals, so the needles are
+# counted in the text as the model reads it.
+RULES_TEXT="$(sed 's/\\`/`/g' "$RULES_SRC")"
+check_count() { # desc, needle, expected
+  local n
+  n=$(printf '%s\n' "$RULES_TEXT" | grep -oF -- "$2" | wc -l | tr -d ' ')
+  if [ "$n" = "$3" ]; then PASS=$((PASS + 1)); echo "  ✅ $1"
+  else FAIL=$((FAIL + 1)); echo "  ❌ $1 — found $n, expected $3"; fi
+}
+check_count "the roots are named once" "$SCRATCH_ROOTS" 1
 # Agents made probe roots by hand under /tmp, which is no root, and then handed
-# the cleanup to the user. Both copies have to steer new scratch into the
-# scratchpads, or one of them goes on teaching the old habit.
-SCRATCH_WHERE="Never create it anywhere under \`/tmp\` outside your session scratchpad."
-assert_contains "stdout copy says where new scratch goes" \
-  "$SCRATCH_STDOUT" "$SCRATCH_WHERE"
-assert_contains "block says where new scratch goes" \
-  "$OV_ID_BLOCK" "$SCRATCH_WHERE"
-# The refusal once routed an agent's own scratch cleanup to the human as a
-# `! rm -rf`. The stdout copy says that is not the route. The block leaves it to
-# the guard's deny, which carries the same sentence as its recovery text.
-assert_contains "stdout copy keeps scratch cleanup off the user" \
-  "$SCRATCH_STDOUT" "Never hand the user a \`!\` command to delete your own scratch."
+# the cleanup to the user. The one copy steers new scratch into the scratchpads.
+check_count "it says where new scratch goes, once" "Never create it anywhere under \`/tmp\` outside your session scratchpad" 1
+check_count "it keeps scratch cleanup off the user, once" "Never hand the user a \`!\` command to delete your own scratch." 1
+assert_missing "the warmup states no root of its own" "$(cat "$WARMUP")" "run with no prompt when every path they act on resolves"
 
 echo "retired system-overrides.md — a rule-free stub while the alias still names it:"
 # The user's shell alias passes this file to `claude --append-system-prompt-file`,
@@ -465,7 +435,7 @@ mkdir -p "$SANDBOX/aside"
 mv "$SANDBOX/memory/identity" "$SANDBOX/aside/identity"
 OUT=$(run_warmup startup)
 assert_missing  "no not-found notice"                  "$OUT" "not found"
-assert_contains "the rest of startup still runs"       "$OUT" "## Memory routing"
+assert_contains "the rest of startup still runs"       "$(notices)" "_Written by session-warmup.sh at startup session start."
 mv "$SANDBOX/aside/identity" "$SANDBOX/memory/identity"
 
 echo "stray-summary detector — startup flags project-dir summaries:"
@@ -484,7 +454,10 @@ assert_missing  "stdout carries no pointer to the file" "$OUT" "warmup-notices.m
 echo "stray-summary detector — clean project stays quiet:"
 CLEAN_PROJ="$SANDBOX/clean"
 mkdir -p "$CLEAN_PROJ"
+# The probe reports UP: a server that is not up is a notice too, since the
+# health check writes to the notices file, and this run checks for none.
 OUT=$(cd "$CLEAN_PROJ" && printf '{"source":"startup"}' | \
+  WORKBENCH_PROBE_OVERRIDE="$PROBE_STUB/memory-probe.sh" \
   HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
   WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
   CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" 2>/dev/null)
@@ -506,11 +479,14 @@ assert_missing  "the file is not named in the payload"    "$OUT" "warmup-notices
 # but "byte-identical ENTIRE payload", regardless of how much notice state
 # churns underneath it.
 
-echo "cache stability — the whole warmup payload is byte-identical across notice states:"
+echo "cache stability — the warmup prints nothing for the model in any notice state:"
 PREFIX_PROJ="$SANDBOX/prefix-proj"
 mkdir -p "$PREFIX_PROJ"
+# The probe reports UP, so state A below has no notice at all (a server that is
+# not up is a notice too).
 run_in_prefix_proj() {
   (cd "$PREFIX_PROJ" && printf '{"source":"startup"}' | \
+    WORKBENCH_PROBE_OVERRIDE="$PROBE_STUB/memory-probe.sh" \
     HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
     WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
     CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" 2>/dev/null)
@@ -550,15 +526,15 @@ else
   FAIL=$((FAIL + 1)); echo "  ❌ notice state identical — payload comparison would be vacuous"
 fi
 
-# The property itself: same bytes out, despite all that churn.
-if [ -z "$OUT_A" ]; then
-  FAIL=$((FAIL + 1)); echo "  ❌ warmup produced no output — comparison is meaningless"
-elif [ "$OUT_A" = "$OUT_B" ]; then
-  PASS=$((PASS + 1)); echo "  ✅ warmup payload is byte-identical across notice states"
+# The property itself: nothing out, despite all that churn. An empty payload is
+# the strongest form of byte-stable: the model-visible part of the first message
+# cannot drift with any notice, because the warmup puts nothing there.
+if [ -z "$OUT_A" ] && [ -z "$OUT_B" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ the warmup prints nothing in either notice state"
 else
   FAIL=$((FAIL + 1))
-  echo "  ❌ warmup payload drifted with notice state — cache stability broken:"
-  diff <(printf '%s\n' "$OUT_A") <(printf '%s\n' "$OUT_B") | head -20
+  echo "  ❌ the warmup printed for the model:"
+  printf '%s\n%s\n' "$OUT_A" "$OUT_B" | head -20
 fi
 
 # No volatile notice may leak into the payload by any route.
@@ -620,7 +596,13 @@ OUT=$(printf '{"hook_event_name":"PostCompact","trigger":"auto"}' | \
   HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
   WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" \
   CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" 2>/dev/null)
-assert_contains "the header names the compact source" "$OUT" "session warmup (compact)"
+assert_contains "the notices name the compact source" "$(notices)" "_Written by session-warmup.sh at compact session start."
+check_empty_compact="$OUT"
+if [ -z "$check_empty_compact" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ PostCompact prints nothing for the model"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ PostCompact printed for the model"
+fi
 assert_missing  "no pending block on PostCompact"     "$(notices)" "Pending session summaries"
 rm -f "$SANDBOX/cache/pending-summaries"/sid-*.json
 
@@ -861,11 +843,11 @@ run_old_warmup() {
 OUT=$(run_old_warmup)
 assert_missing  "a configured soul file is not injected" "$OUT" "SOULLESS-CANARY"
 assert_missing  "a configured typo draws no warning"     "$OUT" "not found"
-assert_contains "the rest of the warmup still runs"      "$OUT" "## Memory routing"
+assert_contains "the rest of the warmup still runs" \
+  "$(cat "$OLD_HOME/.claude-workbench/warmup-notices.md" 2>/dev/null)" "_Written by session-warmup.sh at startup session start."
 
-# The rules block must be byte-identical across runs for identical config:
-# prompt caching matches an exact request prefix, so one drifting byte here
-# invalidates the cache for everything after it.
+# What the warmup prints must be byte-identical across runs for identical
+# config, and it is: nothing.
 A=$(run_old_warmup); B=$(run_old_warmup)
 if [ "$A" = "$B" ]; then
   PASS=$((PASS + 1)); echo "  ✅ identical config produces identical bytes"

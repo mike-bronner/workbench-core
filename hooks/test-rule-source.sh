@@ -21,9 +21,10 @@
 #      that rule.
 #   2. The source obeys its own register. A literal model imitates the text it
 #      reads, so a rule file that breaks a rule teaches the break.
-#   3. Nothing the warmup writes or prints restates a rule. The needles are
-#      DERIVED from the source's own rule titles, so a new or renamed rule is
-#      covered without editing this file.
+#   3. Nothing the warmup writes or prints, and none of the workbench sections
+#      the hooks module puts in the system prompt, restates a rule. The needles
+#      are DERIVED from the source's own rule titles, so a new or renamed rule
+#      is covered without editing this file.
 
 set -u
 HOOKS="$(cd "$(dirname "$0")" && pwd)"
@@ -235,13 +236,25 @@ free_of_rules() { # desc, text
 for src in startup clear compact resume; do
   free_of_rules "warmup stdout on $src carries no rule" "$(run "$src")"
 done
-free_of_rules "managed CLAUDE.md carries no rule" "$(cat "$SANDBOX/home/.claude/CLAUDE.md" 2>/dev/null)"
-free_of_rules "system-overrides.md carries no rule" "$(cat "$SANDBOX/home/.claude/system-overrides.md" 2>/dev/null)"
-STUB="$(find "$SANDBOX/home/.claude/projects" -name MEMORY.md 2>/dev/null | head -1)"
-if [ -n "$STUB" ]; then
-  free_of_rules "memory router stub carries no rule" "$(cat "$STUB")"
+if [ -e "$SANDBOX/home/.claude/CLAUDE.md" ]; then
+  no "the warmup writes no CLAUDE.md" "it wrote $SANDBOX/home/.claude/CLAUDE.md"
 else
-  no "memory router stub carries no rule" "the warmup wrote no stub to check"
+  ok "the warmup writes no CLAUDE.md"
+fi
+free_of_rules "system-overrides.md carries no rule" "$(cat "$SANDBOX/home/.claude/system-overrides.md" 2>/dev/null)"
+if [ -n "$(find "$SANDBOX/home/.claude/projects" -name MEMORY.md 2>/dev/null | head -1)" ]; then
+  no "the warmup writes no memory router stub" "it wrote one"
+else
+  ok "the warmup writes no memory router stub"
+fi
+# The workbench rules the system prompt carries (gates, scratch roots, memory
+# routing) reach every agent, sub-agents included, so they hold no output-style
+# rule either. The needles are read against the whole source file.
+PROMPT_RULES="$ROOT/hooks/mods/prompt-rules.ts"
+if [ -r "$PROMPT_RULES" ]; then
+  free_of_rules "the system-prompt sections carry no rule" "$(cat "$PROMPT_RULES")"
+else
+  no "the system-prompt sections carry no rule" "unreadable: $PROMPT_RULES"
 fi
 
 echo

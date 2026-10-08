@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 #
-# session-warmup: inject the memory and scratch rules, and handle pending work
-# at session start.
+# session-warmup: handle pending work at session start, and write the notices
+# to a file for Mike.
 #
 # Invoked by the `core` plugin's SessionStart hook. Reads the hook payload from
-# stdin, writes the rules to stdout for Claude Code to inject into the
-# assistant's context, and writes the notices to a file for Mike.
+# stdin. It prints nothing for the model: the workbench rules reach it as
+# shared system-prompt sections from hooks/register.ts (hooks/mods/
+# prompt-rules.ts), the same bytes in every session, and every notice goes to
+# the notices file.
 #
 # Branches on the payload's `source` field:
-#   startup → full warmup: cleanup + rules + reconcile + drain + notices refresh
-#   resume  → rules + reconcile + drain + notices refresh
-#   clear   → rules + notices refresh
-#   compact → rules only
+#   startup → full warmup: cleanup + reconcile + drain + notices refresh
+#   resume  → reconcile + drain + notices refresh
+#   clear   → notices refresh
+#   compact → notices refresh
 #
 # The drain and the Chat-skill scan need not hold up the start. One argument
 # splits the run in two (hooks/hooks.json, hooks/register.ts):
@@ -33,11 +35,9 @@
 # that unfinished deferred run wrote it, the inline drain ignores the cooldown.
 # A stamp an inline drain wrote holds, so starts with no hooks module keep it.
 #
-# The injected payload is BYTE-STABLE by construction: all volatile housekeeping
-# state goes to ~/.claude-workbench/warmup-notices.md, which the model is never
-# told to read. hooks/register.ts brings the notices to Mike: a toast naming
-# each one, a count on the status line, and the file behind /notices. See the
-# append-only invariant at the rules block.
+# Every notice goes to ~/.claude-workbench/warmup-notices.md, which the model is
+# never told to read. hooks/register.ts brings the notices to Mike: a toast
+# naming each one, a count on the status line, and the file behind /notices.
 #
 # Exit code is always 0 — warmup failures must not break the session.
 
@@ -81,9 +81,9 @@ memory_load_env
 # shellcheck source=hooks/lib/session-reconcile.sh
 . "$HOOKS_DIR/lib/session-reconcile.sh"
 
-# Config resolution for the warmup-only field, agent_name.
-# Prefer the current data dir; fall back to the pre-rename location so users
-# who customized before the workbench → workbench-core rename keep working.
+# Config resolution. Prefer the current data dir; fall back to the pre-rename
+# location so users who customized before the workbench → workbench-core rename
+# keep working.
 CONFIG_FILE="$(memory_resolve_config_file)"
 _cfg() { [ -f "$CONFIG_FILE" ] && command -v jq >/dev/null 2>&1 && jq -r "$1 // empty" "$CONFIG_FILE" 2>/dev/null; }
 
@@ -97,8 +97,6 @@ fi
 
 PENDING_SUMMARIES_DIR="$CACHE_PATH/pending-summaries"
 CHECKPOINTS_DIR="$CACHE_PATH/log-checkpoints"
-AGENT_NAME="$(_cfg '.agent_name')"
-AGENT_NAME="${AGENT_NAME:-Claude}"
 
 # Read hook payload from stdin. May be empty if invoked outside a hook.
 PAYLOAD=""
@@ -258,7 +256,7 @@ add_chat_skill_notice() {
 # ──────────── Pending-summary drain (function def) ────────────
 # THE DRAIN EMITS NOTHING in production. In a full run it goes before the
 # notices section on purpose: it is an action, not a report, and the warmup
-# payload must stay byte-stable. (Under WORKBENCH_DISPATCH_DRY_RUN the shared spawn helper prints
+# prints nothing for the model. (Under WORKBENCH_DISPATCH_DRY_RUN the shared spawn helper prints
 # its resolved invocation to stdout so tests can assert it — that variable is set
 # only by hooks/test-*.sh and never in production.)
 #
@@ -387,158 +385,22 @@ drain_pending_summaries() {
   fi
 }
 
-collect_session_warmup_contributions() {
-  # Concatenate `session-warmup.md` from every installed workbench-* plugin
-  # in the claude-workbench marketplace. Source of truth is
-  # ~/.claude/plugins/installed_plugins.json — each entry's installPath points
-  # at the active cached version. Skips workbench-core itself (its contribution
-  # is the identity block).
-  local plugins_file="$HOME/.claude/plugins/installed_plugins.json"
-  [ -f "$plugins_file" ] || return 0
-  command -v jq >/dev/null 2>&1 || return 0
-
-  local paths
-  paths=$(jq -r '
-    .plugins | to_entries[]
-    | select(.key | endswith("@claude-workbench"))
-    | select(.key | startswith("workbench-core@") | not)
-    | .value[0].installPath // empty
-  ' "$plugins_file" 2>/dev/null) || return 0
-
-  local first=1
-  while IFS= read -r p; do
-    [ -z "$p" ] && continue
-    local frag="$p/session-warmup.md"
-    if [ -r "$frag" ]; then
-      [ "$first" -eq 0 ] && printf '\n'
-      cat "$frag"
-      first=0
-    fi
-  done <<< "$paths"
-}
-
-ensure_claude_md_enforcement() {
-  local target="$HOME/.claude/CLAUDE.md"
-  local id_start="<!-- workbench-identity:start -->"
-  local id_end="<!-- workbench-identity:end -->"
-  local warmup_start="<!-- workbench-warmup:start -->"
-  local warmup_end="<!-- workbench-warmup:end -->"
-  # This block carries FACTS ONLY: which gates exist, what each protects, and
-  # where scratch goes. It holds no behavioural rule, because ~/.claude/CLAUDE.md
-  # reaches every sub-agent, and the persona rules belong to the main session's
-  # output style. A rule written here lands in agents that lack the tools it
-  # names (AskUserQuestion) and the human it assumes.
-  #
-  # The scratch roots are here as well as in the SessionStart stdout below, for
-  # different readers. A sub-agent starts with ~/.claude/CLAUDE.md in context and
-  # WITHOUT this hook's stdout (measured by asking a freshly spawned one to
-  # introspect before its first tool call), so the stdout copy reaches the main
-  # session only. This is the channel that reaches every agent type at once,
-  # including general-purpose, Explore, Plan, and any agent added later. Each
-  # gate's deny carries its own recovery text, so the block names the gate and
-  # what it protects, and leaves the way through to the deny.
-  local identity_block=""
-  read -r -d '' identity_block <<'CMDEOF' || true
-<!-- workbench-identity:start -->
-# Workbench gates and scratch roots
-
-These PreToolUse hooks guard every session. Each deny explains its own way
-through, so read the deny and follow it.
-
-| Gate | What it protects |
-|---|---|
-| Delegation gate | Whole-file work belongs in a sub-agent. It never denies: a main-agent `Write` or `NotebookEdit` goes ahead with a reminder, once per session. Plans and scratch roots draw none. The user's `/orchestrator off` silences it. |
-| Agent dispatch gate | A main-agent `Agent` dispatch must carry the six-slot brief. |
-| Destructive scope guard | `rm`, `rmdir`, `git reset --hard`, `git clean`, `git stash clear`/`drop`, and git commands that discard working-tree changes (such as `git restore`, `git checkout -- <path>`, or `git mv -f`, also through an alias) run only when every target resolves inside the project or a scratch root. |
-| Destructive database guard | Database resets, drops, and destructive SQL are refused. |
-| Provisioning guard | Agents do not create worktrees or databases, and do not destroy a worktree they did not create. |
-| Vault git guard | Git writes aimed at the memory vault are refused. |
-| Credential guard | Reads of `~/.ssh`, `~/.aws`, `~/.gnupg`, and `.env` files are refused. |
-| Outbound prose guard | `gh` and board-MCP prose must pass the output style's mechanical checks. |
-| Peer message gate | A sub-agent messages only its orchestrator or the agents it spawned. |
-
-A deny is the system working. Report it, and do not route around it.
-
-A scratch root is the session scratchpad, `~/Developer/scratchpad`, or a `mktemp -d` sandbox.
-Make new scratch in the session scratchpad or `~/Developer/scratchpad`.
-Never create it anywhere under `/tmp` outside your session scratchpad.
-<!-- workbench-identity:end -->
-CMDEOF
-
-  local warmup_body=""
-  local warmup_block=""
-  warmup_body=$(collect_session_warmup_contributions)
-  if [ -n "$warmup_body" ]; then
-    warmup_block=$(printf '%s\n%s\n%s' "$warmup_start" "$warmup_body" "$warmup_end")
-  fi
-
-  mkdir -p "$HOME/.claude"
-
-  if [ ! -f "$target" ]; then
-    printf '%s\n' "$identity_block" > "$target"
-    [ -n "$warmup_block" ] && printf '\n%s\n' "$warmup_block" >> "$target"
-    return 0
-  fi
-
-  local tmp rest
-  tmp=$(mktemp)
-  rest=$(mktemp)
-
-  # Strip both old marker pairs in one pass — warmup block disappears
-  # automatically when no plugin contributes one, so uninstalls clean up.
-  awk -v is="$id_start" -v ie="$id_end" -v ws="$warmup_start" -v we="$warmup_end" '
-    $0 == is || $0 == ws { skip=1; next }
-    skip && ($0 == ie || $0 == we) { skip=0; ate=1; next }
-    skip { next }
-    ate && /^$/ { ate=0; next }
-    { ate=0; print }
-  ' "$target" > "$rest"
-
-  # Rebuild: identity, then optional warmup contributions, then remaining content.
-  printf '%s\n' "$identity_block" > "$tmp"
-  [ -n "$warmup_block" ] && printf '\n%s\n' "$warmup_block" >> "$tmp"
-  if [ -s "$rest" ]; then
-    printf '\n' >> "$tmp"
-    cat "$rest" >> "$tmp"
-  fi
-  rm -f "$rest"
-
-  if cmp -s "$tmp" "$target"; then
-    rm -f "$tmp"
-    return 0
-  fi
-  mv "$tmp" "$target"
-}
-
-ensure_memory_routing_stub() {
-  # Neutralize the harness's per-project memory channel. Claude Code's system
-  # prompt tells every session to save memories under
-  # ~/.claude/projects/<encoded-cwd>/memory/ + MEMORY.md — the vault must stay
-  # canonical, so MEMORY.md becomes a router stub pointing at the memory MCP.
-  # The encoded dir name is the project cwd with "/" replaced by "-".
+retire_memory_routing_stub() {
+  # The router stub an older warmup wrote into the harness's per-project memory
+  # folder, ~/.claude/projects/<cwd with "/" as "-">/memory/MEMORY.md, is
+  # retired. It restated the memory routing beside the harness's own memory
+  # section, and both are gone: hooks/register.ts drops that section and states
+  # the routing once (hooks/mods/prompt-rules.ts). The stub opens with the
+  # marker below, and a file that does was always the warmup's to rewrite, so
+  # it is removed, and the folder too once it is empty. A MEMORY.md without the
+  # marker is someone else's and is left alone.
   local marker="<!-- workbench-memory-router -->"
-  local template="${CLAUDE_PLUGIN_ROOT:-}/references/memory-routing-stub.md"
-  [ -r "$template" ] || return 0
-
-  local encoded memory_dir target
-  encoded="${PWD//\//-}"
-  memory_dir="$HOME/.claude/projects/$encoded/memory"
-  target="$memory_dir/MEMORY.md"
-
-  if [ -f "$target" ]; then
-    if ! grep -qF "$marker" "$target" 2>/dev/null; then
-      # Unmanaged content — a human or migration owns this file. Never
-      # overwrite; flag it in the warmup output instead (printed after the
-      # header, since this runs before the first printf).
-      MEMORY_ROUTING_CONFLICT="$target"
-      return 0
-    fi
-    # Marker present — ours to manage. Refresh only if drifted from template.
-    cmp -s "$template" "$target" && return 0
-  fi
-
-  mkdir -p "$memory_dir" 2>/dev/null || return 0
-  cp "$template" "$target" 2>/dev/null || true
+  local memory_dir="$HOME/.claude/projects/${PWD//\//-}/memory"
+  local target="$memory_dir/MEMORY.md"
+  [ -f "$target" ] && [ ! -L "$target" ] || return 0
+  [ "$(head -n 1 "$target" 2>/dev/null)" = "$marker" ] || return 0
+  rm -f "$target" && rmdir "$memory_dir" 2>/dev/null
+  return 0
 }
 
 # Skip guard: the summary-writer spawn from session-log.sh sets this env
@@ -552,9 +414,10 @@ fi
 # Skip guard: Claude Code sets this env var on every sub-agent dispatch
 # (Watson, Holmes-reviewer, Lestrade, Harvester, and any future agent
 # from any plugin). Those runs carry self-contained system prompts and
-# must not inherit the interactive session context this warmup injects:
-# the memory rules and the housekeeping notices are written for a
-# human-attended session, and Watson dispatched via cron has no human present.
+# must not run the housekeeping this warmup does for a human-attended session:
+# the drain, the reconciler and the notices. Watson dispatched via cron has no
+# human present. (hooks/mods/prompt-rules.ts reads the same two variables to
+# pick which rules such a run gets.)
 # Orchestrator/Dispatch and Mike's own interactive sessions run without
 # --agent, leave this unset, and are unaffected.
 if [ -n "${CLAUDE_CODE_AGENT:-}" ]; then
@@ -605,35 +468,26 @@ if [ "$WARMUP_PART" = "blocking" ] && { [ "$SOURCE" = "startup" ] || [ "$SOURCE"
   fi
 fi
 
-# ──────────── CLAUDE.md + retired system-overrides (startup only) ────────────
-# These files persist on disk, so there is no need to regenerate on
+# ──────────── Retired files (startup only) ────────────
+# These files persist on disk, so there is no need to revisit them on
 # compact/resume. The system-overrides stub is read by the CLI before the
 # session starts, so a rewrite takes effect on the *next* session.
+#
+# ~/.claude/CLAUDE.md is the user's file, and this hook no longer writes it. It
+# used to splice the gates, the scratch roots and each sibling plugin's
+# session-warmup.md into it on every start, which re-created that part of the
+# first message in every session. Those now come from hooks/register.ts as
+# shared system-prompt sections. A block an older warmup left there is taken
+# out by /workbench-core:setup (scripts/setup-config.sh unsplice-claude-md),
+# and hooks/register.ts leaves it out of the first message until then.
 if [ "$SOURCE" = "startup" ]; then
   retire_system_overrides || true
-  ensure_claude_md_enforcement || true
-  ensure_memory_routing_stub || true
-fi
-
-printf '# %s session warmup (%s)\n\n' "$AGENT_NAME" "$SOURCE"
-
-# ──────────── Config validation warning ────────────
-if [ "${CONFIG_BROKEN:-}" = "1" ]; then
-  printf '## ⚠ Malformed config.json\n\n'
-  printf '`%s` exists but is not valid JSON.\n' "$CONFIG_FILE"
-  printf 'All settings are falling back to hardcoded defaults, which may point to wrong directories.\n'
-  printf 'Run `/workbench-core:setup` to regenerate the config, or fix the JSON manually.\n\n'
-fi
-
-# ──────────── Memory-routing stub conflict warning ────────────
-if [ -n "${MEMORY_ROUTING_CONFLICT:-}" ]; then
-  printf '⚠ Harness `MEMORY.md` at `%s` has unmanaged content — left untouched; migrate it to the vault, then delete it so the router stub can take over.\n\n' "$MEMORY_ROUTING_CONFLICT"
+  retire_memory_routing_stub || true
 fi
 
 # ──────────── Retention cleanup (startup only) ────────────
-# Prune stale artifacts on full warmup. Runs before the rules block so it
-# doesn't add latency to the user-visible part of startup. All find commands
-# are fire-and-forget (-delete exits silently on no matches).
+# Prune stale artifacts on full warmup. All find commands are fire-and-forget
+# (-delete exits silently on no matches).
 if [ "$SOURCE" = "startup" ]; then
   # Raw logs older than 7 days — summaries stay forever as the durable record.
   # A log whose session still has a pending-summary marker is NOT deleted:
@@ -671,134 +525,14 @@ if [ "$SOURCE" = "startup" ]; then
   [ -d "$CACHE_METER_DIR" ] && find "$CACHE_METER_DIR" -name "*.json" -mtime +7 -delete 2>/dev/null
 fi
 
-# ──────────── Memory server health check (startup only) ────────────
-# The memory server is a shared HTTP server, lazy-started by the
-# memory-server-up hook that runs just before this warmup. Probe its actual
-# health (identity-checked) rather than guessing from the index file's presence.
-# Only surface a notice when something is wrong — a healthy/coming-up server is
-# the common case and needs no words.
-#
-# Restored in the Linux/Claude-Code migration when the transport went back to the
-# shared HTTP server: dropping Cowork removed the remote-sandbox constraint that
-# forced per-session stdio in v0.13.0. The server is now reference-counted —
-# memory-server-up.sh registers a ref, memory-server-release.sh drops it, and the
-# reaper stops the server a grace period after the last session leaves.
-if [ "$SOURCE" = "startup" ]; then
-  case "$(memory_probe)" in
-    UP|BUILDING)
-      : # serving (BUILDING = bound, index still building, search available) — quiet.
-      ;;
-    PORT_DRIFT)
-      printf '## ⚠ Memory server port drift\n\n'
-      printf 'The running memory server bound a different port than configured (port `%s`).\n' "$MEMORY_PORT"
-      printf 'This usually means `WORKBENCH_MEMORY_PORT` in `~/.claude/settings.json` and the\n'
-      printf 'recorded `%s/server.port` disagree. Reconcile them (or run `/memory-status`), then restart Claude Code.\n\n' "$CACHE_PATH"
-      ;;
-    DOWN_FOREIGN)
-      printf '## ⚠ Memory server port conflict\n\n'
-      printf 'Another process is listening on memory port `%s` that is not the `%s` vault.\n' "$MEMORY_PORT" "$MCP_NAME"
-      printf 'The shared server was not started to avoid a conflict. Free the port or set a different\n'
-      printf '`WORKBENCH_MEMORY_PORT`, then restart. See `/memory-status`.\n\n'
-      ;;
-    DOWN_FAILED)
-      printf '## ⚠ Memory server failed to start\n\n'
-      printf 'The last attempt to start the shared memory server failed (see `%s/server.log`).\n' "$CACHE_PATH"
-      printf 'Memory search and write will fail until it comes up. Run `/memory-status` to diagnose.\n\n'
-      ;;
-    *)  # DOWN_NONE — the up-hook already waited out its bind budget and it is
-        # STILL not answering, so this is a slow or stuck start, not a fresh one.
-      printf '## ℹ Memory server starting\n\n'
-      printf 'The shared memory server did not answer within the startup wait, so it is still coming up.\n'
-      printf 'Memory tools are likely unavailable for this session: the MCP client startup retries are already spent.\n'
-      printf 'Open `/mcp` to check the server and reconnect it in place. If that does not take, run `/memory-status`, and restart Claude Code only as a fallback.\n\n'
-      ;;
-  esac
-fi
-
-# ──────────── Rules block (every source) ────────────
-# No behavioural rule list is injected here. The rules load once, from the
-# active output style, which is system-prompt tier and survives compaction.
-# No persona file is injected either: the shipped persona is that output style,
-# so the soul and profile files this block used to load had no writer left.
-# Skill learnings are not pointed at from here. The hooks module merges each
-# skill's own learnings file into its text (hooks/mods/learnings.ts).
-
-# APPEND-ONLY INVARIANT (cache-prefix stability). Everything printed from the
-# top of this script through the end of the rules payload below must be
-# BYTE-STABLE across invocations: identical config → identical bytes.
-# Anthropic prompt caching matches on an exact request prefix, so a single
-# drifting byte up here invalidates the cache for the entire rest of the
-# prompt — the rules payload, every plugin's contributions, the
-# skill body, and the tool definitions. Any block whose content varies run to
-# run (a live file count, a wall-clock-triggered flag, a directory listing)
-# therefore APPENDS after this section, never precedes it. See the
-# stray-summary, recall-liveness, pending-summary, and chat-skills blocks
-# below for the pattern.
-
-# Memory routing — countermand the harness's per-project memory instructions.
-# Re-injected on every source so the rule survives compaction. This is the
-# always-on FLOOR for the capture rule. The hooks module's capture checkpoint
-# (hooks/mods/capture.ts) is its backstop, and asks a fork, not the session. A per-turn UserPromptSubmit capture nudge used to sit between
-# the two. It was retired on 2026-09-27, because it also fired on sub-agent
-# hand-backs and task notifications and restated this block at a measured
-# ~180k tokens in three days.
-#
-# It is also the floor for the two recall rules — WHEN to search and WHAT to
-# search for. The hooks module's recall searches each substantive PROMPT of the main
-# session, and nothing else, and that is not only a coverage gap. The throttles
-# it needs for context cost (prompt-only input, turn-start only, 2 hits,
-# per-session dedup, a substance gate) mean a topic a scan uncovers mid-task
-# never reaches it. Its scan recall, on a Bash content search, catches PART of
-# that — the file searches that carry an extractable query — but only those, so
-# the floor below still has to carry the rule in full. (Until 2026-09-27 the
-# bullet below claimed auto-recall saw only the OPENING prompt. That was never
-# true: prompt recall runs on every prompt that passes its substance gate.)
-# And even on a prompt, the prompt's own wording is a WEAKER query than the
-# one the agent can form from the task. Measured: "go ahead and push and create a
-# release" left skills/release.learnings.md — which carries the release-title
-# rule — outside the top 8, while "release title naming convention", the query
-# the task implies, put it in the top 5 (5th when first measured, 3rd on
-# re-measure 2026-09-14; ranks drift as the vault grows, the gap does not).
-# The last two bullets close both halves by prose, for the reason the
-# question-delivery rule is prose: the alternative is a semantic classifier on
-# "is this turn worth a search", and the one time that was built and measured
-# here (hooks/agent-dispatch-gate.sh) the variants traded 83% precision at 26%
-# recall against 34% precision at 84% recall.
-#
-# A per-turn recall nudge used to restate these two bullets. It was retired with
-# the capture nudge, for the same cost, and because it repeated the false
-# opening-prompt claim on every turn.
-#
-# The recall bullet does not name a search mode. The server's default is "auto":
-# hybrid when the vault has embeddings, keyword when it does not. Telling the
-# agent to pass `hybrid` broke that fallback on a vault with no embeddings.
-printf '## Memory routing\n\n'
-printf -- '- The workbench memory vault is the CANONICAL durable memory store, served by the `memory` MCP (`mcp__plugin_workbench-core_memory__search` / `write` / etc.).\n'
-printf -- '- When the harness'\''s memory instructions prompt a save, write to the VAULT instead: MCP `write` with frontmatter `name` + `type` (decision | insight | project | feedback | reference) plus tags/summary/date per vault conventions.\n'
-printf -- '- Proactively CAPTURE durable knowledge without asking: a decision (+ rationale), a troubleshooting root-cause, a design choice and the options weighed, a non-obvious insight or gotcha, a project/plan outcome, or feedback on how to work — `write` it to the vault immediately with the correct `type`, then note the save in one line. This is standing authorization: a memory-capture write needs no options round and no confirmation. Do NOT ask first.\n'
-printf -- '- Before saving, `search` for an existing memory to UPDATE rather than duplicate. Skip the trivial: routine code edits, facts already in the repo or git, ephemeral chatter. Capture what would otherwise be a "by the way, should I remember this?".\n'
-printf -- '- The per-project memory directory and its MEMORY.md are a router only — never create memory files there.\n'
-printf -- '- Recall = vault `search`, not directory reads. Omit `mode`: the server picks hybrid when the vault has embeddings and keyword when it does not.\n'
-printf -- '- Recall comes FIRST: the moment a task turns up a topic — an error, a tool, a design choice, a repo or file you have worked before — `search` the vault BEFORE you scan the repo for the answer. Auto-recall searches only the wording of each prompt and the patterns of your file searches, so a topic that reaches you any other way has had NO memory searched against it unless you search it yourself.\n'
-printf -- '- Build the recall QUERY from the TASK, not from the prompt: name the thing you are about to produce or decide — the convention, the format, the procedure, the tool, the error — in the words a note about it would use, and search THAT. Auto-recall can only ever run wording that was already typed, so your advantage over it is asking the better question; a recorded rule filed under another phrase is one query away and will not arrive on its own.\n\n'
-
-# Destructive commands — scoped by hooks/destructive-scope-guard.sh rather than
-# asked about by a permission rule. What an agent has to know is not a command
-# to type any more; it is the SHAPE that lets the guard read the call. A delete
-# whose path is a `$variable` or a glob is denied rather than prompted, because
-# that guard has no permission rule underneath it and denies what it cannot
-# resolve. An agent told this writes the literal path the first time.
-#
-# Three lines, and no more, deliberately. This block sits inside the byte-stable
-# cache prefix, so its bytes are fixed text and vary run to run not at all; the
-# cost it carries is the tokens themselves, on every session. So the shape rule
-# leads and the root list is compressed around it. The middle line exists
-# because agents made probe roots by hand under /tmp, which is no root, and then
-# handed their cleanup to the user as a `!` command.
-printf '## Destructive commands\n\n'
-printf -- '- `rm`, `rmdir`, `git reset --hard`, `git clean`, `git stash clear`/`drop`, and git commands that discard working-tree changes (such as `git restore`, `git checkout -- <path>`, or `git mv -f`, also through an alias) run with no prompt when every path they act on resolves inside the project or a scratch root: the session scratchpad, `~/Developer/scratchpad`, or a `mktemp -d` sandbox. A PreToolUse guard resolves each path and permits the call. `rm` and `rmdir` may also remove a leftover `/tmp/claude-*scratch*` folder you own, the folder itself included. It is not a root, so `git` verbs there are still denied.\n'
-printf -- '- Make new scratch in the session scratchpad or `~/Developer/scratchpad`. Never create it anywhere under `/tmp` outside your session scratchpad. Do not put new scratch in an old `claude-*scratch*` folder there either.\n'
-printf -- '- Outside those roots it DENIES, and so does any target it cannot read: a `$variable`, a glob, `bash -c`, `ssh`, `xargs`, `find -delete`, or a loop body. Spell paths out literally and keep the delete its own command. Never hand the user a `!` command to delete your own scratch. A target outside every root that is not scratch is the user'"'"'s call, and they run it with the `!` prefix.\n\n'
+# ──────────── No rules block ────────────
+# Nothing here is printed for the model. The memory routing and the destructive
+# commands this block used to print, and the gates and scratch roots it spliced
+# into ~/.claude/CLAUDE.md, are stated once, in hooks/mods/prompt-rules.ts, and
+# hooks/register.ts sends them as shared system-prompt sections: the same bytes
+# in every session, so their cache is read rather than created. They survive
+# compaction there too, which is why this hook still runs on PostCompact only
+# to refresh the notices.
 
 # ──────────── Dead-marker sweep + session reconciler (startup + resume) ────────────
 # EMITS NOTHING, like the drain below, and runs right before it.
@@ -850,12 +584,12 @@ fi
 # prompt-cache reuse for the ENTIRE prompt downstream of it — the ~36k-token
 # tail of a scheduled Dispatch tick never cached for exactly this reason.
 #
-# So they never reach the payload: they are collected into $NOTICES_FILE, and
+# So they never reach the model: they are collected into $NOTICES_FILE, and
 # hooks/register.ts reads that file a few seconds after session start and shows
 # the notices to Mike, never to the model (README, "Housekeeping notices — for
-# Mike, not the model"). The warmup payload is therefore byte-stable for every
-# session type — interactive, sub-agent, or scheduled — without the hook needing
-# to detect which kind of fire this is.
+# Mike, not the model"). The warmup prints nothing at all, for every session
+# type — interactive, sub-agent, or scheduled — without the hook needing to
+# detect which kind of fire this is.
 #
 # A pointer line used to tell the model to read the file at session start. That
 # cost a Read turn in every session, and a session that read the file acted on
@@ -863,6 +597,59 @@ fi
 # setup he re-runs, the Chat skills he installs.
 
 collect_warmup_notices() {
+# ──────────── Config validation warning (every source) ────────────
+if [ "${CONFIG_BROKEN:-}" = "1" ]; then
+  printf '## ⚠ Malformed config.json\n\n'
+  printf '`%s` exists but is not valid JSON.\n' "$CONFIG_FILE"
+  printf 'All settings are falling back to hardcoded defaults, which may point to wrong directories.\n'
+  printf 'Run `/workbench-core:setup` to regenerate the config, or fix the JSON manually.\n\n'
+fi
+
+# ──────────── Memory server health check (startup only) ────────────
+# The memory server is a shared HTTP server, lazy-started by the
+# memory-server-up hook that runs just before this warmup. Probe its actual
+# health (identity-checked) rather than guessing from the index file's presence.
+# Only surface a notice when something is wrong — a healthy/coming-up server is
+# the common case and needs no words. The notice is Mike's, so it goes to the
+# notices file with the rest; the status line shows the server's health too.
+#
+# Restored in the Linux/Claude-Code migration when the transport went back to the
+# shared HTTP server: dropping Cowork removed the remote-sandbox constraint that
+# forced per-session stdio in v0.13.0. The server is now reference-counted —
+# memory-server-up.sh registers a ref, memory-server-release.sh drops it, and the
+# reaper stops the server a grace period after the last session leaves.
+if [ "$SOURCE" = "startup" ]; then
+  case "$(memory_probe)" in
+    UP|BUILDING)
+      : # serving (BUILDING = bound, index still building, search available) — quiet.
+      ;;
+    PORT_DRIFT)
+      printf '## ⚠ Memory server port drift\n\n'
+      printf 'The running memory server bound a different port than configured (port `%s`).\n' "$MEMORY_PORT"
+      printf 'This usually means `WORKBENCH_MEMORY_PORT` in `~/.claude/settings.json` and the\n'
+      printf 'recorded `%s/server.port` disagree. Reconcile them (or run `/memory-status`), then restart Claude Code.\n\n' "$CACHE_PATH"
+      ;;
+    DOWN_FOREIGN)
+      printf '## ⚠ Memory server port conflict\n\n'
+      printf 'Another process is listening on memory port `%s` that is not the `%s` vault.\n' "$MEMORY_PORT" "$MCP_NAME"
+      printf 'The shared server was not started to avoid a conflict. Free the port or set a different\n'
+      printf '`WORKBENCH_MEMORY_PORT`, then restart. See `/memory-status`.\n\n'
+      ;;
+    DOWN_FAILED)
+      printf '## ⚠ Memory server failed to start\n\n'
+      printf 'The last attempt to start the shared memory server failed (see `%s/server.log`).\n' "$CACHE_PATH"
+      printf 'Memory search and write will fail until it comes up. Run `/memory-status` to diagnose.\n\n'
+      ;;
+    *)  # DOWN_NONE — the up-hook already waited out its bind budget and it is
+        # STILL not answering, so this is a slow or stuck start, not a fresh one.
+      printf '## ℹ Memory server starting\n\n'
+      printf 'The shared memory server did not answer within the startup wait, so it is still coming up.\n'
+      printf 'Memory tools are likely unavailable for this session: the MCP client startup retries are already spent.\n'
+      printf 'Open `/mcp` to check the server and reconnect it in place. If that does not take, run `/memory-status`, and restart Claude Code only as a fallback.\n\n'
+      ;;
+  esac
+fi
+
 # ──────────── Stray project-dir summary detector (startup only) ────────────
 # Session summaries belong in the vault, never in a project. A misrouted
 # summary-writer (see the summary-misroute fix) could leave *.summary.md under
@@ -898,8 +685,7 @@ if [ "$SOURCE" = "startup" ]; then
 fi
 
 # ──────────── Pending-summary check (all sources except compact) ────────────
-# On compact we just re-injected the rules — don't add summary work on top of
-# a context that was just shed. On all other sources, check for unprocessed
+# On compact, don't add summary work on top of a context that was just shed. On all other sources, check for unprocessed
 # summaries and tell the model to dispatch a background agent.
 if [ "$SOURCE" != "compact" ]; then
   MARKERS=()
@@ -960,8 +746,7 @@ if [ -f "$SYSTEM_OVERRIDES" ]; then
 fi
 
 # ──────────── Output-style drift check (every source) ────────────
-# The warmup re-renders the CLAUDE.md block itself, but
-# the output style is written only by /workbench-core:setup, so after a plugin
+# The output style is written only by /workbench-core:setup, so after a plugin
 # update the live copy can lag the shipped one with nothing to say so. It once
 # ran 8 days stale and still told the model to run an options round before a
 # push, which the shipped style contradicts: a push gets one approval question

@@ -53,7 +53,7 @@ export const HARNESS_MEMORY = 'memory'
 
 export const RULES = `# Workbench gates and scratch roots
 
-These PreToolUse hooks guard every session. Each deny explains its own way through, so read the deny and follow it. A deny is the system working. Report it, and do not route around it.
+These hooks guard every session. Each deny explains its own way through, so read the deny and follow it. A deny is the system working. Report it, and do not route around it.
 
 | Gate | What it protects |
 |---|---|
@@ -63,9 +63,12 @@ These PreToolUse hooks guard every session. Each deny explains its own way throu
 | Destructive database guard | Database resets, drops, and destructive SQL are refused. |
 | Provisioning guard | Agents do not create worktrees or databases, and do not destroy a worktree they did not create. |
 | Vault git guard | Git writes aimed at the memory vault are refused. |
-| Credential guard | Reads of \`~/.ssh\`, \`~/.aws\`, \`~/.gnupg\`, and \`.env\` files are refused. |
+| Credential guard | Reading, linking or copying \`~/.ssh\`, \`~/.aws\`, \`~/.gnupg\`, \`.env\` files, a keychain folder, or Claude's credential store is refused. |
 | Outbound prose guard | \`gh\` and board-MCP prose must pass the output style's mechanical checks. |
 | Peer message gate | A sub-agent messages only its orchestrator or the agents it spawned. |
+| Whole-disk search guard | A search (\`find\`, \`fd\`, \`rg\`, \`grep -r\`, \`mdfind\`, \`Grep\`, \`Glob\`) may not start at \`/\`, a home folder, \`~/Library\`, \`/Users\`, \`/System\`, \`/Library\`, \`/Applications\`, \`/Volumes\`, \`/private\`, \`/var\`, \`/opt\` or \`/usr\`. |
+
+Every guard refuses a Bash line whose command it cannot name: a command name from a variable or a substitution, a wrapper option it cannot read, or a script piped into a shell. Write the command name out plainly. A plain \`"$NAME/…"\` or \`"\${NAME}/…"\`, inside double quotes, in front of a literal path is fine.
 
 ## Scratch roots and destructive commands
 

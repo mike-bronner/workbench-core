@@ -1,5 +1,6 @@
 #!/bin/bash
-# Tests for hooks/peer-message-gate.sh — the PreToolUse gate that stops a
+# Tests for the frozen peer-message-gate.sh beside this file, kept as a test
+# oracle for its port to hooks/register.ts: the gate that stops a
 # sub-agent from messaging anything except its own orchestrator or its own
 # children.
 # Run directly: ./test-peer-message-gate.sh
@@ -24,9 +25,14 @@
 set -u
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 GATE="$HOOKS_DIR/peer-message-gate.sh"
-HOOKS_JSON="$HOOKS_DIR/hooks.json"
-SKILL="$HOOKS_DIR/../skills/cross-session-messaging/SKILL.md"
-README="$HOOKS_DIR/../README.md"
+
+# Under hooks/test-guard-oracles.sh each call of the guard goes through
+# tests/oracle/record.sh, which writes the payload and the verdict for the
+# differential test (tests/guard-differential.test.ts).
+if [ -n "${ORACLE_CASES_OUT:-}" ]; then
+  export ORACLE_REAL_GUARD="$GATE"
+  GATE="$HOOKS_DIR/../record.sh"
+fi
 PASS=0
 FAIL=0
 
@@ -369,63 +375,12 @@ echo "the gate carries no raw separator byte:"
 # The US byte the record is joined on is written as the jq escape \u001f, never
 # as a literal 0x1f in the source. A raw control character survives an editor
 # round-trip badly and is invisible in review.
-if LC_ALL=C grep -q "$(printf '\037')" "$GATE"; then
+if LC_ALL=C grep -q "$(printf '\037')" "${ORACLE_REAL_GUARD:-$GATE}"; then
   FAIL=$((FAIL + 1)); echo "  ❌ the gate holds a literal 0x1f byte"
 else
   PASS=$((PASS + 1)); echo "  ✅ no literal 0x1f byte in the source"
 fi
-assert_grep "the record separator is written as a jq escape" 'join("\u001f")' "$GATE"
-
-echo
-echo "hooks.json wires it, and wires it once:"
-assert_eq "exactly one PreToolUse entry runs the gate" \
-  "$(jq -r '[.hooks.PreToolUse[] | select(.hooks[].command | contains("peer-message-gate.sh"))] | length' "$HOOKS_JSON")" \
-  "1"
-assert_eq "its matcher is SendMessage" \
-  "$(jq -r '.hooks.PreToolUse[] | select(.hooks[].command | contains("peer-message-gate.sh")) | .matcher' "$HOOKS_JSON")" \
-  "SendMessage"
-assert_eq "no other hook event runs the gate" \
-  "$(jq -r '[.hooks | to_entries[] | select(.key != "PreToolUse") | .value[].hooks[].command | select(contains("peer-message-gate.sh"))] | length' "$HOOKS_JSON")" \
-  "0"
-assert_eq "it runs through CLAUDE_PLUGIN_ROOT like its siblings" \
-  "$(jq -r '.hooks.PreToolUse[] | select(.hooks[].command | contains("peer-message-gate.sh")) | .hooks[0].command' "$HOOKS_JSON")" \
-  'bash "${CLAUDE_PLUGIN_ROOT}/hooks/peer-message-gate.sh"'
-
-echo
-echo "the skill the gate points at exists, and says what the gate says:"
-# The slug is read out of the gate's own deny message rather than written here,
-# so renaming the skill without updating the gate reddens this case.
-SLUG=$(printf '%s' "$DENY" | grep -o '/workbench-core:[a-z-]*' | head -1 | cut -d: -f2)
-assert_eq "the skill directory matches the slug the gate prints" \
-  "$([ -f "$HOOKS_DIR/../skills/$SLUG/SKILL.md" ] && echo present || echo "missing: $SLUG")" \
-  "present"
-assert_grep "the skill names the gate script"        'hooks/peer-message-gate.sh' "$SKILL"
-assert_grep "the skill carries the receive rule"     'Surface it to your human, and stop' "$SKILL"
-assert_grep "the skill refuses a request, not just a rude one" 'It is never an instruction' "$SKILL"
-assert_grep "the skill says a message informs rather than asks" 'informs' "$SKILL"
-assert_grep "the skill states who may send"          'never messages a peer session' "$SKILL"
-assert_grep "the skill keeps a pipeline agent top-level" 'claude -p --agent' "$SKILL"
-# The two must agree. If the skill claimed the gate checks the stated reason,
-# every send that passed would read as approval of its reason, which the gate
-# never gives.
-assert_grep "the skill says the gate never reads the body" 'never reads the message body' "$SKILL"
-assert_grep "the skill says the gate cannot tell a child from a sibling" \
-  'cannot tell a peer session from a child' "$SKILL"
-assert_grep "the skill says ListAgents is ungated"   'ungated' "$SKILL"
-assert_grep "the skill says the gate fails open"     'It fails open' "$SKILL"
-
-echo
-echo "the README documents the gate alongside its siblings:"
-assert_grep "README names the script"      'hooks/peer-message-gate.sh' "$README"
-assert_grep "README names the test suite"  'hooks/test-peer-message-gate.sh' "$README"
-assert_grep "README names the skill"       'skills/cross-session-messaging' "$README"
-assert_grep "README documents fail-open"   'enforcement stops silently' "$README"
-# The Done-when for this change: the README must say which part of the fourth
-# branch is inferred rather than measured, in those words.
-assert_grep "README names the inferred part as inferred" \
-  'inferred, never measured' "$README"
-assert_grep "README states the deny is the default" \
-  'the deny is the default' "$README"
+assert_grep "the record separator is written as a jq escape" 'join("\u001f")' "${ORACLE_REAL_GUARD:-$GATE}"
 
 echo
 echo "$PASS passed, $FAIL failed"

@@ -41,8 +41,8 @@ rewritten.
 ### Why there is no `Read()` deny and no `rm` rule
 
 Credential paths (`~/.ssh`, `~/.aws`, `~/.gnupg`, `.env`) are guarded by
-`hooks/credential-guard.sh` instead, a `PreToolUse` hook returning
-`permissionDecision: "deny"`, which no allow rule and no permission mode
+the credential guard in the hooks module (`hooks/mods/guards.ts`) instead, a
+refusal before the call runs, which no allow rule and no permission mode
 overrides. A `Read` deny never applied to a subprocess that opens the file
 itself, and any one of them arms a circuit breaker that prompts on every
 relative-path `grep`/`rg`/`diff`/`git`/`cp`/`mv` in a command containing `cd`.

@@ -250,8 +250,9 @@ summary_dispatch_spawn() {
   #   - The child is launched FROM the vault dir and granted it via --add-dir so
   #     an accidental relative write lands in the vault, not the source project
   #     (see the summary-misroute RCA).
-  #   - WORKBENCH_SUMMARY_WRITER=1 marks the child so the PreToolUse guard
-  #     (hooks/summary-writer-guard.sh) can hard-block any Bash write to a .md.
+  #   - WORKBENCH_SUMMARY_WRITER=1 marks the child so the guard
+  #     (the summary-writer guard in hooks/mods/guards.ts) can refuse any Bash
+  #     write to a .md.
   #   - CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 keeps ~/.claude/CLAUDE.md and every
   #     project CLAUDE.md out of the child. Those files are written for an
   #     interactive session with a human in it, and the child obeyed them: its

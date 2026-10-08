@@ -6,7 +6,8 @@ WARNING — EVERY SAFETY GUARD THAT IMPORTS THIS FILE FAILS SILENTLY.
 hooks/lib/destructive-db-check.py is the enforcement behind
 hooks/destructive-database-guard.sh, which exists because a real development
 database was destroyed on 2026-09-04. hooks/lib/vault-git-check.py is the
-enforcement behind hooks/vault-git-guard.sh. Those two hooks fail OPEN
+enforcement behind hooks/vault-git-guard.sh. hooks/lib/provisioning-check.py is
+the enforcement behind hooks/provisioning-guard.sh. Those three hooks fail OPEN
 by design: a checker that cannot run exits 0, and exit 0 means allow. So a
 change here that raises, renames a symbol, or merely re-splits a command
 differently does not produce an error anybody sees. It produces a guard that
@@ -26,7 +27,9 @@ would go stale the next time a guard is added, and nothing would say so. As of
 this writing the importers are:
     hooks/test-destructive-database-guard.sh
     hooks/test-vault-git-guard.sh
+    hooks/test-provisioning-guard.sh
     hooks/test-destructive-scope-guard.sh
+    hooks/test-credential-guard.sh
     hooks/test-outbound-prose-guard.sh   (its inline parser imports this file)
     hooks/test-scan-query.sh             (hooks/lib/scan-query.py)
     hooks/test-shell-parse.sh            (this file's own rules, pinned directly)
@@ -47,10 +50,9 @@ The database guard follows a command through ssh, because a database on another
 host is still a database being destroyed. The vault guard stops dead at it,
 because another machine's vault is not this vault and reading it could only ever
 produce a false block. Same token, opposite meaning. Each guard keeps its own
-unwrap(). The provisioning guard, which moved into the hooks module
-(hooks/mods/guards.ts), is a third opinion rather than a tiebreaker: it follows
-through, for its own reason, which is that its verdict never depends on a path
-and so a remote command cannot mislead it.
+unwrap(). The provisioning guard is a third opinion rather than a tiebreaker: it
+follows through, for its own reason, which is that its verdict never depends on
+a path and so a remote command cannot mislead it.
 
 The tokenising story, which every importer depends on: a substring match cannot
 decide any of this. `grep -rn "drop table" app/` and `git log --grep="git rm"`
@@ -173,8 +175,7 @@ SHELL_OPERATORS = ("<<<", "&>>", "&&", "||", ";;", ";&", "|&", "<<", ">>",
                    "<", ">")
 
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-# Bash allows only a space or a tab between << and the delimiter.
-HEREDOC_START = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+HEREDOC_START = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 
 
 def base(token):

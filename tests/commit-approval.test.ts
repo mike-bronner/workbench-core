@@ -213,7 +213,6 @@ describe('AC1: one "Commit it" pick allows one commit, then the push of that com
     'export CDP\\ATH=/x; cd other; git commit -m x; false',
     'cdpath=(/x); cd other; git commit -m x; false',
     'declare -x "CDPATH=/x"; cd other; git commit -m x; false',
-    'n=CDP; eval "${n}ATH=/x"; cd other; git commit -m x; false',
     'n=CDP; printf -v "${n}ATH" /x; cd other; git commit -m x; false',
     'cd other; git commit -m x; false',
   ]) {
@@ -233,6 +232,16 @@ describe('AC1: one "Commit it" pick allows one commit, then the push of that com
       expect(await bash($, b, 'git commit -m y')).toBe(COMMIT_REFUSAL)
     })
   }
+
+  // An eval whose command name is built at run time: since batch C1 the
+  // guards refuse the whole line before the commit gate reads it, because the
+  // reader cannot name the command eval runs. The pick is left unused.
+  test('a commit behind an eval whose command name is built at run time never runs', async ($, on) => {
+    const b = bench(on)
+    await session($)
+    await pick($, b)
+    expect(await bash($, b, 'n=CDP; eval "${n}ATH=/x"; cd other; git commit -m x; false')).toContain('the shell reader cannot tell which command this line runs')
+  })
 
   test('an escaped command word counts as a commit and push, so beside a real commit the line is refused under any pick', async ($, on) => {
     const b = bench(on)

@@ -1,5 +1,6 @@
-// workbench-core's hooks module, beside the command hooks in hooks.json. The
-// command hooks stay registered: the guards move here only after parity.
+// workbench-core's hooks module, beside the command hooks in hooks.json. A
+// bash guard moves here once its port holds parity with its frozen copy under
+// tests/oracle/, and its command hook is then removed.
 //
 //   $.workbench     the noun other plugins build on: the brief, the scratch
 //                   roots, orchestrator mode, the lane, the shell reader
@@ -27,6 +28,9 @@
 //                   injected at the tail, never into the system prompt
 //   learnings       a skill's vault learnings, merged into its text
 //   intake nudge    the first Edit of a task with no intake block on screen
+//   guards          the peer message gate, the provisioning, summary-writer,
+//                   credential and whole-disk search guards, judged before a
+//                   tool call runs, and refusing when they cannot judge
 //   prompt rules    the workbench rules as shared system-prompt sections, the
 //                   same bytes in every session, and a sub-agent's copy at its
 //                   start; the harness's memory section and the block an older
@@ -96,6 +100,29 @@ import type { Refs } from './mods/commit-approval'
 import { BUNDLE_REFUSAL, approvalAfter, bundlesCommit, dirOf, isCommitPick, readLine, refusalOf } from './mods/commit-approval'
 import { isAttendedPrompt, isAttendedSession, isScheduledFire, laneOf } from './mods/lane'
 import { parseShell } from './mods/shell'
+import {
+  AGENT_WORKTREE_REFUSAL,
+  ENTER_WORKTREE_REFUSAL,
+  EXIT_WORKTREE_REFUSAL,
+  GUARDED,
+  PEER_ADVICE,
+  PEER_REFUSAL,
+  SEARCH_UNREAD,
+  bodyTargets,
+  credentialPathRefusal,
+  credentialRefusal,
+  hiddenCommandRefusal,
+  isPartlyRead,
+  mentionsSearch,
+  peerVerdict,
+  provisioningRefusal,
+  resolvePath,
+  searchRefusal,
+  searchRoots,
+  summaryWriterRefusal,
+  toolSearchRoots,
+} from './mods/guards'
+import type { SearchRoot } from './mods/guards'
 import {
   REFUSAL,
   STORE_KEY,
@@ -651,6 +678,99 @@ async function unspliced($: EngineInterface, file: InstructionFile): Promise<Ins
   return content === file.content ? undefined : { ...file, content }
 }
 
+const GUARD_FAILED =
+  'Workbench guards (workbench-core): the guards that judge this call could not finish, so the call is refused. Try the call again. If it is refused again, stop and tell Mike which call it was.'
+
+type Guarded = Record<string, unknown> & { tool: string; agentId?: string }
+
+// Each root with where it lands once its symbolic links are followed. A path
+// that does not resolve keeps its spelling alone.
+async function withRealPaths($: EngineInterface, roots: readonly SearchRoot[]): Promise<SearchRoot[]> {
+  return Promise.all(
+    roots.map(async root => {
+      if (root.path === undefined) return root
+      const stat = await $.fs.stat(root.path, { resolve: true }).catch(() => undefined)
+      return stat?.realPath === undefined ? root : { ...root, real: stat.realPath }
+    }),
+  )
+}
+
+// The heredoc targets that are missing or regular files right now, followed
+// through any symbolic link. A FIFO, a socket, a device, a folder, or a
+// target the stat cannot answer for is left out, so its body is read.
+async function regularFiles($: EngineInterface, targets: readonly string[], home: string | undefined): Promise<ReadonlySet<string>> {
+  const regular = new Set<string>()
+  for (const target of targets) {
+    // A relative target lands in the Bash tool's live directory, not the engine's.
+    const path = resolvePath(target, await $.session.cwd(), home)
+    if (path === undefined) continue
+    const kind = await $.fs.stat(path, { resolve: true }).then(
+      stat => stat.kind,
+      () => undefined,
+    )
+    // A stat that fails counts as missing only when nothing is at the path.
+    const isMissing = kind === undefined && !(await $.fs.exists(path).catch(() => true))
+    if (kind === 'file' || isMissing) regular.add(target)
+  }
+  return regular
+}
+
+// The guards' verdict on one tool call (hooks/mods/guards.ts): a refusal, an
+// advisory to add to the result, or nothing. The facts each guard needs are
+// read only when the call reaches it.
+async function guardVerdict($: EngineInterface, e: Guarded): Promise<{ deny: string } | { advise: string } | undefined> {
+  const text = (value: unknown): string => (typeof value === 'string' ? value : value === undefined || value === null ? '' : JSON.stringify(value))
+  switch (e.tool) {
+    case 'SendMessage': {
+      // A lane that cannot be read is taken as a sub-agent's, the gated side.
+      const lane = await $.workbench.callerLane(e.agentId === undefined ? {} : { agentId: e.agentId }).catch((): WorkbenchCallerLane => 'sub-agent')
+      if (lane !== 'sub-agent') return undefined
+      const verdict = peerVerdict({ to: e.to, recipient: e.recipient })
+      return verdict === 'deny' ? { deny: PEER_REFUSAL } : verdict === 'advise' ? { advise: PEER_ADVICE } : undefined
+    }
+    case 'EnterWorktree':
+      return { deny: ENTER_WORKTREE_REFUSAL }
+    case 'ExitWorktree':
+      return e.action === 'remove' ? { deny: EXIT_WORKTREE_REFUSAL } : undefined
+    case 'Agent':
+      return e.isolation === 'worktree' ? { deny: AGENT_WORKTREE_REFUSAL } : undefined
+    case 'Read':
+    case 'Edit':
+    case 'Write':
+    case 'NotebookEdit':
+    case 'Grep':
+    case 'Glob': {
+      const home = await $.env.get('HOME')
+      const path = text(e.file_path ?? e.notebook_path ?? e.path)
+      const refusal = path === '' ? undefined : credentialPathRefusal(path, home)
+      if (refusal !== undefined) return { deny: refusal }
+      if (e.tool !== 'Grep' && e.tool !== 'Glob') return undefined
+      const roots = await withRealPaths($, toolSearchRoots(e.tool, { path: e.path, pattern: e.pattern }, await $.session.cwd(), home))
+      const searched = searchRefusal(roots, home)
+      return searched === undefined ? undefined : { deny: searched }
+    }
+    case 'Bash': {
+      const line = text(e.command)
+      const parse = parseShell(line)
+      const home = await $.env.get('HOME')
+      const refusal =
+        hiddenCommandRefusal(parse) ??
+        credentialRefusal(line, home, parse, await regularFiles($, bodyTargets(parse), home)) ??
+        provisioningRefusal(line, parse) ??
+        ((await $.env.get('WORKBENCH_SUMMARY_WRITER')) === '1' ? summaryWriterRefusal(parse) : undefined)
+      if (refusal !== undefined) return { deny: refusal }
+      if (!mentionsSearch(parse)) return undefined
+      if (isPartlyRead(parse)) return { deny: SEARCH_UNREAD }
+      const roots = searchRoots(parse, await $.session.cwd(), home)
+      if (roots.length === 0) return undefined
+      const searched = searchRefusal(await withRealPaths($, roots), home)
+      return searched === undefined ? undefined : { deny: searched }
+    }
+    default:
+      return undefined
+  }
+}
+
 export const register: Register = on => {
   // Set at every load, because a reload runs session.start again. Undefined
   // until then: the question rule reads it as unattended, and the noun rejects.
@@ -803,6 +923,13 @@ export const register: Register = on => {
   })
 
   on('tool.call', async ($, e, next) => {
+    // The guards judge first, in every lane. One that throws refuses the call.
+    const verdict = await guardVerdict($, e as Guarded).catch(() => ({ deny: GUARD_FAILED }))
+    if (verdict !== undefined && 'deny' in verdict) return { deny: verdict.deny }
+    if (verdict !== undefined) {
+      const result = await next(e)
+      return result.deny !== undefined ? result : { ...result, context: [...(result.context ?? []), verdict.advise] }
+    }
     if (e.tool === 'AskUserQuestion') {
       // The commit approval rule: the commit question is asked alone, and a
       // "Commit it" pick is what approves the commit.
@@ -887,7 +1014,12 @@ export const register: Register = on => {
       return result
     }
     return next(e)
-  })
+  }).catch(($, e, next) =>
+    // A hook that failed or overran its budget before it passed a guarded call
+    // on refuses it. Any other call goes on, as it did before the guards moved
+    // here, and a call already passed on keeps its answer.
+    next.called ? next(e) : GUARDED.has(e.tool) ? { deny: GUARD_FAILED } : next(e),
+  )
 
   on('command.run', async ($, e, next) => {
     if (!OURS.has(e.command)) return next(e)

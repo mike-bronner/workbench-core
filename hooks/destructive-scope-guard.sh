@@ -37,8 +37,8 @@
 #
 # THIS GUARD FAILS CLOSED, WHICH INVERTS THE CONVENTION EVERY SIBLING GUARD
 # HERE FOLLOWS — READ THIS BEFORE CHANGING ANYTHING.
-# credential-guard.sh, vault-git-guard.sh, destructive-database-guard.sh,
-# provisioning-guard.sh and the retired scratch-delete-guard.sh all fail open,
+# the bash credential guard, vault-git-guard.sh, destructive-database-guard.sh,
+# the bash provisioning guard and the retired scratch-delete-guard.sh all fail open,
 # and they are right to: an unparseable command fell through to
 # `Bash(rm -rf:*)` in permissions.ask and a human read a prompt, so the cost of
 # a miss was one prompt. That entry is gone. A fail-open verdict here reaches
@@ -73,7 +73,7 @@
 # A PreToolUse hook returning permissionDecision "deny" refuses the call
 # outright, and no allow rule or permission mode reaches it. It is also the only
 # verdict that binds: a root-cause investigation on 2026-09-11, recorded in
-# hooks/provisioning-guard.sh, measured that a hook returning "ask" is silently
+# the provisioning guard's bash hook, measured that a hook returning "ask" is silently
 # auto-approved by the auto-mode classifier, because a hook cannot set
 # classifierApprovable. Of the three verdicts a hook can return, only "deny"
 # does anything. So an out-of-scope or unreadable command is hard-blocked, and
@@ -193,7 +193,7 @@ COMMAND=$(printf '%s' "$PAYLOAD" | jq -r '
 # the checker's verdict about computed verb slots never ran. The bracket classes
 # are what make this case-insensitive without a fork — bash 3.2 ships on macOS
 # and has no ${var,,}, and `tr` or `grep -i` would each cost the fork this check
-# exists to avoid. Same idiom as hooks/provisioning-guard.sh. The letters are
+# exists to avoid. The bash provisioning guard used the same idiom. The letters are
 # listed rather than ranged, because a range follows the locale's collation.
 #
 # THE FLOOR, STATED RATHER THAN IMPLIED: a verb held in a variable whose name

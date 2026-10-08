@@ -409,7 +409,8 @@ assert_jq "the guard is registered once on Bash" "$REPO_ROOT_RAILS/hooks/hooks.j
   '[.hooks.PreToolUse[] | select(.hooks[].command | test("destructive-scope-guard.sh")) | .matcher] | join(",")' \
   "Bash"
 
-# Credential paths are guarded by hooks/credential-guard.sh, not by a deny rule.
+# Credential paths are guarded by the credential guard in the hooks module
+# (hooks/mods/guards.ts), not by a deny rule.
 # A Read deny never applied to a subprocess that opens the file itself, and ANY
 # Read() rule arms the `deniedPathInsideDirectory` circuit breaker, which forces
 # a prompt on every relative-path grep/rg/diff/git/cp/mv in a command containing

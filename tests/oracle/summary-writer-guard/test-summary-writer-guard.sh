@@ -1,11 +1,21 @@
 #!/bin/bash
-# Tests for summary-writer-guard.sh. Run directly: ./test-summary-writer-guard.sh
+# Tests for the frozen summary-writer-guard.sh beside this file, kept as a test
+# oracle for its port to hooks/register.ts. Run: ./test-summary-writer-guard.sh
 # The guard is a PreToolUse(Bash) hook that blocks the detached summary-writer
 # from writing markdown vault files with Bash (it must use the memory MCP). It
 # is scoped to WORKBENCH_SUMMARY_WRITER=1 and is a no-op everywhere else.
 
 set -u
-GUARD="$(cd "$(dirname "$0")" && pwd)/summary-writer-guard.sh"
+HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
+GUARD="$HOOKS_DIR/summary-writer-guard.sh"
+
+# Under hooks/test-guard-oracles.sh each call of the guard goes through
+# tests/oracle/record.sh, which writes the payload and the verdict for the
+# differential test (tests/guard-differential.test.ts).
+if [ -n "${ORACLE_CASES_OUT:-}" ]; then
+  export ORACLE_REAL_GUARD="$GUARD"
+  GUARD="$HOOKS_DIR/../record.sh"
+fi
 PASS=0
 FAIL=0
 

@@ -102,11 +102,12 @@ the orchestrator decide. That is the same boundary the six-slot brief draws for
 dispatch, in the other direction.
 
 **A pipeline agent launched by `claude -p --agent` is top-level and may send.**
-It carries no `agent_id`, so it is on the allow side of every check here.
+It carries no `agentId`, so it is on the allow side of every check here.
 
 ## What the gate enforces, and what it does not
 
-`hooks/peer-message-gate.sh` sits on `SendMessage`. It checks structure only:
+The peer message gate in workbench-core's hooks module judges every
+`SendMessage` before it runs. It checks structure only:
 
 | Call | Verdict |
 |---|---|
@@ -130,12 +131,12 @@ Three things the gate does **not** do, so do not read a passing send as approval
 - It does not touch `ListAgents`. Listing peers is read-only and ungated for
   every caller, including a sub-agent that may not send to any of them.
 
-**It fails open.** A malformed payload or a missing `jq` allows the call. If the
-gate is down, nothing announces it, and the rules above are the only thing left.
+**It fails closed.** A sub-agent's send that names no destination is refused,
+and so is a send the gate could not finish judging. A refusal says what to do
+instead: send to `main`.
 
 ## Related
 
-- `hooks/peer-message-gate.sh` — the gate, its four branches, and which part of
-  it is measured rather than inferred.
+- `hooks/mods/guards.ts` (workbench-core) — the gate and its four branches.
 - `hooks/agent-dispatch-gate.sh` — the orchestrator boundary in the dispatch
   direction. Same line, drawn between the same two parties.

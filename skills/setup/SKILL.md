@@ -183,7 +183,7 @@ Output is `kind<TAB>rule<TAB>why`. Render it as two short tables — 🔴 deny a
 Three behaviours worth calling out by name:
 
 - `Bash(git push --force:*)` also blocks `--force-with-lease`, since that string starts with `--force`.
-- **There is no `Read()` deny rule.** Credential paths are guarded by `hooks/credential-guard.sh`, a hook deny no allow rule or mode overrides.
+- **There is no `Read()` deny rule.** Credential paths are guarded by the credential guard in the hooks module, a refusal no allow rule or mode overrides.
 - **There is no `rm` rule at all.** `rm` and the destructive git verbs are gated by `hooks/destructive-scope-guard.sh`, which permits them only inside the project or a scratch root.
 
 Then offer a dry run — it prints exactly what would change and writes nothing:

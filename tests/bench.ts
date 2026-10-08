@@ -35,6 +35,10 @@ export type Bench = {
   wroteThrough: string[]
   // Paths that are directories.
   dirs: Set<string>
+  // What $.fs.stat reports a path leads to, where that is no regular file:
+  // `other` for a FIFO, a socket or a device, `dir` for a folder. A path in
+  // `links` too is a symbolic link to such a thing.
+  kinds: Map<string, 'dir' | 'other'>
   // Runs after each `rm`, as something racing the module would.
   afterRm?: () => void
   // The module's $.store.
@@ -87,6 +91,7 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     mtimes: new Map(Object.keys(options.files ?? {}).map(path => [path, options.mtime ?? START])),
     links: new Set(),
     dirs: new Set(),
+    kinds: new Map(),
     wroteThrough: [],
     store: new Map(Object.entries(options.store ?? {})),
     runs: [],
@@ -132,6 +137,8 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     return { value: undefined }
   })
   on('fs.stat', ($, e) => {
+    const kind = b.kinds.get(e.path)
+    if (kind !== undefined) return { value: { kind, size: 0, mtimeMs: 0, isLink: b.links.has(e.path) } }
     if (!b.files.has(e.path)) throw new Error(`ENOENT: ${e.path}`)
     return { value: { kind: 'file' as const, size: (b.files.get(e.path) ?? '').length, mtimeMs: b.mtimes.get(e.path) ?? 0, isLink: b.links.has(e.path) } }
   })

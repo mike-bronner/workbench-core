@@ -58,12 +58,12 @@
 # volumes alone, and only the --volumes form destroys the data. The reasoning,
 # and the hole in the Artisan exemption, are in hooks/lib/destructive-db-check.py.
 #
-# FAIL OPEN, for a different reason than credential-guard.sh gives:
+# FAIL OPEN, for a different reason than the credential guard gives:
 # There is no adversary here. The threat is a confidently wrong agent, not a
 # crafted payload. A command that actually destroys data has to be valid shell to
 # run at all, so it parses. Anything unparseable is something bash would likely
 # reject too, and blocking it would break ordinary quoted one-liners for nothing.
-# As with credential-guard.sh, this guards Claude's own tool calls and is not an
+# As with the credential guard, this guards Claude's own tool calls and is not an
 # OS boundary — `/sandbox` enforces in the kernel, for every subprocess.
 #
 # ONE EXCEPTION, AND IT IS THE READ CEILING: a command longer than the checker's

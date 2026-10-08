@@ -44,7 +44,7 @@
 # is not this vault and judging it could only produce a false block.
 #
 # FAIL OPEN, matching both existing guards, and for the reason the database
-# guard gives rather than the one credential-guard.sh gives: there is no
+# guard gives rather than the one the credential guard gives: there is no
 # adversary here. The threat is a confidently wrong agent, not a crafted
 # payload. A command that actually writes to the vault must be valid shell to
 # run at all, so it tokenises. Anything unparseable is something bash would

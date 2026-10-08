@@ -45,7 +45,7 @@ The hole, stated plainly: --env=testing proves intent, not target. A project
 whose .env.testing points at the development database still walks through. This
 narrows the mistake, it does not close it. `/sandbox` is the real boundary.
 
-FAIL OPEN, and for a different reason than credential-guard.sh gives:
+FAIL OPEN, and for a different reason than the credential guard gives:
 There is no adversary here. The threat is a confidently wrong agent, not someone
 crafting input to slip past a parser. A command that actually destroys data must
 be syntactically valid to run at all, so it tokenises. Anything this checker
@@ -83,7 +83,7 @@ file, and reading it could only ever produce a false block.
 THE TOKENISER IS SHARED; THE RULES ARE NOT:
 Tokenising, statement/pipeline splitting, heredoc lifting, and no-op-prefix
 stripping live in hooks/lib/shell_parse.py, imported below and also used by
-hooks/lib/vault-git-check.py and hooks/lib/provisioning-check.py. Only that
+hooks/lib/vault-git-check.py. Only that
 mechanical half is shared. Every verb table, regex, and blocking decision in
 this file stays in this file, and so does unwrap(): the vault guard must STOP at
 `ssh`, where this one follows through, because a database on another host is

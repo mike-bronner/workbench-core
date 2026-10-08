@@ -5,15 +5,6 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|Read|Edit|Write|NotebookEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/credential-guard.sh\""
-          }
-        ]
-      },
-      {
         "matcher": "Write|NotebookEdit",
         "hooks": [
           {
@@ -50,15 +41,6 @@
         ]
       },
       {
-        "matcher": "Bash|Agent|EnterWorktree|ExitWorktree",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/provisioning-guard.sh\""
-          }
-        ]
-      },
-      {
         "matcher": "Bash",
         "hooks": [
           {
@@ -68,29 +50,11 @@
         ]
       },
       {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/summary-writer-guard.sh\""
-          }
-        ]
-      },
-      {
         "matcher": "Bash|mcp__.*__(add_comment|submit_review|create_issue|set_acceptance_criteria)",
         "hooks": [
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/outbound-prose-guard.sh\""
-          }
-        ]
-      },
-      {
-        "matcher": "SendMessage",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/peer-message-gate.sh\""
           }
         ]
       }

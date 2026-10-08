@@ -1,5 +1,6 @@
 #!/bin/bash
-# Tests for hooks/provisioning-guard.sh — the PreToolUse provisioning guard.
+# Tests for the frozen provisioning-guard.sh beside this file: the bash guard as
+# it stood before its port to hooks/register.ts, kept as a test oracle.
 # Run directly: ./test-provisioning-guard.sh
 # Each case feeds the hook one PreToolUse payload on stdin and asserts its
 # VERDICT: deny (the call is refused) or allow (nothing is printed, so the normal
@@ -23,8 +24,14 @@
 set -u
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 GUARD="$HOOKS_DIR/provisioning-guard.sh"
-HOOKS_JSON="$HOOKS_DIR/hooks.json"
-README="$HOOKS_DIR/../README.md"
+
+# Under hooks/test-guard-oracles.sh each call of the guard goes through
+# tests/oracle/record.sh, which writes the payload and the verdict for the
+# differential test (tests/guard-differential.test.ts).
+if [ -n "${ORACLE_CASES_OUT:-}" ]; then
+  export ORACLE_REAL_GUARD="$GUARD"
+  GUARD="$HOOKS_DIR/../record.sh"
+fi
 PASS=0
 FAIL=0
 
@@ -482,29 +489,6 @@ if [ "$(verdict_of "$OUT")" = "deny" ]; then
 else
   FAIL=$((FAIL + 1)); echo "  ❌ failed open when invoked by a relative path"
 fi
-
-# A guard nothing calls guards nothing, so registration is part of the behaviour.
-# All four surfaces have to be in the matcher: a matcher that lost EnterWorktree
-# would leave that tool unguarded and no test above would notice.
-echo "the hook is registered in hooks.json, on all four surfaces:"
-assert_jq "matcher covers all four" "$HOOKS_JSON" \
-  '[.hooks.PreToolUse[] | select(.hooks[].command | test("provisioning-guard.sh")) | .matcher] | join(",")' \
-  "Bash|Agent|EnterWorktree|ExitWorktree"
-assert_jq "registered exactly once" "$HOOKS_JSON" \
-  '[.hooks.PreToolUse[].hooks[] | select(.command | test("provisioning-guard.sh"))] | length' "1"
-assert_jq "no if condition narrows it" "$HOOKS_JSON" \
-  '[.hooks.PreToolUse[] | select(.hooks[].command | test("provisioning-guard.sh")) | .if // empty] | length' "0"
-
-# A rule with no reasoning attached gets relaxed later, so the README carries
-# the argument and this suite holds it there.
-echo "the README documents the guard alongside its siblings:"
-assert_grep "names the script"         'hooks/provisioning-guard.sh' "$README"
-assert_grep "names the checker"        'hooks/lib/provisioning-check.py' "$README"
-assert_grep "names the test suite"     'hooks/test-provisioning-guard.sh' "$README"
-assert_grep "documents EnterWorktree"  'EnterWorktree' "$README"
-assert_grep "documents the Agent path" 'isolation: "worktree"' "$README"
-assert_grep "documents the SQLite exclusion" 'database/database.sqlite' "$README"
-assert_grep "documents stack startup"  'docker compose up' "$README"
 
 echo
 echo "$PASS passed, $FAIL failed"

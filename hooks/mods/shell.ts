@@ -11,6 +11,8 @@
 // and insights/2026-09-26-shell-parsing-guards-lose-arms-race-use-allowlist.md.
 //
 // WHAT IT READS:
+//   - blanks: a word ends only at a space, a tab or a newline, as in bash. Any
+//     other space, such as U+00A0, is part of the word
 //   - quotes: '…', "…", $'…' with its escapes, and $"…", read as "…"
 //   - backslashes, and a backslash-newline, which bash deletes
 //   - the separators ; & | && || newline ( ), and comments
@@ -53,6 +55,11 @@ import type {
 
 // The mark a word carries when a $'…' string in it held any backslash escape.
 const ESCAPED = '\uE000'
+
+// The mark the lexer puts before a `$` written outside any quote. Such an
+// expansion is split into words by bash, so `$P/x` may run any command,
+// where `"$P"/x` names one path.
+const UNQUOTED = '\uE002'
 
 // What a substitution leaves in the word it stood in.
 const SUBSTITUTED = '$_'
@@ -166,11 +173,19 @@ const MAX_DEPTH = 4
 // A word's command name: its last path part, lowercased, the escape mark
 // removed.
 export const nameOf = (word: string): string => {
-  const plain = word.replaceAll(ESCAPED, '')
+  const plain = word.replaceAll(ESCAPED, '').replaceAll(UNQUOTED, '')
   return plain.slice(plain.lastIndexOf('/') + 1).toLowerCase()
 }
 
 export const isEscaped = (word: string): boolean => word.includes(ESCAPED)
+
+// Whether a command word's text comes, even in part, from an expansion or a
+// substitution, other than a plain variable prefix before a literal path,
+// written inside double quotes. `$_` is where a substitution stood, so it is
+// never a plain prefix. `word` carries the lexer's UNQUOTED marks: an
+// unquoted expansion is split into words, so it is never plain.
+const PLAIN_PREFIX = /^(\$(?!_\/)[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})\/[^$`]*$/
+export const isExpanded = (word: string): boolean => /[$`]/.test(word) && (word.includes(UNQUOTED) || !PLAIN_PREFIX.test(word))
 
 // What one read of a line collects: every heredoc, by index, and every unknown.
 // `isCompat` reads as the commit gate of 77bb2f3 did (commandsOf).
@@ -219,9 +234,9 @@ function closingParen(line: string, from: number, countsCases = true): number {
   let cases = 0
   for (let i = from; i < line.length; i++) {
     const c = line[i]
-    const isWord = (name: string) => line.startsWith(name, i) && isWordStart(line, i) && /[\s;&|()]/.test(line[i + name.length] ?? ' ')
+    const isWord = (name: string) => line.startsWith(name, i) && isWordStart(line, i) && /[ \t\n;&|()]/.test(line[i + name.length] ?? ' ')
     // A case counts only where a command starts, as `case WORD in`.
-    const isCase = () => /^case\s+\S+\s+in(\s|$)/.test(line.slice(i)) && /(^|[;&|(\n])\s*$/.test(line.slice(from, i))
+    const isCase = () => /^case[ \t\n]+[^ \t\n]+[ \t\n]+in([ \t\n]|$)/.test(line.slice(i)) && /(^|[;&|(\n])[ \t\n]*$/.test(line.slice(from, i))
     // The compat reading (commandsOf) counts no case.
     // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
     if (countsCases && isWord('case') && isCase()) cases++
@@ -279,7 +294,7 @@ type Context = 'top' | '$(' | '`' | "'" | '"' | '(('
 
 // Whether a word starts at `i`: a `#` there opens a comment, and `((` there
 // opens arithmetic.
-const isWordStart = (text: string, i: number): boolean => i === 0 || /[\s;&|()]/.test(text[i - 1] as string)
+const isWordStart = (text: string, i: number): boolean => i === 0 || /[ \t\n;&|()]/.test(text[i - 1] as string)
 
 // The delimiter of a heredoc whose word starts at `from`, built as bash builds
 // it: every part of the word joined, quoted or not, with the quotes and
@@ -289,7 +304,7 @@ function delimiterAt(text: string, from: number): { delimiter: string; isQuoted:
   let delimiter = ''
   let isQuoted = false
   let i = from
-  while (i < text.length && !/[\s;&|<>()]/.test(text[i] as string)) {
+  while (i < text.length && !/[ \t\n;&|<>()]/.test(text[i] as string)) {
     const c = text[i] as string
     if (c === "'") {
       const close = text.indexOf("'", i + 1)
@@ -325,7 +340,7 @@ function feedsShell(before: string): boolean {
   const segment = before.split(/;|&|\||\n/).pop() ?? ''
   return segment
     .replace(/["']/g, '')
-    .split(/\s+/)
+    .split(/[ \t\n]+/)
     .some(word => SHELLS.has(nameOf(word)) || nameOf(word) === 'eval')
 }
 
@@ -431,7 +446,7 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; spans
     } else if (c === '<' && next === '<' && text[i + 2] === '<') {
       out += '<<<'
       i += 2
-    } else if (c === '<' && next === '<' && !/^\s*let(\s|$)/.test(out.split(/[;&|\n(]/).pop() ?? '')) {
+    } else if (c === '<' && next === '<' && !/^[ \t\n]*let([ \t\n]|$)/.test(out.split(/[;&|\n(]/).pop() ?? '')) {
       let from = i + 2
       const stripsTabs = text[from] === '-'
       if (stripsTabs) from++
@@ -522,7 +537,7 @@ function closingArithmetic(line: string, from: number): number {
 const isArithmetic = (body: string): boolean => {
   let plain = body
   for (const inner of substitutionsOf(body)) plain = plain.replace(inner, '')
-  return !/[;\n'"\\`]/.test(plain) && !/[\w$}\]]\s+[\w$]/.test(plain)
+  return !/[;\n'"\\`]/.test(plain) && !/[\w$}\]][ \t\n]+[\w$]/.test(plain)
 }
 
 // closingArithmetic, or -1 when the text there does not read as arithmetic.
@@ -591,7 +606,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       isHead = isReserved && (KEYWORDS.has(word) || word === 'time' || (word === '-p' && words.at(-2) === 'time'))
     }
     if (hasWord && target !== undefined) {
-      const plain = word.replaceAll(ESCAPED, '')
+      const plain = word.replaceAll(ESCAPED, '').replaceAll(UNQUOTED, '')
       const doc = plain.startsWith(HEREDOC) ? reading.heredocs[Number(plain.slice(1))] : undefined
       if (doc !== undefined && target.op === '<') {
         target.op = doc.stripsTabs ? '<<-' : '<<'
@@ -651,7 +666,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
   for (let i = 0; i < line.length; i++) {
     const c = line[i] as string
     const next = line[i + 1]
-    if (start === -1 && !/\s/.test(c) && !';&|()'.includes(c)) start = i
+    if (start === -1 && !/[ \t\n]/.test(c) && !';&|()'.includes(c)) start = i
     if (c === '\\') {
       isBare = false
       if (next !== '\n') {
@@ -744,7 +759,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       i = end + 1
       // Bash allows nothing after it but a redirect or a separator, so a word
       // after it is read as a command of its own.
-      if (/^[ \t]*[^\s;&|()<>]/.test(line.slice(i + 1))) endCommand()
+      if (/^[ \t]*[^ \t\n;&|()<>]/.test(line.slice(i + 1))) endCommand()
     } else if (isTest && (c === '<' || c === '>') && !(hasWord && isBare && word === ']]')) {
       // A < or > in a test compares strings. A ]] right before it ends the
       // test, so then it is a redirect.
@@ -782,7 +797,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     } else if (c === '#' && !hasWord) {
       const end = line.indexOf('\n', i)
       i = end === -1 ? line.length : end - 1
-    } else if (/\s/.test(c)) {
+    } else if (c === ' ' || c === '\t' || c === '\n') {
       if (c === '\n') endCommand()
       else endWord()
       // `function f` ends the definition's own command: its body follows.
@@ -805,14 +820,14 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       i++
     } else if (';&|()'.includes(c)) {
       // `name()` defines a function, whose body may never run.
-      if (c === '(' && words.length + (hasWord ? 1 : 0) === 1 && /^\s*\)/.test(line.slice(i + 1))) isUncertain = true
+      if (c === '(' && words.length + (hasWord ? 1 : 0) === 1 && /^[ \t\n]*\)/.test(line.slice(i + 1))) isUncertain = true
       // A | ( ) in a test splits the statement, and the test goes on.
       endWord()
       const keep: boolean = isTest && c !== ';' && c !== '&'
       endCommand()
       isTest = keep
     } else {
-      word += c
+      word += exact && c === '$' ? UNQUOTED + c : c
       hasWord = true
     }
   }
@@ -845,7 +860,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
 export function commandsOf(text: string, isCompat = false): string[][] {
   return lex(text, { heredocs: [], unknowns: new Set(), isCompat }, 'line', 0, true)
     .filter(raw => raw.words.length > 0)
-    .map(raw => raw.words)
+    .map(raw => raw.words.map(word => word.replaceAll(UNQUOTED, '')))
 }
 
 // Where the command a wrapper runs starts, in words, from `at` (the wrapper
@@ -861,7 +876,7 @@ function pastWrapper(words: readonly string[], at: number): { next: number; stop
     // An escaped option may decode to any option, so it is read as written
     // and leaves the statement unplaced.
     if (isEscaped(words[i] as string)) isPlaced = false
-    const word = (words[i] as string).replaceAll(ESCAPED, '')
+    const word = (words[i] as string).replaceAll(ESCAPED, '').replaceAll(UNQUOTED, '')
     if (word === '--') {
       i++
       break
@@ -870,7 +885,11 @@ function pastWrapper(words: readonly string[], at: number): { next: number; stop
       const [name = '', value] = word.slice(2).split(/=(.*)/s)
       if (options.longStops?.includes(name)) return { next: i, stops: true, isPlaced }
       if (options.longValue?.includes(name) && value === undefined) i++
-      else if (!options.longValue?.includes(name) && !options.longFlags?.includes(name) && value === undefined) isPlaced = false
+      // A long name the table does not list exactly is not placed, with or
+      // without an `=value`. getopt_long takes any unambiguous prefix of a
+      // name, so `--spl=…` is env's --split-string, which runs its value as
+      // the command, and a prefix of a listed name may be another option.
+      else if (!options.longValue?.includes(name) && !options.longFlags?.includes(name)) isPlaced = false
       i++
       continue
     }
@@ -920,7 +939,7 @@ function subcommandAt(name: string, args: readonly string[]): number {
 // but keywords.
 function statementOf(raw: Raw, reading: Reading): ShellStatement | undefined {
   const marked = raw.words
-  const words = marked.map(word => word.replaceAll(ESCAPED, ''))
+  const words = marked.map(word => word.replaceAll(ESCAPED, '').replaceAll(UNQUOTED, ''))
   const assignments: string[] = []
   const wrappers: string[] = []
   let isPlaced = true
@@ -950,8 +969,13 @@ function statementOf(raw: Raw, reading: Reading): ShellStatement | undefined {
   if (!isPlaced) reading.unknowns.add('wrapper')
   const nameAt = at < words.length ? at : -1
   const name = nameAt === -1 ? '' : nameOf(words[nameAt] as string)
-  // A name from a variable or a substitution is only known at run time.
-  if (name.includes('$')) reading.unknowns.add('expansion')
+  // A name from a variable or a substitution is only known at run time, and
+  // so is a command word with an expansion anywhere in it: `${X:-/bin/rm}`
+  // keeps a slash inside its braces, so its last path part reads as `rm}`.
+  // The one shape allowed is a plain `$NAME/` or `${NAME}/`, inside double
+  // quotes, in front of a literal path (`"$HOME"/bin/x`,
+  // `"${CLAUDE_PLUGIN_ROOT}/scripts/x.sh"`).
+  if (nameAt !== -1 && isExpanded((marked[nameAt] as string).replaceAll(ESCAPED, ''))) reading.unknowns.add('expansion')
   if (nameAt === -1 && assignments.length === 0 && raw.redirects.length === 0) return undefined
   const args = nameAt === -1 ? [] : words.slice(nameAt + 1)
   return {

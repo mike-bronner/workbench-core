@@ -326,10 +326,12 @@ echo "the gates the system prompt names are real:"
 # The gate table is in hooks/mods/prompt-rules.ts, the one copy. The main loop
 # gets it in the system prompt, and a sub-agent that loads CLAUDE.md gets it
 # at SubagentStart. Every gate it names must be a hook this plugin ships AND
-# registers. The list is read from the table, so a renamed or retired hook turns
-# the row red instead of leaving the agents told about a gate that is gone.
+# registers, or a guard of the hooks module: hooks/mods/guards.ts holds its
+# refusal, which opens with the gate's name and "(workbench-core)". The list is
+# read from the table, so a renamed or retired hook turns the row red instead
+# of leaving the agents told about a gate that is gone.
 RULES_SRC="$REPO_ROOT/hooks/mods/prompt-rules.ts"
-GATE_ROWS=$(sed -nE 's/^\| ([A-Z][a-z]* [a-z ]*(gate|guard)) \|.*/\1/p' "$RULES_SRC")
+GATE_ROWS=$(sed -nE 's/^\| ([A-Z][a-z-]* [a-z ]*(gate|guard)) \|.*/\1/p' "$RULES_SRC")
 if [ "$(printf '%s\n' "$GATE_ROWS" | grep -c .)" -lt 5 ]; then
   FAIL=$((FAIL + 1)); echo "  ❌ the table names fewer than five gates: $(printf '%s' "$GATE_ROWS" | tr '\n' ',')"
 fi
@@ -340,6 +342,8 @@ while IFS= read -r gate; do
     | select(.command | endswith("/" + $h + "\""))] | length' "$REPO_ROOT/hooks/hooks.json" 2>/dev/null)
   if [ -f "$REPO_ROOT/hooks/$hook" ] && [ "${registered:-0}" -ge 1 ]; then
     PASS=$((PASS + 1)); echo "  ✅ $gate is shipped and registered ($hook)"
+  elif grep -qF "$gate (workbench-core)" "$REPO_ROOT/hooks/mods/guards.ts"; then
+    PASS=$((PASS + 1)); echo "  ✅ $gate is a guard of the hooks module (hooks/mods/guards.ts)"
   else
     FAIL=$((FAIL + 1)); echo "  ❌ the table names $gate, but $hook is not shipped and registered"
   fi

@@ -9,7 +9,7 @@ import type { On } from 'claude-code'
 
 import type { WorkbenchShellStatement } from '../types'
 import { commandsOf as commitCommandsOf } from '../hooks/mods/commit-approval'
-import { commandsOf, parseShell, shellScriptOf } from '../hooks/mods/shell'
+import { WRAPPERS, commandsOf, parseShell, shellScriptOf } from '../hooks/mods/shell'
 import { bench, caller, start } from './bench'
 import { CAUGHT, LET_THROUGH, OVER_COUNTED } from './commit-corpus'
 import { PARSER_CASES } from './shell-cases'
@@ -154,6 +154,55 @@ describe('AC2: each statement\'s name and arguments, with its prefix stripped', 
     expect(only("sudo -u$'\\x75' rm x")).toMatchObject({ name: 'rm', isPlaced: false })
     expect(only('watch -x rm x')).toMatchObject({ name: 'rm', isPlaced: true })
     expect(parseShell('watch -x rm x').unknowns).toEqual([])
+  })
+
+  // GNU env's --split-string runs its value as the command, as -S does, and
+  // getopt_long takes any unambiguous prefix of a long name. A long option the
+  // table does not list exactly is unplaced, with or without an `=value`.
+  test('env --split-string, and every abbreviation of it, is the -S case', () => {
+    for (const line of [
+      "env --split-string='rm x' y",
+      'env --split-string "rm x" y',
+      "env --spl='rm x' y",
+      "env --s='rm x' y",
+      "env --split='rm x'",
+      "env -i --split-strin='rm x' y",
+      "env -S'rm x' y",
+    ]) {
+      const reading = parseShell(line)
+      expect(reading.statements[0]?.isPlaced).toBe(false)
+      expect(reading.unknowns).toContain('wrapper')
+    }
+  })
+
+  // Bash ends a word only at a space, a tab or a newline. A no-break space or
+  // an ideographic space is part of the word, so `> foo<NBSP>.md` writes to
+  // one file named that way, and `tee<NBSP>x` is one command name.
+  test('only a space, a tab or a newline ends a word', () => {
+    for (const blank of ['\u00a0', '\u3000', '\u2007', '\u202f']) {
+      expect(only(`echo a${blank}b`)).toMatchObject({ name: 'echo', args: [`a${blank}b`] })
+      expect(only(`tee${blank}out.md`)).toMatchObject({ name: `tee${blank}out.md`, args: [] })
+      expect(only(`> foo${blank}.md`).redirects).toEqual([{ op: '>', fd: '', target: `foo${blank}.md`, isReal: true }])
+    }
+    expect(only('echo a\tb')).toMatchObject({ args: ['a', 'b'] })
+  })
+
+  // The audit of every wrapper entry: in each, a long word that only
+  // abbreviates a listed name, or names none, is unplaced whether or not it
+  // carries `=value`. Only a name listed exactly is placed.
+  test('no wrapper places a long option it does not list exactly', () => {
+    for (const wrapper of Object.keys(WRAPPERS)) {
+      for (const option of ['--zz', '--zz=rm', '--c=rm', '--ch=/x', '--u=x']) {
+        const reading = parseShell(`${wrapper} ${option} -x rm y`)
+        expect([wrapper, option, reading.statements[0]?.isPlaced]).toEqual([wrapper, option, false])
+      }
+    }
+    // Listed names still place, in both spellings.
+    expect(only('env --chdir=/x rm y')).toMatchObject({ name: 'rm', isPlaced: true })
+    expect(only('env --chdir /x rm y')).toMatchObject({ name: 'rm', isPlaced: true })
+    expect(only('env --ignore-environment rm y')).toMatchObject({ name: 'rm', isPlaced: true })
+    expect(only('sudo --user=mike rm y')).toMatchObject({ name: 'rm', isPlaced: true })
+    expect(only('timeout --signal=KILL 5 rm y')).toMatchObject({ name: 'rm', isPlaced: true })
   })
 
   test('a statement is certain until a && or ||, or a branch keyword, comes before it', () => {
@@ -665,6 +714,13 @@ describe('AC7: what the reader cannot read is named, never left out', () => {
     ['nice --adj 5 rm x', ['wrapper']],
     ['eval eval eval eval eval git push', ['depth']],
     ['$cmd x', ['expansion']],
+    ['${X:-/bin/rm} x', ['expansion']],
+    ['${X#a}/bin/rm x', ['expansion']],
+    ['/usr/${X}/rm x', ['expansion']],
+    ['$(echo /bin)/rm x', ['expansion']],
+    // Unquoted, the expansion is split into words.
+    ['$P/x y', ['expansion']],
+    ['${P}/x y', ['expansion']],
     ['echo x | bash', ['stdin']],
     ['echo $((1', ['substitution']],
     ['echo $[1', ['substitution']],
@@ -685,6 +741,11 @@ describe('AC7: what the reader cannot read is named, never left out', () => {
       "echo $'\\x67\\n\\101'",
       'eval eval eval eval git push',
       'bash -c "sudo -u x rm y"',
+      // A plain variable in front of a literal path names a known command.
+      '"$HOME/bin/x" y',
+      '"${CLAUDE_PLUGIN_ROOT}/scripts/x.sh" y',
+      '"$P"/x y',
+      '"${P}"/bin/x y',
     ]) {
       expect(parseShell(line).unknowns).toEqual([])
     }

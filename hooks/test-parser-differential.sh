@@ -61,16 +61,20 @@ echo "keep" > "$OUTSIDE/keep.txt"
 CONFIG="$SANDBOX/config.json"
 printf '{"memory_path": "%s"}\n' "$VAULT" > "$CONFIG"
 
-# verdict <guard> <command> — the live hook's decision, or "silent".
+# verdict <guard> <command> — the live hook's decision, or "silent". The
+# provisioning guard moved into the hooks module (hooks/mods/guards.ts), so its
+# rows run its frozen copy under tests/oracle/, which still reads lines through
+# a copy of shell_parse.py; tests/guards.test.ts holds the port to the same rows.
 verdict() {
-  local guard="$1" command="$2" out
+  local guard="$1" command="$2" out script="$HOOKS_DIR/$1.sh"
+  [ -f "$script" ] || script="$HOOKS_DIR/../tests/oracle/$guard/$guard.sh"
   out=$(jq -nc --arg c "$command" --arg d "$PROJECT" \
         '{tool_name: "Bash", tool_input: {command: $c}, cwd: $d, session_id: "differential-fixture"}' \
       | (unset CLAUDE_CODE_SESSION_ID
          CLAUDE_PROJECT_DIR="$PROJECT" \
          WORKBENCH_MEMORY_PATH="$VAULT" \
          WORKBENCH_CONFIG_FILE="$CONFIG" \
-         bash "$HOOKS_DIR/$guard.sh") 2>/dev/null)
+         bash "$script") 2>/dev/null)
   # No output at all is the neutral verdict, and it has to be spelled rather
   # than left as an empty string: `jq` over empty input prints nothing and exits
   # 0, so an empty result would compare equal to nothing and read as a pass.

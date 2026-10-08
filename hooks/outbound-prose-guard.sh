@@ -32,7 +32,7 @@
 # Fail-open by design. Anything unparseable (a command substitution such as
 # --body "$(cat notes.md)", an unreadable path) exits 0 rather than blocking.
 # This is a style gate, not a security boundary: a false block costs more than
-# a missed check, and credential-guard.sh makes the same trade.
+# a missed check, and the bash credential guard made the same trade.
 #
 # Exit codes: 0 = allow (default). 2 = block. Stderr is surfaced to the model
 # on a blocking PreToolUse hook, so the findings become the revision brief.

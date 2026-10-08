@@ -165,7 +165,7 @@ exist, and a component that does not exist cannot be a symlink. The final
 component is deliberately NOT dereferenced, because `rm -rf` on a symlink
 removes the link and never its target. See physical() for the whole argument.
 
-Output contract, matching hooks/lib/provisioning-check.py plus one word:
+Output contract, matching the retired provisioning-check.py plus one word:
   exit 1, stdout  line 1 = the action the human line names, the rest = detail
                   → the guard denies
   exit 0, stdout `allow`

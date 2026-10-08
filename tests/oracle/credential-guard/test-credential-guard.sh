@@ -1,5 +1,6 @@
 #!/bin/bash
-# Tests for hooks/credential-guard.sh — the PreToolUse credential-path guard.
+# Tests for the frozen credential-guard.sh beside this file: the bash guard as
+# it stood before its port to hooks/register.ts, kept as a test oracle.
 # Run directly: ./test-credential-guard.sh
 # Each case feeds the hook one PreToolUse payload on stdin and asserts its
 # VERDICT: deny (the call is refused) or allow (nothing is printed, so the normal
@@ -19,7 +20,14 @@
 set -u
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 GUARD="$HOOKS_DIR/credential-guard.sh"
-HOOKS_JSON="$HOOKS_DIR/hooks.json"
+
+# Under hooks/test-guard-oracles.sh each call of the guard goes through
+# tests/oracle/record.sh, which writes the payload and the verdict for the
+# differential test (tests/guard-differential.test.ts).
+if [ -n "${ORACLE_CASES_OUT:-}" ]; then
+  export ORACLE_REAL_GUARD="$GUARD"
+  GUARD="$HOOKS_DIR/../record.sh"
+fi
 PASS=0
 FAIL=0
 
@@ -257,7 +265,7 @@ check allow "empty object"             '{}'
 echo "keeps the block when stage 2 cannot run — this guard fails closed:"
 FAILCLOSED=$(mktemp -d)
 trap 'rm -rf "$FAILCLOSED"' EXIT
-cp "$GUARD" "$FAILCLOSED/credential-guard.sh"
+cp "${ORACLE_REAL_GUARD:-$GUARD}" "$FAILCLOSED/credential-guard.sh"
 check_guard "$FAILCLOSED/credential-guard.sh" deny "the checker is missing" \
   "$(bash_json 'grep DB_PASSWORD .env')"
 # Not redundant with the case above, and the reason is the whole design of the
@@ -379,18 +387,6 @@ assert_contains "a file-tool deny names the action too" \
   "$(reason_of "$OUT")" "🛑 Blocked: reading a credential directory."
 assert_contains "and puts the path in the model's half" \
   "$(context_of "$OUT")" "$HOME/.aws/credentials"
-
-# Registration is part of the behaviour: a guard nothing calls guards nothing.
-# The matcher is deliberately every file-touching tool with no `if` condition —
-# a pre-filter that misses a case is a hole in the guard.
-echo "the hook is registered globally in hooks.json:"
-assert_jq "matcher covers every file tool" "$HOOKS_JSON" \
-  '[.hooks.PreToolUse[] | select(.hooks[].command | test("credential-guard.sh")) | .matcher] | join(",")' \
-  "Bash|Read|Edit|Write|NotebookEdit"
-assert_jq "registered exactly once" "$HOOKS_JSON" \
-  '[.hooks.PreToolUse[].hooks[] | select(.command | test("credential-guard.sh"))] | length' "1"
-assert_jq "no if condition narrows it" "$HOOKS_JSON" \
-  '[.hooks.PreToolUse[] | select(.hooks[].command | test("credential-guard.sh")) | .if // empty] | length' "0"
 
 echo
 echo "$PASS passed, $FAIL failed"

@@ -622,6 +622,47 @@ describe('decision A: a line whose command the reader cannot name is refused by 
     'bash <<EOF\ngit re\\set --hard\nEOF',
     'bash <<EOF\necho \\`git push\\`\nEOF',
     'bash <<EOF\ngit re\\\nset --hard\nEOF',
+    // The outer shell expands a $ or a backtick in a -c script or an eval
+    // argument, unquoted or inside "…", before the inner shell reads it.
+    "X='a; git push'; bash -c \"echo $X\"",
+    'bash -c "echo `id`"',
+    'sh -c "echo ${X}"',
+    'eval "echo $X"',
+    'bash -c echo\\ $X',
+    'bash -ec "$X"',
+    'env bash -c "$X"',
+    'exec bash -c "$X"',
+    'command eval "$X"',
+    'bash -c -- "$X"',
+    'trap "rm -f $tmp" EXIT',
+    // A line that takes in outside data and does arithmetic: arithmetic
+    // evaluates a variable's value, and an array subscript in it runs a $( ).
+    'X=$(cat f); echo $((X))',
+    'read X < f; ((X))',
+    'X=`cat f`; let X',
+    'mapfile -t A < f; echo $((A))',
+    'read X < f; [[ -n y && X -eq 1 ]]',
+    'read X < f; echo "${s:X}"',
+    'read X < f; echo "${a[@]:X}"',
+    'read Y < f; X=$Y; echo $((X))',
+    'printf -v X %s "$(cat f)"; ((X))',
+    'echo $(( $(cat f) ))',
+    'echo $(( $(date +%s) - start ))',
+    'n=$(wc -l < f); [[ $n -eq 0 ]]',
+    'read X < f; for ((i=0;i<X;i++)); do :; done',
+    // A name taken from a value: bash evaluates a subscript in it.
+    'read X < f; echo "${!X}"',
+    'read X < f; read "$X" < g',
+    'read X < f; printf -v "$X" 1',
+    'read X < f; printf -v"$X" 1',
+    'read X < f; getopts ab "$X"',
+    'read X < f; wait -p "$X"',
+    'read X < f; unset "$X"',
+    'read X < f; [[ -v $X ]]',
+    'read X < f; declare -n R=$X',
+    'select X in a; do ((REPLY)); done',
+    'X=$(<f); ((X))',
+    'echo "${X:-$(cat f)}"; ((Y))',
   ]
   for (const line of REFUSED) {
     test(`refuses ${JSON.stringify(line)}`, async ($, on) => {
@@ -637,6 +678,22 @@ describe('decision A: a line whose command the reader cannot name is refused by 
     'bash -c "ls"',
     'git log --format=%H',
     'echo $(date)',
+    // A '…' script reaches the inner shell as written.
+    "bash -c 'echo $HOME'",
+    "bash -c 'for f in *; do echo \"$f\"; done'",
+    "eval 'echo $HOME'",
+    // The destructive-scope guard refuses an rm in a trap on its own, so the
+    // rm form is checked at the parse level, in tests/shell.test.ts.
+    "trap 'echo \"$tmp\"' EXIT",
+    'read X < f; [[ $X == y ]]',
+    'read X < f; echo "${#X}"',
+    'unset X',
+    "read X < f; printf '%s\\n' \"$X\"",
+    // Arithmetic with no outside data on the line, and outside data with no
+    // arithmetic.
+    'i=0; i=$((i+1)); echo $i',
+    'n=$(wc -l < f); echo $n',
+    'echo $((2+3))',
     // The pipeline's paths: a plain variable before a literal path.
     '"${CLAUDE_PLUGIN_ROOT}/scripts/x.sh"',
     '"$HOME/bin/x"',

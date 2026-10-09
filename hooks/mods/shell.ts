@@ -41,7 +41,9 @@
 // WHAT IT CANNOT SEE, because the line does not say: an alias or a function,
 // text piped into a shell (`echo x | sh`, flagged as the `stdin` unknown), a
 // script file, an interpreter (`python -c`), and what a variable holds (a
-// command name from one is the `expansion` unknown). A `watch` without -x, a
+// command name from one is the `expansion` unknown, and so is a -c script,
+// eval argument or trap handler the outer shell expands, and a line that both
+// takes in outside data and has arithmetic). A `watch` without -x, a
 // `sudo -s` and a `flock <file> -c` hand their words to a shell, so their
 // statements are not placed.
 //
@@ -196,7 +198,10 @@ export const isExpanded = (word: string): boolean => /[$`]/.test(word) && (word.
 
 // What one read of a line collects: every heredoc, by index, and every unknown.
 // `isCompat` reads as the commit gate of 77bb2f3 did (commandsOf).
-type Reading = { heredocs: ShellHeredoc[]; unknowns: Set<ShellUnknown>; isCompat?: boolean }
+// `takesInput` is true once the line takes in outside data: a command
+// substitution, read, mapfile, readarray or printf -v. `isArithmetic` is true
+// once it has an arithmetic context (arithmeticIn).
+type Reading = { heredocs: ShellHeredoc[]; unknowns: Set<ShellUnknown>; isCompat?: boolean; takesInput?: boolean; isArithmetic?: boolean }
 
 const ANSI_CONTROLS: Record<string, string> = { a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v' }
 
@@ -553,6 +558,11 @@ type Raw = {
   depth: number
   isCertain: boolean
   pipedFrom?: Raw
+  // The indices in `words` of each word that holds a `$` or backtick the
+  // shell expands (unquoted or inside double quotes).
+  expanding: number[]
+  // Whether the command stands inside a [[ ]] test, wholly or in part.
+  isTest: boolean
 }
 
 // The redirect operators, longest first. Only these shapes are read, so a
@@ -622,6 +632,9 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
   let words: string[] = []
   let redirects: ShellRedirect[] = []
   let heredocs: ShellHeredoc[] = []
+  let expanding: number[] = []
+  // Whether the word holds a `$` inside double quotes.
+  let isExpanding = false
   let word = ''
   let hasWord = false
   // Where the command's first character stands in `line`, or -1.
@@ -661,6 +674,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     if (hasWord && target === undefined) {
       const isReserved = isHead && isBare
       words.push(word)
+      if (isExpanding || word.includes(UNQUOTED)) expanding.push(words.length - 1)
       // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
       if (exact && isReserved && word === 'case') caseAt = words.length - 1
       if (exact && isReserved && word === '[[') isTest = true
@@ -683,9 +697,12 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     word = ''
     hasWord = false
     isBare = true
+    isExpanding = false
   }
   const endCommand = () => {
     endWord()
+    // A test open here, or one opened and closed in this command.
+    const wasTest = isTest || words.includes(']]')
     target = undefined
     isTest = false
     isHead = true
@@ -698,6 +715,8 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
         source,
         depth,
         isCertain: !isUncertain && !['then', 'else', 'elif', 'do', 'case', 'for', 'select', 'function'].includes(head),
+        expanding,
+        isTest: wasTest,
         ...(isPiped && last !== undefined ? { pipedFrom: last } : {}),
       }
       commands.push(command)
@@ -715,6 +734,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     words = []
     redirects = []
     heredocs = []
+    expanding = []
     start = -1
   }
   // A substitution's commands go in the list, and the outer word goes on.
@@ -727,11 +747,16 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     commands.push(...lex(inner, reading, nestedSource, depth + 1, !isUncertain, isBody, shifted))
     word += SUBSTITUTED
     hasWord = true
+    reading.takesInput = true
   }
   // Arithmetic is no command: its < > are text, and only its substitutions
   // run.
   const arithmetic = (body: string) => {
-    for (const inner of substitutionsOf(body)) commands.push(...lex(inner, reading, nestedSource, depth + 1, !isUncertain, isBody))
+    reading.isArithmetic = true
+    for (const inner of substitutionsOf(body)) {
+      reading.takesInput = true
+      commands.push(...lex(inner, reading, nestedSource, depth + 1, !isUncertain, isBody))
+    }
     redirects.push(...textual(body))
   }
   // The heredoc bodies kept from the line, each read as a script of its own
@@ -747,6 +772,9 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     const c = line[i] as string
     const next = line[i + 1]
     if (start === -1 && !/[ \t\n]/.test(c) && !';&|()'.includes(c)) start = i
+    // A `for ((…))` header is arithmetic, though its ; keep it from reading
+    // as such below. It only sets the flag.
+    if (c === '(' && next === '(' && (hasWord ? word : words.at(-1)) === 'for') reading.isArithmetic = true
     if (c === '\\') {
       isBare = false
       if (next !== '\n') {
@@ -797,6 +825,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
           substitute(exact ? backtickText(line.slice(i + 1, end)) : line.slice(i + 1, end), i + 1)
           i = end
         } else {
+          if (d === '$') isExpanding = true
           word += d
           redirects.push(...textual(d))
         }
@@ -1115,6 +1144,13 @@ function statementOf(raw: Raw, reading: Reading): ShellStatement | undefined {
 // and `-` end the options, and -o, -O, --rcfile and --init-file take a value.
 // `readsStdin` is true when there is no script and no script file, or -s.
 export function shellScriptOf(args: readonly string[]): { script?: string; readsStdin: boolean } {
+  const { at, readsStdin } = shellScriptAt(args)
+  return at === undefined ? { readsStdin } : { script: args[at] ?? '', readsStdin }
+}
+
+// The index in args of a shell's -c script, if it has one, read as
+// shellScriptOf reads it.
+function shellScriptAt(args: readonly string[]): { at?: number; readsStdin: boolean } {
   let hasScript = false
   let readsStdin = false
   let i = 0
@@ -1131,7 +1167,7 @@ export function shellScriptOf(args: readonly string[]): { script?: string; reads
       if (/[oO]/.test(arg)) i++
     } else if (!arg.startsWith('--')) break
   }
-  if (hasScript) return { script: args[i] ?? '', readsStdin: false }
+  if (hasScript) return { at: i, readsStdin: false }
   return { readsStdin: readsStdin || i >= args.length }
 }
 
@@ -1149,6 +1185,51 @@ function scriptOf(statement: ShellStatement): { script: string; isCertain: boole
   return script === undefined ? undefined : { script, isCertain: statement.isCertain }
 }
 
+// Whether the outer shell expands a `$` or backtick in the script a shell's
+// -c or eval runs, so the script the inner shell reads is not the text the
+// reader sees: in `bash -c "echo $X"`, X may hold `; rm -rf ~`. A trap's
+// handler word is read the same way. A nested `bash -c 'bash -c "$X"'` is
+// caught too, and rightly: the middle shell expands X from its environment.
+function expandsScript(raw: Raw, statement: ShellStatement): boolean {
+  if (statement.name === 'eval') return raw.expanding.some(i => i > statement.nameAt)
+  if (statement.name === 'trap') return raw.expanding.includes(statement.nameAt + (statement.args[0] === '--' ? 2 : 1))
+  if (!SHELLS.has(statement.name)) return false
+  const { at } = shellScriptAt(statement.args)
+  return at !== undefined && raw.expanding.includes(statement.nameAt + 1 + at)
+}
+
+// Whether a statement takes in outside data: read, mapfile, readarray, or
+// printf -v. A command substitution anywhere is noted by the lexer.
+function takesInput(statement: ShellStatement): boolean {
+  if (['read', 'mapfile', 'readarray', 'select'].includes(statement.name)) return true
+  return statement.name === 'printf' && statement.args.some(arg => /^-\w*v/.test(arg))
+}
+
+// Whether a statement has an arithmetic context, beside the $(( )), $[ ] and
+// (( )) the lexer notes: let, declare -i or typeset -i, a [ ] subscript, a
+// ${s:X} offset, or a numeric operator inside [[ ]]. A name taken from a
+// value counts too, as bash evaluates a subscript in it: ${!X}, a variable
+// name argument that holds a $ or a substitution, or `-v $X` in a test.
+function arithmeticIn(raw: Raw, statement: ShellStatement): boolean {
+  if (statement.name === 'let') return true
+  if (statement.words.some(word => word.includes('${!'))) return true
+  const isExpanded = (i: number) => raw.expanding.includes(i)
+  const takesNames = ['read', 'mapfile', 'readarray', 'unset', 'declare', 'typeset', 'local', 'export', 'readonly'].includes(statement.name)
+  if (takesNames && statement.args.some((_, i) => isExpanded(statement.nameAt + 1 + i))) return true
+  // printf -v, test -v, [ -v, [[ -v and wait -p take a name, in the next word
+  // or attached to the option (`-vNAME`).
+  const letter = statement.name === 'wait' ? 'p' : 'v'
+  const isNamed = ['printf', 'test', '[', 'wait'].includes(statement.name) || raw.isTest
+  const option = new RegExp(`^-\\w*${letter}$`)
+  const attached = new RegExp(`^-\\w*${letter}.`)
+  if (isNamed && statement.words.some((word, i) => (option.test(word) && isExpanded(i + 1)) || (attached.test(word) && isExpanded(i)))) return true
+  // getopts stores into a name.
+  if (statement.name === 'getopts' && statement.args.some((_, i) => isExpanded(statement.nameAt + 1 + i))) return true
+  if (['declare', 'typeset', 'local', 'export', 'readonly'].includes(statement.name) && statement.args.some(arg => /^-\w*i/.test(arg))) return true
+  if (statement.words.some(word => /\[[^\]]*\]/.test(word) || /\$\{[^}]*:(?![-=+?])/.test(word))) return true
+  return raw.isTest && statement.words.some(word => /^-(eq|ne|lt|le|gt|ge)$/.test(word))
+}
+
 function statementsOf(text: string, reading: Reading, source: ShellSource, depth: number, isCertain: boolean): ShellStatement[] {
   const statements: ShellStatement[] = []
   // Each lexed command's statement, so a pipe can find what feeds it.
@@ -1163,6 +1244,9 @@ function statementsOf(text: string, reading: Reading, source: ShellSource, depth
     of.set(raw, statement)
     statements.push(statement)
     const run = scriptOf(statement)
+    if (takesInput(statement)) reading.takesInput = true
+    if (arithmeticIn(raw, statement)) reading.isArithmetic = true
+    if (run !== undefined && expandsScript(raw, statement)) reading.unknowns.add('expansion')
     if (run !== undefined) nested(run.script, statement, 'script', run.isCertain)
     else if (SHELLS.has(statement.name) && shellScriptOf(statement.args).readsStdin) {
       // A shell reading its script from stdin: a pipe or a here-string. A
@@ -1186,5 +1270,11 @@ function statementsOf(text: string, reading: Reading, source: ShellSource, depth
 export function parseShell(text: string): ShellParse {
   const reading: Reading = { heredocs: [], unknowns: new Set() }
   const statements = statementsOf(text, reading, 'line', 0, true)
+  // Arithmetic evaluates a variable's value as an expression, and a subscript
+  // in it runs its substitutions: with X='a[$(cmd)]', $((X)) runs cmd. Which
+  // variable holds outside data is not tracked, so a line that both takes in
+  // outside data and has any arithmetic context is refused. Plain arithmetic,
+  // such as a counter, and a substitution with no arithmetic both pass.
+  if (reading.takesInput && reading.isArithmetic) reading.unknowns.add('expansion')
   return { statements, unknowns: [...reading.unknowns].sort() }
 }

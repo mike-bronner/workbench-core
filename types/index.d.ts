@@ -66,7 +66,12 @@ export type WorkbenchCallerLaneArgs = {
 //   wrapper       a wrapper option the reader cannot place (isPlaced),
 //                 including one that hands its command to a shell (`sudo -s`,
 //                 `flock <file> -c`)
-//   expansion     a command name from a variable or a substitution (`$X a`)
+//   expansion     a command name from a variable or a substitution (`$X a`),
+//                 a -c script, eval argument or trap handler the outer
+//                 shell expands (`bash -c "echo $X"`), or a line that both
+//                 takes in outside data (a substitution, read, mapfile,
+//                 select, printf -v) and has arithmetic or uses a value as
+//                 a variable name (`read X; ((X))`, `read X; unset "$X"`)
 //   stdin         a shell with no script reads one from a pipe or a
 //                 here-string (`echo x | sh`, `cat <<EOF | bash`). A heredoc
 //                 piped in, or the here-string, is still read as a script.

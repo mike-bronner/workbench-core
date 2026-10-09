@@ -215,7 +215,6 @@ describe('AC1: one "Commit it" pick allows one commit, then the push of that com
     'export CDP\\ATH=/x; cd other; git commit -m x; false',
     'cdpath=(/x); cd other; git commit -m x; false',
     'declare -x "CDPATH=/x"; cd other; git commit -m x; false',
-    'n=CDP; printf -v "${n}ATH" /x; cd other; git commit -m x; false',
     'cd other; git commit -m x; false',
   ]) {
     test(`a commit that lands where the walk did not follow uses the pick up: ${JSON.stringify(line)}`, async ($, on) => {
@@ -244,6 +243,23 @@ describe('AC1: one "Commit it" pick allows one commit, then the push of that com
     await pick($, b)
     expect(await bash($, b, 'n=CDP; eval "${n}ATH=/x"; cd other; git commit -m x; false')).toContain('the shell reader cannot tell which command this line runs')
   })
+
+  // printf -v into a name built at run time: the guards refuse the line, as
+  // bash evaluates a subscript in a name taken from a value. The pick is left
+  // unused.
+  for (const line of [
+    'n=CDP; printf -v "${n}ATH" /x; cd other; git commit -m x; false',
+    'n=CDP; printf -v"${n}ATH" /x; cd other; git commit -m x; false',
+  ]) {
+    test(`a commit behind printf -v into a name built at run time never runs: ${JSON.stringify(line)}`, async ($, on) => {
+      const b = bench(on)
+      await session($)
+      await pick($, b)
+      expect(await bash($, b, line)).toContain('the shell reader cannot tell which command this line runs')
+      // The pick is left unused, so a plain commit still goes through.
+      expect(await bash($, b, 'git commit -m y')).toBeUndefined()
+    })
+  }
 
   test('an escaped command word counts as a commit and push, so beside a real commit the line is refused under any pick', async ($, on) => {
     const b = bench(on)

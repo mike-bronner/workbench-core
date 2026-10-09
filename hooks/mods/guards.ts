@@ -70,7 +70,7 @@ const piecesOf = (text: string): string[] => text.split(/[ \t\n\r\v\f]+/).filter
 // only where the line names a guard's subject.
 export function hiddenCommandRefusal(parse: ShellParse): string | undefined {
   const why = parse.unknowns.includes('expansion')
-    ? 'a command name, or an unquoted heredoc fed to a shell, takes text from a variable or a substitution'
+    ? 'a command name, a script for bash -c, eval or trap, or an unquoted heredoc fed to a shell, takes text from a variable or a substitution, or the line both takes in outside data (a substitution, read, mapfile, select or printf -v) and does arithmetic or uses a value as a variable name. To do that, split the line: run the arithmetic or the name lookup in a separate Bash call'
     : parse.unknowns.includes('stdin')
       ? 'a script is piped or fed into a shell'
       : parse.unknowns.includes('wrapper') || parse.statements.some(s => !s.isPlaced)

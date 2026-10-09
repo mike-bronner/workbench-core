@@ -6,8 +6,7 @@ WARNING — A GUARD THAT IMPORTS THIS FILE CAN FAIL SILENTLY.
 The destructive-scope, destructive-database and vault-git guards used to
 import this file. They now run in the hooks module (hooks/mods/*.ts), which
 reads shell through hooks/mods/shell.ts and does not import this file. Their
-bash copies under tests/oracle/ carry frozen copies of this file, as test
-oracles. Do not edit those copies.
+bash guards are retired.
 
 The live importer is hooks/lib/scan-query.py. The outbound prose guard moved
 into the hooks module too (hooks/mods/outbound-prose.ts). A change here that
@@ -84,9 +83,10 @@ reader starts from the answers rather than the question:
   back: 578 assertions across six suites were green while three guards were
   broken, and "rerun every importer's suite" was followed. Both missed it
   because the defect lived in the SEAM between this file and its callers, and
-  every suite tests one layer. hooks/test-parser-differential.sh tests the
-  composition — one corpus, every guard, live hooks, verdicts pinned — and it is
-  the suite that catches a change here moving a verdict over there. Run it.
+  every suite tests one layer. The guards now run in the hooks module, and
+  tests/guard-corpus.test.ts tests the composition there: one recorded corpus,
+  every ported guard, verdicts pinned. hooks/test-shell-parity.sh holds this
+  reader to the same readings as the module's parser. Run both.
 
   FIXED, BY REPORTING RATHER THAN BY PARSING — the whole-text retry in
   token_lines() merges every line into ONE token list, because shlex treats a
@@ -121,9 +121,9 @@ reader starts from the answers rather than the question:
   visible gap — the failure mode this module is meant not to have. So the rule
   stays with the caller: the scope guard (now hooks/mods/destructive-scope.ts)
   treats a verb slot that is not a command name as unreadable and refuses it,
-  which needs no table. The frozen database and provisioning guards under
-  tests/oracle/ do not, and for them `env -i psql -c "DROP DATABASE x"` reads as
-  a command named `-i`. hooks/test-parser-differential.sh pins that gap.
+  which needs no table. The retired database and provisioning bash guards did
+  not, and for them `env -i psql -c "DROP DATABASE x"` read as a command named
+  `-i`.
 """
 
 import os

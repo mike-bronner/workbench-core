@@ -1,6 +1,6 @@
 // workbench-core's hooks module, beside the command hooks in hooks.json. A
-// bash guard moves here once its port holds parity with its frozen copy under
-// tests/oracle/, and its command hook is then removed.
+// bash guard moved here once its port held parity with it, and its command
+// hook was then removed.
 //
 //   $.workbench     the noun other plugins build on: the brief, the scratch
 //                   roots, orchestrator mode, the lane, the shell reader

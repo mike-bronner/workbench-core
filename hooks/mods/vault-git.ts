@@ -1,6 +1,5 @@
 // The vault-git guard, as pure functions. It replaces hooks/vault-git-guard.sh,
-// frozen under tests/oracle/ as a test oracle. hooks/register.ts calls it from
-// tool.call, before the call runs.
+// now retired. hooks/register.ts calls it from tool.call, before the call runs.
 //
 // It exists because of a real loss of provenance. On 2026-09-04 an agent ran
 // `git -C ~/Documents/Claude/Memory rm identity/profile.md`. The memory server

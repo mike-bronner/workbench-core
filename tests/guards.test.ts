@@ -1,8 +1,8 @@
 // The guards in the hooks module (hooks/mods/guards.ts, judged in
 // hooks/register.ts's tool.call hook), driven through the engine: the peer
 // message gate, and the provisioning, summary-writer, credential and
-// whole-disk search guards. tests/guard-differential.test.ts holds the first
-// four to their frozen bash guards; this file pins each one's behaviour in both
+// whole-disk search guards. tests/guard-corpus.test.ts holds the first
+// four to the cases their retired bash guards refused; this file pins each one's behaviour in both
 // directions, and what each refusal tells the agent to do.
 
 import { describe, expect, mock, test } from 'claude-code/testing'
@@ -122,7 +122,7 @@ describe('the provisioning guard', () => {
     // The bash guard's known gap: env -i hid the command after it.
     'env -i createdb app',
     "git $'\\x77orktree' add x",
-    // The rows hooks/test-parser-differential.sh pins for the frozen guard.
+    // The rows hooks/test-parser-differential.sh records for the retired guard.
     'cat <<EOF > notes.txt\njust some text\nEOF\ncreatedb app',
     'cat <<EOF\ncreatedb app',
     '(true); createdb app',

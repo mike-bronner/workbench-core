@@ -15,16 +15,16 @@
 //   whole-disk search no search starts at the whole disk, a home folder, a
 //                     Library folder or a system tree: Bash, Grep and Glob
 //
-// The first four replace bash hooks of the same names. Each bash hook is frozen
-// under tests/oracle/ as a test oracle, and tests/guard-differential.test.ts
-// holds each port to refusing everything its oracle refused, unless a sandboxed
-// run in bash and zsh showed the command does no harm.
+// The first four replace retired bash hooks of the same names.
+// tests/guard-corpus.test.ts holds each port to refusing everything its bash
+// hook refused, unless a sandboxed run in bash and zsh showed the command does
+// no harm.
 //
 // Four more guards run in the same hook from modules of their own: the
 // destructive-scope, destructive-database and vault-git guards
 // (destructive-scope.ts, destructive-database.ts, vault-git.ts), and the
 // outbound prose guard (outbound-prose.ts). Each is held to the cases its bash
-// hook refused, recorded in tests/oracle/.
+// hook refused, recorded in tests/guard-corpus/.
 //
 // HOW A COMMAND IS READ. A Bash command is read only through parseShell
 // (hooks/mods/shell.ts), never as raw text. A guard reads the statements'

@@ -1,8 +1,8 @@
 // The destructive-scope, destructive-database and vault-git guards in the hooks
 // module (hooks/mods/destructive-scope.ts, destructive-database.ts and
 // vault-git.ts), driven through the engine's tool.call and tool.check in a
-// modeled world (tests/world.ts). tests/guard-differential.test.ts holds each
-// one to its frozen bash guard; this file pins each behaviour in both
+// modeled world (tests/world.ts). tests/guard-corpus.test.ts holds each
+// one to the cases its retired bash guard refused; this file pins each behaviour in both
 // directions, and what each refusal and each prompt tells the reader to do.
 
 import { describe, expect, test } from 'claude-code/testing'
@@ -358,6 +358,70 @@ describe('the database and vault-git guards', () => {
     b.cwd = '/repo'
     const here = ['git add file.txt', 'git tag v1', 'git branch topic']
     expect(await decisions($, b, here)).toEqual(all(here, 'beneath'))
+  })
+})
+
+// The corpus of hooks/test-parser-differential.sh, for the three guards this
+// file covers: each row's command in this world (its sandbox project, vault
+// and outside folder are /repo, /vault and /victim), and the verdict its
+// retired bash guard reached. Where the port differs, the row says why.
+describe('the parser corpus: each row reaches the verdict it was recorded with', () => {
+  const heredocBefore = (line: string) => `cat <<EOF > notes.txt\njust some text\nEOF\n${line}`
+  const unterminatedBefore = (line: string) => `cat <<EOF\n${line}`
+  const parenBefore = (line: string) => `(true); ${line}`
+  const DROP = 'dropdb app'
+  const VAULT_RM = 'git -C /vault rm insights/a.md'
+  const OUT_RM = 'rm -rf /victim/keep.txt'
+
+  test('database and vault-git rows', async ($, on) => {
+    const b = await session($, on)
+    const rows: Record<string, string> = {
+      [DROP]: 'deny',
+      [heredocBefore(DROP)]: 'deny',
+      [unterminatedBefore(DROP)]: 'deny',
+      [parenBefore(DROP)]: 'deny',
+      'drop\\\ndb app': 'deny',
+      'DROPDB app': 'deny',
+      "psql -c 'SELECT 1'": 'beneath',
+      'cat <<EOF\nDROP DATABASE app;\nEOF': 'beneath',
+      // KNOWN-GAP in the bash guard, which read `-i` as the command. The port
+      // reads past env's options, so it refuses: the gap is closed.
+      'env -i dropdb app': 'deny',
+      [VAULT_RM]: 'deny',
+      [heredocBefore(VAULT_RM)]: 'deny',
+      [parenBefore(VAULT_RM)]: 'deny',
+      'git -C /vault r\\\nm insights/a.md': 'deny',
+      'GIT -C /vault rm insights/a.md': 'deny',
+      'git -C /vault log --oneline': 'beneath',
+    }
+    expect(await decisions($, b, Object.keys(rows))).toEqual(rows)
+  })
+
+  test('destructive-scope rows', async ($, on) => {
+    const b = await session($, on)
+    // The bash guard denied a readable target outside every root. The port
+    // asks instead, by Mike's decision of 2026-10-06, so those rows pin `ask`.
+    // A target the port cannot read is still refused.
+    const rows: Record<string, string> = {
+      [OUT_RM]: 'ask',
+      'rm -rf /repo/sub': 'allow',
+      [heredocBefore(OUT_RM)]: 'ask',
+      // A line the reader cannot read whole is refused rather than asked, so
+      // this row keeps the bash guard's deny.
+      [unterminatedBefore(OUT_RM)]: 'deny',
+      [parenBefore(OUT_RM)]: 'ask',
+      'cat <<EOF\nrm -rf /\nEOF': 'beneath',
+      // A heredoc fed to a shell is a script the port does not read, so it is
+      // refused as unreadable, as the bash guard refused it.
+      'bash <<EOF\nrm -rf /victim/keep.txt\nEOF': 'deny',
+      'r\\\nm -rf /victim/keep.txt': 'ask',
+      'RM -rf /victim/keep.txt': 'ask',
+      "echo 'r\\\nm -rf /'": 'beneath',
+      'git status': 'beneath',
+      "grep -rn 'rm -rf' .": 'beneath',
+      'env -i rm -rf /victim/keep.txt': 'ask',
+    }
+    expect(await decisions($, b, Object.keys(rows))).toEqual(rows)
   })
 })
 

@@ -86,9 +86,8 @@
 #
 # Newline is deliberately absent. grep matches within a line, so \n can never
 # appear in the subject, and listing it would suggest this set is a copy of the
-# six-character bash set in the frozen
-# tests/oracle/outbound-prose-guard/outbound-prose-guard.sh rather than the
-# line-scoped set it is.
+# six-character bash set in the retired outbound prose bash guard rather than
+# the line-scoped set it is.
 #
 # \t is written as a literal tab through $'...' rather than as the two
 # characters \t inside the bracket. POSIX gives a backslash no special meaning

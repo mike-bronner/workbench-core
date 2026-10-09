@@ -1,8 +1,8 @@
 #!/bin/bash
-# Differential test for hooks/lib/shell_parse.py — the parser all four Bash
-# guards share. Run directly: ./test-parser-differential.sh
+# The parser corpus: commands that once moved a bash guard's verdict through
+# hooks/lib/shell_parse.py. Run directly: ./test-parser-differential.sh
 #
-# WHY THIS EXISTS, AND WHY NO SINGLE GUARD'S SUITE CAN REPLACE IT.
+# WHY THIS CORPUS EXISTS.
 #
 # On 2026-09-21 a change to token_lines() made it call extract_heredocs(). Three
 # checkers already called that function themselves and passed the stripped text
@@ -12,96 +12,43 @@
 # every command after it from three guards' view. `dropdb app` denied; the same
 # command behind a harmless heredoc returned nothing.
 #
-# 578 assertions across six suites were green while that was true, and the rule
-# "rerun every importer's suite after touching the parser" was followed. Both
-# failed for the same reason: THE DEFECT LIVED IN THE SEAM BETWEEN TWO LAYERS,
-# and each layer's own suite tests that layer. shell_parse's callers each have a
-# suite; the composition of parser-plus-caller had none.
+# The defect lived in the seam between the parser and its callers, which no
+# single guard's suite tests. This file held the composition: one corpus of
+# commands, run end to end through every bash guard, each verdict pinned.
 #
-# So this file tests the composition. It drives the LIVE hooks end to end, one
-# corpus of commands against every guard, and pins the verdict each one reaches.
-# A parser change that moves any verdict shows up here as a diff, whichever
-# guard it moves and whichever direction it moves in — including a guard the
-# author of the change was not thinking about.
+# WHAT IT DOES NOW. The bash guards are retired, and their ports in the hooks
+# module read shell through hooks/mods/shell.ts. So this file no longer runs a
+# guard. It records its corpus only:
 #
-# HOW TO READ A FAILURE. This suite asserts CURRENT BEHAVIOUR, not correct
-# behaviour. A diff means a parser change altered a verdict somewhere. That is
-# not automatically a bug — an improvement moves a verdict too. It means: go
-# look, decide which it is, and if it is an improvement, update the row and say
-# so in the commit. What it must never be is unnoticed.
+#   - hooks/test-shell-parity.sh runs it with PARSER_CASES_OUT set, and holds
+#     the TypeScript reader to shell_parse.py on every command;
+#   - tests/guards.test.ts holds the provisioning port to its rows, and
+#     tests/destructive.test.ts holds the other three ports to theirs.
 #
-# ROWS MARKED KNOWN-GAP RECORD A DEFECT RATHER THAN AN ENDORSEMENT. They are
-# here so that a fix becomes visible as a diff, in a file whose failures get
-# read. Each one names what is wrong with it.
+# Each row keeps the verdict the retired bash guard reached, as a record. Rows
+# marked KNOWN-GAP recorded a defect in that guard rather than an endorsement.
 
 set -u
-HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
-PASS=0
-FAIL=0
+COUNT=0
 
-# /tmp, deliberately NOT `mktemp -d`. On Darwin mktemp lands under
-# /private/var/folders, which IS this account's per-user temporary directory and
-# therefore an approved scratch root for the scope guard — a victim placed there
-# is in scope, and a case asserting it is refused would fail for a reason that
-# has nothing to do with the parser. /tmp is under no approved root: the session
-# glob needs a `claude-` prefix, and /tmp resolves to /private/tmp rather than
-# into the folders tree.
-SANDBOX="/tmp/pdiff-$$"
-mkdir -p "$SANDBOX"
-trap 'rm -rf "$SANDBOX"' EXIT
-
+# The corpus writes its paths under /sandbox, so the record is the same on
+# every run. No command here runs, so nothing is created there.
+SANDBOX="/sandbox"
 PROJECT="$SANDBOX/project"
 VAULT="$SANDBOX/vault"
 OUTSIDE="$SANDBOX/outside"
-mkdir -p "$PROJECT/sub" "$VAULT/insights" "$OUTSIDE"
-echo "keep" > "$OUTSIDE/keep.txt"
 
-# A config file naming a vault that is not this machine's, so the vault guard
-# judges the sandbox rather than the user's real notes.
-CONFIG="$SANDBOX/config.json"
-printf '{"memory_path": "%s"}\n' "$VAULT" > "$CONFIG"
-
-# verdict <guard> <command> — the live hook's decision, or "silent". The
-# provisioning guard moved into the hooks module (hooks/mods/guards.ts), so its
-# rows run its frozen copy under tests/oracle/, which still reads lines through
-# a copy of shell_parse.py; tests/guards.test.ts holds the port to the same rows.
-verdict() {
-  local guard="$1" command="$2" out script="$HOOKS_DIR/$1.sh"
-  [ -f "$script" ] || script="$HOOKS_DIR/../tests/oracle/$guard/$guard.sh"
-  out=$(jq -nc --arg c "$command" --arg d "$PROJECT" \
-        '{tool_name: "Bash", tool_input: {command: $c}, cwd: $d, session_id: "differential-fixture"}' \
-      | (unset CLAUDE_CODE_SESSION_ID
-         CLAUDE_PROJECT_DIR="$PROJECT" \
-         WORKBENCH_MEMORY_PATH="$VAULT" \
-         WORKBENCH_CONFIG_FILE="$CONFIG" \
-         bash "$script") 2>/dev/null)
-  # No output at all is the neutral verdict, and it has to be spelled rather
-  # than left as an empty string: `jq` over empty input prints nothing and exits
-  # 0, so an empty result would compare equal to nothing and read as a pass.
-  [ -n "$out" ] || { echo "silent"; return; }
-  printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "silent"' 2>/dev/null \
-    || echo "silent"
-}
-
-# row <guard> <expected> <label> <command>
+# row <guard> <bash verdict> <label> <command>
 #
-# With PARSER_CASES_OUT set, each row's command is also written there as one
-# JSON line, the sandbox path spelled /sandbox so the record is the same on
-# every run. hooks/test-shell-parity.sh reads them, to hold the TypeScript
-# reader (hooks/mods/shell.ts) to shell_parse.py on this same corpus.
+# With PARSER_CASES_OUT set, each row's command is written there as one JSON
+# line. hooks/test-shell-parity.sh reads them.
 row() {
-  local guard="$1" expected="$2" label="$3" command="$4" actual
+  local guard="$1" label="$3" command="$4"
   if [ -n "${PARSER_CASES_OUT:-}" ]; then
-    jq -nc --arg label "$guard · $label" --arg command "${command//$SANDBOX//sandbox}" \
-      '{label: $label, command: $command}' >>"$PARSER_CASES_OUT"
+    jq -nc --arg label "$guard · $label" --arg command "$command" \
+      '{label: $label, command: $command}' >>"$PARSER_CASES_OUT" || exit 1
   fi
-  actual=$(verdict "$guard" "$command")
-  if [ "$actual" = "$expected" ]; then
-    PASS=$((PASS + 1)); echo "  ✅ $guard · $label"
-  else
-    FAIL=$((FAIL + 1))
-    echo "  ❌ $guard · $label — verdict moved: expected $expected, got $actual"
-  fi
+  COUNT=$((COUNT + 1)); echo "  recorded: $guard · $label"
 }
 
 # Wrap a command in a heredoc that writes an unrelated file, then runs it. This
@@ -184,5 +131,4 @@ row provisioning-guard         silent "KNOWN-GAP env -i hides createdb" "env -i 
 row destructive-scope-guard    deny   "env -i does NOT hide rm"        "env -i rm -rf $OUTSIDE/keep.txt"
 
 echo
-echo "$PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ]
+echo "$COUNT commands recorded"

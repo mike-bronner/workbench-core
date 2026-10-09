@@ -8,9 +8,9 @@
 // Two worlds feed it:
 //   model()     a small world a test writes out: folders, files, links, and
 //               repositories with their branches, tracked files and aliases
-//   recorded()  the facts the port asked about in a real sandbox, recorded by
-//               tests/oracle/port-facts.ts while a frozen guard's suite ran
-//               (tests/oracle/world-cases.ts)
+//   recorded()  the facts the port asked about in a real sandbox, recorded
+//               while a retired bash guard's suite ran
+//               (tests/guard-corpus/world-cases.ts)
 
 import type { Bench } from './bench'
 

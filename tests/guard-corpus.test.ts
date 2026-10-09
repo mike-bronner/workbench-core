@@ -1,9 +1,9 @@
 // The class guard for the four bash guards' move into the hooks module. Each
 // port (hooks/mods/guards.ts, judged in hooks/register.ts's tool.call hook)
-// must refuse every call its frozen bash guard refused: the cases the guard's
-// own suite fed it and seeded random ones, all in tests/oracle/guard-cases.ts,
-// which hooks/test-guard-oracles.sh holds to the frozen guards under
-// tests/oracle/. A port may let a refused call through only where a sandboxed
+// must refuse every call its retired bash guard refused: the cases the guard's
+// own suite fed it and seeded random ones, all in the static corpus
+// tests/guard-corpus/guard-cases.ts, recorded from the bash guards before they
+// were retired. A port may let a refused call through only where a sandboxed
 // run of the command under bash and under zsh did no harm (the fixture's
 // SANDBOX half), and each such call is listed below.
 
@@ -13,10 +13,10 @@ import type { Engine } from 'claude-code/testing'
 import { proseRefusal } from '../hooks/mods/outbound-prose'
 import type { Bench } from './bench'
 import { bench, start } from './bench'
-import { COUNTS, DENIED, HOME, PROSE_SANDBOX, SANDBOX } from './oracle/guard-cases'
-import type { OracleCase } from './oracle/guard-cases'
-import { WORLD_COUNTS, WORLD_DENIED, WORLD_FACTS, WORLD_SANDBOX } from './oracle/world-cases'
-import type { WorldCase } from './oracle/world-cases'
+import { COUNTS, DENIED, HOME, PROSE_SANDBOX, SANDBOX } from './guard-corpus/guard-cases'
+import type { OracleCase } from './guard-corpus/guard-cases'
+import { WORLD_COUNTS, WORLD_DENIED, WORLD_FACTS, WORLD_SANDBOX } from './guard-corpus/world-cases'
+import type { WorldCase } from './guard-corpus/world-cases'
 import { install, peekOf, recorded } from './world'
 
 // The first line of a refusal that judged a body on its prose.
@@ -108,7 +108,7 @@ const benchFor = (on: Parameters<typeof bench>[0], writer: string): Bench => {
   return b
 }
 
-describe('AC3: each port refuses everything its frozen bash guard refused', () => {
+describe('AC3: each port refuses everything its retired bash guard refused', () => {
   for (const guard of Object.keys(EXCEPTIONS)) {
     const writer = guard === 'summary-writer-guard' ? '1' : ''
     test(`${guard}: every refused case is refused, or sandbox-proven harmless and listed`, { timeoutMs: 60_000 }, async ($, on) => {
@@ -154,13 +154,13 @@ describe('AC3: each port refuses everything its frozen bash guard refused', () =
 // ─── the guards that read the disk ───────────────────────────────────────────
 //
 // The destructive-scope, destructive-database and vault-git ports judge where
-// a path lands and what git says. Their cases (tests/oracle/world-cases.ts)
+// a path lands and what git says. Their cases (tests/guard-corpus/world-cases.ts)
 // carry the facts the port asked about in the sandbox the oracle ran in, and
 // each is replayed here through the module (tests/world.ts): its tool.call,
 // and its tool.check, where an out-of-root target asks. A refusal or an ask
 // counts as the port refusing. A fact the replay asks for that nobody recorded
-// fails the test: the module and tests/oracle/port-facts.js have drifted, and
-// the fixture must be written again.
+// fails the test: the module now asks about a fact the corpus never recorded,
+// so add the fact to the case by hand.
 
 // Each command the port lets through that its oracle refused, all of them
 // shown harmless by a sandboxed run under bash and zsh. The classes they fall
@@ -245,7 +245,7 @@ async function worldDifferential($: Engine, b: Bench, cases: readonly WorldCase[
   return run
 }
 
-describe('AC2: each disk-reading port refuses or asks on everything its frozen bash guard refused', () => {
+describe('AC2: each disk-reading port refuses or asks on everything its retired bash guard refused', () => {
   for (const [key, cases] of groupsOf(WORLD_DENIED)) {
     const [guard = '', source = '', vault = ''] = key.split('\u0000')
     test(`${guard}, ${source} cases${vault === '' ? '' : ' with a vault'}: each is refused or asked, or sandbox-proven harmless and listed`, { timeoutMs: 120_000 }, async ($, on) => {
@@ -298,7 +298,7 @@ type ProseWorld = { vault: string; files: Record<string, string>; dirs: string[]
 const PROSE = DENIED.filter(c => c.guard === 'outbound-prose-guard')
 const worldOf = (c: OracleCase): ProseWorld => (c.world === undefined ? { vault: '', files: {}, dirs: [] } : (JSON.parse(c.world) as ProseWorld))
 
-describe('AC2: the outbound prose port refuses every body its frozen bash guard refused', () => {
+describe('AC2: the outbound prose port refuses every body its retired bash guard refused', () => {
   // One test per vault root: the module reads the root once per load.
   const vaults = [...new Set(PROSE.map(c => worldOf(c).vault))]
   let replayedTotal = 0

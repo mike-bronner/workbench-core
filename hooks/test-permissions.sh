@@ -583,6 +583,62 @@ for PREFIX in "Bash(git push" "Bash(git commit" "Bash(git * push" "Bash(git * co
   fi
 done
 
+# The database rails, carried over from the retired bash database guard's
+# suite. The hooks module is the enforcement, and a prefix rule cannot see
+# `cd foo && php artisan db:wipe`, but these rules are what /config shows. A
+# deny belongs here only when the first words of a command decide the outcome.
+echo "rails.json denies the database commands that have no legitimate use:"
+for RULE in "Bash(dropdb:*)" "Bash(dropuser:*)" "Bash(mysqladmin drop:*)" \
+            "Bash(docker volume rm:*)" "Bash(docker volume prune:*)" \
+            "Bash(lando destroy:*)" "Bash(wp-env destroy:*)"; do
+  assert_jq "$RULE denied" "$SHIPPED_RAILS" \
+    "[.deny[] | select(.rule == \"$RULE\")] | length" "1"
+done
+assert_jq "every database deny explains itself" "$SHIPPED_RAILS" \
+  '[.deny[] | select(.rule | test("dropdb|dropuser|mysqladmin|docker volume")) | select(.why == null)] | length' "0"
+# The Artisan reset verbs are exempt under --env=testing, `docker compose down`
+# keeps named volumes, and `ddev delete images` removes
+# images rather than project data, so a prefix rule would block routine work.
+echo "no artisan, docker compose or ddev rule ships, because a prefix cannot read the flag:"
+for KEY in deny ask; do
+  assert_jq "no artisan rule in $KEY" "$SHIPPED_RAILS" \
+    "[.${KEY}[] | select(.rule | test(\"artisan\"))] | length" "0"
+  assert_jq "no compose rule in $KEY" "$SHIPPED_RAILS" \
+    "[.${KEY}[] | select(.rule | test(\"docker compose|docker-compose\"))] | length" "0"
+  assert_jq "no ddev rule in $KEY" "$SHIPPED_RAILS" \
+    "[.${KEY}[] | select(.rule | test(\"ddev\"))] | length" "0"
+done
+
+# THE RETIRED ROUTE, carried over from the retired bash scope guard's suite. The
+# scope guard replaced hooks/scratch-delete-guard.sh and the bin/scratch-rm.sh
+# command it routed to. A hook deny binds absolutely, so that guard left
+# registered would block the in-scratch deletes the scope guard permits, and a
+# stray mention of the helper is an instruction to run a file that is gone.
+echo "nothing points at the retired scratch-delete route:"
+for RETIRED in hooks/scratch-delete-guard.sh hooks/lib/scratch-delete-check.py \
+               hooks/test-scratch-delete-guard.sh bin/scratch-rm.sh hooks/test-scratch-rm.sh; do
+  if [ -e "$REPO_ROOT/$RETIRED" ]; then
+    FAIL=$((FAIL + 1)); echo "  ❌ $RETIRED is back"
+  else
+    PASS=$((PASS + 1)); echo "  ✅ $RETIRED stays gone"
+  fi
+done
+# Scoped to the runnable spelling, which is what an agent copies. The README,
+# rails.json and the setup skill may still name the helper. The needle is
+# assembled, because spelled out here it would match this tracked file.
+HELPER_NAME="scratch-rm.sh"
+STRAY=$(cd "$REPO_ROOT" && git ls-files -z \
+  | xargs -0 grep -lF "bash \"\$HOME/.claude-workbench/bin/$HELPER_NAME\"" 2>/dev/null)
+if [ -z "$STRAY" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ no tracked file still tells anyone to run the helper"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ the runnable spelling survives in: $(echo "$STRAY" | tr '\n' ' ')"
+fi
+# The grant it depended on stays out of the rails, so setup cannot re-add a
+# rule naming a path with no file behind it.
+assert_jq "no allow entry names the helper" "$SHIPPED_RAILS" \
+  '[(.allow // [])[] | select(.rule | test("scratch-rm"))] | length' "0"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

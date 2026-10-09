@@ -1,6 +1,5 @@
 // The destructive-scope guard, as pure functions. It replaces
-// hooks/destructive-scope-guard.sh, frozen under tests/oracle/ as a test
-// oracle. hooks/register.ts calls it from tool.call, where a target nobody
+// hooks/destructive-scope-guard.sh, now retired. hooks/register.ts calls it from tool.call, where a target nobody
 // can read is refused, and from tool.check, where a target outside every
 // root is put to the permission prompt and an in-scope delete is let
 // through unprompted.

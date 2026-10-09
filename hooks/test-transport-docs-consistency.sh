@@ -233,6 +233,18 @@ else
      "$(echo "$BADIDX" | head -2 | sed "s|$ROOT/||" | cut -c1-90)"
 fi
 
+# Carried over from the retired bash vault-git guard's suite: the vault's git
+# belongs to the memory server, and the conventions doc must say so and cite
+# the incident that made it a rule.
+echo "vault-conventions.md documents the vault-git rule and cites the incident:"
+CONV="$(cat "$ROOT/references/vault-conventions.md" 2>/dev/null)"
+for NEEDLE in 014f51b1 delete git_sync deferred; do
+  case "$CONV" in
+    *"$NEEDLE"*) PASS=$((PASS + 1)); echo "  ✅ names $NEEDLE" ;;
+    *) FAIL=$((FAIL + 1)); echo "  ❌ vault-conventions.md does not name $NEEDLE" ;;
+  esac
+done
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

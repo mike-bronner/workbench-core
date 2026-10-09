@@ -1,6 +1,5 @@
 // The outbound prose guard's checks, as pure functions: a port of
-// hooks/lib/prose-check.py, frozen with its bash guard under
-// tests/oracle/outbound-prose-guard/. It reads prose that leaves this machine
+// hooks/lib/prose-check.py, retired with its bash guard. It reads prose that leaves this machine
 // (a gh body or a board-MCP argument) and returns one finding per broken rule
 // of the Clear output style, each saying how to fix the prose. It reads what a
 // body says, never which tool sent it.

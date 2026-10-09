@@ -5,8 +5,8 @@
 .DS_Store
 
 # Python bytecode, written beside a checker whenever a guard runs.
-# hooks/lib/scan-query.py and the frozen oracle checkers under tests/oracle/
-# each import shell_parse, and the import caches it beside the source. So the test
+# hooks/lib/scan-query.py and hooks/test-shell-parity.sh each import
+# shell_parse, and the import caches it beside the source. So the test
 # suite dirties the working tree on any machine whose python3 leaves
 # sys.pycache_prefix at its default — which is most of them, CI included.
 # Apple's system python3 redirects the cache under ~/Library/Caches, so this

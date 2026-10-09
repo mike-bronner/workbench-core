@@ -1,6 +1,5 @@
 // The destructive-database guard, as pure functions. It replaces
-// hooks/destructive-database-guard.sh, frozen under tests/oracle/ as a test
-// oracle. hooks/register.ts calls it from tool.call, before the call runs.
+// hooks/destructive-database-guard.sh, now retired. hooks/register.ts calls it from tool.call, before the call runs.
 //
 // It exists because of a real loss. On 2026-09-04 an agent ran
 // `php artisan db:wipe --database=pgsql --force` in the belief that `pgsql`

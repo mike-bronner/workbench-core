@@ -116,7 +116,7 @@ has "rule 11 bans restated context"                 'Do not restate context'
 has "rule 11 aims at one pass"                      'get the point in one pass'
 # A reader sees only the text in front of them. Mike set this on 2026-10-07:
 # outward prose never points at a plan, a scratchpad file, or a vault note for
-# content, and hooks/outbound-prose-guard.sh refuses a gh body that does.
+# content, and hooks/mods/outbound-prose.ts refuses a gh body that does.
 has "rule 11 restates what the reader needs"        'The reader sees only that text, so restate in it what they need'
 has "rule 11 bans pointing at an unseen file"       'Never point at a file they cannot open from where they read, such as a plan, a scratchpad file, or a vault note'
 has "rule 11 keeps a path the reader acts on"       'A path may still appear as a location the reader acts on, such as a file the change edits or a command to run'

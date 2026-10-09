@@ -11,6 +11,14 @@
 
 set -u
 GUARD="$(cd "$(dirname "$0")" && pwd)/outbound-prose-guard.sh"
+REAL_GUARD="$GUARD"
+# Under hooks/test-guard-oracles.sh each call of the guard goes through
+# tests/oracle/record.sh, which writes the payload and the verdict for the
+# differential test (tests/guard-differential.test.ts).
+if [ -n "${ORACLE_CASES_OUT:-}" ]; then
+  export ORACLE_REAL_GUARD="$GUARD"
+  GUARD="$(dirname "$GUARD")/../record.sh"
+fi
 PASS=0
 FAIL=0
 SANDBOX=$(mktemp -d)
@@ -419,15 +427,15 @@ echo "the emptiness pre-check decides the same thing on every platform:"
 # which turns "the checker ran" into an observable block.
 STUB="$SANDBOX/stub"
 mkdir -p "$STUB/lib"
-cp "$GUARD" "$STUB/"
+cp "$REAL_GUARD" "$STUB/"
 # The parser imports the shared tokeniser, so the stub tree carries it too.
-cp "$(dirname "$GUARD")/lib/shell_parse.py" "$STUB/lib/"
+cp "$(dirname "$REAL_GUARD")/lib/shell_parse.py" "$STUB/lib/"
 printf '%s\n' 'import sys; sys.stdin.read(); print("stub-finding")' > "$STUB/lib/prose-check.py"
 
 run_stub() {  # run_stub <body-file> -> rc (0 allowed, 2 blocked)
   jq -cn --arg c "gh pr create --title t --body-file $1" --arg d "$SANDBOX" \
     '{tool_name:"Bash", cwd:$d, tool_input:{command:$c}}' \
-    | bash "$STUB/$(basename "$GUARD")" >/dev/null 2>&1
+    | bash "$STUB/$(basename "$REAL_GUARD")" >/dev/null 2>&1
 }
 
 # Every one of these is content, so every one must reach the checker. Before the

@@ -29,8 +29,9 @@
 //   learnings       a skill's vault learnings, merged into its text
 //   intake nudge    the first Edit of a task with no intake block on screen
 //   guards          the peer message gate, the provisioning, summary-writer,
-//                   credential and whole-disk search guards, judged before a
-//                   tool call runs, and refusing when they cannot judge
+//                   credential, whole-disk search and outbound prose guards,
+//                   judged before a tool call runs, and refusing when they
+//                   cannot judge
 //   prompt rules    the workbench rules as shared system-prompt sections, the
 //                   same bytes in every session, and a sub-agent's copy at its
 //                   start; the harness's memory section and the block an older
@@ -127,6 +128,8 @@ import { SQL_FILE_CAP, databaseRefusal, fileKey } from './mods/destructive-datab
 import type { Fact, FactGetter, ScopeContext, ScopeVerdict } from './mods/destructive-scope'
 import { NO_ONE_TO_ASK, dirKey, getterOf, needsScope, scopeVerdict, stepOf } from './mods/destructive-scope'
 import { needsVaultGit, vaultGitRefusal } from './mods/vault-git'
+import type { BodyPart } from './mods/outbound-prose'
+import { UNREAD_BODY, bashBodies, isProseTool, mcpBody, proseFindings, proseOfJson, proseRefusal } from './mods/outbound-prose'
 import {
   REFUSAL,
   STORE_KEY,
@@ -853,6 +856,52 @@ async function vaultGitOf($: EngineInterface, line: string, parse: WorkbenchShel
   return settled($, get => vaultGitRefusal(line, parse, { vault, cwd, home }, get))
 }
 
+// ─── the outbound prose guard ────────────────────────────────────────────────
+//
+// hooks/mods/outbound-prose.ts reads the body and judges it. Here the files a
+// body names are read, and the vault's top-level folders are listed, so a
+// pointer at a configured vault is caught. A body file that cannot be read is
+// refused, with how to pass the body instead.
+
+async function bodyText($: EngineInterface, part: BodyPart, home: string | undefined): Promise<string | undefined> {
+  if ('text' in part) return part.text
+  const path = resolvePath(part.file, await $.session.cwd(), home)
+  if (path === undefined) return undefined
+  // A regular file only: a FIFO would hold the read open.
+  const stat = await $.fs.stat(path, { resolve: true }).catch(() => undefined)
+  if (stat?.kind !== 'file') return undefined
+  const text = await $.fs.read(path).catch(() => undefined)
+  // A graphql query file is prose only when it holds a mutation.
+  if (text !== undefined && part.isQuery === true) return text.trimStart().startsWith('mutation') ? text : ''
+  if (text === undefined || !part.isJson) return text
+  try {
+    return proseOfJson(text)
+  } catch {
+    return undefined
+  }
+}
+
+async function bashProseOf($: EngineInterface, line: string, parse: WorkbenchShellParse, home: string | undefined): Promise<string | undefined> {
+  const reading = bashBodies(parse)
+  return 'unread' in reading ? reading.unread : reading.parts.length === 0 ? undefined : outboundRefusal($, reading.parts, home)
+}
+
+async function outboundRefusal($: EngineInterface, parts: readonly BodyPart[], home: string | undefined): Promise<string | undefined> {
+  const texts: string[] = []
+  for (const part of parts) {
+    const text = await bodyText($, part, home)
+    if (text === undefined) return UNREAD_BODY
+    texts.push(text)
+  }
+  const prose = texts.join('\n\n')
+  if (prose.trim() === '') return undefined
+  const root = await vaultRoot($).catch(() => undefined)
+  const entries = root === undefined ? [] : await $.fs.list(root).catch(() => [])
+  const folders = new Set(entries.filter(e => e.kind === 'dir' && !e.name.startsWith('.')).map(e => e.name.toLowerCase()))
+  const findings = proseFindings(prose, { root, home, folders })
+  return findings.length === 0 ? undefined : proseRefusal(findings)
+}
+
 // The guards' verdict on one tool call (hooks/mods/guards.ts): a refusal, an
 // advisory to add to the result, or nothing. The facts each guard needs are
 // read only when the call reaches it. `isAttended` says whether a person can
@@ -860,6 +909,10 @@ async function vaultGitOf($: EngineInterface, line: string, parse: WorkbenchShel
 // refusal.
 async function guardVerdict($: EngineInterface, e: Guarded, isAttended: boolean): Promise<{ deny: string } | { advise: string } | undefined> {
   const text = (value: unknown): string => (typeof value === 'string' ? value : value === undefined || value === null ? '' : JSON.stringify(value))
+  if (isProseTool(e.tool)) {
+    const refusal = await outboundRefusal($, [{ text: mcpBody(e) }], await $.env.get('HOME'))
+    return refusal === undefined ? undefined : { deny: refusal }
+  }
   switch (e.tool) {
     case 'SendMessage': {
       // A lane that cannot be read is taken as a sub-agent's, the gated side.
@@ -899,7 +952,8 @@ async function guardVerdict($: EngineInterface, e: Guarded, isAttended: boolean)
         provisioningRefusal(line, parse) ??
         ((await $.env.get('WORKBENCH_SUMMARY_WRITER')) === '1' ? summaryWriterRefusal(parse) : undefined) ??
         (await databaseOf($, line, parse, home)) ??
-        (await vaultGitOf($, line, parse, home))
+        (await vaultGitOf($, line, parse, home)) ??
+        (await bashProseOf($, line, parse, home))
       if (refusal !== undefined) return { deny: refusal }
       // A target nobody can read is refused here. One read and outside every
       // root is put to Mike by the tool.check hook, where a person can answer.
@@ -1165,7 +1219,7 @@ export const register: Register = on => {
     // A hook that failed or overran its budget before it passed a guarded call
     // on refuses it. Any other call goes on, as it did before the guards moved
     // here, and a call already passed on keeps its answer.
-    next.called ? next(e) : GUARDED.has(e.tool) ? { deny: GUARD_FAILED } : next(e),
+    next.called ? next(e) : GUARDED.has(e.tool) || isProseTool(e.tool) ? { deny: GUARD_FAILED } : next(e),
   )
 
   // The destructive-scope guard's other two verdicts, given where the engine

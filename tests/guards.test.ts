@@ -635,6 +635,7 @@ const REENTRANT: Plugin = {
         const calls = [
           { tool: 'Bash', command: 'ls' },
           { tool: 'SendMessage', to: 'main', message: 'x' },
+          { tool: 'mcp__the-index__add_comment', id: 1, body: 'Fixed it.' },
         ]
         for (const call of calls) {
           const result = await $.tool.call(call as never)
@@ -668,7 +669,7 @@ describe('the guards fail closed', () => {
   // $.session.cwd(), and hands each answer over through the store. A plugin
   // may not raise an Agent call through $.tool.call, so Agent's place in the
   // guarded set is pinned on its own.
-  test("the hook's .catch refuses a guarded call it could not judge, SendMessage included", { plugins: [REENTRANT] }, async ($, on) => {
+  test("the hook's .catch refuses a guarded call it could not judge, SendMessage and a board-MCP prose tool included", { plugins: [REENTRANT] }, async ($, on) => {
     mock.env(on, { HOME })
     const inner: unknown[] = []
     on('session.cwd', () => ({ value: '/repo' }))
@@ -678,8 +679,22 @@ describe('the guards fail closed', () => {
     })
     on('tool.call', () => ({ result: {} as never }))
     await $.tool.call({ tool: 'Bash', command: 'find /repo -name x' } as never)
-    expect(inner).toHaveLength(2)
+    expect(inner).toHaveLength(3)
     for (const deny of inner) expect(deny).toContain('could not finish')
+  })
+
+  test('a board-MCP prose call whose guard throws is refused', async ($, on) => {
+    const reached: string[] = []
+    on('env.get', () => {
+      throw new Error('env unreadable')
+    })
+    on('tool.call', ($2, e) => {
+      reached.push(e.tool)
+      return { result: {} as never }
+    })
+    const result = await $.tool.call({ tool: 'mcp__the-index__add_comment', id: 1, body: 'Fixed it.' } as never)
+    expect(result.deny).toContain('could not finish')
+    expect(reached).toEqual([])
   })
 
   test('every tool a guard judges is in the set the .catch refuses', () => {

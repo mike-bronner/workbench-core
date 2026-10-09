@@ -10,13 +10,17 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
+import { proseRefusal } from '../hooks/mods/outbound-prose'
 import type { Bench } from './bench'
 import { bench, start } from './bench'
-import { COUNTS, DENIED, HOME, SANDBOX } from './oracle/guard-cases'
+import { COUNTS, DENIED, HOME, PROSE_SANDBOX, SANDBOX } from './oracle/guard-cases'
 import type { OracleCase } from './oracle/guard-cases'
 import { WORLD_COUNTS, WORLD_DENIED, WORLD_FACTS, WORLD_SANDBOX } from './oracle/world-cases'
 import type { WorldCase } from './oracle/world-cases'
 import { install, peekOf, recorded } from './world'
+
+// The first line of a refusal that judged a body on its prose.
+const PROSE_HEADER = proseRefusal([]).split('\n')[0] as string
 
 type Payload = { tool_name?: unknown; tool_input?: unknown; agent_id?: unknown }
 
@@ -277,5 +281,66 @@ describe('AC2: each disk-reading port refuses or asks on everything its frozen b
     const refused = WORLD_DENIED.filter(c => c.port === 'deny' || c.port === 'ask')
     expect(refused.length).toBeGreaterThan(WORLD_DENIED.length * 0.9)
     expect(WORLD_DENIED.filter(c => c.port === 'ask').length).toBeGreaterThan(100)
+  })
+})
+
+// ─── the outbound prose guard ────────────────────────────────────────────────
+//
+// The port (hooks/mods/outbound-prose.ts) reads body files and lists the vault
+// root. Each refused case in the fixture carries the files, folders and vault
+// root of the sandbox its suite ran in, written as PROSE_SANDBOX, and is
+// replayed here with those files in place. The guard posts prose and runs no
+// command that can do harm, so no sandbox run can prove a let-through
+// harmless, and none is listed: the port refuses every one.
+
+type ProseWorld = { vault: string; files: Record<string, string>; dirs: string[] }
+
+const PROSE = DENIED.filter(c => c.guard === 'outbound-prose-guard')
+const worldOf = (c: OracleCase): ProseWorld => (c.world === undefined ? { vault: '', files: {}, dirs: [] } : (JSON.parse(c.world) as ProseWorld))
+
+describe('AC2: the outbound prose port refuses every body its frozen bash guard refused', () => {
+  // One test per vault root: the module reads the root once per load.
+  const vaults = [...new Set(PROSE.map(c => worldOf(c).vault))]
+  let replayedTotal = 0
+  for (const vault of vaults) {
+    test(`outbound-prose-guard, ${vault === '' ? 'the default vault' : `the vault ${vault}`}: every refused body is refused`, { timeoutMs: 60_000 }, async ($, on) => {
+      const b = bench(on, { env: { HOME } })
+      b.scripts['vault-resolve.sh'] = () => `root\t${vault === '' ? `${HOME}/Documents/Claude/Memory` : vault}\n`
+      await $.session.start(start(false))
+      const letThrough: string[] = []
+      const unjudged: string[] = []
+      const cases = PROSE.filter(d => worldOf(d).vault === vault)
+      let replayed = 0
+      for (const c of cases) {
+        const call = callOf(c)
+        expect([c.payload, call !== undefined]).toEqual([c.payload, true])
+        if (call === undefined) continue
+        replayed++
+        const world = worldOf(c)
+        b.files.clear()
+        b.dirs.clear()
+        for (const [path, text] of Object.entries(world.files)) b.files.set(path, text)
+        for (const dir of world.dirs) b.dirs.add(dir)
+        b.cwd = PROSE_SANDBOX
+        const refusal = await portRefusal($, b, call)
+        if (refusal === undefined) letThrough.push(c.payload)
+        else if (!refusal.startsWith(PROSE_HEADER)) unjudged.push(c.payload)
+      }
+      // Each body the bash guard refused is judged here too on its prose,
+      // not refused unread, expanded or moved, and no case is skipped.
+      expect(letThrough).toEqual([])
+      expect(unjudged).toEqual([])
+      expect(replayed).toBe(cases.length)
+      replayedTotal += replayed
+    })
+  }
+
+  test('the fixture holds refused suite cases of the prose guard, with their files', () => {
+    expect((COUNTS['outbound-prose-guard']?.suite ?? 0) > 0).toBe(true)
+    expect(PROSE.length).toBe(COUNTS['outbound-prose-guard']?.denied)
+    // The cases the replay above judged, not the fixture's own count.
+    expect(replayedTotal).toBe(PROSE.length)
+    expect(PROSE.length).toBeGreaterThan(50)
+    expect(PROSE.some(c => Object.keys(worldOf(c).files).length > 0)).toBe(true)
   })
 })

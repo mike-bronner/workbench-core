@@ -152,6 +152,9 @@ def random_cases():
 
 # ─── the frozen guards ─────────────────────────────────────────────────────
 
+# Where the outbound prose guard's sandbox is written in the fixture.
+PROSE_SANDBOX = "/sandbox"
+
 
 def oracle_verdict(guard, payload_text, writer, run_home):
     env = dict(os.environ, HOME=run_home, WORKBENCH_SUMMARY_WRITER=writer)
@@ -647,19 +650,36 @@ def main():
             if record["guard"] in WORLD_GUARDS:
                 world_suite.append(record)
                 continue
-            suite.append((record["guard"], record["payload"], record["writer"], record["verdict"]))
+            suite.append((record["guard"], record["payload"], record["writer"], record["verdict"], record.get("world")))
     if "--world" in sys.argv:
         world_main(world_suite, run_home, sys.argv[sys.argv.index("--world") + 1])
 
     def to_fixture(text):
         return text.replace(run_home, HOME)
 
+    # The outbound prose guard's refused cases carry the sandbox its suite ran
+    # in (tests/oracle/record.sh). Its path differs on every run, so it is
+    # written as PROSE_SANDBOX, in the payload and in the files.
+    def prose_world(payload, world):
+        cwd = world.get("cwd") or ""
+        swap = (lambda text: text.replace(cwd, PROSE_SANDBOX)) if cwd.startswith("/") else (lambda text: text)
+        fixed = {
+            "vault": swap(world.get("vault") or ""),
+            "files": {swap(k): v for k, v in sorted((world.get("files") or {}).items())},
+            "dirs": sorted(swap(d) for d in world.get("dirs") or []),
+        }
+        return swap(payload), fixed
+
     denied = []
     counts = {}
-    for guard, payload, writer, verdict in suite:
+    for guard, payload, writer, verdict, world in suite:
         counts.setdefault(guard, {"suite": 0, "random": 0, "denied": 0})["suite"] += 1
         if verdict == "deny":
-            denied.append((guard, "suite", to_fixture(payload), writer))
+            if guard == "outbound-prose-guard" and isinstance(world, dict):
+                payload, world = prose_world(payload, world)
+                denied.append((guard, "suite", to_fixture(payload), writer, to_fixture(json.dumps(world, sort_keys=True))))
+            else:
+                denied.append((guard, "suite", to_fixture(payload), writer, None))
 
     randoms = random_cases()
 
@@ -673,7 +693,7 @@ def main():
     for (guard, payload, writer), verdict in zip(randoms, verdicts):
         counts.setdefault(guard, {"suite": 0, "random": 0, "denied": 0})["random"] += 1
         if verdict == "deny":
-            denied.append((guard, "random", json.dumps(payload), writer))
+            denied.append((guard, "random", json.dumps(payload), writer, None))
     for guard, *_ in denied:
         counts[guard]["denied"] += 1
 
@@ -686,22 +706,26 @@ def main():
     out.append("// each port to refusing every one of them, unless SANDBOX shows the command")
     out.append("// did no harm under both bash and zsh.")
     out.append("")
-    out.append("export type OracleCase = { guard: string; source: 'suite' | 'random'; payload: string; writer: string }")
+    out.append("// `world` is the outbound prose guard's: the files, folders and vault root of")
+    out.append("// the sandbox its case ran in, as JSON, with the sandbox written as PROSE_SANDBOX.")
+    out.append("export type OracleCase = { guard: string; source: 'suite' | 'random'; payload: string; writer: string; world?: string }")
     out.append("")
     out.append(f"export const HOME = {json.dumps(HOME)}")
+    out.append(f"export const PROSE_SANDBOX = {json.dumps(PROSE_SANDBOX)}")
     out.append("")
     out.append("// How many cases each guard read, from its suite and at random, and how many it refused.")
     out.append(f"export const COUNTS: Record<string, {{ suite: number; random: number; denied: number }}> = {json.dumps(counts, sort_keys=True)}")
     out.append("")
     out.append("export const DENIED: readonly OracleCase[] = [")
-    for guard, source, payload, writer in denied:
-        out.append(f"  {{ guard: {json.dumps(guard)}, source: {json.dumps(source)}, payload: {json.dumps(payload)}, writer: {json.dumps(writer)} }},")
+    for guard, source, payload, writer, world in denied:
+        extra = "" if world is None else f", world: {json.dumps(world)}"
+        out.append(f"  {{ guard: {json.dumps(guard)}, source: {json.dumps(source)}, payload: {json.dumps(payload)}, writer: {json.dumps(writer)}{extra} }},")
     out.append("]")
     out.append("")
     out.append("// SANDBOX: below this line, the sandboxed runs (generate.py --sandbox).")
     if with_sandbox:
         jobs = []
-        for guard, _, payload, _ in denied:
+        for guard, _, payload, _, _ in denied:
             try:
                 parsed = json.loads(payload)
             except json.JSONDecodeError:
@@ -709,7 +733,9 @@ def main():
             if not isinstance(parsed, dict) or parsed.get("tool_name") != "Bash":
                 continue
             command = (parsed.get("tool_input") or {}).get("command")
-            if isinstance(command, str) and guard != "peer-message-gate":
+            # Neither guard judges a command that can do harm: one reads a
+            # message, the other a body posted with gh.
+            if isinstance(command, str) and guard not in ("peer-message-gate", "outbound-prose-guard"):
                 jobs.append((guard, command))
         jobs = sorted(set(jobs))
         scratch = os.environ.get("TMPDIR") or tempfile.gettempdir()

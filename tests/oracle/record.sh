@@ -18,6 +18,9 @@
 # --write), a refused call also runs tests/oracle/port-facts.js here, in the
 # environment the suite gave the guard, and the line carries what the port
 # made of it and the facts it asked about. That needs deno.
+#
+# The outbound prose guard reads body files, so each refused call of it
+# carries, as `world`, the files and folders of the sandbox it ran in.
 
 set -u
 
@@ -42,9 +45,35 @@ case "$guard" in
     ;;
 esac
 
+# The outbound prose guard reads body files and lists the vault root. For it, a
+# refused call carries the files under the folder it ran in (the suite's
+# sandbox), the folders there, and the vault root it was given, so the port can
+# be run against the same files (tests/guard-differential.test.ts).
+world=null
+if [ "$guard" = outbound-prose-guard ] && [ "$verdict" = deny ]; then
+  world=$(printf '%s' "$payload" | python3 -c '
+import json, os, sys
+cwd = (json.load(sys.stdin).get("cwd") or "")
+files, dirs = {}, []
+if os.path.isabs(cwd) and os.path.isdir(cwd):
+    for top, subdirs, names in os.walk(cwd):
+        subdirs[:] = sorted(d for d in subdirs if d != "stub")
+        dirs.append(top)
+        for name in sorted(names):
+            path = os.path.join(top, name)
+            # Body files only: not the stderr of the suite, nor a shim it plants,
+            # whose text names the sandbox in another spelling.
+            if name not in ("stderr", "starts") and os.path.isfile(path) and not os.access(path, os.X_OK) and os.path.getsize(path) <= 20000:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    files[path] = f.read()
+print(json.dumps({"cwd": cwd, "vault": os.environ.get("WORKBENCH_MEMORY_PATH", ""), "files": files, "dirs": dirs}))
+' 2>/dev/null)
+  [ -n "$world" ] || world='{"error": true}'
+fi
+
 if [ "${#payload}" -le 10000 ]; then
   printf '%s' "$payload" | jq -Rsc --arg guard "$guard" \
-    --arg writer "${WORKBENCH_SUMMARY_WRITER:-}" --arg verdict "$verdict" --argjson port "$port" \
-    '{guard: $guard, payload: ., writer: $writer, verdict: $verdict} + (if $port == null then {} else {port: $port} end)' >>"$ORACLE_CASES_OUT"
+    --arg writer "${WORKBENCH_SUMMARY_WRITER:-}" --arg verdict "$verdict" --argjson port "$port" --argjson world "$world" \
+    '{guard: $guard, payload: ., writer: $writer, verdict: $verdict} + (if $port == null then {} else {port: $port} end) + (if $world == null then {} else {world: $world} end)' >>"$ORACLE_CASES_OUT"
 fi
 exit "$status"

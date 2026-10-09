@@ -9,13 +9,14 @@ reads shell through hooks/mods/shell.ts and does not import this file. Their
 bash copies under tests/oracle/ carry frozen copies of this file, as test
 oracles. Do not edit those copies.
 
-The live importer is hooks/lib/scan-query.py. The outbound prose guard moved
-into the hooks module too (hooks/mods/outbound-prose.ts). A change here that
+The live importers are the outbound prose guard (hooks/outbound-prose-guard.sh,
+through its inline parser) and hooks/lib/scan-query.py. A change here that
 raises, renames a symbol, or re-splits a command differently produces no error
 anybody sees. It changes what those readers find.
 
 THE RULE, which outlives the list under it: after touching anything below, run
 the suite of EVERY importer. As of this writing those are:
+    hooks/test-outbound-prose-guard.sh   (its inline parser imports this file)
     hooks/test-scan-query.sh             (hooks/lib/scan-query.py)
     hooks/test-shell-parse.sh            (this file's own rules, pinned directly)
     hooks/test-shell-parity.sh           (holds hooks/mods/shell.ts, the TS reader

@@ -3,11 +3,14 @@
 # Run directly: ./test-guard-oracles.sh          (check)
 #               ./test-guard-oracles.sh --write  (regenerate the fixtures)
 #
-# Seven bash guards moved into the hooks module: the peer message gate and the
+# Eight bash guards moved into the hooks module: the peer message gate and the
 # provisioning, summary-writer and credential guards in batch C1
-# (hooks/mods/guards.ts), and the destructive-scope, destructive-database and
+# (hooks/mods/guards.ts), the destructive-scope, destructive-database and
 # vault-git guards in batch C2 (hooks/mods/destructive-scope.ts,
-# destructive-database.ts, vault-git.ts). Each is frozen, unchanged, under
+# destructive-database.ts, vault-git.ts), and the outbound prose guard
+# (hooks/mods/outbound-prose.ts). Its refused cases carry the body files of the
+# sandbox its suite ran in, written as /sandbox, so they stay in
+# guard-cases.ts and are checked on every full run. Each is frozen, unchanged, under
 # tests/oracle/<guard>/ as a test oracle that hooks/ never runs. This script:
 #
 #   1. runs each frozen guard's own suite, which must still pass, and records
@@ -15,7 +18,7 @@
 #      (tests/oracle/record.sh);
 #   2. runs tests/oracle/generate.py, which adds seeded random cases, runs
 #      each through its frozen guard, and renders every refused case of the
-#      first four as tests/oracle/guard-cases.ts;
+#      first four and the outbound prose guard as tests/oracle/guard-cases.ts;
 #   3. compares that with the committed fixture, down to the SANDBOX marker.
 #
 # tests/guard-differential.test.ts then holds each port to refusing every case
@@ -48,7 +51,7 @@ FIXTURE="$ORACLE/guard-cases.ts"
 WORLD_FIXTURE="$ORACLE/world-cases.ts"
 STAMP="$ORACLE/fixtures.sha256"
 MARKER='// SANDBOX: below this line'
-GUARDS="credential-guard provisioning-guard summary-writer-guard peer-message-gate destructive-scope-guard destructive-database-guard vault-git-guard"
+GUARDS="credential-guard provisioning-guard summary-writer-guard peer-message-gate destructive-scope-guard destructive-database-guard vault-git-guard outbound-prose-guard"
 WORLD_GUARDS="destructive-scope-guard destructive-database-guard vault-git-guard"
 
 for tool in jq python3; do

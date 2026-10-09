@@ -4,8 +4,8 @@
 #               ./test-shell-parity.sh --write  (regenerate the fixture)
 #
 # $.workbench.parseShell (hooks/mods/shell.ts) is the TypeScript reader the
-# ported guards use. shell_parse.py stays behind the outbound prose guard, the
-# scan query and the frozen oracles under tests/oracle/, and the two must read
+# ported guards use. shell_parse.py stays behind the scan query and the
+# frozen oracles under tests/oracle/, and the two must read
 # the same corpus the same way. So:
 #
 #   1. this script runs hooks/test-parser-differential.sh with

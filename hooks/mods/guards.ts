@@ -20,6 +20,12 @@
 // holds each port to refusing everything its oracle refused, unless a sandboxed
 // run in bash and zsh showed the command does no harm.
 //
+// Four more guards run in the same hook from modules of their own: the
+// destructive-scope, destructive-database and vault-git guards
+// (destructive-scope.ts, destructive-database.ts, vault-git.ts), and the
+// outbound prose guard (outbound-prose.ts). Each is held to the cases its bash
+// hook refused, recorded in tests/oracle/.
+//
 // HOW A COMMAND IS READ. A Bash command is read only through parseShell
 // (hooks/mods/shell.ts), never as raw text. A guard reads the statements'
 // words, their redirect targets and their heredoc bodies. A line whose command

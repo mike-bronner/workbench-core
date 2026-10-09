@@ -481,3 +481,42 @@ describe('the scope judge, read directly', () => {
     }
   })
 })
+
+describe('quoted text that only mentions a verb, beside a substitution that runs one', () => {
+  // Read-only lines the retired python guard of workbench-core 0.44.1 refused,
+  // or read near its fault. That guard read a wrapper option (`env -u`) or a
+  // substitution as an unreadable verb slot. It then refused when its pattern
+  // matched anywhere on the line, a quoted word included.
+  //   1  a discard verb (`git restore`) inside a quoted grep pattern
+  //   2  a read-only git in a process substitution
+  //   3  a safe git subcommand inside a quoted grep pattern
+  //   4  a `$(…)` beside a quoted discard verb, the substitution half of the fault
+  //   5  the dev-team session line: `env -u` beside a quoted discard verb
+  //   6  the herdr session line: `$(…)` beside `git/config 2>/dev/null`, which
+  //      the old pattern's "git plus any non-safe word" branch matched. It
+  //      holds no discard verb.
+  // Rows 5 and 6 carry this world's paths.
+  const READ_ONLY = [
+    `grep -n -e 'diff <(git show' -e "git restore' README" -e "git status' README" file.txt`,
+    'diff <(git show HEAD:file.txt) file.txt',
+    'grep -n "git status" file.txt',
+    'grep -n "git restore" $(git ls-files)',
+    `cd /repo; grep -n -e 'diff <(git show' -e "git restore' README" -e "git status' README" file.txt | head; env -u DRY_RUN bash run-tests.sh all 2>&1 | tail -1; git status --short | wc -l`,
+    `grep -n 'includeIf' ~/.gitconfig ~/.config/git/config 2>/dev/null; ps -o pid,command -p $(pgrep -f 'herdr' | tr '\\n' ',' | sed 's/,$//') 2>/dev/null | head`,
+  ]
+  // The same shapes where the quoted or substituted text really runs.
+  const RUNS_CODE = ['diff <(git restore x) y', 'grep x "$(git restore y)"', "bash -c 'git restore x'", 'eval "git restore x"', 'env -u X bash -c "git restore x"']
+
+  test('a read-only line is left to the engine', async ($, on) => {
+    const b = await session($, on)
+    expect(await decisions($, b, READ_ONLY)).toEqual(all(READ_ONLY, 'beneath'))
+  })
+
+  test('a discard verb that runs in a substitution, or through a shell or eval, is refused', async ($, on) => {
+    const b = await session($, on)
+    for (const line of RUNS_CODE) {
+      const { decision, reason } = await verdict($, b, line)
+      expect([line, decision, reason]).toEqual([line, 'deny', expect.stringContaining('Destructive-scope guard (workbench-core)')])
+    }
+  })
+})

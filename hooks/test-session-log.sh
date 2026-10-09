@@ -291,12 +291,13 @@ assert_file "the marker follows WORKBENCH_CONFIG_FILE's memory_cache" \
   "$CFG_CACHE/pending-summaries/sid-cfg.json"
 assert_no_file "and not the \$HOME default cache" \
   "$SANDBOX/home/.claude-memory-cache/pending-summaries/sid-cfg.json"
-GUARD_OUT=$(jq -nc --arg c "rm -f $CFG_CACHE/pending-summaries/sid-cfg.json" \
-    '{tool_name: "Bash", tool_input: {command: $c}, cwd: "/", session_id: "sid-cfg"}' | \
-  env -u WORKBENCH_MEMORY_CACHE HOME="$SANDBOX/home" WORKBENCH_CONFIG_FILE="$CFG_FILE" \
-    CLAUDE_PROJECT_DIR="$SANDBOX/memory" bash "$(dirname "$LOG_HOOK")/destructive-scope-guard.sh" 2>/dev/null)
-assert_contains "the guard permits deleting that same marker" \
-  "$(printf '%s' "$GUARD_OUT" | jq -r '.hookSpecificOutput.permissionDecision // "neutral"')" "allow"
+# The destructive-scope guard (hooks/mods/destructive-scope.ts) permits deleting
+# one marker in the folder hooks/lib/scope-facts.sh reports as `markers`. So the
+# pin is that scope-facts.sh resolves that folder from the same config.
+MARKERS_ROW=$(env -u WORKBENCH_MEMORY_CACHE HOME="$SANDBOX/home" WORKBENCH_CONFIG_FILE="$CFG_FILE" \
+    bash "$(dirname "$LOG_HOOK")/lib/scope-facts.sh" roots sid-cfg 2>/dev/null | awk -F '\t' '$1 == "markers" { print $2 }')
+assert_contains "the guard's marker folder is that same pending-summaries folder" \
+  "$MARKERS_ROW" "$(cd -P "$CFG_CACHE/pending-summaries" && pwd -P)"
 
 echo
 echo "mode=turn — the hooks module's per-turn checkpoint shares one checkpoint with SessionEnd:"

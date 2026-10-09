@@ -48,7 +48,7 @@ itself, and any one of them arms a circuit breaker that prompts on every
 relative-path `grep`/`rg`/`diff`/`git`/`cp`/`mv` in a command containing `cd`.
 The `_comment` block in `assets/permissions/rails.json` has the full finding.
 
-`rm` is gated by `hooks/destructive-scope-guard.sh` and by nothing else. A deny on
+`rm` is gated by the destructive-scope guard (`hooks/mods/destructive-scope.ts`) and by nothing else. A deny on
 `rm -rf /` would match every absolute-path delete: `*` is always a wildcard, and
 deny beats allow regardless of specificity, so no `/tmp` exception is
 expressible. Claude Code still gates the catastrophic case semantically
@@ -76,10 +76,10 @@ than be narrowed. Narrowing one, or adding a scoped companion beside it, does
 nothing: rules run deny → ask → allow, first match wins, specificity does not
 reorder them, and Bash rules carry no negation operator.
 
-`hooks/destructive-scope-guard.sh` is the guard that answers in their place, and
-it ships registered with the plugin. It permits a destructive command when
-**every path it acts on** resolves inside the project or a scratch root, and
-denies otherwise. The roots are the project from `CLAUDE_PROJECT_DIR`, the login
+The destructive-scope guard (`hooks/mods/destructive-scope.ts`) answers in their
+place, and it ships in the plugin's hooks module. It permits a destructive command when
+**every path it acts on** resolves inside the project or a scratch root. It asks when a target it can read
+lies outside every root, and denies a target it cannot read. The roots are the project from `CLAUDE_PROJECT_DIR`, the login
 home's `Developer/scratchpad`, this session's scratchpad, and on Darwin this
 account's per-user temporary directory where `mktemp -d` writes. Two narrow
 permits sit beyond the roots: a leftover `/tmp/claude-*scratch*` folder this

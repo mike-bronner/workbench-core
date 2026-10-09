@@ -123,6 +123,10 @@ import {
   toolSearchRoots,
 } from './mods/guards'
 import type { SearchRoot } from './mods/guards'
+import { SQL_FILE_CAP, databaseRefusal, fileKey } from './mods/destructive-database'
+import type { Fact, FactGetter, ScopeContext, ScopeVerdict } from './mods/destructive-scope'
+import { NO_ONE_TO_ASK, dirKey, getterOf, needsScope, scopeVerdict, stepOf } from './mods/destructive-scope'
+import { needsVaultGit, vaultGitRefusal } from './mods/vault-git'
 import {
   REFUSAL,
   STORE_KEY,
@@ -683,6 +687,8 @@ const GUARD_FAILED =
 
 type Guarded = Record<string, unknown> & { tool: string; agentId?: string }
 
+const IN_SCOPE = 'Destructive-scope guard (workbench-core): every path this command destroys lies inside the project or a scratch root.'
+
 // Each root with where it lands once its symbolic links are followed. A path
 // that does not resolve keeps its spelling alone.
 async function withRealPaths($: EngineInterface, roots: readonly SearchRoot[]): Promise<SearchRoot[]> {
@@ -715,10 +721,144 @@ async function regularFiles($: EngineInterface, targets: readonly string[], home
   return regular
 }
 
+// ─── facts for the destructive-scope, database and vault-git guards ─────────
+//
+// Each of those guards is a pure judge that asks for a fact by key
+// (hooks/mods/destructive-scope.ts names the keys). settled() runs the judge,
+// answers the fact it asked for, and runs it again, until it reaches a
+// verdict. An answer that cannot be had is null, which every judge reads the
+// closed way. A judge that asks too many questions throws, and the guards'
+// .catch refuses the call.
+
+const MAX_FACT_ROUNDS = 400
+
+const factsScript = ($: EngineInterface): string => `${$.plugin.root}/hooks/lib/scope-facts.sh`
+
+async function gitFact($: EngineInterface, question: string, dir: string, arg: string): Promise<Fact> {
+  const git = (argv: readonly string[]) => $.process.run(['git', ...argv], { timeoutMs: 10_000 })
+  switch (question) {
+    case 'builtins': {
+      const { exitCode, stdout } = await git(['--list-cmds=builtins'])
+      const names = stdout.split(/\s+/).filter(Boolean)
+      return exitCode === 0 && names.length > 0 ? names.join(' ') : null
+    }
+    case 'top': {
+      const { exitCode, stdout } = await git(['-C', dir, 'rev-parse', '--show-toplevel'])
+      return exitCode === 0 ? stdout.trim() : ''
+    }
+    case 'tracked': {
+      const { exitCode } = await git(['-C', dir, 'ls-files', '--error-unmatch', '--', arg])
+      return exitCode === 0 ? 'yes' : exitCode === 1 ? 'no' : null
+    }
+    case 'commit': {
+      const { exitCode } = await git(['-C', dir, 'rev-parse', '--verify', '--quiet', '--end-of-options', `${arg}^{commit}`])
+      return exitCode === 0 ? 'yes' : 'no'
+    }
+    case 'remotes': {
+      const { exitCode, stdout } = await git(['-C', dir, 'for-each-ref', '--format=%(refname)', `refs/remotes/*/${arg}`])
+      return exitCode === 0 ? String(stdout.split(/\s+/).filter(Boolean).length) : null
+    }
+    case 'alias': {
+      const { exitCode, stdout } = await git(['-C', dir, 'config', '--get', `alias.${arg}`])
+      return exitCode === 1 ? 'none' : exitCode === 0 ? `=${stdout.replace(/\n$/, '')}` : null
+    }
+    default:
+      return null
+  }
+}
+
+async function answerFact($: EngineInterface, key: string): Promise<Fact> {
+  const [kind = '', a = '', b = '', c = ''] = key.split('\t')
+  switch (kind) {
+    case 'dir': {
+      const { stdout } = await $.process.run(['bash', factsScript($), 'dir', a], { timeoutMs: 10_000 })
+      const path = stdout.replace(/\n$/, '')
+      return path.startsWith('/') ? path : null
+    }
+    case 'entry': {
+      const { stdout } = await $.process.run(['bash', factsScript($), 'entry', a], { timeoutMs: 10_000 })
+      return stdout.trim() === '' ? null : stdout.trim()
+    }
+    case 'name': {
+      const { stdout } = await $.process.run(['bash', factsScript($), 'name', a, b], { timeoutMs: 10_000 })
+      const name = stdout.replace(/\n$/, '')
+      return name === '' || name.includes('\n') ? null : name
+    }
+    case 'file': {
+      // A regular file only: a FIFO would hold the read open.
+      const stat = await $.fs.stat(a).catch(() => undefined)
+      if (stat?.kind !== 'file') return null
+      const { exitCode, stdout } = await $.process.run(['head', '-c', String(SQL_FILE_CAP), '--', a], { timeoutMs: 10_000 })
+      return exitCode === 0 ? stdout : null
+    }
+    case 'git':
+      return gitFact($, a, b, c)
+    default:
+      return null
+  }
+}
+
+async function settled<T>($: EngineInterface, judge: (get: FactGetter) => T): Promise<T> {
+  const answers = new Map<string, Fact>()
+  for (let round = 0; round < MAX_FACT_ROUNDS; round++) {
+    const step = stepOf(() => judge(getterOf(answers)))
+    if ('value' in step) return step.value
+    answers.set(step.need, await answerFact($, step.need))
+  }
+  throw new Error('workbench guards: too many facts')
+}
+
+// The destructive-scope guard's verdict on a Bash line. The roots are read
+// only when the judge needs a fact: a line it settles without one (no
+// destructive command, or one whose target nobody can read) costs no process.
+async function scopeOf($: EngineInterface, line: string, parse: WorkbenchShellParse, home: string | undefined): Promise<ScopeVerdict> {
+  if (!needsScope(line, parse)) return { kind: 'none' }
+  const cwd = await $.session.cwd()
+  const bare: ScopeContext = { cwd, home, roots: [], tmp: undefined, markers: undefined }
+  const quick = stepOf(() => scopeVerdict(line, parse, bare, getterOf(new Map())))
+  if ('value' in quick) return quick.value
+  const { stdout } = await $.process.run(['bash', factsScript($), 'roots', await $.session.id()], { timeoutMs: 10_000 })
+  const fields = stdout
+    .split('\n')
+    .map(row => row.split('\t'))
+    .filter(([, path]) => path?.startsWith('/'))
+  const project = await answerFact($, dirKey(await $.session.root()))
+  const roots = [...new Set([...(project !== null && project !== '/' ? [project] : []), ...fields.filter(([kind]) => kind === 'root').map(([, path]) => path as string)])]
+  const ctx: ScopeContext = {
+    cwd,
+    home,
+    roots,
+    tmp: fields.find(([kind]) => kind === 'tmp')?.[1],
+    markers: fields.find(([kind]) => kind === 'markers')?.[1],
+  }
+  return settled($, get => scopeVerdict(line, parse, ctx, get))
+}
+
+// The database guard reads a fact only for a SQL file a client is fed, so an
+// ordinary line asks for none.
+async function databaseOf($: EngineInterface, line: string, parse: WorkbenchShellParse, home: string | undefined): Promise<string | undefined> {
+  const cwd = await $.session.cwd()
+  return settled($, get => databaseRefusal(line, parse, cwd, home, get))
+}
+
+async function vaultGitOf($: EngineInterface, line: string, parse: WorkbenchShellParse, home: string | undefined): Promise<string | undefined> {
+  if (!needsVaultGit(line, parse)) return undefined
+  // A vault root that cannot be read is a broken install, not a command
+  // nobody can read: refusing every git write for it would stop all work.
+  const root = await vaultRoot($).catch(() => undefined)
+  const vault = root === undefined ? null : await answerFact($, dirKey(root))
+  // No vault on disk, nothing to protect.
+  if (vault === null) return undefined
+  const cwd = await $.session.cwd()
+  return settled($, get => vaultGitRefusal(line, parse, { vault, cwd, home }, get))
+}
+
 // The guards' verdict on one tool call (hooks/mods/guards.ts): a refusal, an
 // advisory to add to the result, or nothing. The facts each guard needs are
-// read only when the call reaches it.
-async function guardVerdict($: EngineInterface, e: Guarded): Promise<{ deny: string } | { advise: string } | undefined> {
+// read only when the call reaches it. `isAttended` says whether a person can
+// answer a permission prompt: where nobody can, a destructive-scope ask is a
+// refusal.
+async function guardVerdict($: EngineInterface, e: Guarded, isAttended: boolean): Promise<{ deny: string } | { advise: string } | undefined> {
   const text = (value: unknown): string => (typeof value === 'string' ? value : value === undefined || value === null ? '' : JSON.stringify(value))
   switch (e.tool) {
     case 'SendMessage': {
@@ -757,8 +897,15 @@ async function guardVerdict($: EngineInterface, e: Guarded): Promise<{ deny: str
         hiddenCommandRefusal(parse) ??
         credentialRefusal(line, home, parse, await regularFiles($, bodyTargets(parse), home)) ??
         provisioningRefusal(line, parse) ??
-        ((await $.env.get('WORKBENCH_SUMMARY_WRITER')) === '1' ? summaryWriterRefusal(parse) : undefined)
+        ((await $.env.get('WORKBENCH_SUMMARY_WRITER')) === '1' ? summaryWriterRefusal(parse) : undefined) ??
+        (await databaseOf($, line, parse, home)) ??
+        (await vaultGitOf($, line, parse, home))
       if (refusal !== undefined) return { deny: refusal }
+      // A target nobody can read is refused here. One read and outside every
+      // root is put to Mike by the tool.check hook, where a person can answer.
+      const scope = await scopeOf($, line, parse, home)
+      if (scope.kind === 'deny') return { deny: scope.reason }
+      if (scope.kind === 'ask' && !isAttended) return { deny: `${scope.reason} ${NO_ONE_TO_ASK}` }
       if (!mentionsSearch(parse)) return undefined
       if (isPartlyRead(parse)) return { deny: SEARCH_UNREAD }
       const roots = searchRoots(parse, await $.session.cwd(), home)
@@ -924,7 +1071,7 @@ export const register: Register = on => {
 
   on('tool.call', async ($, e, next) => {
     // The guards judge first, in every lane. One that throws refuses the call.
-    const verdict = await guardVerdict($, e as Guarded).catch(() => ({ deny: GUARD_FAILED }))
+    const verdict = await guardVerdict($, e as Guarded, sessionAttended === true).catch(() => ({ deny: GUARD_FAILED }))
     if (verdict !== undefined && 'deny' in verdict) return { deny: verdict.deny }
     if (verdict !== undefined) {
       const result = await next(e)
@@ -1020,6 +1167,27 @@ export const register: Register = on => {
     // here, and a call already passed on keeps its answer.
     next.called ? next(e) : GUARDED.has(e.tool) ? { deny: GUARD_FAILED } : next(e),
   )
+
+  // The destructive-scope guard's other two verdicts, given where the engine
+  // decides whether a call may run (hooks/mods/destructive-scope.ts). A
+  // destructive command whose target lies outside the project and every
+  // scratch root asks Mike, on top of whatever the rules and the mode said,
+  // and where nobody can answer it is refused. A line that does nothing but
+  // delete inside the roots runs without the prompt the mode would give it,
+  // unless a settings rule or a hook asked for one. tool.call above has
+  // already refused every target nobody can read.
+  on('tool.check', { tool: 'Bash' }, async ($, e, next) => {
+    const command = (e.input as { command?: unknown } | null | undefined)?.command
+    if (typeof command !== 'string') return next(e)
+    const parse = parseShell(command)
+    const scope = hiddenCommandRefusal(parse) === undefined ? await scopeOf($, command, parse, await $.env.get('HOME')) : ({ kind: 'none' } as const)
+    const beneath = await next(e)
+    if (beneath.decision === 'deny') return beneath
+    if (scope.kind === 'deny') return { decision: 'deny', reason: scope.reason }
+    if (scope.kind === 'ask') return sessionAttended === true ? { decision: 'ask', reason: scope.reason } : { decision: 'deny', reason: `${scope.reason} ${NO_ONE_TO_ASK}` }
+    if (scope.kind === 'allow' && beneath.decision === 'ask' && beneath.rule === undefined && beneath.hook === undefined) return { decision: 'allow', reason: IN_SCOPE }
+    return beneath
+  }).catch(() => ({ decision: 'deny' as const, reason: GUARD_FAILED }))
 
   on('command.run', async ($, e, next) => {
     if (!OURS.has(e.command)) return next(e)

@@ -39,8 +39,9 @@ HOOKS_DIR="${HOOKS_DIR:-$SCRIPT_DIR}"
 # Config resolution: env var → config.json → hardcoded default, through the
 # shared resolver in lib/memory-env.sh. The cache path in particular MUST come
 # from memory_resolve_cache_path: this script writes the pending-summary
-# markers, and hooks/destructive-scope-guard.sh permits deleting them only in
-# the folder that same function names. Two copies of the lookup could drift
+# markers, and the destructive-scope guard (hooks/mods/destructive-scope.ts)
+# permits deleting them only in the folder that same function names, read
+# through roots() in hooks/lib/scope-facts.sh. Two copies of the lookup could drift
 # apart, and a marker written where the guard is not looking cannot be deleted.
 # shellcheck source=hooks/lib/memory-env.sh
 . "$HOOKS_DIR/lib/memory-env.sh"

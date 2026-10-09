@@ -181,7 +181,7 @@ cmd_leftover_asks() {
     . == "Bash(git stash drop:*)")] | length' "$SETTINGS" 2>/dev/null || echo 0)
   if [ "$scoped" = "0" ]; then
     echo "✅ No leftover scope-able entries in permissions.ask."
-    echo "   hooks/destructive-scope-guard.sh is the only layer gating those verbs — it permits what resolves inside the project or a scratch root, and denies everything else, including what it cannot resolve."
+    echo "   The destructive-scope guard (hooks/mods/destructive-scope.ts) is the only layer gating those verbs. It permits what resolves inside the project or a scratch root, asks about a target outside them, and denies what it cannot resolve."
   else
     echo "⚠  $scoped leftover scope-able entr(ies) in permissions.ask, from a setup run before they were dropped."
     echo "   They prompt regardless of where the command acts, and a matching ask rule still prompts even when a PreToolUse hook returned \"allow\" — so the guard's permit cannot show through while they are there."

@@ -14,6 +14,9 @@ import type { Bench } from './bench'
 import { bench, start } from './bench'
 import { COUNTS, DENIED, HOME, SANDBOX } from './oracle/guard-cases'
 import type { OracleCase } from './oracle/guard-cases'
+import { WORLD_COUNTS, WORLD_DENIED, WORLD_FACTS, WORLD_SANDBOX } from './oracle/world-cases'
+import type { WorldCase } from './oracle/world-cases'
+import { install, peekOf, recorded } from './world'
 
 type Payload = { tool_name?: unknown; tool_input?: unknown; agent_id?: unknown }
 
@@ -141,5 +144,138 @@ describe('AC3: each port refuses everything its frozen bash guard refused', () =
       return run !== undefined && !(run.bash && run.zsh)
     })
     expect(harmful.length).toBeGreaterThan(100)
+  })
+})
+
+// ─── the guards that read the disk ───────────────────────────────────────────
+//
+// The destructive-scope, destructive-database and vault-git ports judge where
+// a path lands and what git says. Their cases (tests/oracle/world-cases.ts)
+// carry the facts the port asked about in the sandbox the oracle ran in, and
+// each is replayed here through the module (tests/world.ts): its tool.call,
+// and its tool.check, where an out-of-root target asks. A refusal or an ask
+// counts as the port refusing. A fact the replay asks for that nobody recorded
+// fails the test: the module and tests/oracle/port-facts.js have drifted, and
+// the fixture must be written again.
+
+// Each command the port lets through that its oracle refused, all of them
+// shown harmless by a sandboxed run under bash and zsh. The classes they fall
+// in:
+//   - a git verb after a real redirect the oracle misread as a quoted `>`
+//     (`git checkout -b fresh 2>/dev/null` makes a branch and discards nothing)
+//   - a destructive word the oracle found in a line, where the port reads no
+//     destructive command: one with no operand (`rmdir`, `git` alone), a
+//     word that is no git verb, and a verb that is only an argument
+//     (`docker compose down -v` as words handed to a command named `db:wipe`,
+//     on a line that opens with `;`, which neither shell runs)
+//   - a line neither shell can parse (`&&;`, `;|`, `;||;`, a stray `)` or an
+//     unclosed `(`), so no word of it runs as a command
+//   - a destructive word that is only an argument of a command that is not
+//     rm, rmdir, git or a runner: of a name that is no program (`-C`,
+//     `file.txtfind`, `/`, `clean`, `stash`), of `echo`, or of `cd` under
+//     `env -i`. A `-c alias.x='reset --hard'` there never reaches git
+//   - `reset` run as the terminal's own reset command, not as a git verb
+//     (`*;git;reset --hard`: `git` stands alone and prints its usage)
+//   - `xargs` with no command, which runs echo
+// A glob in the command word is no exception: the port refuses it, because it
+// runs the first file in the folder.
+const WORLD_EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
+  'destructive-scope-guard': [
+    // a git verb after a real redirect
+    'git checkout -b fresh 2>/dev/null',
+    // no operand
+    '2>&1 rmdir',
+    // no parse
+    'env -i cd /tmp/wb-oracle/victim rm -rf parallel >clean -fd;-C /tmp/wb-oracle/victim-repo;|',
+    '2>&1; clean -n ; git &&;cd /tmp/wb-oracle/victim',
+    'build git;stash list;( env -i ( stash list',
+    // only an argument, or the terminal's reset
+    "-C /tmp/wb-oracle/project -c alias.x='reset --hard' x cd /tmp/wb-oracle/victim rmdir",
+    '/tmp/wb-oracle//project/./build clean -n;stash liststash drop } find . -exec rm {} + sudo',
+    "-C /tmp/wb-oracle/project -c alias.x='reset --hard' x echo rm rm -rf -C /tmp/wb-oracle/victim-repo stash drop {\ncheckout feature",
+    "echo -c alias.x='reset --hard' x;cd /tmp/wb-oracle/victim;file.txtfind . -exec rm {} +;/\ncd /tmp/wb-oracle/project *",
+    "/ buildstash list -c alias.x='reset --hard' xfind . -exec rm {} + ;",
+    "xargs |\nclean -fdbuild\n-c alias.x='reset --hard' x restore rmdir",
+    "reset --hard-c alias.x='reset --hard' x /tmp/wb-oracle/victim/keep.txt /tmp/wb-oracle/project/build\ngit;||;-C /tmp/wb-oracle/victim-repo timeout 5",
+    'clean -fd\n2>&1 git build#;/ env -i',
+    'file.txtrm\ngit /tmp/wb-oracle/victim/keep.txt rm -rf;/',
+  ],
+  'destructive-database-guard': [';db:wipe { docker compose down -v;eval'],
+  'vault-git-guard': [],
+}
+
+type WorldRun = { letThrough: string[]; unproven: string[]; misses: string[] }
+
+// The cases of one guard and source, in groups of one vault each: the module
+// reads the vault root once per load.
+const groupsOf = (cases: readonly WorldCase[]): Map<string, WorldCase[]> => {
+  const groups = new Map<string, WorldCase[]>()
+  for (const c of cases) groups.set(`${c.guard}\u0000${c.source}\u0000${c.vault ?? ''}`, [...(groups.get(`${c.guard}\u0000${c.source}\u0000${c.vault ?? ''}`) ?? []), c])
+  return groups
+}
+
+async function worldDifferential($: Engine, b: Bench, cases: readonly WorldCase[]): Promise<WorldRun> {
+  await $.session.start(start(true))
+  const run: WorldRun = { letThrough: [], unproven: [], misses: [] }
+  // The engine's own decision allows, so any ask or deny is the module's.
+  b.decision = 'allow'
+  for (const c of cases) {
+    const call = callOf({ guard: c.guard, source: c.source, payload: c.payload, writer: '' })
+    const command = call === undefined ? undefined : commandOf(call)
+    if (call === undefined || command === undefined) continue
+    const facts = { ...(WORLD_FACTS[`${c.guard}\u0000${c.source}`] ?? {}), ...c.facts }
+    install(b, recorded(facts, run.misses), { roots: c.roots, vault: c.vault }, peekOf(facts))
+    b.cwd = c.cwd
+    b.root = c.project
+    const result = await $.tool.call(call as never)
+    if (result.deny !== undefined) {
+      expect(result.deny).not.toContain('could not finish')
+      continue
+    }
+    const check = await $.tool.check({ tool: 'Bash', input: { command } })
+    if (check.decision !== 'allow') continue
+    const sandbox = WORLD_SANDBOX[`${c.guard}\u0000${command}`]
+    if (sandbox?.bash === true && sandbox.zsh === true) run.letThrough.push(command)
+    else run.unproven.push(command)
+  }
+  return run
+}
+
+describe('AC2: each disk-reading port refuses or asks on everything its frozen bash guard refused', () => {
+  for (const [key, cases] of groupsOf(WORLD_DENIED)) {
+    const [guard = '', source = '', vault = ''] = key.split('\u0000')
+    test(`${guard}, ${source} cases${vault === '' ? '' : ' with a vault'}: each is refused or asked, or sandbox-proven harmless and listed`, { timeoutMs: 120_000 }, async ($, on) => {
+      const b = bench(on, { env: { HOME } })
+      b.scripts['scratch-roots.sh'] = () => ''
+      const { letThrough, unproven, misses } = await worldDifferential($, b, cases)
+      expect([...new Set(misses)]).toEqual([])
+      expect(unproven).toEqual([])
+      expect([guard, letThrough.filter(command => !(WORLD_EXCEPTIONS[guard] ?? []).includes(command))]).toEqual([guard, []])
+    })
+  }
+
+  test('the fixture reads cases of every disk-reading guard, from its suite and at random', () => {
+    for (const guard of Object.keys(WORLD_EXCEPTIONS)) {
+      const counts = WORLD_COUNTS[guard]
+      expect([guard, (counts?.suite ?? 0) > 0, (counts?.random ?? 0) > 0, (counts?.denied ?? 0) > 0]).toEqual([guard, true, true, true])
+      expect([guard, WORLD_DENIED.filter(c => c.guard === guard).length]).toEqual([guard, counts?.denied])
+    }
+  })
+
+  test('each listed exception is a refused case the sandbox proved harmless in both shells', () => {
+    for (const [guard, commands] of Object.entries(WORLD_EXCEPTIONS)) {
+      for (const command of commands) {
+        expect([guard, command, WORLD_SANDBOX[`${guard}\u0000${command}`]]).toEqual([guard, command, { bash: true, zsh: true }])
+        expect([guard, command, WORLD_DENIED.some(c => c.guard === guard && commandOf(callOf({ ...c, writer: '' }) ?? {}) === command)]).toEqual([guard, command, true])
+      }
+    }
+  })
+
+  // The test must be able to fail: the port's recorded verdicts hold many
+  // refusals and asks.
+  test('control: most recorded cases are refused or asked by the port', () => {
+    const refused = WORLD_DENIED.filter(c => c.port === 'deny' || c.port === 'ask')
+    expect(refused.length).toBeGreaterThan(WORLD_DENIED.length * 0.9)
+    expect(WORLD_DENIED.filter(c => c.port === 'ask').length).toBeGreaterThan(100)
   })
 })

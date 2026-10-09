@@ -1,4 +1,8 @@
 #!/bin/bash
+# Tests for the frozen vault-git-guard.sh beside this file: the bash guard as
+# it stood before its port to the hooks module (hooks/mods/vault-git.ts), kept
+# as a test oracle. hooks/ runs it no more. The original header follows.
+#
 # Tests for hooks/vault-git-guard.sh — the PreToolUse memory-vault git guard.
 # Run directly: ./test-vault-git-guard.sh
 # Each case feeds the hook one PreToolUse payload on stdin and asserts its
@@ -21,7 +25,14 @@
 set -u
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 GUARD="$HOOKS_DIR/vault-git-guard.sh"
-HOOKS_JSON="$HOOKS_DIR/hooks.json"
+
+# Under hooks/test-guard-oracles.sh each call of the guard goes through
+# tests/oracle/record.sh, which writes the payload and the verdict for the
+# differential test (tests/guard-differential.test.ts).
+if [ -n "${ORACLE_CASES_OUT:-}" ]; then
+  export ORACLE_REAL_GUARD="$GUARD"
+  GUARD="$HOOKS_DIR/../record.sh"
+fi
 PASS=0
 FAIL=0
 
@@ -385,15 +396,6 @@ else
   FAIL=$((FAIL + 1)); echo "  ❌ failed open when invoked by a relative path"
 fi
 
-# A guard nothing calls guards nothing, so registration is part of the behaviour.
-echo "the hook is registered in hooks.json:"
-assert_jq "matcher is Bash" "$HOOKS_JSON" \
-  '[.hooks.PreToolUse[] | select(.hooks[].command | test("vault-git-guard.sh")) | .matcher] | join(",")' \
-  "Bash"
-assert_jq "registered exactly once" "$HOOKS_JSON" \
-  '[.hooks.PreToolUse[].hooks[] | select(.command | test("vault-git-guard.sh"))] | length' "1"
-assert_jq "no if condition narrows it" "$HOOKS_JSON" \
-  '[.hooks.PreToolUse[] | select(.hooks[].command | test("vault-git-guard.sh")) | .if // empty] | length' "0"
 
 # The vault's git is unreachable by a permission rule in the other direction
 # too: the memory server commits from its own process, as
@@ -470,7 +472,7 @@ done
 check deny "command cd into the vault moves" "$(cwd_json "command cd $VAULT && git rm x" "$PROJECT")"
 
 echo "vault-conventions.md documents the rule and cites the incident:"
-CONVENTIONS="$(cd "$HOOKS_DIR/.." && pwd)/references/vault-conventions.md"
+CONVENTIONS="$(cd "$HOOKS_DIR/../../.." && pwd)/references/vault-conventions.md"
 CONV="$(cat "$CONVENTIONS" 2>/dev/null)"
 assert_contains "names the incident commit" "$CONV" "014f51b1"
 assert_contains "points at the delete tool" "$CONV" "delete"

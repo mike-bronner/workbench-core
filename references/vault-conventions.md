@@ -57,7 +57,7 @@ unrelated note being written. Nothing in that commit says a profile was lost.
 The `delete` tool was available the whole time and would have produced a commit
 that said so.
 
-`hooks/vault-git-guard.sh` enforces this rule. The rule is written down here
+The vault-git guard in the hooks module (`hooks/mods/vault-git.ts`) enforces this rule. The rule is written down here
 because a rule with no incident attached gets relaxed later.
 
 ## Required frontmatter

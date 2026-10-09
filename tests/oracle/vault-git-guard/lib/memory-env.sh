@@ -40,8 +40,7 @@ memory_resolve_config_file() {
 # memory_resolve_cache_path: echo the cache root (override → config.json →
 # default), the same precedence memory_load_env applies to CACHE_PATH. For a
 # caller that needs the cache location alone and none of the server env —
-# roots() in hooks/lib/scope-facts.sh finds the pending-summaries markers with
-# it, for the destructive-scope guard (hooks/mods/destructive-scope.ts).
+# hooks/destructive-scope-guard.sh finds the pending-summaries markers with it.
 memory_resolve_cache_path() {
   local config_file cache
   config_file="$(memory_resolve_config_file)"

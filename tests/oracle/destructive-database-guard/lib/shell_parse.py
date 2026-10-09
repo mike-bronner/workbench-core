@@ -1,21 +1,32 @@
 #!/usr/bin/env python3
 """shell_parse: the mechanical half of reading a shell command.
 
-WARNING — A GUARD THAT IMPORTS THIS FILE CAN FAIL SILENTLY.
+WARNING — EVERY SAFETY GUARD THAT IMPORTS THIS FILE FAILS SILENTLY.
 
-The destructive-scope, destructive-database and vault-git guards used to
-import this file. They now run in the hooks module (hooks/mods/*.ts), which
-reads shell through hooks/mods/shell.ts and does not import this file. Their
-bash copies under tests/oracle/ carry frozen copies of this file, as test
-oracles. Do not edit those copies.
+hooks/lib/destructive-db-check.py is the enforcement behind
+hooks/destructive-database-guard.sh, which exists because a real development
+database was destroyed on 2026-09-04. hooks/lib/vault-git-check.py is the
+enforcement behind hooks/vault-git-guard.sh. Those two hooks fail OPEN
+by design: a checker that cannot run exits 0, and exit 0 means allow. So a
+change here that raises, renames a symbol, or merely re-splits a command
+differently does not produce an error anybody sees. It produces a guard that
+never blocks again.
 
-The live importers are the outbound prose guard (hooks/outbound-prose-guard.sh,
-through its inline parser) and hooks/lib/scan-query.py. A change here that
-raises, renames a symbol, or re-splits a command differently produces no error
-anybody sees. It changes what those readers find.
+hooks/lib/destructive-scope-check.py fails CLOSED instead, and it is the one
+importer this warning has to be read backwards for. It is the only layer gating
+`rm`, `rmdir`, and four destructive git verbs — the permission-rule entries that
+used to sit under them are being retired — so a re-split that hides a verb slot
+does not merely stop blocking, it silently PERMITS a delete. A change here that
+makes it raise or mis-tokenise is the more visible half: the guard denies every
+destructive command until somebody fixes it.
 
 THE RULE, which outlives the list under it: after touching anything below, run
-the suite of EVERY importer. As of this writing those are:
+the suite of EVERY checker that imports this file. A count in this sentence
+would go stale the next time a guard is added, and nothing would say so. As of
+this writing the importers are:
+    hooks/test-destructive-database-guard.sh
+    hooks/test-vault-git-guard.sh
+    hooks/test-destructive-scope-guard.sh
     hooks/test-outbound-prose-guard.sh   (its inline parser imports this file)
     hooks/test-scan-query.sh             (hooks/lib/scan-query.py)
     hooks/test-shell-parse.sh            (this file's own rules, pinned directly)
@@ -120,11 +131,12 @@ reader starts from the answers rather than the question:
   it needs a per-wrapper table of which flags take a separate value, and a
   hand-maintained table that is one entry short is a silent bypass rather than a
   visible gap — the failure mode this module is meant not to have. So the rule
-  stays with the caller: the scope guard (now hooks/mods/destructive-scope.ts)
-  treats a verb slot that is not a command name as unreadable and refuses it,
-  which needs no table. The frozen database and provisioning guards under
-  tests/oracle/ do not, and for them `env -i psql -c "DROP DATABASE x"` reads as
-  a command named `-i`. hooks/test-parser-differential.sh pins that gap.
+  stays with the caller: hooks/lib/destructive-scope-check.py treats a verb slot
+  that is not a command name as unreadable and refuses it, which needs no table.
+  THE OTHER THREE IMPORTERS DO NOT DO THIS, and for them `env -i psql -c "DROP
+  DATABASE x"` reads as a command named `-i`. That is a live gap in those guards,
+  reported rather than fixed here, because changing what strip_noop() returns
+  changes three guards' verdicts at once.
 """
 
 import os

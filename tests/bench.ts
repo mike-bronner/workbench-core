@@ -63,6 +63,16 @@ export type Bench = {
   // What each Bash call that reaches the engine does, such as moving a repo's
   // HEAD as a commit would, and whether it reports an error.
   onBash?: (command: string) => { isError?: boolean } | void
+  // What $.session.cwd and $.session.root answer (default /repo).
+  cwd: string
+  root: string
+  // A file system and a git the test models (tests/world.ts), asked before
+  // the bench's own: undefined passes the call on to the bench.
+  run?: (argv: readonly string[]) => { exitCode: number; stdout: string } | undefined
+  stat?: (path: string) => { kind: 'file' | 'dir' | 'other'; isLink: boolean } | null | undefined
+  // What the engine's own permission decision answers to tool.check, beneath
+  // the module (default ask, as for a Bash call no rule allows).
+  decision: 'allow' | 'ask' | 'deny'
   clock: MockClock
 }
 
@@ -100,12 +110,17 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     inputs: [],
     dialog: {},
     repos: {},
+    cwd: '/repo',
+    root: '/repo',
+    decision: 'ask',
     clock: mock.clock(on, { now: START }),
   }
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.end', ($, e) => ({ sessionId: e.sessionId }))
   on('session.id', () => ({ value: sessionId }))
-  on('session.cwd', () => ({ value: '/repo' }))
+  on('session.cwd', () => ({ value: b.cwd }))
+  on('session.root', () => ({ value: b.root }))
+  on('tool.check', () => ({ decision: b.decision }))
   on('prompt.submit', ($, e) => ({ text: e.text }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
   on('command.register', ($, e) => {
@@ -137,6 +152,9 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     return { value: undefined }
   })
   on('fs.stat', ($, e) => {
+    const modeled = b.stat?.(e.path)
+    if (modeled === null) throw new Error(`ENOENT: ${e.path}`)
+    if (modeled !== undefined) return { value: { ...modeled, size: 0, mtimeMs: 0 } }
     const kind = b.kinds.get(e.path)
     if (kind !== undefined) return { value: { kind, size: 0, mtimeMs: 0, isLink: b.links.has(e.path) } }
     if (!b.files.has(e.path)) throw new Error(`ENOENT: ${e.path}`)
@@ -157,6 +175,12 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
   })
   on('process.run', ($, e) => {
     b.runs.push(e.argv)
+    const modeled = b.run?.(e.argv)
+    if (modeled !== undefined) return { value: { ...ran(modeled.stdout), exitCode: modeled.exitCode } }
+    // With no modeled world, the destructive-scope guard's facts say that
+    // nothing but the filesystem root exists, and git answers nothing.
+    if ((e.argv[1] ?? '').endsWith('/scope-facts.sh')) return { value: ran(e.argv[2] === 'dir' && e.argv[3] === '/' ? '/\n' : e.argv[2] === 'entry' ? 'missing\n' : '') }
+    if (e.argv[0] === 'git' && !(e.argv[1] === '-C' && e.argv[3] === 'rev-parse' && ['HEAD', '@{push}'].includes(e.argv.at(-1) ?? ''))) return { value: { ...ran(''), exitCode: 128 } }
     if (e.argv[0] === 'rm') {
       b.files.delete(e.argv[e.argv.length - 1] ?? '')
       b.links.delete(e.argv[e.argv.length - 1] ?? '')

@@ -29,6 +29,7 @@ import {
 import { parseShell } from '../hooks/mods/shell'
 import type { Bench } from './bench'
 import { bench, start } from './bench'
+import { install, model, rootsOf } from './world'
 
 const HOME = '/Users/tester'
 const SCRATCH = '/scratch'
@@ -184,6 +185,10 @@ describe('the summary-writer guard', () => {
   for (const line of ALLOWED) {
     test(`with WORKBENCH_SUMMARY_WRITER=1, allows ${JSON.stringify(line)}`, async ($, on) => {
       const b = await session($, on, { WORKBENCH_SUMMARY_WRITER: '1' })
+      // The writer deletes its own marker, which the destructive-scope guard
+      // permits in the memory cache's pending-summaries folder.
+      const markers = '/cache/pending-summaries'
+      install(b, model({ dirs: ['/cache', markers], files: [`${markers}/abc.json`] }), { roots: rootsOf([], undefined, markers), vault: null })
       expect(await refusal($, b, bash(line))).toBeUndefined()
     })
   }

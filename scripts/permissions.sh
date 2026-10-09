@@ -22,7 +22,8 @@
 # What ships in that list is deliberately tiny: one plugin's MCP server, so the
 # memory vault stays writable, and nothing else. A fixed-path script entry used
 # to ship beside it so that deleting inside a scratchpad stopped prompting;
-# hooks/destructive-scope-guard.sh answers that question directly now — by
+# the destructive-scope guard (hooks/mods/destructive-scope.ts) answers that
+# question directly now — by
 # resolving where the path lands — so both the script and its grant were
 # retired. A shell PATTERN must never be added. An allow rule
 # matching a command shape (`Bash(rm -rf:*)`, or any `*` inside the command part)

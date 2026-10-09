@@ -372,7 +372,8 @@ assert_jq "every autoMode entry has a why"  "$SHIPPED_RAILS" \
 # permitted, outside is the human's call. That exception cannot be layered on
 # top of an ask entry, because a matching ask rule still prompts even when a
 # PreToolUse hook returned "allow". So the five had to leave rather than be
-# narrowed, and hooks/destructive-scope-guard.sh answers in their place.
+# narrowed, and the destructive-scope guard (hooks/mods/destructive-scope.ts)
+# answers in their place.
 #
 # A deny was never an option either, in any era: `*` is always a wildcard in a
 # Bash rule and deny cannot carry an allow exception, so an `rm -rf /`-shaped
@@ -400,14 +401,20 @@ assert_jq "no rm rule anywhere" "$SHIPPED_RAILS" \
 # too: shipped, and registered exactly once on Bash. Delete the guard and the
 # absence of the rules stops being a policy and becomes a hole.
 REPO_ROOT_RAILS="$(cd "$(dirname "$0")/.." && pwd)"
-if [ -f "$REPO_ROOT_RAILS/hooks/destructive-scope-guard.sh" ]; then
-  PASS=$((PASS + 1)); echo "  ✅ the guard that replaced them ships"
+# The guard lives in the hooks module: hooks/mods/destructive-scope.ts judges,
+# and hooks/register.ts runs it from a tool.check hook bound to Bash.
+if [ -f "$REPO_ROOT_RAILS/hooks/mods/destructive-scope.ts" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ the guard that replaced them ships (hooks/mods/destructive-scope.ts)"
 else
   FAIL=$((FAIL + 1)); echo "  ❌ the five are gone and no guard ships — these verbs are gated by nothing"
 fi
-assert_jq "the guard is registered once on Bash" "$REPO_ROOT_RAILS/hooks/hooks.json" \
-  '[.hooks.PreToolUse[] | select(.hooks[].command | test("destructive-scope-guard.sh")) | .matcher] | join(",")' \
-  "Bash"
+SCOPE_CHECKS=$(grep -cE "^  on\('tool\.check', \{ tool: 'Bash' \}" "$REPO_ROOT_RAILS/hooks/register.ts")
+if [ "$SCOPE_CHECKS" = "1" ] && grep -q "from './mods/destructive-scope'" "$REPO_ROOT_RAILS/hooks/register.ts" \
+   && grep -q "await scopeOf(\$, command, parse" "$REPO_ROOT_RAILS/hooks/register.ts"; then
+  PASS=$((PASS + 1)); echo "  ✅ the guard is registered once on Bash (hooks/register.ts)"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ hooks/register.ts does not run the guard from one Bash tool.check hook"
+fi
 
 # Credential paths are guarded by the credential guard in the hooks module
 # (hooks/mods/guards.ts), not by a deny rule.
@@ -484,7 +491,7 @@ assert_jq "every allow rule is an mcp__ pattern or a fixed bin/ script" "$SHIPPE
 #   command substitution, and documents nothing either way about allow rules, so
 #   an argument carrying `$(...)` is undocumented ground. A substitution holding
 #   `rm -rf` used to be covered by this file's own ask rule, which is no longer
-#   here — hooks/destructive-scope-guard.sh reads it instead, because a `$(...)`
+#   here — hooks/mods/destructive-scope.ts reads it instead, because a `$(...)`
 #   becomes a statement of its own when the command is tokenised and its verb
 #   slot is judged like any other. That residual is not introduced here anyway:
 #   workbench-dev-team already ships allow entries of exactly this form for
@@ -500,7 +507,7 @@ assert_jq "the memory MCP is allowed" "$SHIPPED_RAILS" \
   '[(.allow // [])[] | select(.rule == "mcp__plugin_workbench-core_memory__*")] | length' "1"
 # No Bash allow entry ships at all. The one that did named a command at a fixed
 # path under ~/.claude-workbench/bin/ which deleted inside a scratchpad without
-# prompting; hooks/destructive-scope-guard.sh answers that question directly
+# prompting; hooks/mods/destructive-scope.ts answers that question directly
 # now, by resolving the path, so the command and its grant were retired.
 #
 # Asserted rather than left to the loop below, which iterates Bash allow entries

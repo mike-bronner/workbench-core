@@ -342,8 +342,11 @@ while IFS= read -r gate; do
     | select(.command | endswith("/" + $h + "\""))] | length' "$REPO_ROOT/hooks/hooks.json" 2>/dev/null)
   if [ -f "$REPO_ROOT/hooks/$hook" ] && [ "${registered:-0}" -ge 1 ]; then
     PASS=$((PASS + 1)); echo "  ✅ $gate is shipped and registered ($hook)"
-  elif grep -qF "$gate (workbench-core)" "$REPO_ROOT/hooks/mods/guards.ts"; then
-    PASS=$((PASS + 1)); echo "  ✅ $gate is a guard of the hooks module (hooks/mods/guards.ts)"
+  # A guard of the hooks module names itself in its refusal, with a space or a
+  # hyphen between words, and counts only when hooks/register.ts imports it.
+  elif mod=$(grep -lE "$(printf '%s' "$gate" | sed 's/ /[ -]/g') \(workbench-core\)" "$REPO_ROOT"/hooks/mods/*.ts | head -1) \
+    && [ -n "$mod" ] && grep -qF "from './mods/$(basename "$mod" .ts)'" "$REPO_ROOT/hooks/register.ts"; then
+    PASS=$((PASS + 1)); echo "  ✅ $gate is a guard of the hooks module (hooks/mods/$(basename "$mod"))"
   else
     FAIL=$((FAIL + 1)); echo "  ❌ the table names $gate, but $hook is not shipped and registered"
   fi
@@ -351,12 +354,12 @@ done <<< "$GATE_ROWS"
 assert_contains "the table names the destructive scope guard" "$GATE_ROWS" "Destructive scope guard"
 
 # The table promises the destructive commands run unprompted inside scope, and
-# only hooks/destructive-scope-guard.sh makes that true. Registration is checked
-# as well as the file, because an unregistered guard is a file that runs never.
-GUARD_HOOKS=$(jq -r '[.hooks.PreToolUse[].hooks[]
-  | select(.command | test("destructive-scope-guard.sh"))] | length' \
-  "$REPO_ROOT/hooks/hooks.json" 2>/dev/null)
-if [ "$GUARD_HOOKS" = "1" ]; then
+# only the destructive-scope guard (hooks/mods/destructive-scope.ts) makes that
+# true. Registration is checked as well as the file, because a guard that
+# hooks/register.ts never runs is a file that runs never.
+if [ -f "$REPO_ROOT/hooks/mods/destructive-scope.ts" ] \
+   && [ "$(grep -cE "^  on\('tool\.check', \{ tool: 'Bash' \}" "$REPO_ROOT/hooks/register.ts")" = "1" ] \
+   && grep -q "await scopeOf(\$, command, parse" "$REPO_ROOT/hooks/register.ts"; then
   PASS=$((PASS + 1)); echo "  ✅ the guard is registered once, so the promise holds"
 else
   FAIL=$((FAIL + 1)); echo "  ❌ the guard the table promises is not registered once"

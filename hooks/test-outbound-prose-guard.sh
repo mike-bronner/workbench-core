@@ -223,7 +223,7 @@ assert_allowed "repository paths, a command, and URLs, through --body-file" \
 assert_allowed "a scratch root named as a place, not a file" \
   run_bash "gh pr comment 1 --body 'Scratch now goes in \`~/Developer/scratchpad\`, and plans stay in ~/.claude/plans/.'"
 assert_allowed "the word vault beside a repository path" \
-  run_bash "gh pr comment 1 --body 'The vault hooks/vault-git-guard.sh refuses git writes.'"
+  run_bash "gh pr comment 1 --body 'The vault hooks/mods/vault-git.ts refuses git writes.'"
 # "Vault" is also HashiCorp's secret store, and markdown-vault-mcp has repo
 # folders that hold vault notes. A path after the word counts only when its
 # first folder is one of the vault's own, under a listed root and the fallback.

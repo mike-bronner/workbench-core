@@ -1,4 +1,9 @@
 #!/bin/bash
+# Tests for the frozen destructive-database-guard.sh beside this file: the bash
+# guard as it stood before its port to the hooks module
+# (hooks/mods/destructive-database.ts), kept as a test oracle. hooks/ runs it
+# no more. The original header follows.
+#
 # Tests for hooks/destructive-database-guard.sh — the PreToolUse database guard.
 # Run directly: ./test-destructive-database-guard.sh
 # Each case feeds the hook one PreToolUse payload on stdin and asserts its
@@ -20,8 +25,15 @@
 set -u
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 GUARD="$HOOKS_DIR/destructive-database-guard.sh"
-HOOKS_JSON="$HOOKS_DIR/hooks.json"
-RAILS="$(cd "$HOOKS_DIR/.." && pwd)/assets/permissions/rails.json"
+RAILS="$(cd "$HOOKS_DIR/../../.." && pwd)/assets/permissions/rails.json"
+
+# Under hooks/test-guard-oracles.sh each call of the guard goes through
+# tests/oracle/record.sh, which writes the payload and the verdict for the
+# differential test (tests/guard-differential.test.ts).
+if [ -n "${ORACLE_CASES_OUT:-}" ]; then
+  export ORACLE_REAL_GUARD="$GUARD"
+  GUARD="$HOOKS_DIR/../record.sh"
+fi
 PASS=0
 FAIL=0
 
@@ -465,16 +477,6 @@ if [ "$(verdict_of "$(printf '%s' "$(cwd_json 'psql -f db/reset.sql' "$SQLDIR")"
 else
   FAIL=$((FAIL + 1)); echo "  ❌ lost the payload-relative file read from another cwd"
 fi
-
-# Registration is part of the behaviour: a guard nothing calls guards nothing.
-echo "the hook is registered in hooks.json:"
-assert_jq "matcher is Bash" "$HOOKS_JSON" \
-  '[.hooks.PreToolUse[] | select(.hooks[].command | test("destructive-database-guard.sh")) | .matcher] | join(",")' \
-  "Bash"
-assert_jq "registered exactly once" "$HOOKS_JSON" \
-  '[.hooks.PreToolUse[].hooks[] | select(.command | test("destructive-database-guard.sh"))] | length' "1"
-assert_jq "no if condition narrows it" "$HOOKS_JSON" \
-  '[.hooks.PreToolUse[] | select(.hooks[].command | test("destructive-database-guard.sh")) | .if // empty] | length' "0"
 
 # The declarative layer. It does not replace the hook — a prefix rule cannot see
 # `cd foo && php artisan db:wipe` — but it is what shows up in /config, so the

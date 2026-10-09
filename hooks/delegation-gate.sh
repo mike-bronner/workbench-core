@@ -137,7 +137,7 @@ esac
 #     gate still denied, those two kinds of file were nearly every denial.
 #
 #     The roots are the two scratchpads the destructive-scope guard
-#     (hooks/lib/destructive-scope-check.py) already trusts, resolved the same
+#     (hooks/mods/destructive-scope.ts) already trusts, resolved the same
 #     way, plus the plans folder. hooks/lib/scratch-roots.sh holds the one
 #     resolver, which $.workbench.scratchRoots() in hooks/register.ts runs too,
 #     and its header says how each root is found.

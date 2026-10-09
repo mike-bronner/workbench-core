@@ -1,4 +1,9 @@
 #!/bin/bash
+# Tests for the frozen destructive-scope-guard.sh beside this file: the bash
+# guard as it stood before its port to the hooks module
+# (hooks/mods/destructive-scope.ts), kept as a test oracle. hooks/ runs it no
+# more. The original header follows.
+#
 # Tests for hooks/destructive-scope-guard.sh — the PreToolUse guard that permits
 # a destructive command whose every target resolves inside the project or a
 # scratch root, and refuses one that reaches outside or that it cannot read.
@@ -41,9 +46,16 @@
 
 set -u
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT_DIR="$(cd "$HOOKS_DIR/.." && pwd)"
+ROOT_DIR="$(cd "$HOOKS_DIR/../../.." && pwd)"
 GUARD="$HOOKS_DIR/destructive-scope-guard.sh"
-HOOKS_JSON="$HOOKS_DIR/hooks.json"
+
+# Under hooks/test-guard-oracles.sh each call of the guard goes through
+# tests/oracle/record.sh, which writes the payload and the verdict for the
+# differential test (tests/guard-differential.test.ts).
+if [ -n "${ORACLE_CASES_OUT:-}" ]; then
+  export ORACLE_REAL_GUARD="$GUARD"
+  GUARD="$HOOKS_DIR/../record.sh"
+fi
 PASS=0
 FAIL=0
 
@@ -535,7 +547,7 @@ assert_survives "the leftover survived every case" "$LEFT_SCRATCH/sub/file.txt"
 # under the checker instead. The folder on disk is this account's, so a checker
 # that stopped reading the owner would still approve it here.
 echo "refuses a family folder another account owns:"
-OWNER_REPORT=$(cd "$ROOT_DIR/hooks/lib" && python3 -c "
+OWNER_REPORT=$(cd "$HOOKS_DIR/lib" && python3 -c "
 import importlib.util, os
 spec = importlib.util.spec_from_file_location('c', 'destructive-scope-check.py')
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
@@ -929,7 +941,7 @@ assert_survives "the victim survived every condition shape" "$VICTIM/keep.txt"
 # or does not (and must not be, or a real command name gets eaten). A keyword
 # added to either side without thought fails here.
 echo "the shell-keyword set is the complete POSIX partition:"
-KW_REPORT=$(cd "$ROOT_DIR/hooks/lib" && python3 -c "
+KW_REPORT=$(cd "$HOOKS_DIR/lib" && python3 -c "
 import importlib.util
 spec = importlib.util.spec_from_file_location('c', 'destructive-scope-check.py')
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
@@ -1351,7 +1363,7 @@ fi
 echo "a checker it cannot run is a destructive command nobody judged:"
 BROKEN="$SANDBOX/broken-install"
 mkdir -p "$BROKEN/lib"
-cp "$GUARD" "$BROKEN/destructive-scope-guard.sh"
+cp "${ORACLE_REAL_GUARD:-$GUARD}" "$BROKEN/destructive-scope-guard.sh"
 OUT=$(payload "rm -rf $PROJECT/sub" | \
   (unset CLAUDE_CODE_SESSION_ID
    CLAUDE_PROJECT_DIR="$PROJECT" bash "$BROKEN/destructive-scope-guard.sh") 2>/dev/null)
@@ -1435,18 +1447,6 @@ if [ -z "$(context_of "$GRANT")" ]; then
 else
   FAIL=$((FAIL + 1)); echo "  ❌ an allow carried a context block"
 fi
-
-# ─────────────────────────────────────────────────────────────────────────────
-# A guard nothing calls guards nothing, so registration is part of the
-# behaviour.
-echo "the hook is registered in hooks.json:"
-assert_jq "matcher is Bash" "$HOOKS_JSON" \
-  '[.hooks.PreToolUse[] | select(.hooks[].command | test("destructive-scope-guard.sh")) | .matcher] | join(",")' \
-  "Bash"
-assert_jq "registered exactly once" "$HOOKS_JSON" \
-  '[.hooks.PreToolUse[].hooks[] | select(.command | test("destructive-scope-guard.sh"))] | length' "1"
-assert_jq "no if condition narrows it" "$HOOKS_JSON" \
-  '[.hooks.PreToolUse[] | select(.hooks[].command | test("destructive-scope-guard.sh")) | .if // empty] | length' "0"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # THE RETIRED ROUTE. This guard replaces hooks/scratch-delete-guard.sh and the
@@ -1564,8 +1564,8 @@ assert_starts some 'git -C "a b" status'
 # two languages. Every name must be a real git builtin, because git ignores an
 # alias only for a builtin, and none may be a verb the checker judges.
 echo "the prefilter's safe git verbs are the checker's, and each is a builtin:"
-SAFE_SH=$(sed -n "s/^GIT_SAFE='\(.*\)'$/\1/p" "$GUARD" | tr '|' '\n' | sort)
-SAFE_REPORT=$(cd "$ROOT_DIR/hooks/lib" && SAFE_SH="$SAFE_SH" python3 -c "
+SAFE_SH=$(sed -n "s/^GIT_SAFE='\(.*\)'$/\1/p" "${ORACLE_REAL_GUARD:-$GUARD}" | tr '|' '\n' | sort)
+SAFE_REPORT=$(cd "$HOOKS_DIR/lib" && SAFE_SH="$SAFE_SH" python3 -c "
 import importlib.util, os, subprocess
 spec = importlib.util.spec_from_file_location('c', 'destructive-scope-check.py')
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)

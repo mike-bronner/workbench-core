@@ -12,6 +12,12 @@
 # exited 2 (the summary-writer guard's refusal), and `allow` otherwise. A
 # payload past 10,000 characters is not recorded: the read-ceiling cases feed
 # 200,000, and tests/guards.test.ts pins the ceiling on its own.
+#
+# The destructive-scope, destructive-database and vault-git guards read the
+# disk and git. For them, with ORACLE_WORLD_FACTS=1 (hooks/test-guard-oracles.sh
+# --write), a refused call also runs tests/oracle/port-facts.js here, in the
+# environment the suite gave the guard, and the line carries what the port
+# made of it and the facts it asked about. That needs deno.
 
 set -u
 
@@ -25,9 +31,20 @@ if [ "$status" = 2 ] || [ "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.per
   verdict=deny
 fi
 
+guard=$(basename "$ORACLE_REAL_GUARD" .sh)
+port='null'
+case "$guard" in
+  destructive-scope-guard | destructive-database-guard | vault-git-guard)
+    if [ "${ORACLE_WORLD_FACTS:-}" = 1 ] && [ "$verdict" = deny ] && [ "${#payload}" -le 10000 ]; then
+      port=$(printf '%s' "$payload" | deno run -A --quiet --unstable-sloppy-imports "$(dirname "$0")/port-facts.js" 2>/dev/null)
+      [ -n "$port" ] || port='{"verdict": "error"}'
+    fi
+    ;;
+esac
+
 if [ "${#payload}" -le 10000 ]; then
-  printf '%s' "$payload" | jq -Rsc --arg guard "$(basename "$ORACLE_REAL_GUARD" .sh)" \
-    --arg writer "${WORKBENCH_SUMMARY_WRITER:-}" --arg verdict "$verdict" \
-    '{guard: $guard, payload: ., writer: $writer, verdict: $verdict}' >>"$ORACLE_CASES_OUT"
+  printf '%s' "$payload" | jq -Rsc --arg guard "$guard" \
+    --arg writer "${WORKBENCH_SUMMARY_WRITER:-}" --arg verdict "$verdict" --argjson port "$port" \
+    '{guard: $guard, payload: ., writer: $writer, verdict: $verdict} + (if $port == null then {} else {port: $port} end)' >>"$ORACLE_CASES_OUT"
 fi
 exit "$status"

@@ -48,6 +48,8 @@ const TOKENS = [
   'x=1', '$x', "$'\\x67it'", '#', '<<-', '$"', '|&', 'trap', 'setsid', 'flock', 'cat', 'do', 'done', 'while', '!', '>|', '&>',
   '\\case', '"case"', 'c\\ase', ']]&&', ']]||', ']]>', ']]<', '${y:-$(', '(a|b', 'x)', '$(case', '|git', 'coproc N {', '\\[[', '"[["',
   '((x))', '$((1))', '$[x]', '(())', 'esac)',
+  // Terminated heredocs that feed a shell, whose bodies the gate read inline.
+  'bash <<EOF\ngit \\\nEOF\n', "bash <<EOF\n'\nEOF\n", 'sh <<E\ngit push\nE\n', 'bash <<-E\n\tx=(\nE\n', 'eval "$(cat <<E\n"\nE\n)"',
 ]
 const SEPARATORS = [' ', ' ', ' ', '', '\n', ';']
 
@@ -85,6 +87,9 @@ const COMPAT_LINES = [
   '|&>((x)) git push',
   // A [[ ]] test's < was a redirect.
   "[[ !(()) < $[ $'\\x67it' ! (a|b",
+  // A shell-fed heredoc body was read inline, as part of the line.
+  'bash <<EOF\ngit \\\nEOF\npush',
+  "bash <<EOF\n'\nEOF\n'; git push",
 ]
 
 describe('the live gate never finds fewer commits or pushes than the gate of 77bb2f3', () => {
@@ -104,7 +109,7 @@ describe('the live gate never finds fewer commits or pushes than the gate of 77b
   test('on the lines only the compat reading keeps', () => {
     for (const line of COMPAT_LINES) {
       const before = oracleWritesOf(line)
-      expect(before.commits + before.pushes).toBeGreaterThan(0)
+      expect([line, before.commits + before.pushes > 0]).toEqual([line, true])
     }
     expect(lowerOn(COMPAT_LINES)).toEqual([])
   })

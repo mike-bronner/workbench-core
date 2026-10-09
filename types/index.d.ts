@@ -71,7 +71,9 @@ export type WorkbenchCallerLaneArgs = {
 //                 here-string (`echo x | sh`, `cat <<EOF | bash`). A heredoc
 //                 piped in, or the here-string, is still read as a script.
 //   depth         scripts nested past four levels, which are not read
-export type WorkbenchShellUnknown = 'quote' | 'substitution' | 'heredoc' | 'escape' | 'wrapper' | 'expansion' | 'stdin' | 'depth'
+//   compound      an array assignment `x=(` or a `case … in` still open
+//                 where its script ends
+export type WorkbenchShellUnknown = 'quote' | 'substitution' | 'heredoc' | 'escape' | 'wrapper' | 'expansion' | 'stdin' | 'depth' | 'compound'
 
 // One redirect of a statement. A real one is an operator bash reads: `op` is
 // the operator as written (`>`, `>>`, `<`, `<>`, `>|`, `&>`, `&>>`, `>&`,

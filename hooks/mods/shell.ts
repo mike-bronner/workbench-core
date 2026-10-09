@@ -25,7 +25,10 @@
 //     script only when it feeds a shell or eval, and the substitutions of a
 //     body with an unquoted delimiter are read, as bash runs them.
 //   - arithmetic ($(( )), $[ ], (( ))) and [[ ]] tests, whose < > are text
-//   - case…esac, whose patterns are text and whose `)` closes no $( )
+//   - case…esac, whose patterns are text and whose `)` closes no $( ). A
+//     pattern that starts a line, or follows `;;`, is no statement
+//   - array assignments, `x=(a b)` and `x+=(c)`: one assignment word, whose
+//     substitutions alone run
 //   - prefixes: assignments, the keywords if then else elif do while until
 //     ! { coproc, and the wrappers in WRAPPERS with their own options
 //   - nested scripts: `bash -c`, `sh -c` and the other shells, `eval`, a trap
@@ -61,8 +64,11 @@ const ESCAPED = '\uE000'
 // where `"$P"/x` names one path.
 const UNQUOTED = '\uE002'
 
-// What a substitution leaves in the word it stood in.
-const SUBSTITUTED = '$_'
+// What a substitution leaves in the word it stood in. It carries the
+// UNQUOTED mark, quoted or not, so `$(cmd)x/y` is never read as the plain
+// variable `$_x` before a path: what a substitution prints is known only at
+// run time.
+const SUBSTITUTED = UNQUOTED + '$_'
 
 // The heredoc a `<` redirect target stands for: the mark, then its index.
 const HEREDOC = '\uE001'
@@ -183,7 +189,8 @@ export const isEscaped = (word: string): boolean => word.includes(ESCAPED)
 // substitution, other than a plain variable prefix before a literal path,
 // written inside double quotes. `$_` is where a substitution stood, so it is
 // never a plain prefix. `word` carries the lexer's UNQUOTED marks: an
-// unquoted expansion is split into words, so it is never plain.
+// unquoted expansion is split into words, and a substitution's text is known
+// only at run time, so neither is ever plain.
 const PLAIN_PREFIX = /^(\$(?!_\/)[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})\/[^$`]*$/
 export const isExpanded = (word: string): boolean => /[$`]/.test(word) && (word.includes(UNQUOTED) || !PLAIN_PREFIX.test(word))
 
@@ -344,23 +351,29 @@ function feedsShell(before: string): boolean {
     .some(word => SHELLS.has(nameOf(word)) || nameOf(word) === 'eval')
 }
 
+// The text kept from one heredoc body, and where the body stood in the line.
+type Body = { at: number; script: string }
+
 // `text` with each heredoc body taken out before it is read as shell, and the
-// spans of the text kept from bodies. A body is the text of a file or a
+// text kept from bodies. A body is the text of a file or a
 // message, not commands: an apostrophe in it would open a quote that swallows
 // the commands after it, and a line in it that starts with `git push` is not
 // a push. So the body and its delimiter line go, and the operator becomes a
 // `<` redirect whose target marks the heredoc, which the reader takes out.
 // Bash still runs what a body feeds a shell, and the $( ) and backticks of a
-// body whose delimiter is unquoted, so those are kept as lines to read.
+// body whose delimiter is unquoted, so those are kept as a script of their
+// own, with `at`, where the body stood in the line. The lexer reads each
+// script apart, so a quote, substitution, array or case left open in a body
+// never reaches the line after it.
 //
 // It scans the whole text as one command, as bash does, so an operator counts
 // only where bash would read one: never inside a quoted string, on any line it
 // spans; never in a comment; and never in arithmetic ($(( )), (( )) or let),
 // where << is a shift. A here-string (<<<) is not a heredoc. The bodies start
 // after the next unquoted line end, in the operators' order.
-function heredocBodiesOut(text: string, reading: Reading): { line: string; spans: [number, number][] } {
+function heredocBodiesOut(text: string, reading: Reading): { line: string; bodies: Body[] } {
   let out = ''
-  const spans: [number, number][] = []
+  const bodies: Body[] = []
   const stack: Context[] = ['top']
   // How deep each open arithmetic is in its own parentheses.
   const depths: number[] = []
@@ -481,9 +494,11 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; spans
         doc.body = body.join('\n')
         // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
         const kept = doc.feedsShell ? body : doc.isQuoted ? [] : substitutionsOf(doc.body, reading.isCompat)
-        const from = out.length
-        out += kept.map(row => `${row}\n`).join('')
-        if (out.length > from) spans.push([from, out.length])
+        const script = kept.map(row => `${row}\n`).join('')
+        // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
+        // The gate of 77bb2f3 read a kept body inline, as part of the line.
+        if (reading.isCompat) out += script
+        else if (kept.length > 0) bodies.push({ at: out.length, script })
       }
       pending = []
       i = at - 1
@@ -493,7 +508,7 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; spans
   }
   // A heredoc whose line ends the text has no body yet.
   if (reading.heredocs.some(doc => !doc.isTerminated)) reading.unknowns.add('heredoc')
-  return { line: out, spans }
+  return { line: out, bodies }
 }
 
 // One simple command as the lexer reads it: its words, each escaped word
@@ -562,15 +577,16 @@ const textual = (text: string): ShellRedirect[] => [...text.matchAll(/[<>]/g)].m
 // The simple commands of `text` in reading order, a substitution's before the
 // command it stands in. Heredoc bodies are taken out first (heredocBodiesOut).
 //
-// `carried` holds the body spans of the line a substitution came from, moved
-// to the substitution's own text, so a body line read there keeps its source.
-function lex(text: string, reading: Reading, source: ShellSource, depth: number, isCertain: boolean, carried: [number, number][] = []): Raw[] {
+// `isBody` is true for the text of a heredoc body, so a substitution read in
+// it keeps the `heredoc` source.
+function lex(text: string, reading: Reading, source: ShellSource, depth: number, isCertain: boolean, isBody = false, carried: Body[] = []): Raw[] {
   const own = heredocBodiesOut(text, reading)
+  // The bodies still to read, in the order they stood.
+  const bodies = [...own.bodies, ...carried].sort((a, b) => a.at - b.at)
   // Off in the compat reading, which reads as the gate of 77bb2f3 did.
   const exact = !reading.isCompat
   const line = own.line
-  const spans = [...own.spans, ...carried]
-  const inBody = (at: number): boolean => spans.some(([from, to]) => at >= from && at < to)
+  const nestedSource: ShellSource = isBody ? 'heredoc' : 'substitution'
   const commands: Raw[] = []
   let words: string[] = []
   let redirects: ShellRedirect[] = []
@@ -596,11 +612,26 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
   // The last command read at this level, and whether the next reads its output.
   let last: Raw | undefined
   let isPiped = false
+  // Inside `name=( … )` the items are one assignment word: bash runs no
+  // command there, only the substitutions in it.
+  let isArray = false
+  // How many case…esac are open, and whether a case pattern comes next, as
+  // after `case x in` and each `;;`. A pattern is text, never a command.
+  let cases = 0
+  let isPattern = false
+  // Where in the command's words a reserved `case` stands, or -1. A quoted
+  // or escaped `case` is an ordinary command name, and opens no case.
+  let caseAt = -1
   const endWord = () => {
+    if (isPattern && hasWord && isBare && word === 'esac' && words.length === 0) {
+      isPattern = false
+      cases--
+    }
     if (hasWord && target === undefined) {
       const isReserved = isHead && isBare
       words.push(word)
       // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
+      if (exact && isReserved && word === 'case') caseAt = words.length - 1
       if (exact && isReserved && word === '[[') isTest = true
       else if (isTest && isBare && word === ']]') isTest = false
       isHead = isReserved && (KEYWORDS.has(word) || word === 'time' || (word === '-p' && words.at(-2) === 'time'))
@@ -629,20 +660,26 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     isHead = true
     if (words.length > 0 || redirects.length > 0) {
       const head = nameOf(words.find(w => !ASSIGNMENT.test(w)) ?? '')
-      const isBodyStart = start >= 0 && inBody(start)
       const command: Raw = {
         words,
         redirects,
         heredocs,
-        source: isBodyStart ? 'heredoc' : source,
-        depth: isBodyStart ? depth + 1 : depth,
+        source,
+        depth,
         isCertain: !isUncertain && !['then', 'else', 'elif', 'do', 'case', 'for', 'select', 'function'].includes(head),
         ...(isPiped && last !== undefined ? { pipedFrom: last } : {}),
       }
       commands.push(command)
       last = command
       if (BRANCHES.has(head)) isUncertain = true
+      // `case x in` ended here, so its first pattern is still to come. A
+      // pattern on the same line, as in `case x in y)`, is read with it.
+      if (caseAt !== -1 && words[caseAt + 2] === 'in') {
+        cases++
+        isPattern = words.length === caseAt + 3
+      }
     }
+    caseAt = -1
     isPiped = false
     words = []
     redirects = []
@@ -650,20 +687,32 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     start = -1
   }
   // A substitution's commands go in the list, and the outer word goes on.
-  // `from` is where the inner text starts in `line`.
-  const substitute = (inner: string, at: number, from: number) => {
-    const moved = spans.map(([a, b]): [number, number] => [a - from, b - from]).filter(([, b]) => b > 0)
-    commands.push(...lex(inner, reading, inBody(at) ? 'heredoc' : 'substitution', depth + 1, !isUncertain, moved))
+  // A body that stood inside the substitution, as in `eval "$(cat <<E`, is
+  // read there. `from` is where the inner text starts in `line`.
+  const substitute = (inner: string, from: number) => {
+    const moved = bodies.filter(b => b.at >= from && b.at <= from + inner.length)
+    bodies.splice(0, bodies.length, ...bodies.filter(b => !moved.includes(b)))
+    const shifted = moved.map(b => ({ at: b.at - from, script: b.script }))
+    commands.push(...lex(inner, reading, nestedSource, depth + 1, !isUncertain, isBody, shifted))
     word += SUBSTITUTED
     hasWord = true
   }
   // Arithmetic is no command: its < > are text, and only its substitutions
   // run.
-  const arithmetic = (body: string, at: number) => {
-    for (const inner of substitutionsOf(body)) commands.push(...lex(inner, reading, inBody(at) ? 'heredoc' : 'substitution', depth + 1, !isUncertain))
+  const arithmetic = (body: string) => {
+    for (const inner of substitutionsOf(body)) commands.push(...lex(inner, reading, nestedSource, depth + 1, !isUncertain, isBody))
     redirects.push(...textual(body))
   }
+  // The heredoc bodies kept from the line, each read as a script of its own
+  // once the lexer reaches where it stood.
+  const readBodies = (upTo: number) => {
+    while (bodies.length > 0 && (bodies[0] as Body).at <= upTo) {
+      endCommand()
+      commands.push(...lex((bodies.shift() as Body).script, reading, 'heredoc', depth + 1, !isUncertain, true))
+    }
+  }
   for (let i = 0; i < line.length; i++) {
+    readBodies(i)
     const c = line[i] as string
     const next = line[i + 1]
     if (start === -1 && !/[ \t\n]/.test(c) && !';&|()'.includes(c)) start = i
@@ -694,27 +743,27 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
           word += line[++i]
         } else if (close !== -1) {
           if (close === line.length) reading.unknowns.add('substitution')
-          arithmetic(line.slice(i + 3, close), i)
+          arithmetic(line.slice(i + 3, close))
           word += SUBSTITUTED
           i = close + 1
         // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
         } else if (exact && d === '$' && line[i + 1] === '[' && isArithmetic(line.slice(i + 2, closingBracket(line, i + 2)))) {
           const end = closingBracket(line, i + 2)
           if (end === line.length) reading.unknowns.add('substitution')
-          arithmetic(line.slice(i + 2, end), i)
+          arithmetic(line.slice(i + 2, end))
           word += SUBSTITUTED
           i = end
         } else if (d === '$' && line[i + 1] === '(') {
           // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
           const end = closingParen(line, i + 2, exact)
           if (end === line.length) reading.unknowns.add('substitution')
-          substitute(line.slice(i + 2, end), i, i + 2)
+          substitute(line.slice(i + 2, end), i + 2)
           i = end
         } else if (d === '`') {
           const end = closingTick(line, i + 1)
           if (end === line.length) reading.unknowns.add('substitution')
           // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
-          substitute(exact ? backtickText(line.slice(i + 1, end)) : line.slice(i + 1, end), i, i + 1)
+          substitute(exact ? backtickText(line.slice(i + 1, end)) : line.slice(i + 1, end), i + 1)
           i = end
         } else {
           word += d
@@ -737,7 +786,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     } else if (c === '$' && next === '(' && line[i + 2] === '(' && arithmeticEnd(line, i + 3) !== -1) {
       const end = arithmeticEnd(line, i + 3)
       if (end === line.length) reading.unknowns.add('substitution')
-      arithmetic(line.slice(i + 3, end), i)
+      arithmetic(line.slice(i + 3, end))
       word += SUBSTITUTED
       hasWord = true
       i = end + 1
@@ -745,7 +794,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     } else if (exact && c === '$' && next === '[' && isArithmetic(line.slice(i + 2, closingBracket(line, i + 2)))) {
       const end = closingBracket(line, i + 2)
       if (end === line.length) reading.unknowns.add('substitution')
-      arithmetic(line.slice(i + 2, end), i)
+      arithmetic(line.slice(i + 2, end))
       word += SUBSTITUTED
       hasWord = true
       i = end
@@ -755,7 +804,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       const end = arithmeticEnd(line, i + 2)
       if (end === line.length) reading.unknowns.add('substitution')
       words.push('((')
-      arithmetic(line.slice(i + 2, end), i)
+      arithmetic(line.slice(i + 2, end))
       i = end + 1
       // Bash allows nothing after it but a redirect or a separator, so a word
       // after it is read as a command of its own.
@@ -770,13 +819,13 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
       const end = closingParen(line, i + 2, exact)
       if (end === line.length) reading.unknowns.add('substitution')
-      substitute(line.slice(i + 2, end), i, i + 2)
+      substitute(line.slice(i + 2, end), i + 2)
       i = end
     } else if (c === '`') {
       const end = closingTick(line, i + 1)
       if (end === line.length) reading.unknowns.add('substitution')
       // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
-      substitute(exact ? backtickText(line.slice(i + 1, end)) : line.slice(i + 1, end), i, i + 1)
+      substitute(exact ? backtickText(line.slice(i + 1, end)) : line.slice(i + 1, end), i + 1)
       i = end
     } else if (c === '<' || c === '>' || (c === '&' && next === '>')) {
       // A word of digits before it is the file descriptor, not a word.
@@ -794,12 +843,42 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       i += op.length - 1
       target = { op, fd, target: '', isReal: true }
       redirects.push(target)
+    } else if (isArray && (c === ' ' || c === '\t' || c === '\n' || c === ')')) {
+      word += c
+      isArray = c !== ')'
+    } else if (exact && c === '(' && hasWord && /^[A-Za-z_][A-Za-z0-9_]*\+?=$/.test(word) && words.every(w => ASSIGNMENT.test(w))) {
+      // `x=(a b)` and `x+=(c)` assign an array.
+      word += c
+      isArray = true
+    } else if (isPattern && (c === '|' || c === '(' || c === ')')) {
+      // A pattern's words are dropped at its `)`, and the branch's commands
+      // follow. Its substitutions were read where they stood.
+      if (c === ')') {
+        word = ''
+        hasWord = false
+        isBare = true
+        words = []
+        redirects = []
+        start = -1
+        isPattern = false
+      } else {
+        endWord()
+      }
+    } else if (cases > 0 && c === ';' && (next === ';' || next === '&')) {
+      // `;;`, `;&` and `;;&` end a case branch, and a pattern comes next.
+      endCommand()
+      isPattern = true
+      i += line.startsWith(';;&', i) ? 2 : 1
     } else if (c === '#' && !hasWord) {
       const end = line.indexOf('\n', i)
       i = end === -1 ? line.length : end - 1
     } else if (c === ' ' || c === '\t' || c === '\n') {
+      // A pattern never spans a line, so its words are read as a command,
+      // and the reading goes on as if no pattern had begun.
+      // An `esac` there closes the case first.
+      endWord()
+      if (c === '\n' && isPattern && words.length > 0) isPattern = false
       if (c === '\n') endCommand()
-      else endWord()
       // `function f` ends the definition's own command: its body follows.
       if (words.length === 2 && words[0] === 'function') endCommand()
     } else if (c === '|' && next !== '|') {
@@ -832,6 +911,10 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     }
   }
   endCommand()
+  readBodies(line.length)
+  // An array or case still open where its script ends is a syntax error bash
+  // runs nothing of, and the reader cannot tell where it was meant to end.
+  if (isArray || cases > 0) reading.unknowns.add('compound')
   return commands
 }
 

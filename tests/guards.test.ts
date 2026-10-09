@@ -577,6 +577,12 @@ describe('decision A: a line whose command the reader cannot name is refused by 
     "P='/usr/bin/security dump-keychain login.keychain '; $P/x",
     '$HOME/bin/x',
     '${CLAUDE_PLUGIN_ROOT}/scripts/x.sh',
+    // A substitution's output is split, and its first word runs: never the
+    // plain variable `$_x` before a path.
+    '$(echo a b)x/y c',
+    '`echo a`x/y c',
+    '$((1))x/y c',
+    '"$(echo a)x/y" c',
   ]
   for (const line of REFUSED) {
     test(`refuses ${JSON.stringify(line)}`, async ($, on) => {
@@ -599,6 +605,10 @@ describe('decision A: a line whose command the reader cannot name is refused by 
     '"${CLAUDE_PLUGIN_ROOT}"/scripts/x.sh',
     '"$HOME/Developer/workbench-dev-team/bin/dispatch-agent.sh" 12',
     'bash "${CLAUDE_PLUGIN_ROOT}/hooks/session-log.sh"',
+    // An array assignment runs no command, and a case pattern is text.
+    'x=(a b)',
+    'missing+=("$cmd")',
+    'case "$x" in\n  *" $PIN_AGENT "*) echo yes ;;\nesac',
   ]) {
     test(`allows ${JSON.stringify(line)}`, async ($, on) => {
       const b = await session($, on)

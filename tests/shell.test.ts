@@ -549,7 +549,8 @@ describe('AC2, AC3, AC7: the shapes the first review found misread', () => {
 
   test('6: a case pattern ) does not close a $( )', () => {
     expect(shape('echo $(case x in x) zap now;; esac)')).toEqual([['case', ['x', 'in', 'x']], ['zap', ['now']], ['echo', ['$_']]])
-    expect(shape('echo $(case x in (x) zap;; esac; other)').map(([name]) => name)).toEqual(['case', 'x', 'zap', 'other', 'echo'])
+    // A pattern after its opening ( is text, not a statement.
+    expect(shape('echo $(case x in (x) zap;; esac; other)').map(([name]) => name)).toEqual(['case', 'zap', 'other', 'echo'])
     // A word that only looks like case opens nothing.
     expect(shape('echo $(echo case x) zap)')).toEqual([['echo', ['case', 'x']], ['echo', ['$_', 'zap']]])
   })
@@ -563,6 +564,87 @@ describe('AC2, AC3, AC7: the shapes the first review found misread', () => {
       expect(zap).toMatchObject({ args: ['now'], source: 'substitution' })
     }
     expect(shape('case $1 in rm) zap a;; esac')).toEqual([['case', ['$1', 'in', 'rm']], ['zap', ['a']]])
+  })
+
+  test('round 3: a substitution before a path is never a plain variable', () => {
+    for (const line of ['$(echo a b)x/y c', '`echo a`x/y c', '$((1))x/y c', '"$(echo a)x/y" c']) {
+      expect(parseShell(line).unknowns).toContain('expansion')
+    }
+    for (const line of ['"$HOME/bin/x"', '"${CLAUDE_PLUGIN_ROOT}/scripts/x.sh"']) {
+      expect(parseShell(line).unknowns).toEqual([])
+    }
+    // The mark stays out of the words.
+    expect(shape('echo $(date)x')).toEqual([['date', []], ['echo', ['$_x']]])
+  })
+
+  test('round 3: an array assignment runs no command, only its substitutions', () => {
+    for (const line of ['x=(a b)', 'missing+=("$cmd")', 'arr+=(one two)', 'x=(\n  a\n  b\n)']) {
+      const parse = parseShell(line)
+      expect(parse.unknowns).toEqual([])
+      expect(parse.statements).toHaveLength(1)
+      expect(parse.statements[0]).toMatchObject({ nameAt: -1, name: '' })
+    }
+    expect(statements('x=(a b)')[0]?.assignments).toEqual(['x=(a b)'])
+    expect(named('x=($(rm -rf /))')).toContainEqual({ name: 'rm', args: ['-rf', '/'] })
+    expect(named('x=(a) zap now')).toContainEqual({ name: 'zap', args: ['now'] })
+    // A ( after a word that is no assignment still opens a subshell.
+    expect(named('echo x=(zap now)').map(s => s.name)).toContain('zap')
+  })
+
+  test('round 4: an array or case is closed where its script ends', () => {
+    // A heredoc body fed to a shell is a script of its own.
+    expect(named('bash <<E\nx=(\nE\nzap now')).toContainEqual({ name: 'zap', args: ['now'] })
+    expect(named('bash <<E\ncase x in\nE\n(zap now)')).toContainEqual({ name: 'zap', args: ['now'] })
+    expect(parseShell('bash <<E\nx=(\nE\nzap now').unknowns).toContain('compound')
+    expect(parseShell('bash <<E\ncase x in\nE\n(zap now)').unknowns).toContain('compound')
+    // A quote or substitution left open in a body ends with it, and is unknown.
+    for (const [open, unknown] of [["'", 'quote'], ['"', 'quote'], ['$(', 'substitution'], ['`', 'substitution']]) {
+      const parse = parseShell(`bash <<E\n${open}\nE\n(zap now); echo \\${open.at(-1)}`)
+      expect(parse.statements.map(s => [s.name, s.args])).toContainEqual(['zap', ['now']])
+      expect(parse.unknowns).toContain(unknown)
+    }
+    // A nested body is a script of its own as well.
+    const nested = parseShell("bash <<E\nbash <<F\n'\nF\nzap now\nE\n(zip)")
+    expect(nested.statements.map(s => s.name).filter(name => /^[a-z]+$/.test(name))).toEqual(['bash', 'bash', 'zap', 'zip'])
+    expect(nested.unknowns).toContain('quote')
+    // State from outside a body comes back after it.
+    expect(named('case x in\n a) bash <<E\necho hi\nE\n;;\n (zip)) zap;;\nesac').map(s => s.name)).toEqual(['case', 'bash', 'echo', 'zap'])
+    expect(parseShell('case x in\n a) bash <<E\necho hi\nE\n;;\nesac').unknowns).toEqual([])
+    // Still open at the end of the text.
+    for (const line of ['x=(a b', 'case x in\n a) zap;;', 'case x in a) zap', 'bash <<E\nx=(a']) {
+      expect(parseShell(line).unknowns).toContain('compound')
+    }
+    for (const line of ['x=(a b)', 'case x in a) zap;; esac']) {
+      expect(parseShell(line).unknowns).toEqual([])
+    }
+  })
+
+  test('round 3: a case pattern on its own line is no statement', () => {
+    for (const pattern of ['*" $PIN_AGENT "*)', 'foo|bar)', '(pat)']) {
+      const parse = parseShell(`case "$x" in\n  ${pattern} zap now ;;\n  other) zip ;;\nesac`)
+      expect(parse.unknowns).toEqual([])
+      expect(parse.statements.map(s => s.name)).toEqual(['case', 'zap', 'zip'])
+    }
+    // After ;; on the same line, and in a nested case.
+    expect(named('case x in a) zap;; b|c) zip;; esac').map(s => s.name)).toEqual(['case', 'zap', 'zip'])
+    expect(named('case x in\n a) case y in\n  b) zap;;\n esac;;\n c) zip;;\nesac').map(s => s.name)).toEqual(['case', 'case', 'zap', 'zip'])
+    // A substitution in the pattern is still read.
+    expect(named('case x in\n $(zap now)) ;;\nesac')).toContainEqual({ name: 'zap', args: ['now'] })
+    // Only a reserved case opens one: a quoted or escaped case is a command.
+    for (const head of ['"case"', '\\case', 'echo case']) {
+      expect(named(`${head} x in\n(zap now)\n;; esac`)).toContainEqual({ name: 'zap', args: ['now'] })
+    }
+    // A case after a keyword is reserved, and its own-line patterns are text.
+    for (const [open, close] of [['if a; then case', 'fi'], ['while a; do case', 'done'], ['{ case', '}'], ['! case', ''], ['time case', '']]) {
+      const parse = parseShell(`${open} "$x" in\n  *" $PIN_AGENT "*) zap now ;;\nesac\n${close}`)
+      expect([open, parse.unknowns]).toEqual([open, []])
+      expect(parse.statements.map(s => s.name)).toContain('zap')
+      expect(parse.statements.some(s => s.name.includes('PIN_AGENT'))).toBe(false)
+    }
+    // A pattern with no ) before its line ends is read as a command.
+    expect(named('case x in\n zap now\n zip | zop\nesac').map(s => s.name)).toEqual(['case', 'zap', 'zip', 'zop'])
+    // After esac, words are commands again.
+    expect(named('case x in\n a) ;;\nesac\nfoo bar)')).toContainEqual({ name: 'foo', args: ['bar'] })
   })
 
   test('round 2: a ]] right before an operator ends the test', () => {

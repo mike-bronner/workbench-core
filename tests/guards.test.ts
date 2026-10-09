@@ -124,7 +124,6 @@ describe('the provisioning guard', () => {
     "git $'\\x77orktree' add x",
     // The rows hooks/test-parser-differential.sh records for the retired guard.
     'cat <<EOF > notes.txt\njust some text\nEOF\ncreatedb app',
-    'cat <<EOF\ncreatedb app',
     '(true); createdb app',
     'create\\\ndb app',
   ]
@@ -540,7 +539,7 @@ describe('AC5: the whole-disk search guard', () => {
 
   test('a search in a line the reader cannot read whole is refused', async ($, on) => {
     const b = await session($, on)
-    expect(await refusal($, b, bash('find / -name "x'))).toBe(SEARCH_UNREAD)
+    expect(await refusal($, b, bash("find / -name $'\\u00e9'"))).toBe(SEARCH_UNREAD)
   })
 
   test('paths resolve as the shell resolves them', () => {
@@ -583,6 +582,46 @@ describe('decision A: a line whose command the reader cannot name is refused by 
     '`echo a`x/y c',
     '$((1))x/y c',
     '"$(echo a)x/y" c',
+    // zsh closes a `"` inside $[ ] and $(( )), and runs what follows: a quote
+    // the reader leaves open hides where the commands end.
+    'x=ech; y=o; echo $[ "1 ]; $x$y MARK',
+    'echo $(( 1 + "1 )); $x$y MARK',
+    'echo "open',
+    // Rows the provisioning, search and outbound prose guards refused as
+    // unread now refuse here first.
+    'cat <<EOF\ncreatedb app',
+    'find / -name "x',
+    "gh pr comment 1 --body 'unclosed",
+    // A $'…' delimiter ends the body at EOF, and the line after it runs.
+    "cat <<$'EOF'\nhi\nEOF\n$x$y MARK",
+    // A delimiter with an escape the reader does not decode never closes.
+    "cat <<$'E\\qOF'\nhi\nE\\qOF\nx",
+    // The outer shell runs a substitution in an unquoted body it feeds a
+    // shell, inside '…' too.
+    "bash <<EOF\necho '`$x$y`'\nEOF",
+    // source and . read a quoted body from stdin, and b\ash is bash.
+    "source /dev/stdin <<'EOF'\n$x$y MARK\nEOF",
+    ". /dev/stdin <<'EOF'\n$x$y MARK\nEOF",
+    ". /dev/fd/0 <<'EOF'\n$x$y MARK\nEOF",
+    "source - <<'EOF'\n$x$y MARK\nEOF",
+    "b\\ash <<'EOF'\n$x$y MARK\nEOF",
+    // The outer shell expands a $X in an unquoted body it feeds a shell, and
+    // a `;` in the value becomes code, inside '…' too.
+    "X='a; git push'\nbash <<EOF\necho $X\nEOF",
+    "X='a; git push'\nbash <<EOF\necho '$X'\nEOF",
+    'bash <<EOF\necho ${X}\nEOF',
+    // Any $ there: $((X)) evaluates X, whose array subscript runs a $( ).
+    "X='a[$(git push)]'\nbash <<EOF\necho $((X))\nEOF",
+    'bash <<EOF\necho $(date)\nEOF',
+    "bash <<EOF\necho $'a\\x3bb'\nEOF",
+    'bash <<EOF\necho a$\nEOF',
+    'zsh <<EOF\necho $X\nEOF',
+    'source /dev/stdin <<EOF\necho $X\nEOF',
+    "bash <<'EOF'\nbash <<EOF2\necho $X\nEOF2\nEOF",
+    // The outer shell removes a backslash before \, $, ` or a newline.
+    'bash <<EOF\ngit re\\set --hard\nEOF',
+    'bash <<EOF\necho \\`git push\\`\nEOF',
+    'bash <<EOF\ngit re\\\nset --hard\nEOF',
   ]
   for (const line of REFUSED) {
     test(`refuses ${JSON.stringify(line)}`, async ($, on) => {
@@ -609,14 +648,33 @@ describe('decision A: a line whose command the reader cannot name is refused by 
     'x=(a b)',
     'missing+=("$cmd")',
     'case "$x" in\n  *" $PIN_AGENT "*) echo yes ;;\nesac',
+    // A data heredoc's body is text: an apostrophe or a lone `"` in it opens
+    // no quote.
+    "cat <<'EOF'\ndon't \" stop\nEOF",
+    // A $'…' delimiter closes the heredoc.
+    "cat <<$'EOF'\nhi\nEOF",
+    // source of a file, and a quoted body fed to a shell with no
+    // substitution run, stay allowed.
+    "source ./env.sh <<'EOF'\nhi\nEOF",
+    "bash <<'EOF'\necho '`hi`'\nEOF",
+    // A quoted body fed to a shell, and an unquoted body fed to none, may
+    // hold a $X.
+    "bash <<'EOF'\necho $HOME\nEOF",
+    // An unquoted body with no $, ` or \ reaches the inner shell unchanged.
+    'bash <<EOF\necho hi\nls -la\nEOF',
+    'cat <<EOF\nhome is $HOME\nEOF',
+    // An apostrophe in a comment opens no quote.
+    "# don't\nls",
   ]) {
     test(`allows ${JSON.stringify(line)}`, async ($, on) => {
       const b = await session($, on)
       expect(await refusal($, b, bash(line))).toBeUndefined()
     })
   }
-  test('an unclosed quote refuses only where the line names a guard\'s subject', () => {
-    expect(hiddenCommandRefusal(parseShell('echo "open'))).toBeUndefined()
+  test('an unclosed quote or heredoc is refused, an undecoded escape is not', () => {
+    expect(hiddenCommandRefusal(parseShell('echo "open'))).toContain('a quote or a heredoc is left open')
+    expect(hiddenCommandRefusal(parseShell('cat <<EOF\nhi'))).toContain('a quote or a heredoc is left open')
+    expect(hiddenCommandRefusal(parseShell("echo $'\\u00e9'"))).toBeUndefined()
     expect(credentialRefusal('cat ~/.ssh/id_rsa "x', HOME)).toBeDefined()
   })
 })

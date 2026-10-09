@@ -21,6 +21,8 @@ import {
 } from '../hooks/mods/commit-approval'
 import type { Bench } from './bench'
 import { HOME, PERSON, bench, start } from './bench'
+import { hiddenCommandRefusal } from '../hooks/mods/guards'
+import { parseShell } from '../hooks/mods/shell'
 import { CAUGHT, LET_THROUGH } from './commit-corpus'
 
 const prompt = (text: string, origin: PromptOrigin = PERSON) => ({ text, wait: false, origin })
@@ -557,7 +559,9 @@ describe('AC1: one "Commit it" pick allows one commit, then the push of that com
     const b = bench(on)
     await session($, 'look around')
     for (const [line] of CAUGHT) expect(await bash($, b, line)).toBeDefined()
-    for (const line of LET_THROUGH) expect(await bash($, b, line)).toBeUndefined()
+    // A read the shell reader cannot close (a heredoc with no end) is refused
+    // by every guard, with the hidden-command refusal, and by nothing else.
+    for (const line of LET_THROUGH) expect(await bash($, b, line)).toBe(hiddenCommandRefusal(parseShell(line)))
   })
 })
 

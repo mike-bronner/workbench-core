@@ -838,6 +838,50 @@ describe('AC7: what the reader cannot read is named, never left out', () => {
     expect(statements('eval eval eval eval eval git push').some(s => s.name === 'git')).toBe(false)
   })
 
+  test("a $'…' delimiter is decoded, and counts as quoted", () => {
+    expect(only("cat <<$'EOF'\nhi\nEOF").heredocs[0]).toMatchObject({ delimiter: 'EOF', isQuoted: true, isTerminated: true })
+    expect(parseShell("cat <<$'EOF'\nhi\nEOF").unknowns).toEqual([])
+    expect(statements("cat <<$'EOF'\nhi\nEOF\nls").map(s => s.name)).toEqual(['cat', 'ls'])
+    // An escape the reader keeps undecoded leaves the heredoc open.
+    expect(parseShell("cat <<$'E\\qOF'\nhi\nE\\qOF").unknowns).toContain('heredoc')
+  })
+
+  test('a substitution in an unquoted body fed to a shell is read, inside quotes too', () => {
+    expect(statements("bash <<EOF\necho '`rm -rf /x`'\nEOF").map(s => s.name)).toContain('rm')
+    expect(statements("bash <<EOF\necho '$(rm -rf /x)'\nEOF").map(s => s.name)).toContain('rm')
+    expect(statements("bash <<'EOF'\necho '`rm -rf /x`'\nEOF").map(s => s.name)).not.toContain('rm')
+  })
+
+  test('a $X in an unquoted body fed to a shell is an expansion unknown', () => {
+    expect(parseShell("bash <<EOF\necho '$X'\nEOF").unknowns).toContain('expansion')
+    expect(parseShell('bash <<EOF\necho ${X}\nEOF').unknowns).toContain('expansion')
+    // $((X)) evaluates X, whose array subscript can run a $( ).
+    expect(parseShell('bash <<EOF\necho $((X))\nEOF').unknowns).toContain('expansion')
+    expect(parseShell('bash <<EOF\necho $(date)\nEOF').unknowns).toContain('expansion')
+    expect(parseShell('bash <<EOF\necho hi\nEOF').unknowns).not.toContain('expansion')
+    // The outer shell's backslash pass and backticks change the body too.
+    expect(parseShell('bash <<EOF\nls re\\set --hard\nEOF').unknowns).toContain('expansion')
+    expect(parseShell('bash <<EOF\necho \\`ls\\`\nEOF').unknowns).toContain('expansion')
+    expect(parseShell('bash <<EOF\necho `ls`\nEOF').unknowns).toContain('expansion')
+    expect(parseShell('bash <<EOF\nl\\\ns\nEOF').unknowns).toContain('expansion')
+    expect(parseShell("bash <<'EOF'\necho $X\nEOF").unknowns).not.toContain('expansion')
+    expect(parseShell('cat <<EOF\necho $X\nEOF').unknowns).not.toContain('expansion')
+  })
+
+  test('source and . with a stdin path, and an escaped shell name, feed a shell', () => {
+    for (const line of [
+      "source /dev/stdin <<'EOF'\nrm -rf /x\nEOF",
+      ". /dev/stdin <<'EOF'\nrm -rf /x\nEOF",
+      ". /proc/self/fd/0 <<'EOF'\nrm -rf /x\nEOF",
+      "b\\ash <<'EOF'\nrm -rf /x\nEOF",
+      "'ba'sh <<'EOF'\nrm -rf /x\nEOF",
+    ]) {
+      expect(statements(line).map(s => s.name)).toContain('rm')
+    }
+    expect(statements("source ./x.sh <<'EOF'\nrm -rf /x\nEOF").map(s => s.name)).not.toContain('rm')
+    expect(statements("cat /dev/stdin <<'EOF'\nrm -rf /x\nEOF").map(s => s.name)).not.toContain('rm')
+  })
+
   test('an unterminated heredoc is reported unterminated', () => {
     expect(only('cat <<EOF\nno end').heredocs[0]).toMatchObject({ isTerminated: false, body: 'no end' })
     expect(only('cat <<EOF').heredocs[0]).toMatchObject({ isTerminated: false, body: '' })

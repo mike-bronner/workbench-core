@@ -224,7 +224,6 @@ describe('the outbound prose guard', () => {
       'gh pr create --title t --body "$(cat notes.md)"',
       'cat notes.md | gh pr comment 1 --body-file -',
       'gh pr comment 1 --body-file - < notes.md',
-      "gh pr comment 1 --body 'unclosed",
       'gh api repos/o/r/pulls/1/reviews --input -',
     ]) {
       expect([command, await refusal($, b, bash(command))]).toEqual([command, UNREAD_BODY])
@@ -237,9 +236,6 @@ describe('the outbound prose guard', () => {
     const tick = '`id`'
     const word = "'Fixed the list loader.'"
     for (const command of [
-      `bash <<EOF\ngh pr comment 1 --body 'see ${tick}'\nEOF`,
-      `bash <<EOF\ngh pr comment 1 --body "${tick}"\nEOF`,
-      `bash <<EOF\ngh pr comment 1 --body-file - <<'X'\n$SECRET ${tick}\nX\nEOF`,
       `bash <<'EOF'\ngh pr comment 1 --body 'see ${tick}'\nEOF`,
       `sh <<'EOF'\ngh pr comment 1 --body ${word}\nEOF`,
       `zsh <<EOF\nbash -c "gh pr comment 1 --body ${word}"\nEOF`,
@@ -251,6 +247,17 @@ describe('the outbound prose guard', () => {
     const piped = `cat <<EOF | bash\ngh pr comment 1 --body ${word}\nEOF`
     expect(await refusal($, b, bash(piped))).toContain('piped or fed into a shell')
     expect(bashBodies(parseShell(piped))).toEqual({ unread: UNREAD_BODY })
+    // So does a $, a backtick or a backslash in an unquoted body fed to a
+    // shell.
+    for (const expanded of [
+      `bash <<EOF\ngh pr comment 1 --body 'see ${tick}'\nEOF`,
+      `bash <<EOF\ngh pr comment 1 --body "${tick}"\nEOF`,
+      `bash <<EOF\ngh pr comment 1 --body-file - <<'X'\n${tick}\nX\nEOF`,
+      `bash <<EOF\ngh pr comment 1 --body-file - <<'X'\n$SECRET ${tick}\nX\nEOF`,
+    ]) {
+      expect(await refusal($, b, bash(expanded))).toContain("must be quoted (bash <<'EOF')")
+      expect(bashBodies(parseShell(expanded))).toEqual({ unread: UNREAD_BODY })
+    }
     expect(await refusal($, b, bash(`gh pr comment 1 --body-file - <<'EOF'\n${CLEAN}\nEOF`))).toBeUndefined()
     expect(await refusal($, b, bash(`bash <<'EOF'\necho hi\nEOF\ngh pr comment 1 --body ${word}`))).toBeUndefined()
   })

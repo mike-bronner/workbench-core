@@ -305,15 +305,25 @@ const isWordStart = (text: string, i: number): boolean => i === 0 || /[ \t\n;&|(
 
 // The delimiter of a heredoc whose word starts at `from`, built as bash builds
 // it: every part of the word joined, quoted or not, with the quotes and
-// backslashes removed (`E'OF'` is EOF). Any quoting at all means the body is
-// not expanded.
-function delimiterAt(text: string, from: number): { delimiter: string; isQuoted: boolean; end: number } {
+// backslashes removed (`E'OF'` is EOF), and a $'…' part decoded ($'EOF' is
+// EOF). Any quoting at all means the body is not expanded. A $'…' part with an
+// escape the reader keeps undecoded gets a NUL, which no row matches, so the
+// heredoc stays open and the line is refused.
+function delimiterAt(text: string, from: number, isCompat: boolean): { delimiter: string; isQuoted: boolean; end: number } {
   let delimiter = ''
   let isQuoted = false
   let i = from
   while (i < text.length && !/[ \t\n;&|<>()]/.test(text[i] as string)) {
     const c = text[i] as string
-    if (c === "'") {
+    // FROZEN compat branch: the gate of 77bb2f3 read $'…' here as a `$` and a
+    // '…' string, so compat skips this decode.
+    if (c === '$' && text[i + 1] === "'" && !isCompat) {
+      const close = closingAnsiQuote(text, i + 2)
+      let isKept = false
+      delimiter += decodeAnsi(text.slice(i + 2, close), () => (isKept = true)) + (isKept ? '\0' : '')
+      isQuoted = true
+      i = close + 1
+    } else if (c === "'") {
       const close = text.indexOf("'", i + 1)
       const end = close === -1 ? text.length : close
       delimiter += text.slice(i + 1, end)
@@ -339,16 +349,23 @@ function delimiterAt(text: string, from: number): { delimiter: string; isQuoted:
   return { delimiter, isQuoted, end: i }
 }
 
+// The paths `source` and `.` read stdin through.
+const STDIN_PATHS: ReadonlySet<string> = new Set(['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0', '-'])
+
 // Whether a heredoc feeds a shell or eval, so its body is a script: a shell or
 // eval word in the text before its operator, back to the last ; & | or line
 // end. A substitution does not end that text, because `eval "$(cat <<EOF`
-// runs the body too.
+// runs the body too. `source` or `.` with a path that reads stdin runs it as
+// well. Quotes and backslashes go before the compare, so `b\ash` is bash.
 function feedsShell(before: string): boolean {
   const segment = before.split(/;|&|\||\n/).pop() ?? ''
-  return segment
-    .replace(/["']/g, '')
-    .split(/[ \t\n]+/)
-    .some(word => SHELLS.has(nameOf(word)) || nameOf(word) === 'eval')
+  const words = segment.replace(/["'\\]/g, '').split(/[ \t\n]+/)
+  return words.some(
+    (word, k) =>
+      SHELLS.has(nameOf(word)) ||
+      nameOf(word) === 'eval' ||
+      ((word === 'source' || word === '.') && STDIN_PATHS.has(words[k + 1] ?? '')),
+  )
 }
 
 // The text kept from one heredoc body, and where the body stood in the line.
@@ -464,7 +481,7 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; bodie
       const stripsTabs = text[from] === '-'
       if (stripsTabs) from++
       while (text[from] === ' ' || text[from] === '\t') from++
-      const { delimiter, isQuoted, end } = delimiterAt(text, from)
+      const { delimiter, isQuoted, end } = delimiterAt(text, from, reading.isCompat)
       if (delimiter === '') {
         out += '<<'
         i++
@@ -493,7 +510,21 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; bodie
         }
         doc.body = body.join('\n')
         // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
-        const kept = doc.feedsShell ? body : doc.isQuoted ? [] : substitutionsOf(doc.body, reading.isCompat)
+        const expanded = doc.isQuoted ? [] : substitutionsOf(doc.body, reading.isCompat)
+        // The outer shell runs the $( ) and backticks of an unquoted body it
+        // feeds a shell before the inner shell reads it, inside '…' too, so
+        // the exact reading keeps them beside the body.
+        const kept = doc.feedsShell ? (reading.isCompat ? body : [...body, ...expanded]) : expanded
+        // The outer shell changes an unquoted body in exactly three ways (bash
+        // manual, Here Documents): it expands every $ (parameters, $( ) and
+        // $(( ))), it runs backticks, and it removes a backslash before \, $,
+        // a backtick or a newline. So $, ` and \ are the complete set of
+        // characters it processes, and a body without them reaches the inner
+        // shell byte for byte. With any of them, the exact reading cannot name
+        // the commands: a `;` in a $X value becomes code, $((X)) can run a
+        // $( ) through an array subscript, and `re\set` reaches the inner
+        // shell as `reset`. The $( ) and backticks are still read above.
+        if (doc.feedsShell && !doc.isQuoted && !reading.isCompat && /[$`\\]/.test(doc.body)) reading.unknowns.add('expansion')
         const script = kept.map(row => `${row}\n`).join('')
         // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
         // The gate of 77bb2f3 read a kept body inline, as part of the line.

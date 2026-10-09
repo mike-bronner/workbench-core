@@ -60,23 +60,29 @@ export const isPartlyRead = (parse: ShellParse): boolean => parse.unknowns.lengt
 const piecesOf = (text: string): string[] => text.split(/[ \t\n\r\v\f]+/).filter(Boolean)
 
 // A command the reader cannot name: a command name from a variable or a
-// substitution, a wrapper option it cannot place, or a script piped into a
-// shell. Every guard refuses such a line, whatever it mentions, because the
-// command it hides may be any guard's subject. Other unknowns (an unclosed
-// quote, an escape the reader does not decode) refuse only where the line
-// names a guard's subject.
+// substitution, a wrapper option it cannot place, a script piped into a
+// shell, or a quote or heredoc the reader cannot close. Every guard refuses
+// such a line, whatever it mentions, because the command it hides may be any
+// guard's subject. zsh closes a `"` inside $[ ] and $(( )) where the reader
+// does not, and a heredoc delimiter the reader cannot build ends the body
+// where it cannot see, so after either the reader cannot tell where the
+// commands end. Other unknowns (an escape the reader does not decode) refuse
+// only where the line names a guard's subject.
 export function hiddenCommandRefusal(parse: ShellParse): string | undefined {
   const why = parse.unknowns.includes('expansion')
-    ? 'a command name comes from a variable or a substitution'
+    ? 'a command name, or an unquoted heredoc fed to a shell, takes text from a variable or a substitution'
     : parse.unknowns.includes('stdin')
       ? 'a script is piped or fed into a shell'
       : parse.unknowns.includes('wrapper') || parse.statements.some(s => !s.isPlaced)
         ? 'a wrapper carries an option the reader does not know, so the command after it is a guess'
-        : undefined
+        : parse.unknowns.includes('quote') || parse.unknowns.includes('heredoc')
+          ? 'a quote or a heredoc is left open, so the reader cannot tell where the commands end'
+          : undefined
   if (why === undefined) return undefined
   return (
     `Workbench guards (workbench-core): the shell reader cannot tell which command this line runs: ${why}. ` +
-    'Write each command name out plainly, with no variable or substitution in it, and run a script with bash -c or as a file instead of piping it into a shell. ' +
+    'Write each command name out plainly, with no variable or substitution in it, close every quote and heredoc, and run a script with bash -c or as a file instead of piping it into a shell. ' +
+    "A heredoc fed to a shell must be quoted (bash <<'EOF'), because the outer shell expands a $, runs a backtick and removes a backslash in an unquoted one before the inner shell reads it. " +
     'If the line must stay as it is, stop and ask Mike to run it himself with the ! prefix.'
   )
 }

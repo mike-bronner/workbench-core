@@ -22,6 +22,9 @@ export const CAUGHT: readonly (readonly [string, Expected])[] = [
   ['git commit -am "fix: x"', C],
   ['git push', P],
   ['git push origin main', P],
+  // The outer shell runs a substitution in an unquoted body it feeds b\ash,
+  // inside '…' too.
+  ["b\\ash <<EOF\necho '$(git commit)'\nEOF", C],
   // Global options before the subcommand.
   ['git -C /repo commit -m x', C],
   ['git -C "/path with space" commit -m x', C],

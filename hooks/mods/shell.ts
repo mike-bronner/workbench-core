@@ -309,7 +309,7 @@ const isWordStart = (text: string, i: number): boolean => i === 0 || /[ \t\n;&|(
 // EOF). Any quoting at all means the body is not expanded. A $'…' part with an
 // escape the reader keeps undecoded gets a NUL, which no row matches, so the
 // heredoc stays open and the line is refused.
-function delimiterAt(text: string, from: number, isCompat: boolean): { delimiter: string; isQuoted: boolean; end: number } {
+function delimiterAt(text: string, from: number, isCompat = false): { delimiter: string; isQuoted: boolean; end: number } {
   let delimiter = ''
   let isQuoted = false
   let i = from

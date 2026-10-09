@@ -2,12 +2,10 @@
 #
 # scratch-roots: the scratch roots a session may write to, resolved physically.
 #
-# One copy, two callers:
-#
-#   hooks/delegation-gate.sh   sources this file and calls scratch_roots, so a
-#                              write under a root draws no reminder
-#   hooks/register.ts          runs this file as `bash scratch-roots.sh <sid>`
-#                              to answer $.workbench.scratchRoots()
+# One copy, one caller: hooks/register.ts runs this file as
+# `bash scratch-roots.sh <sid>` to answer $.workbench.scratchRoots(), which the
+# delegation reminder and the destructive-scope guard read. Tests:
+# hooks/test-scratch-roots.sh.
 #
 # The roots, none of them taken from anything the caller can set:
 #   - this session's scratchpad, matched by session id under

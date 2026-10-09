@@ -63,13 +63,16 @@ export type Bench = {
   // What each Bash call that reaches the engine does, such as moving a repo's
   // HEAD as a commit would, and whether it reports an error.
   onBash?: (command: string) => { isError?: boolean } | void
+  // A deny from beneath the module, as a settings rule or a person would give:
+  // the reason for a call this refuses, else undefined.
+  denyBeneath?: (tool: string) => string | undefined
   // What $.session.cwd and $.session.root answer (default /repo).
   cwd: string
   root: string
   // A file system and a git the test models (tests/world.ts), asked before
   // the bench's own: undefined passes the call on to the bench.
   run?: (argv: readonly string[]) => { exitCode: number; stdout: string } | undefined
-  stat?: (path: string) => { kind: 'file' | 'dir' | 'other'; isLink: boolean } | null | undefined
+  stat?: (path: string) => { kind: 'file' | 'dir' | 'other'; isLink: boolean; realPath?: string } | null | undefined
   // What the engine's own permission decision answers to tool.check, beneath
   // the module (default ask, as for a Bash call no rule allows).
   decision: 'allow' | 'ask' | 'deny'
@@ -85,6 +88,8 @@ export type BenchOptions = {
   mtime?: number
   // Makes every $.store.get reject, as a store that cannot be read.
   storeFails?: boolean
+  // Makes $.store.set reject for these keys, as a store that cannot be written.
+  storeSetFails?: readonly string[]
 }
 
 const ran = (stdout: string) => ({ exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
@@ -132,6 +137,7 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     return { value: b.store.get(e.key) }
   })
   on('store.set', ($, e) => {
+    if (options.storeSetFails?.includes(e.key)) throw new Error('store unwritable')
     b.store.set(e.key, JSON.parse(JSON.stringify(e.value)))
     return { value: undefined }
   })
@@ -220,6 +226,8 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
       const answers = Object.fromEntries(e.questions.map(question => [question.question, pick]))
       return { result: { questions: e.questions, answers, ...b.dialog } as never }
     }
+    const denied = b.denyBeneath?.(e.tool)
+    if (denied !== undefined) return { deny: denied }
     if (e.tool === 'Bash' && b.onBash?.(e.command)?.isError) return { isError: true, result: 'exit 1', text: 'exit 1' }
     return { result: {} as never }
   })

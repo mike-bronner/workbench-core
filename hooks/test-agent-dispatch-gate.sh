@@ -17,7 +17,6 @@ set -u
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 GATE="$HOOKS_DIR/agent-dispatch-gate.sh"
 HOOKS_JSON="$HOOKS_DIR/hooks.json"
-DELEGATION="$HOOKS_DIR/delegation-gate.sh"
 TOGGLE="$HOOKS_DIR/mods/orchestrator.ts"  # /orchestrator, in hooks/register.ts
 README="$HOOKS_DIR/../README.md"
 PASS=0
@@ -728,12 +727,13 @@ out=$(main_payload "$FREEFORM" | env -u WORKBENCH_ORCHESTRATOR HOME="$FAKE_HOME"
   CLAUDE_PLUGIN_ROOT="$SPACED_ROOT" sh -c "${CMD_TEMPLATE:-false}")
 check "gate fires when the plugin path contains a space" "$out" deny
 
-echo "the two gates agree on their shared escape hatches:"
-# One toggle stands both gates down. If either side renames the env var or the
-# default directory, the human is left with a gate they cannot turn off.
+echo "the dispatch gate and the toggle agree on their shared escape hatches:"
+# One toggle stands the dispatch gate and the delegation reminder down. The
+# reminder reads the mode inside the module (tests/delegation.test.ts). If the
+# gate or the toggle renames the env var or the default directory, the human
+# is left with a gate they cannot turn off.
 for token in "WORKBENCH_ORCHESTRATOR_STATE_DIR" ".claude-workbench/orchestrator-mode"; do
   assert_grep "dispatch gate uses $token"   "$token" "$GATE"
-  assert_grep "delegation gate uses $token" "$token" "$DELEGATION"
   assert_grep "toggle command uses $token"  "$token" "$TOGGLE"
 done
 assert_grep "dispatch gate honours WORKBENCH_ORCHESTRATOR=0" 'WORKBENCH_ORCHESTRATOR:-' "$GATE"

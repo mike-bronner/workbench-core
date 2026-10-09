@@ -221,7 +221,7 @@ fi
 msg="STALE-BUNDLE GUARD - ${plugin}. This desktop session was served version ${bundle_ver:-UNKNOWN} from its frozen rpm/ bundle, but the authoritative installed version is ${version}. Any command or skill body injected into this turn may be stale. Before acting: read the current body from ${target} and execute THAT, ignoring the injected text where they differ. State in one line which version you executed. Do not edit anything under ~/.claude/plugins/cache - it is a read-only reference."
 
 # Both events carry the warning as additionalContext, the one channel measured
-# to reach the model (see the note in hooks/delegation-gate.sh). It used to ride
+# to reach the model (vault: insights/2026-09-17-hook-message-channels-measured.md). It used to ride
 # on systemMessage in the PreToolUse path, which never reached this user's
 # client, so the model never saw the warning it was meant to act on.
 #

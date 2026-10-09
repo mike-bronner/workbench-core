@@ -41,7 +41,8 @@ eq "session-log.sh runs on SessionEnd" "$(jq -r '[.hooks.SessionEnd[].hooks[].co
 # ported guard, and no hooks/<guard>.sh may come back beside its port.
 echo "no bash hook runs a guard that moved into the module:"
 for guard in credential-guard provisioning-guard summary-writer-guard peer-message-gate \
-             destructive-scope-guard destructive-database-guard vault-git-guard outbound-prose-guard; do
+             destructive-scope-guard destructive-database-guard vault-git-guard outbound-prose-guard \
+             delegation-gate; do
   if grep -q "$guard" "$HOOKS_JSON" || [ -e "$HOOKS_DIR/$guard.sh" ]; then
     FAIL=$((FAIL + 1)); echo "  ❌ $guard is still a bash hook"
   else

@@ -3,13 +3,14 @@
 //
 // WHERE THE MODE LIVES. hooks/register.ts keeps it in $.state for the session,
 // and in $.store keyed by session id, so a resumed session in a new process
-// keeps it. The two bash gates, hooks/delegation-gate.sh and
-// hooks/agent-dispatch-gate.sh, still read the legacy file:
+// keeps it. The delegation reminder (hooks/mods/delegation.ts) reads it there,
+// through $.workbench.orchestratorIsOn(). The bash gate
+// hooks/agent-dispatch-gate.sh still reads the legacy file:
 //
 //   ${WORKBENCH_ORCHESTRATOR_STATE_DIR:-$HOME/.claude-workbench/orchestrator-mode}/<session_id>
 //
 // An existing file means off. So the module mirrors the mode into that file, and
-// the gates honour /orchestrator exactly as they honoured the old skill.
+// the gate honours /orchestrator exactly as it honoured the old skill.
 //
 // ONLY MIKE SWITCHES IT. /orchestrator is a command, and its command.run hook
 // acts only on a run a person started: Enter at the prompt (`composer`) or the

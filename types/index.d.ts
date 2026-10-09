@@ -330,6 +330,9 @@ declare module 'claude-code' {
       noticesMtime: number
       // Orchestrator mode for this session. Unset until session.start seeds it.
       orchestratorOn: boolean
+      // The session id the delegation reminder was shown for, or '' before it
+      // was shown (hooks/mods/delegation.ts).
+      delegationReminded: string
       // The memory server's health as the probe names it (UP, BUILDING,
       // DOWN, ...). Unset until the first probe answers.
       memoryHealth: string

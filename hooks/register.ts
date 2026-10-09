@@ -141,6 +141,7 @@ import {
   toggleOf,
   withMode,
 } from './mods/orchestrator'
+import { REMIND_STORE_KEY, hasDotPart, isInRoots, isWholeFileWrite, reminderOf, remindedOf, splitTarget, targetOf } from './mods/delegation'
 import {
   ASKS_NOTHING,
   ASKS_USER,
@@ -176,6 +177,7 @@ const cache = atom({ plugin: 'workbench-core', key: 'cache' } as const, EMPTY_CA
 const turnAttended = atom({ plugin: 'workbench-core', key: 'turnAttended' } as const, false)
 // Whether the question rule already re-prompted in the current turn.
 const reprompted = atom({ plugin: 'workbench-core', key: 'reprompted' } as const, false)
+const delegationReminded = atom({ plugin: 'workbench-core', key: 'delegationReminded' } as const, '')
 // Where Mike's last "Commit it" pick stands: unused, used by its commit with
 // the push left, or used up. Any prompt ends an unused pick, and Mike's own
 // prompt ends the push left too.
@@ -324,6 +326,79 @@ async function setOrchestrator($: EngineInterface, isOn: boolean): Promise<void>
   await $.state.set(ORCHESTRATOR_ON, isOn)
   await $.store.set(STORE_KEY, withMode(offSessionsOf(await $.store.get(STORE_KEY), now), id, isOn, now))
   await mirror($, isOn)
+}
+
+// ─── the delegation reminder (hooks/mods/delegation.ts) ─────────────────────
+
+const isLinkAt = ($: EngineInterface, path: string): Promise<boolean> =>
+  $.fs.stat(path).then(
+    stat => stat.isLink,
+    () => false,
+  )
+const isDirAt = ($: EngineInterface, path: string): Promise<boolean> =>
+  $.fs.stat(path).then(
+    stat => stat.kind === 'dir',
+    () => false,
+  )
+
+// The physical path a write target would land at, or undefined when it cannot
+// be settled: a relative path, a name that is empty, `.` or `..`, a target or
+// a missing folder that is a symbolic link (Write writes through it), a `.` or
+// `..` below the deepest existing folder, or a folder that does not resolve.
+// The deepest existing folder is resolved through realPath, so
+// `<root>/link/x` and `<root>/../x` cannot pass a prefix test.
+async function physicalTarget($: EngineInterface, path: string): Promise<string | undefined> {
+  const split = splitTarget(path)
+  if (split === undefined || (await isLinkAt($, path))) return undefined
+  let { dir, name: rest } = split
+  while (dir !== '' && !(await isDirAt($, dir))) {
+    if (await isLinkAt($, dir)) return undefined
+    const cut = dir.lastIndexOf('/')
+    rest = `${dir.slice(cut + 1)}/${rest}`
+    dir = dir.slice(0, cut)
+  }
+  if (hasDotPart(rest)) return undefined
+  const real = (await $.fs.stat(dir || '/', { resolve: true })).realPath
+  return real === undefined ? undefined : `${real.replace(/\/+$/, '')}/${rest}`
+}
+
+// Whether a workbench-dev-team plugin is installed: any
+// $HOME/.claude/plugins/cache/<marketplace>/workbench-dev-team folder.
+async function hasDevTeam($: EngineInterface, home: string): Promise<boolean> {
+  const cache = `${home}/.claude/plugins/cache`
+  const entries = await $.fs.list(cache).catch(() => [])
+  for (const entry of entries) {
+    if (await isDirAt($, `${cache}/${entry.name}/workbench-dev-team`)) return true
+  }
+  return false
+}
+
+// The reminder for one main-loop whole-file write, or undefined for silence.
+// Rejects on any failure, and the caller reads a rejection as silence.
+async function delegationReminder($: EngineInterface, e: { tool: string; agentId?: string; file_path?: unknown; notebook_path?: unknown }): Promise<string | undefined> {
+  if (!isWholeFileWrite(e.tool)) return undefined
+  if ((await $.workbench.callerLane(e.agentId === undefined ? {} : { agentId: e.agentId })) !== 'main') return undefined
+  if (!(await $.workbench.orchestratorIsOn())) return undefined
+  const target = await physicalTarget($, targetOf(e))
+  if (target !== undefined && isInRoots(target, await $.workbench.scratchRoots())) return undefined
+  const home = await $.env.get('HOME')
+  if (!home) return undefined
+  // Once per session. The store is read first, so a session reminded in an
+  // earlier process stays quiet. Then the $.state change decides a race: only
+  // the change that saw another session's id wins. The store is written last,
+  // and a write that fails rejects, so the reminder is never shown unrecorded.
+  const id = await $.session.id()
+  const now = await $.clock.now()
+  const stored = remindedOf(await $.store.get(REMIND_STORE_KEY), now)
+  if (id in stored) return undefined
+  let isFirst = false
+  await update($, delegationReminded, seen => {
+    isFirst = seen !== id
+    return id
+  })
+  if (!isFirst) return undefined
+  await $.store.set(REMIND_STORE_KEY, { ...stored, [id]: now })
+  return reminderOf(await hasDevTeam($, home))
 }
 
 async function probeMemory($: EngineInterface): Promise<void> {
@@ -1178,10 +1253,11 @@ export const register: Register = on => {
       const checked = await checkVaultWrite($, e as VaultCall, vaultTool)
       return 'deny' in checked ? checked : next(checked.call as typeof e)
     }
-    // The calls the bash gates judge read the legacy file next, so it is put
-    // back in line with the mode Mike chose first. A file the model wrote to
-    // stand the gates down is removed here.
-    if (e.agentId === undefined && (e.tool === 'Write' || e.tool === 'NotebookEdit' || e.tool === 'Agent')) {
+    // The Agent call the bash dispatch gate judges reads the legacy file next,
+    // so it is put back in line with the mode Mike chose first. A file the
+    // model wrote to stand the gate down is removed here. A whole-file write
+    // keeps the file in line too, before the delegation reminder reads the mode.
+    if (e.agentId === undefined && (isWholeFileWrite(e.tool) || e.tool === 'Agent')) {
       // One caught expression: a rejected seed must not throw the hook, which
       // the engine would skip, leaving the gates an unmirrored file.
       // A mode that cannot be read is taken as on, the closed way.
@@ -1189,7 +1265,16 @@ export const register: Register = on => {
         .catch(() => true)
         .then(isOn => mirror($, isOn))
         .catch(() => undefined)
-      return next(e)
+      if (e.tool === 'Agent') return next(e)
+      // The delegation reminder is advice, never a guard: it gives no verdict,
+      // and it fails open to silence, where every guard above fails closed. It
+      // is judged after the write has gone through the engine, so neither a
+      // rejection nor an overrun can block the write: the .catch below this
+      // hook passes a call already passed on through with its own answer.
+      const result = await next(e)
+      if (result.deny !== undefined) return result
+      const reminder = await delegationReminder($, e).catch(() => undefined)
+      return reminder === undefined ? result : { ...result, context: [...(result.context ?? []), reminder] }
     }
     // The intake nudge rides the result of the task's first Edit. It never
     // denies.

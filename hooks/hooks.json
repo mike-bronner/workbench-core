@@ -5,15 +5,6 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Write|NotebookEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/delegation-gate.sh\""
-          }
-        ]
-      },
-      {
         "matcher": "Agent",
         "hooks": [
           {

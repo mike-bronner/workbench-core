@@ -5,7 +5,7 @@
 # an advisory note when a brief dictates method instead of outcome.
 #
 # The rule already existed in prose and drifted anyway, which is the same story
-# delegation-gate.sh tells. This hook is the harness-level backstop for the
+# the delegation reminder (hooks/mods/delegation.ts) tells. This hook is the harness-level backstop for the
 # handoff itself rather than for the file write at the other end.
 #
 # WHAT THIS GATE CHECKS, AND WHAT IT DELIBERATELY DOES NOT
@@ -51,8 +51,8 @@
 # essentially every well-formed brief.
 #
 # The main-vs-sub-agent signal is the payload itself, verified empirically
-# against a logging-only hook on Claude Code 2.1.260 and reused verbatim from
-# delegation-gate.sh:
+# against a logging-only hook on Claude Code 2.1.260, as the retired bash
+# delegation gate used it:
 #
 #   main agent (interactive or `claude -p`)  agent_id absent, agent_type absent
 #   sub-agent (Agent tool)                   agent_id present, agent_type present
@@ -62,7 +62,7 @@
 # review-lens fan-out: an agent session runs its own blind lenses as top-level
 # dispatches, 422 of them in the same 14 days, and every one carries agent_type.
 #
-# Escape hatches match delegation-gate.sh exactly, so one mental model covers
+# Escape hatches match the delegation reminder's exactly, so one mental model covers
 # both: WORKBENCH_ORCHESTRATOR=0 in the environment, and the per-session state
 # file written by the /orchestrator off command (hooks/register.ts). The gate
 # is ON by default.
@@ -132,7 +132,7 @@ IFS=$'\x1f' read -r AGENT_ID AGENT_TYPE TOOL_NAME SESSION_ID <<<"$FIELDS"
 [ "${WORKBENCH_ORCHESTRATOR:-}" = "0" ] && exit 0
 
 # (d) The human asked for an inline exception this session. Shared with
-#     delegation-gate.sh: one toggle stands both gates down, so the human never
+#     the delegation reminder: one toggle stands both down, so the human never
 #     has to remember which gate refused them.
 #
 #     A session_id that is absent, or that holds anything outside

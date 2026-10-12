@@ -1112,12 +1112,6 @@ function statementOf(raw: Raw, reading: Reading): ShellStatement | undefined {
   if (!isPlaced) reading.unknowns.add('wrapper')
   const nameAt = at < words.length ? at : -1
   const name = nameAt === -1 ? '' : nameOf(words[nameAt] as string)
-  // A name from a variable or a substitution is only known at run time, and
-  // so is a command word with an expansion anywhere in it: `${X:-/bin/rm}`
-  // keeps a slash inside its braces, so its last path part reads as `rm}`.
-  // The one shape allowed is a plain `$NAME/` or `${NAME}/`, inside double
-  // quotes, in front of a literal path (`"$HOME"/bin/x`,
-  // `"${CLAUDE_PLUGIN_ROOT}/scripts/x.sh"`).
   if (nameAt !== -1 && isExpanded((marked[nameAt] as string).replaceAll(ESCAPED, ''))) reading.unknowns.add('expansion')
   if (nameAt === -1 && assignments.length === 0 && raw.redirects.length === 0) return undefined
   const args = nameAt === -1 ? [] : words.slice(nameAt + 1)

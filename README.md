@@ -97,7 +97,7 @@ The [hooks module](#the-hooks-module) enforces rule 4 without loading it. Its re
 
 The task-intake routine is not a rule, so it does not live in the output style. It is a procedure, and its one copy is `skills/intake/SKILL.md`. The style carries a one-line pointer to it, and `hooks/test-intake.sh` fails if the style starts restating it. See [Task intake](#task-intake).
 
-The workbench facts the agents need (the gates, what each protects, the scratch roots, and the memory routing) are not rules of the persona, so they do not live in the output style either. The [hooks module](#the-workbench-rules-in-the-system-prompt) sends them as shared system-prompt sections, and gives a sub-agent that loads CLAUDE.md the same text at its start. Each gate's deny carries its own recovery text. Nothing is written into `~/.claude/CLAUDE.md` any more.
+The workbench facts the agents need (the gates, what each protects, the scratch roots, the commit scope, the no-comments rule, and the memory routing) are not rules of the persona, so they do not live in the output style either. The [hooks module](#the-workbench-rules-in-the-system-prompt) sends them as shared system-prompt sections, and gives a sub-agent that loads CLAUDE.md the same text at its start. Each gate's deny carries its own recovery text. Nothing is written into `~/.claude/CLAUDE.md` any more.
 
 **Retiring the old alias.** If your shell profile has `alias claude='claude --append-system-prompt-file ~/.claude/system-overrides.md'`, the CLI refuses to start when that file is missing. So the warmup never deletes it. It rewrites an existing file to a one-line stub with no rules, never creates one, and posts a startup notice until the file is gone. Finish the retirement in this order:
 
@@ -808,7 +808,7 @@ The [hooks module](#the-hooks-module) puts the workbench rules into the system p
 
 | Section | Holds | Lanes |
 |---|---|---|
-| `workbench-core:rules` | The gate table, the scratch roots, and how the destructive scope guard reads a command | Main loop, `claude -p`, top-level `--agent` |
+| `workbench-core:rules` | The gate table, the scratch roots, how the destructive scope guard reads a command, and two working rules: a commit takes every uncommitted file in one commit, and code carries no comments a linter does not require | Main loop, `claude -p`, top-level `--agent` |
 | `workbench-core:memory` | The memory routing: the vault is the store, capture without asking, recall first, query the task | Main loop and `claude -p` |
 | `workbench-core:plugins` | Each sibling workbench plugin's `session-warmup.md`, verbatim (see [docs/session-warmup-contributions.md](docs/session-warmup-contributions.md)) | Main loop, `claude -p`, top-level `--agent` |
 

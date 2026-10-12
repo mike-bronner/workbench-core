@@ -423,6 +423,25 @@ describe('AC2: the harness memory section is dropped, and memory routing is stat
   })
 })
 
+describe('the working rules on commits and code comments', () => {
+  test('a commit takes everything uncommitted, in one commit', () => {
+    expect(RULES).toContain('## Commits and code comments')
+    expect(RULES).toContain('A commit takes every uncommitted file in the tree, in one commit with one message that covers the whole set.')
+    expect(RULES).toContain('Stage tracked changes and untracked files alike, including files this session did not create and files that appeared during it.')
+    expect(RULES).toContain('Never split the work into several commits, never leave a file out because it looks unrelated, and never ask which files to include.')
+    expect(RULES).toContain('The one exception is content that must never ship, such as a secret or a stray build artifact. Leave it out, and tell the user about it in one sentence. Never leave a file out silently.')
+    expect(RULES).toContain('It does not change who approves a commit or when.')
+  })
+
+  test('code carries no comments, short of what a linter requires', () => {
+    expect(RULES).toContain('Write no comments or docblocks in code, in any project, plugin code that agents maintain included.')
+    expect(RULES).toContain("The only exception is a comment that the project's linter or config requires")
+    expect(RULES).toContain('Functional lines such as a shebang or a directive that a tool reads are not comments, and they stay.')
+    expect(RULES).toContain('Leave the existing comments in code you do not change as they are.')
+    expect(RULES).toContain('When a change makes a comment wrong, delete the comment rather than rewrite it.')
+  })
+})
+
 describe('a sub-agent gets its parent rules at its start', () => {
   test('the sections of the lane, after what the hooks beneath added', async ($, on) => {
     engine(on)

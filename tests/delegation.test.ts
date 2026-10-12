@@ -244,8 +244,15 @@ describe('silent branches, each on its own', () => {
     expect(b.files.has(LEGACY)).toBe(false)
   })
 
-  test('a session id that cannot name a file is silent', async ($, on) => {
+  // A missing legacy path never means off, so it does not silence the reminder.
+  test('a session id that cannot name a file still draws the reminder', async ($, on) => {
     const b = await session($, on, { sessionId: '../escape' })
+    expect(await reminderFor($, b, write('/repo/a.ts'))).toBeDefined()
+  })
+
+  test('a session id that cannot name a file is silent once Mike turns the mode off', async ($, on) => {
+    const b = await session($, on, { sessionId: '../escape' })
+    await $.command.run(run('orchestrator', 'off'))
     expect(await reminderFor($, b, write('/repo/a.ts'))).toBeUndefined()
   })
 

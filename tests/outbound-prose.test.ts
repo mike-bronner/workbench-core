@@ -262,6 +262,111 @@ describe('the outbound prose guard', () => {
     expect(await refusal($, b, bash(`bash <<'EOF'\necho hi\nEOF\ngh pr comment 1 --body ${word}`))).toBeUndefined()
   })
 
+  // C3f: the routes neither guard read before.
+  test('a close or reopen comment, a merge body or subject, and a title are read', async ($, on) => {
+    const b = await session($, on)
+    b.files.set('/repo/body.md', DASH)
+    const cases: [string, string][] = [
+      [`gh issue close 1 --comment '${SEMI}'`, 'Split it.'],
+      [`gh pr close 1 -c '${DASH}'`, 'Use a colon'],
+      [`gh pr reopen 1 --comment='${SEMI}'`, 'Split it.'],
+      [`gh issue reopen 1 -c'${SEMI}'`, 'Split it.'],
+      [`gh pr merge 1 --squash --body '${SEMI}'`, 'Split it.'],
+      [`gh pr merge 1 -b '${DASH}'`, 'Use a colon'],
+      ['gh pr merge 1 --body-file body.md', 'Use a colon'],
+      [`gh pr merge 1 --subject '${DASH}'`, 'Use a colon'],
+      [`gh pr merge 1 -t '${SEMI}'`, 'Split it.'],
+      [`gh pr create --title '${SEMI}' --body '${CLEAN}'`, 'Split it.'],
+      [`gh issue create -t '${DASH}' -b '${CLEAN}'`, 'Use a colon'],
+      [`gh release create v1 --title '${SEMI}' --notes '${CLEAN}'`, 'Split it.'],
+      [`gh pr edit 1 --title='${SEMI}'`, 'Split it.'],
+      [`gh issue edit 1 -t'${DASH}'`, 'Use a colon'],
+      [`gh release edit v1 --title '${POINTER}'`, 'Restate the substance'],
+    ]
+    for (const [command, fix] of cases) {
+      const deny = await refusal($, b, bash(command))
+      expect([command, deny?.includes(fix)]).toEqual([command, true])
+    }
+    for (const command of [
+      `gh pr close 1 --comment '${CLEAN}'`,
+      'gh pr merge 1 --squash --delete-branch',
+      // On pr merge, -m is --merge and takes no value.
+      'gh pr merge -m "$PR"',
+      'gh pr merge 1 -m --delete-branch',
+      `gh pr create --title 'Fix the loader' --body '${CLEAN}'`,
+      // On pr review, -c is the comment review type and takes no value.
+      `gh pr review 1 -c -b '${CLEAN}'`,
+      `gh pr review 1 --comment --body '${CLEAN}'`,
+    ]) {
+      expect([command, await refusal($, b, bash(command))]).toEqual([command, undefined])
+    }
+    expect(await refusal($, b, bash(`gh pr review 1 -c -b '${SEMI}'`))).toContain('Split it.')
+    // -m still takes no value on pr merge when a real body follows it.
+    expect(await refusal($, b, bash(`gh pr merge 1 -m -b '${SEMI}'`))).toContain('Split it.')
+    // Elsewhere -m stays a body flag.
+    expect(await refusal($, b, bash(`gh release edit v1 -m '${SEMI}'`))).toContain('Split it.')
+  })
+
+  test('a graphql mutation\'s variables are read under any name, and a query\'s are not', async ($, on) => {
+    const b = await session($, on)
+    const mutation = 'mutation { addComment(input: {subjectId: "I_1"}) { clientMutationId } }'
+    b.files.set('/repo/m.graphql', mutation)
+    b.files.set('/repo/q.graphql', 'query { viewer { login } }')
+    b.files.set('/repo/text.md', DASH)
+    const refused: [string, string][] = [
+      [`gh api graphql -F query=@m.graphql -f text='${SEMI}'`, 'Split it.'],
+      ['gh api graphql -F query=@m.graphql -F text=@text.md', 'Use a colon'],
+      [`gh api graphql -F query=@- -f msg='${SEMI}' <<'EOF'\n${mutation}\nEOF`, 'Split it.'],
+      [`gh api graphql -f query='${mutation}' -f input[note]='${DASH}'`, 'Use a colon'],
+    ]
+    for (const [command, fix] of refused) {
+      const deny = await refusal($, b, bash(command))
+      expect([command, deny?.includes(fix)]).toEqual([command, true])
+    }
+    for (const command of [
+      `gh api graphql -F query=@q.graphql -f text='${SEMI}'`,
+      `gh api graphql -f query='query { viewer { login } }' -f text='${SEMI}'`,
+      `gh api graphql -F query=@m.graphql -f subjectId=I_1 -f text='${CLEAN}'`,
+      // A REST call's other fields are not prose.
+      `gh api repos/o/r/issues -f labels='${SEMI}'`,
+    ]) {
+      expect([command, await refusal($, b, bash(command))]).toEqual([command, undefined])
+    }
+    expect(await refusal($, b, bash('gh api graphql -F query=@m.graphql -f text="$X"'))).toBe(EXPANDED_BODY)
+  })
+
+  test('nested and array MCP arguments are read, and identifiers at any depth are not', async ($, on) => {
+    const b = await session($, on)
+    const review = 'mcp__github__create_pull_request_review'
+    expect(await refusal($, b, { tool: review, owner: 'o', repo: 'r', comments: [{ path: 'a.ts', line: 3, body: SEMI }] })).toContain('Split it.')
+    expect(await refusal($, b, { tool: 'mcp__the-index__add_comment', id: 1, input: { body: DASH } })).toContain('Use a colon')
+    expect(await refusal($, b, { tool: 'mcp__x__create_issue', id: 1, body: CLEAN, sections: [CLEAN, SEMI] })).toContain('Split it.')
+    expect(await refusal($, b, { tool: review, comments: [{ path: '.claude/plans/x.md', body: CLEAN }], meta: { url: 'https://x/a;b' } })).toBeUndefined()
+  })
+
+  test('the GitHub MCP prose tools are read', async ($, on) => {
+    const b = await session($, on)
+    for (const tool of [
+      'mcp__github__add_issue_comment',
+      'mcp__github__update_issue',
+      'mcp__github__create_pull_request',
+      'mcp__github__update_pull_request',
+      'mcp__github__merge_pull_request',
+      'mcp__github__create_pull_request_review',
+      'mcp__github__add_pull_request_review_comment',
+      'mcp__github__add_comment_to_pending_review',
+      // The newer GitHub MCP tool names.
+      'mcp__github__issue_write',
+      'mcp__github__pull_request_review_write',
+      'mcp__github__add_reply_to_pull_request_comment',
+    ]) {
+      expect([tool, (await refusal($, b, { tool, owner: 'o', repo: 'r', body: SEMI }))?.includes('Split it.')]).toEqual([tool, true])
+      expect([tool, await refusal($, b, { tool, owner: 'o', repo: 'r', body: CLEAN })]).toEqual([tool, undefined])
+    }
+    expect(await refusal($, b, { tool: 'mcp__github__merge_pull_request', commit_title: DASH })).toContain('Use a colon')
+    expect(await refusal($, b, { tool: 'mcp__github__get_issue', owner: 'o', body: SEMI })).toBeUndefined()
+  })
+
   test('a prose tool the guards cannot judge is refused', () => {
     expect(isProseTool('mcp__the-index__add_comment')).toBe(true)
     expect(isProseTool('add_comment')).toBe(false)

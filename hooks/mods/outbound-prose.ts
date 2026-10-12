@@ -1,6 +1,6 @@
 // The outbound prose guard's checks, as pure functions: a port of
 // hooks/lib/prose-check.py, retired with its bash guard. It reads prose that leaves this machine
-// (a gh body or a board-MCP argument) and returns one finding per broken rule
+// (a gh body, title or comment, or a board or GitHub MCP argument) and returns one finding per broken rule
 // of the Clear output style, each saying how to fix the prose. It reads what a
 // body says, never which tool sent it.
 //
@@ -11,6 +11,8 @@
 //
 // The README section "Outbound prose guard" states what each check skips and
 // why. Pure functions only: the engine follows `$` into no imported function.
+
+import type { WorkbenchShellParse as ShellParse, WorkbenchShellStatement as Statement } from '../../types'
 
 const BOT_REGION = /<!--[^>]*auto-generated comment[\s\S]*?-->[\s\S]*?<!--[^>]*end of auto-generated comment[^>]*-->/gi
 const FENCED = /^[ \t]*(```|~~~)[\s\S]*?^[ \t]*\1[ \t]*$/gm
@@ -116,32 +118,100 @@ export const proseRefusal = (findings: readonly string[]): string =>
 
 // ─── where the body comes from ───────────────────────────────────────────────
 
-// The board-MCP tools that carry prose, by the end of their name.
-export const PROSE_TOOL_SUFFIXES = ['add_comment', 'submit_review', 'create_issue', 'set_acceptance_criteria']
+// The MCP tools that carry prose, by the end of their name: the board's, and
+// the GitHub MCP server's comments, issues, pull requests, reviews and merge
+// messages.
+export const PROSE_TOOL_SUFFIXES = [
+  'add_comment',
+  'submit_review',
+  'create_issue',
+  'set_acceptance_criteria',
+  'add_issue_comment',
+  'update_issue',
+  'create_pull_request',
+  'update_pull_request',
+  'merge_pull_request',
+  'pull_request_review',
+  'review_comment',
+  'pending_review',
+  'issue_write',
+  'pull_request_review_write',
+  'add_reply_to_pull_request_comment',
+]
 export const isProseTool = (tool: string): boolean => tool.startsWith('mcp__') && PROSE_TOOL_SUFFIXES.some(s => tool.endsWith(s))
 
-// Identifiers, not prose. Every other string argument of an MCP call is read.
-const SKIP_KEYS: ReadonlySet<string> = new Set(['id', 'item_id', 'issue_id', 'pr_id', 'node_id', 'url', 'html_url', 'owner', 'repo', 'repository', 'number', 'sha', 'ref', 'branch', 'state', 'status', 'slug', 'event', 'login', 'assignee'])
+// Identifiers, not prose. Every other string argument of an MCP call is read,
+// at any depth. A review comment's `path` names the file it is on.
+const SKIP_KEYS: ReadonlySet<string> = new Set(['id', 'item_id', 'issue_id', 'pr_id', 'node_id', 'url', 'html_url', 'owner', 'repo', 'repository', 'number', 'sha', 'ref', 'branch', 'state', 'status', 'slug', 'event', 'login', 'assignee', 'path'])
 
-export const mcpBody = (input: Record<string, unknown>): string =>
-  Object.entries(input)
-    .filter(([key, value]) => typeof value === 'string' && !SKIP_KEYS.has(key.toLowerCase()) && value.trim() !== '')
-    .map(([, value]) => value as string)
-    .join('\n\n')
+// Every string an MCP call carries, nested objects and arrays included: an
+// array's items count under the array's key, so the comments of a review are
+// read under `comments`, each by its own keys.
+export function mcpBody(input: Record<string, unknown>): string {
+  const out: string[] = []
+  const walk = (value: unknown, key: string): void => {
+    if (SKIP_KEYS.has(key.toLowerCase())) return
+    if (typeof value === 'string') {
+      if (value.trim() !== '') out.push(value)
+    } else if (Array.isArray(value)) value.forEach(item => walk(item, key))
+    else if (value !== null && typeof value === 'object') for (const [k, v] of Object.entries(value)) walk(v, k)
+  }
+  for (const [key, value] of Object.entries(input)) walk(value, key)
+  return out.join('\n\n')
+}
 
 // One piece of a body: text from the command, or a file the guard must read.
 // A JSON file is a `gh api --input`, whose prose is its body and title keys.
 // A query file is a graphql `-F query=@file`, which is prose only when it
-// holds a mutation.
-export type BodyPart = { text: string } | { file: string; isJson: boolean; isQuery?: boolean }
+// holds a mutation. A variable is a graphql variable whose query is such a
+// file: it is prose only when that file holds a mutation.
+export type BodyPart = ({ text: string } | { file: string; isJson: boolean; isQuery?: boolean }) & { isVariable?: boolean }
 
 // The bodies a Bash line posts, or `unread` when a prose command's body
 // cannot be read from the text: a substitution or an unknown in the line, or
 // standard input that is not a heredoc or a here-string in the line.
 export type BodyReading = { parts: BodyPart[] } | { unread: string }
 
-const PROSE_COMMANDS: ReadonlySet<string> = new Set(['pr create', 'pr edit', 'pr comment', 'pr review', 'issue create', 'issue edit', 'issue comment', 'release create', 'release edit'])
+const PROSE_COMMANDS: ReadonlySet<string> = new Set([
+  'pr create',
+  'pr edit',
+  'pr comment',
+  'pr review',
+  'pr merge',
+  'pr close',
+  'pr reopen',
+  'issue create',
+  'issue edit',
+  'issue comment',
+  'issue close',
+  'issue reopen',
+  'release create',
+  'release edit',
+])
 const INLINE_FLAGS: ReadonlySet<string> = new Set(['--body', '-b', '--notes', '-n', '--message', '-m'])
+// The prose flags one command adds to those above. They are its own: `-c` on
+// `pr review` is the comment review type, which takes no value, and `-t` on
+// `pr merge` is the commit subject.
+const TITLE = ['--title', '-t']
+const COMMENT = ['--comment', '-c']
+const COMMAND_FLAGS: Readonly<Record<string, readonly string[]>> = {
+  'pr create': TITLE,
+  'pr edit': TITLE,
+  'issue create': TITLE,
+  'issue edit': TITLE,
+  'release create': TITLE,
+  'release edit': TITLE,
+  'pr merge': ['--subject', '-t'],
+  'pr close': COMMENT,
+  'pr reopen': COMMENT,
+  'issue close': COMMENT,
+  'issue reopen': COMMENT,
+}
+// The flags above that one command uses for a switch with no value, so the
+// word after them is not a body: `-m` on `pr merge` is --merge.
+const NO_VALUE_FLAGS: Readonly<Record<string, readonly string[]>> = {
+  'pr merge': ['-m'],
+}
 const FILE_FLAGS: ReadonlySet<string> = new Set(['--body-file', '-F', '--notes-file'])
 const API_FIELD_FLAGS: ReadonlySet<string> = new Set(['-f', '--raw-field', '-F', '--field'])
 const API_PROSE_KEYS: ReadonlySet<string> = new Set(['body', 'title'])
@@ -192,15 +262,16 @@ const fromWord = (part: BodyPart): BodyPart | string => {
 const fromStdin = (stdin: Stdin | undefined): BodyPart | string =>
   stdin === undefined ? UNREAD_BODY : stdin.expands?.test(stdin.text) === true ? EXPANDED_BODY : { text: stdin.text }
 
-// Whether the words after `gh` name a prose command, read two ways: past the
-// global options as the reader places them, and as the first two words that
-// are not options, which is how the bash guard read them.
-function isProseCommand(args: readonly string[], subAt: number): 'api' | 'prose' | undefined {
+// The prose command the words after `gh` name (`pr create`), or `api`, read
+// two ways: past the global options as the reader places them, and as the
+// first two words that are not options, which is how the bash guard read them.
+function proseCommandOf(args: readonly string[], subAt: number): string | undefined {
   const crude = args.filter(a => !a.startsWith('-')).slice(0, 2)
   const placed = subAt >= 0 ? [args[subAt] ?? '', args.slice(subAt + 1).find(a => !a.startsWith('-')) ?? ''] : []
   for (const verbs of [placed, crude]) {
     if (verbs[0]?.toLowerCase() === 'api') return 'api'
-    if (verbs.length === 2 && PROSE_COMMANDS.has(verbs.map(v => v.toLowerCase()).join(' '))) return 'prose'
+    const command = verbs.map(v => v.toLowerCase()).join(' ')
+    if (verbs.length === 2 && PROSE_COMMANDS.has(command)) return command
   }
   return undefined
 }
@@ -220,8 +291,15 @@ export const MOVED_BODY =
   'Outbound prose guard (workbench-core): this line changes directory before the gh call, so the guard cannot tell which relative body file gets posted, and it is refused. ' +
   'Name the body file by its absolute path, or pass the body in a quoted heredoc.'
 
+// The parts of a `gh api` call. A graphql call's other fields are its
+// variables, which carry a mutation's prose under any name: they are read when
+// the query is a mutation, left out when it is not, and kept as variables when
+// the query is a file the caller has yet to read.
 function apiParts(args: readonly string[], stdin: Stdin | undefined): BodyPart[] | string {
   const parts: BodyPart[] = []
+  const variables: (BodyPart | string)[] = []
+  let isGraphql = false
+  let isMutation: boolean | undefined
   let method = ''
   for (let i = 0; i < args.length; ) {
     const token = args[i] as string
@@ -245,25 +323,43 @@ function apiParts(args: readonly string[], stdin: Stdin | undefined): BodyPart[]
       const isTyped = name === '-F' || name === '--field'
       // A typed field's file or standard input is read before the mutation
       // test, as the bash guard read it.
-      const isMutation = (text: string): boolean => leaf === 'query' && text.trimStart().startsWith('mutation')
+      const mutates = (text: string): boolean => text.trimStart().startsWith('mutation')
+      const isQuery = leaf === 'query'
       const isProse = API_PROSE_KEYS.has(leaf)
-      if ((isProse || leaf === 'query') && isTyped && field === '@-') {
+      if ((isProse || isQuery) && isTyped && field === '@-') {
         part = fromStdin(stdin)
-        if (typeof part !== 'string' && 'text' in part && !isProse && !isMutation(part.text)) part = undefined
-      } else if ((isProse || leaf === 'query') && isTyped && field.startsWith('@')) part = fromWord({ file: field.slice(1), isJson: false, ...(isProse ? {} : { isQuery: true }) })
-      else if (isProse || isMutation(field)) part = fromWord({ text: field })
+        if (isQuery && typeof part !== 'string' && 'text' in part) {
+          isMutation = mutates(part.text)
+          if (!isMutation) part = undefined
+        }
+      } else if ((isProse || isQuery) && isTyped && field.startsWith('@')) part = fromWord({ file: field.slice(1), isJson: false, ...(isProse ? {} : { isQuery: true }) })
+      else if (isQuery) {
+        isMutation = mutates(field)
+        if (isMutation) part = fromWord({ text: field })
+      } else if (isProse) part = fromWord({ text: field })
+      else if (!SKIP_KEYS.has(leaf.toLowerCase()))
+        variables.push(isTyped && field === '@-' ? fromStdin(stdin) : isTyped && field.startsWith('@') ? fromWord({ file: field.slice(1), isJson: false }) : fromWord({ text: field }))
     } else if (name === '--input' && value !== undefined) {
       if (value !== '-') part = fromWord({ file: value, isJson: true })
       else {
         part = fromStdin(stdin)
         if (typeof part !== 'string' && 'text' in part) part = { text: proseOfJson(part.text) }
       }
-    } else step = 1
+    } else {
+      if (token.toLowerCase() === 'graphql') isGraphql = true
+      step = 1
+    }
     if (typeof part === 'string') return part
     if (part !== undefined) parts.push(part)
     i += step
   }
-  return method === 'GET' ? [] : parts
+  if (method === 'GET') return []
+  if (!isGraphql || isMutation === false) return parts
+  for (const variable of variables) {
+    if (typeof variable === 'string') return variable
+    parts.push(isMutation === true ? variable : { ...variable, isVariable: true })
+  }
+  return parts
 }
 
 // Every string under a body or title key, at any depth of a JSON text. Text
@@ -283,7 +379,7 @@ export function proseOfJson(text: string): string {
 }
 
 function ghParts(args: readonly string[], subAt: number, stdin: Stdin | undefined): BodyPart[] | string | undefined {
-  const kind = isProseCommand(args, subAt)
+  const kind = proseCommandOf(args, subAt)
   if (kind === undefined) return undefined
   if (kind === 'api') {
     const at = args.findIndex(a => a.toLowerCase() === 'api')
@@ -294,19 +390,23 @@ function ghParts(args: readonly string[], subAt: number, stdin: Stdin | undefine
     }
   }
   const parts: BodyPart[] = []
+  const extra = COMMAND_FLAGS[kind] ?? []
+  const bare = NO_VALUE_FLAGS[kind] ?? []
+  const inline: ReadonlySet<string> = new Set([...INLINE_FLAGS, ...extra].filter(flag => !bare.includes(flag)))
+  const shortInline = [...SHORT_INLINE, ...extra.filter(flag => !flag.startsWith('--'))].filter(flag => !bare.includes(flag))
   const fileOrStdin = (val: string): BodyPart | string => (val === '-' ? fromStdin(stdin) : fromWord({ file: val, isJson: false }))
   for (let i = 0; i < args.length; i++) {
     const token = args[i] as string
     const value = args[i + 1] ?? ''
     let part: BodyPart | string | undefined
-    if (INLINE_FLAGS.has(token) && value !== '') part = fromWord({ text: value })
+    if (inline.has(token) && value !== '') part = fromWord({ text: value })
     else if (FILE_FLAGS.has(token) && value !== '') part = fileOrStdin(value)
-    else if (token.includes('=') && (INLINE_FLAGS.has(token.split('=')[0] as string) || FILE_FLAGS.has(token.split('=')[0] as string))) {
+    else if (token.includes('=') && (inline.has(token.split('=')[0] as string) || FILE_FLAGS.has(token.split('=')[0] as string))) {
       const [flag = '', ...rest] = token.split('=')
       const val = rest.join('=')
-      if (INLINE_FLAGS.has(flag)) part = fromWord({ text: val })
+      if (inline.has(flag)) part = fromWord({ text: val })
       else if (val !== '') part = fileOrStdin(val)
-    } else if (!token.startsWith('--') && token.length > 2 && SHORT_INLINE.includes(token.slice(0, 2))) part = fromWord({ text: token.slice(2) })
+    } else if (!token.startsWith('--') && token.length > 2 && shortInline.includes(token.slice(0, 2))) part = fromWord({ text: token.slice(2) })
     else if (!token.startsWith('--') && token.length > 2 && token.startsWith('-F')) part = fileOrStdin(token.slice(2))
     if (typeof part === 'string') return part
     if (part !== undefined) parts.push(part)

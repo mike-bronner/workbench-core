@@ -158,8 +158,10 @@ jobs:
   # empty HOME and CLAUDE_CONFIG_DIR, 859 tests passed and validate passed.
   # PINNED, like shellcheck above: the mods API moves between releases, and a
   # floating CLI would turn this job red with no change here. Bump it
-  # deliberately. tsc is not run: its types are laid into .claude-plugin/types/
-  # only when a session loads the plugin, and a session needs an account.
+  # deliberately. The type-check needs the engine's types, which the CLI lays
+  # into .claude-plugin/types/ only when a session loads the plugin. A headless
+  # session with no account still loads it before it stops at the login check,
+  # so the type-check step starts one for that and nothing else.
   plugin-tests:
     runs-on: ubuntu-latest
     steps:
@@ -185,3 +187,33 @@ jobs:
 
       - name: claude plugin test
         run: claude plugin test .
+
+      # OMITS_CLAUDE_MD (hooks/mods/prompt-rules.ts) mirrors the agents defined
+      # with omitClaudeMd, because no hooks-module API says which types set it.
+      # It drifted once: Explore and Plan were missing. The check reads the
+      # built-ins out of the pinned CLI binary and core's own agents/*.md, and
+      # fails on any difference, or when it cannot read the binary's layout.
+      - name: OMITS_CLAUDE_MD matches the pinned CLI's omitClaudeMd agents
+        run: python3 scripts/omit-claude-md-check.py "$(readlink -f "$(command -v claude)")"
+
+      # The strict type-check: the engine's own tsconfig (strict and
+      # noUncheckedIndexedAccess), the same one workbench-dev-team checks
+      # against when it re-exports this module. Without it a strict-mode error
+      # reached main in 159f51a and was caught only by dev-team.
+      - name: TypeScript strict type-check
+        run: |
+          set -euo pipefail
+          # PINNED, like the CLI: a new compiler can add errors with no change
+          # here. Bump it deliberately.
+          TYPESCRIPT_VERSION=7.0.2
+          home="$RUNNER_TEMP/type-home"
+          mkdir -p "$home"
+          # Lays the types, then exits 1 at the login check. That exit is
+          # expected, so only the types it leaves behind are checked.
+          HOME="$home" CLAUDE_CONFIG_DIR="$home/.claude" \
+            claude -p 'lay the types' --plugin-dir "$PWD" < /dev/null || true
+          for t in claude-code claude-code-tools claude-code-mcp; do
+            [ -f ".claude-plugin/types/$t/index.d.ts" ] \
+              || { echo "::error::the CLI laid no $t types, so the type-check cannot run"; exit 1; }
+          done
+          npx --yes -p "typescript@${TYPESCRIPT_VERSION}" tsc -p tsconfig.json

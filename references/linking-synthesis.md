@@ -134,7 +134,11 @@ maximum):
   it degrade into a chronological dump.
 - **No topic page exists AND the vault now holds ≥2 related documents on
   the theme** (from Step A) → create one: synthesize the current state in
-  2–5 sentences from those documents and link each of them.
+  2–5 sentences from those documents and link each of them. `read` the new
+  page's path first: another session may have just created it. If it is
+  there, `edit` it as above. After the `write`, check `created` in its
+  answer: `false` means it replaced a page another writer had just made,
+  which is an error to report, never a success.
 - **Neither** → skip. Most sessions don't move a topic.
 
 ### What earns an entry
@@ -216,5 +220,8 @@ Maintenance contract:
   hook describing why someone would open it.
 - **If `README.md` does not exist** (first run), create it with the entries
   you know about — at minimum the documents you just wrote. It will be
-  incomplete; the memory-lint ritual fills it out properly.
+  incomplete; the memory-lint ritual fills it out properly. Decide that it
+  does not exist by a `read` of `README.md` just before the `write`, and check
+  `created` in the write's answer: `false` means another writer created it in
+  between and this write replaced it, which is an error to report.
 - Keep entries to one line each. The index is a map, not a summary.

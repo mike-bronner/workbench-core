@@ -42,8 +42,10 @@
 // Silent, in the bash gate's order:
 //   - a sub-agent (agentId) or a top-level `claude -p --agent` run: the lane
 //     from $.workbench.callerLane is not `main`;
-//   - WORKBENCH_ORCHESTRATOR=0, /orchestrator off, or a session id that cannot
-//     name a file: $.workbench.orchestratorIsOn() answers false;
+//   - WORKBENCH_ORCHESTRATOR=0 or /orchestrator off:
+//     $.workbench.orchestratorIsOn() answers false. A session id that cannot
+//     name the legacy file does not silence it, as a missing legacy path
+//     never means off;
 //   - any tool but Write and NotebookEdit. Edit is not gated, since
 //     2026-09-27: a delegated one-line edit measured tens of thousands of
 //     tokens against about 200 inline;

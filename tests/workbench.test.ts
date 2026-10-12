@@ -98,12 +98,26 @@ describe('AC2: $.workbench is registered and answers a dependent plugin', () => 
     expect(answer(b.files, 'isOn')).toBe(false)
   })
 
-  test('orchestratorIsOn is false when the session id cannot name the toggle file', { plugins: [DEPENDENT] }, async ($, on) => {
-    const b = bench(on, { sessionId: '../escape' })
-    await $.session.start(start())
-    await $.prompt.submit(ask('isOn'))
-    expect(answer(b.files, 'isOn')).toBe(false)
-  })
+  // A legacy file that cannot be named never means off: the answer is the
+  // real mode, on by default and off once Mike turns it off.
+  const UNNAMED: [string, Parameters<typeof bench>[1]][] = [
+    ['the session id cannot name the toggle file', { sessionId: '../escape' }],
+    ['HOME is unset and there is no state dir', { env: {} }],
+  ]
+  for (const [name, options] of UNNAMED) {
+    test(`orchestratorIsOn answers the real mode when ${name}`, { plugins: [DEPENDENT] }, async ($, on) => {
+      const b = bench(on, options)
+      await $.session.start(start())
+      await $.prompt.submit(ask('isOn'))
+      expect(answer(b.files, 'isOn')).toBe(true)
+      await $.command.run(run('orchestrator', 'off'))
+      await $.prompt.submit(ask('isOn'))
+      expect(answer(b.files, 'isOn')).toBe(false)
+      await $.command.run(run('orchestrator', 'on'))
+      await $.prompt.submit(ask('isOn'))
+      expect(answer(b.files, 'isOn')).toBe(true)
+    })
+  }
 
   test('orchestratorIsOn honours a legacy file left at session start', { plugins: [DEPENDENT] }, async ($, on) => {
     const b = bench(on, { files: { [LEGACY]: '' } })

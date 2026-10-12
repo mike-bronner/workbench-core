@@ -121,6 +121,31 @@ const isLine = (value: unknown, max: number): value is string => isText(value, m
 export const isNotFound = (result: { isError: boolean; content: readonly { type: string; text?: string }[] }): boolean =>
   result.isError && result.content.some(block => typeof block.text === 'string' && /^Document not found:/.test(block.text.trimStart()))
 
+// What a `write` did, read from the `created` flag in its answer. The memory
+// MCP's write replaces any note at its path, so `created: false` means a note
+// was there after all: another session wrote it between the read and this
+// write, and this write replaced it. That is an error, never a save. An answer
+// with no readable flag is not taken as a save either.
+export type WriteOutcome = 'created' | 'replaced' | 'unconfirmed'
+export function writeOutcome(result: { isError: boolean; content: readonly { type: string; text?: string }[] }): WriteOutcome {
+  if (result.isError) return 'unconfirmed'
+  for (const block of result.content) {
+    try {
+      const created = (JSON.parse(block.text ?? '') as { created?: unknown } | null)?.created
+      if (created === true) return 'created'
+      if (created === false) return 'replaced'
+    } catch {
+      // Not JSON: the next block may carry the flag.
+    }
+  }
+  return 'unconfirmed'
+}
+
+// The toast for a capture that replaced a note another session had just
+// written. The note is not counted as saved, and Mike learns where to look.
+export const replacedText = (path: string): string =>
+  `Memory checkpoint replaced a note another session had just written at ${path}. Restore that note from the vault history.`
+
 // A score at or above this is a note both retrievers rank first, close to the
 // most a hybrid search scores (2/61). Measured on the live vault 2026-10-07: a
 // note both rank near the top scores 0.02 to 0.035, one retriever alone at most

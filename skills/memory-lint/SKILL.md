@@ -185,7 +185,7 @@ For each skipped file:
    | None of the above | infer from content; match the conventions visible in healthy sibling files |
 
 4. **Infer `date`/`tags`/`summary` only where confidently derivable** — a `YYYY-MM-DD` in the filename or path, an explicit date line in the body, obvious topical tags. Don't fabricate; `name` and `type` are the only required fields.
-5. **Write via the MCP `write` tool**: relative path, `content` = the existing body (minus any broken partial frontmatter you're replacing — the body itself must survive byte-for-byte), `frontmatter` = the inferred dict. Writing through the MCP updates the index immediately.
+5. **Write via the MCP `write` tool**: relative path, `content` = the existing body (minus any broken partial frontmatter you're replacing — the body itself must survive byte-for-byte), `frontmatter` = the inferred dict. Writing through the MCP updates the index immediately. This write replaces the file on purpose, so check `created` in its answer: it must be `false`. `true` means the file was gone when you wrote, so another writer moved or deleted it after your scan. Report that path as an error and stop the rescue pass.
 6. **Round-trip verify the first file before batch-processing the rest**: `search` for its name and confirm it now appears. If it doesn't, stop the rescue pass, diagnose, and report — don't batch-write on a broken assumption.
 
 ### 2a″. Frontmatter health repairs
@@ -272,13 +272,13 @@ Check it in both directions:
 
 **Do not index every document under `decisions/`.** A line-per-document index is actively harmful: it grows without bound, stops being readable at exactly the moment it stops being scannable, duplicates what `search` already does better, and — because every line is a link — converts the entire curated layer into broken-link surface area for this same skill to police. If a run reports a triple-digit "missing entries" backlog, that is the signal this rule has drifted back toward manifest semantics, not that the vault has rotted.
 
-If `README.md` doesn't exist at all, create it per the linking-synthesis contract, populated from the indexed `topics/` documents plus referenced decisions. Sessions are never indexed.
+If `README.md` doesn't exist at all (decide that by a `read` of `README.md` just before the `write`), create it per the linking-synthesis contract, populated from the indexed `topics/` documents plus referenced decisions. After the write, check `created` in its answer. `false` means the write replaced a note another writer had just made: that is an error, so report the path and do not write over it again. Sessions are never indexed.
 
 Each index `edit`/`write` counts against the per-run fix cap.
 
 ## Step 3 — Write the report
 
-Write the audit report via MCP `write` to `maintenance/lint-YYYY-MM-DD.md` (today's date):
+Write the audit report via MCP `write` to `maintenance/lint-YYYY-MM-DD.md` (today's date). `read` that path first. If a report is already there (an earlier run today), write to `maintenance/lint-YYYY-MM-DD-2.md`, the next free number, read the same way. After the write, check `created` in its answer. `false` means the write replaced a note another writer had just made: that is an error, so report the path and do not write over it again. The report:
 
 ```markdown
 ---

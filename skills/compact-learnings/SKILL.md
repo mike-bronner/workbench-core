@@ -61,6 +61,8 @@ Decide a recommendation for every entry first, with a one-line reason. Then ask 
 
 Rewrite with only kept/rewritten entries. Maintain chronological order. Write via `mcp__plugin_workbench-core_memory__write` (full overwrite).
 
+This write replaces the file on purpose, so guard it against a change made since you read it. A skill can append a learning while you review. `read` the file just before the write, take the `etag` from that read, and pass it to `write` as `if_match`. If the write refuses because the file changed, read it again, add the new entries to your kept list, and write again with the new etag. Check `created` in the write's answer: it must be `false`, a replace. `true` means the file was gone when you wrote, so another writer moved or deleted it after your read. Report that as an error, with the path.
+
 If all entries were dropped or integrated, write a minimal file with just frontmatter and no entries.
 
 **Integrated entries leave the learnings file only once the integration is handed off.** If the hand-off below does not happen, keep them in the file, so no learning is lost between the two.

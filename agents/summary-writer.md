@@ -72,9 +72,13 @@ Read `references/summary-format.md` in the plugin directory (`${CLAUDE_PLUGIN_RO
 - Write the summary **only** with `mcp__plugin_workbench-core_memory__write`, passing a **vault-relative** path that begins with `sessions/` (e.g. `sessions/2026-04-09/{session-id}.summary.md`).
 - **Never** write the summary with `Bash` — no `>`, `>>`, `tee`, `cp`, `mv`, `sed -i`, or heredoc. You do not have the `Write` tool and Bash is not a substitute: a shell write resolves against your current directory, and misrouting a summary into the source project instead of the vault is exactly the failure this rule exists to prevent.
 - The path must **not** begin with `memory/` and must **not** be absolute — `sessions/…` is already relative to the vault root the MCP is anchored to.
+- **Read the path before you write it.** The memory `write` replaces any note at its path, with no warning. `read` the summary path first. If a note is there, replace it only when its frontmatter `session_id` is yours: it is this session's earlier summary, and the newer log supersedes it. Any other note at that path is a collision. Print `summary-writer: error sid={sid} path-taken={path}`, leave the marker, and exit.
+- **Check `created` in the write's answer.** It is `true` for a new note and `false` for a replace. If it is `false` and your read found no note, another writer created one at that path in between, and your write replaced it. That is an error, never a success. Print `summary-writer: error sid={sid} replaced={path}`, leave the marker, and exit. Do not write over that path again. The lost note comes back only from the vault's history.
 - **Verify after writing:** confirm the file exists via `mcp__plugin_workbench-core_memory__read` (or `list_documents`) at the path you wrote. If the write errored or the memory MCP is unavailable, follow the **Summary write fails** failure mode — leave the marker and exit. Do **not** fall back to Bash.
 
 After drafting and before writing: read `references/linking-synthesis.md` and run its Steps A–B — `search` the vault for related decisions, topic pages, and prior summaries on the session's main themes, and add a `## Related` section with root-absolute markdown links to the confident hits. Conservative linking is a hard rule: an orphan is better than a forced connection, and the per-ingest link cap applies. Omit the section if nothing clears the bar.
+
+**Every other new note follows the same two rules.** A promoted decision (step 4), a new topic page and a new `README.md` (step 5) are new paths. Before each `write`, `read` the exact path, or `search` for the note's name. If a note is already there, `edit` or `append` it instead, or give a decision another slug. After each `write`, check `created`. If it is `false`, you replaced a note another writer had just made: write nothing more over it, and add `replaced={path}` to your step 7 line, once per path.
 
 ### 4. Promote decisions (only if the bar is met)
 
@@ -106,6 +110,8 @@ Do this LAST. If you release the marker without writing a summary, the summary i
 summary-writer: ok sid={session_id} summary={relative/path} decisions={count} links={count} marker={what the helper printed}
 ```
 
+Append ` replaced={path}` for each note step 4 or 5 replaced by accident. Such a line is a partial failure, and the path names the note to restore from the vault's history.
+
 Then stop.
 
 ## Failure modes
@@ -114,4 +120,5 @@ Then stop.
 - **Log missing, transcript present**: not a failure. Summarize from `transcript_path` per step 2 and print `summary-writer: ok sid={sid} source=transcript summary={path} …`.
 - **Log AND transcript both missing**: Print `summary-writer: error sid={sid} unrecoverable log-missing={log_path} transcript-missing={transcript_path}`, leave marker, exit. This is the only genuinely lost case — both the 7-day cache and the ~30-day source are gone. A marker in this state will never succeed on retry. Leave it: the dead-marker sweep in `hooks/session-warmup.sh` deletes it at the next session start and records the purge in the dispatch log.
 - **Summary write fails** (MCP `write` errors or the memory MCP is unavailable): Print `summary-writer: error sid={sid} summary-write-failed`, leave the marker, and exit. **Never** fall back to a Bash/filesystem write — a missed summary is recovered on the next session's warmup, but a misrouted one is silent corruption.
+- **A note already at the summary path that is not this session's**, or **a summary write that answers `created: false` after the read found nothing**: print `summary-writer: error sid={sid} path-taken={path}` or `summary-writer: error sid={sid} replaced={path}`, leave the marker, and exit (step 3).
 - **Short/unfamiliar log**: Write a thin 2-3 line summary. Don't hallucinate. Release the marker (step 6).

@@ -800,6 +800,8 @@ assert_contains "brief carries log_path"        "$BRIEF" "log_path: /vault/sid-x
 assert_contains "brief carries transcript_path" "$BRIEF" "transcript_path: /projects/sid-x.jsonl"
 assert_contains "brief states the fallback"     "$BRIEF" "summarize from transcript_path"
 assert_contains "brief asks for the source stamp" "$BRIEF" "source: transcript"
+assert_contains "brief says to read a path before writing it" "$BRIEF" "Read every path before you"
+assert_contains "brief makes created:false an error" "$BRIEF" "\`false\` where you meant"
 
 echo "drain — disabled and zero-batch paths spawn nothing:"
 reset_drain

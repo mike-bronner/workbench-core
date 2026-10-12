@@ -29,6 +29,7 @@ import {
   withShared,
   withoutSplice,
 } from '../hooks/mods/prompt-rules'
+import { caller } from './bench'
 import { start } from './harness'
 
 const HOME = '/Users/tester'
@@ -168,6 +169,83 @@ describe('AC1: the workbench rules are shared sections, byte-identical across a 
   test('a list with no session section takes ours at its end', () => {
     const theirs: PromptComposeSection[] = [{ id: 'bare', text: 'x', scope: 'shared' }]
     expect(ids(withShared(theirs, sectionsFor('agent', undefined)))).toEqual(['bare', RULES_ID])
+  })
+})
+
+// C3o. Two plugins each add shared sections from their own prompt.compose
+// hook, one hook inside the other, in either order. The stand-in below is
+// another plugin applying the same rule through withShared, as
+// workbench-dev-team does by re-exporting it.
+describe('another plugin\'s shared section beside ours, in either nesting', () => {
+  const ENGINE: PromptComposeSection[] = [
+    { id: 'intro', text: 'Intro.', scope: 'shared' },
+    { id: 'env', text: "Today's date is 2026-10-12.", scope: 'session' },
+    { id: 'ctx', text: 'Context.', scope: 'session' },
+  ]
+  const OTHER: PromptComposeSection[] = [{ id: 'workbench-dev-team:rules', text: 'Dev-team rules end here.', scope: 'shared' }]
+  const CORE = sectionsFor('main', 'Plugin contributions end here.')
+  // The text the engine sends: each side joined with a blank line, and the two
+  // sides as they are.
+  const rendered = (sections: readonly PromptComposeSection[]): string =>
+    ['shared', 'session'].map(scope => sections.filter(section => section.scope === scope).map(section => section.text).join('\n\n')).join('')
+  // Exactly one blank line at every boundary: the texts, each without the pad,
+  // joined by one blank line.
+  const oneBlankLine = (sections: readonly PromptComposeSection[]): string => sections.map(section => section.text.replace(/\s+$/, '')).join('\n\n')
+
+  test('core outside: the other plugin\'s pad comes off, and core\'s last section, now the last shared one, carries it', () => {
+    const inner = withShared(ENGINE, OTHER)
+    expect(inner.find(section => section.id === OTHER[0]?.id)?.text).toBe('Dev-team rules end here.\n\n')
+    const sections = withShared(inner, CORE)
+    expect(ids(sections)).toEqual(['intro', 'workbench-dev-team:rules', RULES_ID, MEMORY_ID, PLUGINS_ID, 'env', 'ctx'])
+    expect(rendered(sections)).toBe(oneBlankLine(sections))
+    expect(rendered(sections)).toContain("Plugin contributions end here.\n\nToday's date")
+    expect(rendered(sections)).toContain(`Dev-team rules end here.\n\n${RULES.slice(0, 20)}`)
+  })
+
+  test('core inside: the other plugin takes core\'s pad off, and its own section carries it', () => {
+    const sections = withShared(withShared(ENGINE, CORE), OTHER)
+    expect(ids(sections)).toEqual(['intro', RULES_ID, MEMORY_ID, PLUGINS_ID, 'workbench-dev-team:rules', 'env', 'ctx'])
+    expect(rendered(sections)).toBe(oneBlankLine(sections))
+    expect(rendered(sections)).toContain('Plugin contributions end here.\n\nDev-team rules end here.\n\nToday')
+  })
+
+  test('with no session section, neither nesting pads anything', () => {
+    const shared = ENGINE.filter(section => section.scope === 'shared')
+    for (const sections of [withShared(withShared(shared, OTHER), CORE), withShared(withShared(shared, CORE), OTHER)]) {
+      expect(rendered(sections)).toBe(oneBlankLine(sections))
+      expect(sections.every(section => !/\s$/.test(section.text))).toBe(true)
+    }
+  })
+
+  test('an engine section that ends in a single newline is not taken for a pad', () => {
+    const engineOwn: PromptComposeSection[] = [{ id: 'intro', text: 'Intro.\n', scope: 'shared' }, ...ENGINE.slice(1)]
+    expect(withShared(engineOwn, CORE)[0]?.text).toBe('Intro.\n')
+  })
+
+  // The engine runs a plugin's hook with nothing imported, so the stand-in
+  // spells withShared's rule out for its one section.
+  const STAND_IN = caller((on: On) => {
+    on('prompt.compose', async ($, e, next) => {
+      const listed = (await next(e)).sections.filter(section => section.id !== 'workbench-dev-team:rules')
+      const cut = listed.findIndex(section => section.scope === 'session')
+      const at = cut === -1 ? listed.length : cut
+      const before = listed
+        .slice(0, at)
+        .map((section, i) => (i === at - 1 && /\n[ \t]*\n\s*$/.test(section.text) ? { ...section, text: section.text.replace(/\s+$/, '') } : section))
+      const text = 'Dev-team rules end here.'
+      const mine = { id: 'workbench-dev-team:rules', text: cut === -1 ? text : `${text}\n\n`, scope: 'shared' as const }
+      return { sections: [...before, mine, ...listed.slice(at)] }
+    })
+  })
+
+  test('in the engine, with another plugin\'s hook beside core\'s, every boundary is one blank line', { plugins: [STAND_IN] }, async ($, on) => {
+    const g = engine(on)
+    g.files.delete(`${DEV_TEAM}/session-warmup.md`)
+    g.files.delete(`${BUJO}/session-warmup.md`)
+    await $.session.start(start(true))
+    const { sections } = await $.prompt.compose(COMPOSE)
+    expect(ids(sections)).toContain('workbench-dev-team:rules')
+    expect(rendered(sections)).toBe(oneBlankLine(sections))
   })
 })
 

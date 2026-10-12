@@ -52,6 +52,10 @@ export type World = {
   // What a `read` of a missing note answers instead of the server's "not
   // found": another error, or a rejection.
   readFails?: 'error' | 'reject'
+  // What a `write` answers instead of `created: true`: `created: false`, as
+  // when another session wrote the path between the read and the write, an
+  // answer with no flag, or an error.
+  writeAnswer?: 'replaced' | 'no-flag' | 'error'
   clock: MockClock
 }
 
@@ -142,7 +146,12 @@ export function memoryWorld(on: On, env: Record<string, string> = {}): World {
       if (w.readFails === 'error') return { value: { content: [{ type: 'text', text: 'Internal error: index locked' }], isError: true } }
       return { value: { content: [{ type: 'text', text: `Document not found: '${path}'. Find the path with search or list_documents.` }], isError: true } }
     }
-    if (e.tool === 'write') w.existing.add(String(e.args.path))
+    if (e.tool === 'write') {
+      if (w.writeAnswer === 'error') return { value: { content: [{ type: 'text', text: 'Internal error: disk full' }], isError: true } }
+      w.existing.add(String(e.args.path))
+      if (w.writeAnswer === 'no-flag') return { value: { content: text({ path: e.args.path }), isError: false } }
+      return { value: { content: text({ path: e.args.path, created: w.writeAnswer !== 'replaced' }), isError: false } }
+    }
     return { value: { content: text({ created: true }), isError: false } }
   })
   on('model.fork', ($, e) => {

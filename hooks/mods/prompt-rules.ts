@@ -65,7 +65,7 @@ These hooks guard every session. Each deny explains its own way through, so read
 | Provisioning guard | Agents do not create worktrees or databases, and do not destroy a worktree they did not create. |
 | Vault git guard | Git writes aimed at the memory vault are refused. |
 | Credential guard | Reading, linking or copying \`~/.ssh\`, \`~/.aws\`, \`~/.gnupg\`, \`.env\` files, a keychain folder, or Claude's credential store is refused. |
-| Outbound prose guard | \`gh\` and board-MCP prose must pass the output style's mechanical checks. |
+| Outbound prose guard | \`gh\`, board-MCP and GitHub-MCP prose must pass the output style's mechanical checks. |
 | Peer message gate | A sub-agent messages only its orchestrator or the agents it spawned. |
 | Whole-disk search guard | A search (\`find\`, \`fd\`, \`rg\`, \`grep -r\`, \`mdfind\`, \`Grep\`, \`Glob\`) may not start at \`/\`, a home folder, \`~/Library\`, \`/Users\`, \`/System\`, \`/Library\`, \`/Applications\`, \`/Volumes\`, \`/private\`, \`/var\`, \`/opt\` or \`/usr\`. |
 
@@ -96,9 +96,10 @@ export const MEMORY = `## Memory routing
 // get no workbench rules either. No hooks-module API says which types set it:
 // agent.offer gives a type's name, description and source, and $.agent.list()
 // lists running agents. So they are named. The built-ins are the ones the CLI
-// 2.1.294 defines with it (read from its own definitions): Explore, Plan,
-// web-fetch and comment-thread-analyst. summary-writer is core's own, which
-// runs with no CLAUDE.md and no warmup on purpose.
+// defines with it: Explore, Plan, web-fetch and comment-thread-analyst.
+// summary-writer is core's own, which runs with no CLAUDE.md and no warmup on
+// purpose. CI holds this list to the pinned CLI's definitions and to
+// agents/*.md (scripts/omit-claude-md-check.py), so drift turns CI red.
 export const OMITS_CLAUDE_MD: ReadonlySet<string> = new Set([
   'Explore',
   'Plan',
@@ -173,16 +174,28 @@ export function sectionsFor(lane: PromptLane, contributions: string | undefined)
 // section still comes before every session one. Ours already in the list (a
 // second compose of the same list) are not added twice. The engine joins the
 // sections of one side with a blank line, but sends the two sides as they
-// are, so the last of ours ends in a blank line when a session section
+// are, so the last shared section ends in a blank line when a session section
 // follows it: its last sentence would run into the next text otherwise.
+//
+// Only the last shared section carries that pad. Another plugin's hook may run
+// inside this one and pad its own section, the last shared one it saw. Ours
+// now follow that section, so its pad comes off, or the join would leave two
+// blank lines. A plugin whose hook runs outside this one must do the same to
+// ours. workbench-dev-team re-exports this function for that.
+const PAD = /\n[ \t]*\n\s*$/
+const padded = (section: PromptComposeSection): PromptComposeSection => ({ ...section, text: `${section.text.replace(/\s+$/, '')}\n\n` })
+const unpadded = (section: PromptComposeSection): PromptComposeSection => (PAD.test(section.text) ? { ...section, text: section.text.replace(/\s+$/, '') } : section)
+
 export function withShared(sections: readonly PromptComposeSection[], ours: readonly PromptComposeSection[]): PromptComposeSection[] {
   const ids = new Set(ours.map(section => section.id))
   const theirs = sections.filter(section => !ids.has(section.id))
   const cut = theirs.findIndex(section => section.scope === 'session')
   const at = cut === -1 ? theirs.length : cut
   const last = ours[ours.length - 1]
-  const placed = cut === -1 || last === undefined ? ours : [...ours.slice(0, -1), { ...last, text: `${last.text.replace(/\s+$/, '')}\n\n` }]
-  return [...theirs.slice(0, at), ...placed, ...theirs.slice(at)]
+  if (last === undefined) return [...theirs]
+  const before = theirs.slice(0, at).map((section, i) => (i === at - 1 ? unpadded(section) : section))
+  const placed = cut === -1 ? ours : [...ours.slice(0, -1), padded(last)]
+  return [...before, ...placed, ...theirs.slice(at)]
 }
 
 // What a sub-agent's SubagentStart adds: the sections' texts, or undefined

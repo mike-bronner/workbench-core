@@ -38,6 +38,11 @@
 #                              the live server — the hook must inject each hit
 #                              once), or "structured" (structuredContent only —
 #                              exercises the hook's fallback branch).
+#   FAKE_SERVER_PORT_FILE      once the port is bound and listening, write its
+#                              number to this file (whole, by rename). With
+#                              `--port 0` the kernel picks a free port at bind
+#                              time, so a test never hands the fake a port it
+#                              checked earlier and something took since.
 #
 # `serve` is a thin bash shim around an inline python3 HTTP server: python3's
 # http.server gives a real bound TCP port that bash /dev/tcp and curl can hit,
@@ -70,9 +75,11 @@ REQUIRE_TOKEN="${FAKE_SERVER_REQUIRE_TOKEN:-}"
 SEARCH_EMPTY="${FAKE_SEARCH_EMPTY:-0}"
 SEARCH_SHAPE="${FAKE_SEARCH_SHAPE:-content}"
 SEARCH_NOISE="${FAKE_SEARCH_NOISE:-0}"
+PORT_FILE="${FAKE_SERVER_PORT_FILE:-}"
 
-exec python3 - "$PORT" "$HTTP_PATH" "$SERVER_NAME" "$BIND_DELAY_MS" "$SSE" "$REQUIRE_TOKEN" "$SEARCH_EMPTY" "$SEARCH_SHAPE" "$SEARCH_NOISE" <<'PY'
+exec python3 - "$PORT" "$HTTP_PATH" "$SERVER_NAME" "$BIND_DELAY_MS" "$SSE" "$REQUIRE_TOKEN" "$SEARCH_EMPTY" "$SEARCH_SHAPE" "$SEARCH_NOISE" "$PORT_FILE" <<'PY'
 import json
+import os
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -86,6 +93,7 @@ require_token = sys.argv[6]
 search_empty = sys.argv[7] == "1"
 search_shape = sys.argv[8] if len(sys.argv) > 8 else "content"
 search_noise = len(sys.argv) > 9 and sys.argv[9] == "1"
+port_file = sys.argv[10] if len(sys.argv) > 10 else ""
 
 # Fixed session id handed back on initialize and required on every later call,
 # mirroring the real Streamable-HTTP transport's Mcp-Session-Id contract.
@@ -240,5 +248,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 httpd = HTTPServer(("127.0.0.1", port), Handler)
+# The constructor has bound and is listening, so a connect now succeeds.
+if port_file:
+    with open(port_file + ".tmp", "w") as f:
+        f.write(str(httpd.server_address[1]))
+    os.replace(port_file + ".tmp", port_file)
 httpd.serve_forever()
 PY

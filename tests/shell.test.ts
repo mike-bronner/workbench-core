@@ -598,7 +598,7 @@ describe('AC2, AC3, AC7: the shapes the first review found misread', () => {
     expect(parseShell('bash <<E\nx=(\nE\nzap now').unknowns).toContain('compound')
     expect(parseShell('bash <<E\ncase x in\nE\n(zap now)').unknowns).toContain('compound')
     // A quote or substitution left open in a body ends with it, and is unknown.
-    for (const [open, unknown] of [["'", 'quote'], ['"', 'quote'], ['$(', 'substitution'], ['`', 'substitution']]) {
+    for (const [open, unknown] of [["'", 'quote'], ['"', 'quote'], ['$(', 'substitution'], ['`', 'substitution']] as const) {
       const parse = parseShell(`bash <<E\n${open}\nE\n(zap now); echo \\${open.at(-1)}`)
       expect(parse.statements.map(s => [s.name, s.args])).toContainEqual(['zap', ['now']])
       expect(parse.unknowns).toContain(unknown)

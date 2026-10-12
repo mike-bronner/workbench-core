@@ -92,7 +92,14 @@ These fields are indexed for search: `name`, `type`, `tags`, `summary`,
 ## Writing vs editing
 
 - **`write`** — creates a new file or overwrites completely. Use for new
-  documents.
+  documents. It replaces any note already at the path, with no warning, and
+  two writers often record the same finding at the same moment. So before
+  writing a new path, `read` that exact path or `search` for the note's name.
+  If a note is there, `edit` or `append` it instead, or pick another path.
+  After the write, check `created` in its answer: `true` for a new file,
+  `false` for a replace. `false` where you meant to create is an error, never
+  a success: another writer made the note after your read, and your write
+  replaced it. Say so, and restore the lost text from the vault's history.
 - **`edit`** — targeted text replacement within an existing file. Use for
   small updates (adding a bullet, updating a date). Read the file first
   to get the correct text to replace.

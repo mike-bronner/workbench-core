@@ -48,7 +48,7 @@ import type { EngineInterface, FsEntry, InstructionFile, PromptComposeSection, R
 import type { CacheState, ChurnEvent, PaneContent, WorkbenchCallerLane, WorkbenchShellParse } from '../types'
 import { BRIEF_SLOTS, checkBrief } from './mods/brief'
 import type { CaptureNote } from './mods/capture'
-import { FIRST, REPEAT, capturePrompt, duplicateOf, isCaptureDue, isNotFound, notesOf, savedText, thresholdOf } from './mods/capture'
+import { FIRST, REPEAT, capturePrompt, duplicateOf, isCaptureDue, isNotFound, notesOf, replacedText, savedText, thresholdOf, writeOutcome } from './mods/capture'
 import type { CheckpointMode } from './mods/checkpoint'
 import { checkpointRequest, endTimeoutOf } from './mods/checkpoint'
 import { NUDGE, intakeShown } from './mods/intake'
@@ -410,10 +410,9 @@ async function delegationReminder($: EngineInterface, e: { tool: string; agentId
 // .catch, which refuses Agent because Agent is in GUARDED. The dev-team probe
 // only adds a line to a refusal, so a failed probe drops the line.
 async function dispatchVerdict($: EngineInterface, prompt: unknown): Promise<{ deny?: string; hint?: string }> {
-  // The mode is read from $.state and $.store, never through orchestratorIsOn:
-  // that answers off when no legacy file can be named (HOME unset, or a session
-  // id that cannot name a file), and a missing legacy path must not stand this
-  // gate down.
+  // The mode is read from $.state and $.store (orchestratorOn), so a legacy
+  // file that cannot be named (HOME unset, or a session id that cannot name a
+  // file) never stands this gate down.
   if ((await $.workbench.callerLane({})) !== 'main') return {}
   if ((await $.env.get('WORKBENCH_ORCHESTRATOR')) === '0' || !(await orchestratorOn($))) return {}
   const text = typeof prompt === 'string' ? prompt : ''
@@ -613,7 +612,10 @@ async function checkpointLog($: EngineInterface, sessionId: string, mode: Checkp
 // [[link]] rewrite included. A note is written only when the vault holds
 // nothing like it: a search on its name finds no duplicate (another session
 // may have saved it), and a read of its path answers a definite "not found".
-// Any other answer, an error included, skips the note.
+// Any other answer, an error included, skips the note. The write replaces any
+// note at the path, so a write that answers `created: false` replaced one
+// another session wrote after the read: that is an error, shown in a toast,
+// and the note does not count as saved (writeOutcome).
 async function captureNote($: EngineInterface, server: string, note: CaptureNote): Promise<boolean> {
   const found = await $.mcp.call(server, 'search', { query: note.frontmatter.name, limit: 3 })
   if (found.isError) return false
@@ -626,7 +628,13 @@ async function captureNote($: EngineInterface, server: string, note: CaptureNote
   if (!isNotFound(await $.mcp.call(server, 'read', { path: note.path }))) return false
   const checked = await checkVaultWrite($, { path: note.path, content: note.content, frontmatter: note.frontmatter }, 'write')
   if ('deny' in checked) return false
-  return !(await $.mcp.call(server, 'write', checked.call)).isError
+  const outcome = writeOutcome(await $.mcp.call(server, 'write', checked.call))
+  if (outcome === 'replaced') {
+    const path = typeof checked.call.path === 'string' ? checked.call.path : note.path
+    $.ui.log(`workbench capture: replaced an existing note at ${path}`, { to: 'debug' })
+    $.ui.toast(replacedText(path), { timeoutMs: 10_000 })
+  }
+  return outcome === 'created'
 }
 
 async function captureMemory($: EngineInterface): Promise<void> {
@@ -990,9 +998,18 @@ async function bashProseOf($: EngineInterface, line: string, parse: WorkbenchShe
   return 'unread' in reading ? reading.unread : reading.parts.length === 0 ? undefined : outboundRefusal($, reading.parts, home)
 }
 
+// A graphql variable (isVariable) is prose only when the query file it goes
+// with holds a mutation, so the query files are read first.
 async function outboundRefusal($: EngineInterface, parts: readonly BodyPart[], home: string | undefined): Promise<string | undefined> {
   const texts: string[] = []
-  for (const part of parts) {
+  let isMutation = false
+  for (const part of parts.filter(p => p.isVariable !== true)) {
+    const text = await bodyText($, part, home)
+    if (text === undefined) return UNREAD_BODY
+    if ('isQuery' in part && part.isQuery === true && text !== '') isMutation = true
+    texts.push(text)
+  }
+  for (const part of isMutation ? parts.filter(p => p.isVariable === true) : []) {
     const text = await bodyText($, part, home)
     if (text === undefined) return UNREAD_BODY
     texts.push(text)
@@ -1119,9 +1136,12 @@ export const register: Register = on => {
     return { value: stdout.split('\n').filter(root => root.startsWith('/')) }
   })
 
+  // The mode from $.state and $.store (orchestratorOn). A legacy file that
+  // cannot be named (HOME unset with no state dir, or a session id that cannot
+  // name a file) never means off: the legacy file only ever turns a session
+  // off, and its absence is no answer.
   on('workbench.orchestratorIsOn', async $ => {
     if ((await $.env.get('WORKBENCH_ORCHESTRATOR')) === '0') return { value: false }
-    if ((await legacyFile($)) === undefined) return { value: false }
     return { value: await orchestratorOn($) }
   })
 

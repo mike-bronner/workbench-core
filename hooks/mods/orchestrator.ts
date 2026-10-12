@@ -4,9 +4,8 @@
 // WHERE THE MODE LIVES. hooks/register.ts keeps it in $.state for the session,
 // and in $.store keyed by session id, so a resumed session in a new process
 // keeps it. The delegation reminder (hooks/mods/delegation.ts) reads it there,
-// through $.workbench.orchestratorIsOn(). The agent dispatch gate reads it from
-// $.state and $.store through orchestratorOn, and never through
-// orchestratorIsOn, so a legacy file that cannot be named never stands it down.
+// through $.workbench.orchestratorIsOn(), and the agent dispatch gate through
+// orchestratorOn. Neither reads a legacy file that cannot be named as off.
 // The retired bash gates read a legacy file:
 //
 //   ${WORKBENCH_ORCHESTRATOR_STATE_DIR:-$HOME/.claude-workbench/orchestrator-mode}/<session_id>
@@ -36,7 +35,7 @@ export const KEEP_DAYS = 7
 const DAY_MS = 24 * 60 * 60 * 1000
 
 // A session id that can name a file: anything else could walk out of the
-// state directory, and the gates stand down on it. A leading dot is refused
+// state directory, so no legacy file is named for it. A leading dot is refused
 // too: `.` and `..` name directories, and a dotfile is not a session's.
 export const isSessionId = (id: string | undefined): id is string => id !== undefined && /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(id)
 

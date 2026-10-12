@@ -199,8 +199,9 @@ export type Workbench = {
   scratchRoots: () => Promise<readonly string[]>
   // Whether orchestrator mode is on for this session: the delegation reminder
   // and the agent dispatch gate are active. False when Mike ran /orchestrator
-  // off, when WORKBENCH_ORCHESTRATOR=0, and when the session id cannot address
-  // the toggle, which is when the bash gates stand down too.
+  // off, and when WORKBENCH_ORCHESTRATOR=0. A legacy toggle file that cannot
+  // be named (HOME unset with no state dir, or a session id that cannot
+  // address it) never makes it false.
   orchestratorIsOn: () => Promise<boolean>
   // Whether nobody is there to answer, as the question rule reads it
   // (hooks/mods/lane.ts, the one definition). True when the session is not

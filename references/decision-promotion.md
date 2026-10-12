@@ -25,7 +25,7 @@ Most sessions produce zero decisions. Skipping this step is the common case.
 
 ## Decision file template
 
-Write to `decisions/YYYY-MM-DD-slug.md` via `mcp__plugin_workbench-core_memory__write`.
+Write to `decisions/YYYY-MM-DD-slug.md` via `mcp__plugin_workbench-core_memory__write`. First `read` that exact path, or `search` for the decision's name: another session may have promoted the same decision. If a note is already there, `edit` it or pick another slug. After the write, check `created` in its answer. `false` means the write replaced a note another writer had just made: that is an error, so report the path and do not write over it again.
 
 ```yaml
 ---

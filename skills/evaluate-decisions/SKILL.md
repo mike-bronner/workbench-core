@@ -63,7 +63,7 @@ Flag only items that score **poorly** on a metric, with a concrete one-line rati
 
 ## Step 2 — Write the learnings report
 
-Write via MCP `write` to `learnings/YYYY-MM-DD-eval.md` (today's date). This report is the **input contract for `propose-upgrades`** — keep the per-finding structure exact so it can be consumed:
+Write via MCP `write` to `learnings/YYYY-MM-DD-eval.md` (today's date). The memory `write` replaces any note at its path, so `read` that exact path first. If a report is already there (an earlier run today), do not replace it: write to `learnings/YYYY-MM-DD-eval-2.md`, the next free number, read the same way. After the write, check `created` in its answer. `false` means the write replaced a note another writer had just made: that is an error, so report the path and do not write over it again. This report is the **input contract for `propose-upgrades`** — keep the per-finding structure exact so it can be consumed:
 
 ```markdown
 ---

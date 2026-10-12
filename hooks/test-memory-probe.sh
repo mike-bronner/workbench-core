@@ -2,8 +2,8 @@
 # Tests for hooks/lib/memory-probe.sh — the identity-checked health probe.
 # Run directly: ./test-memory-probe.sh
 # Each case sets up a sandbox cache, optionally starts the fake server fixture on
-# a free port with a chosen serverInfo.name, and asserts memory_probe's status
-# word. No real server, no embeddings, no outbound network — only loopback to a
+# a port the kernel picks, with a chosen serverInfo.name, and asserts
+# memory_probe's status word. No real server, no embeddings, no outbound network — only loopback to a
 # python3 fake that binds in milliseconds.
 
 set -u
@@ -19,11 +19,15 @@ cleanup() {
   for p in "${FAKE_PIDS[@]:-}"; do
     [ -n "$p" ] && kill "$p" 2>/dev/null
   done
+  # Reap them, so bash reports no killed job on the way out.
+  wait 2>/dev/null
   rm -rf "$SANDBOX"
 }
 trap cleanup EXIT
 
-# Hand out a fresh loopback port per fake so cases never clash. The counter is
+# Hand out a cold loopback port, one nothing listens on, for the cases that probe
+# a dead port. A fake or a listener never takes one of these: it binds a port
+# the kernel picks (start_fake says why). The counter is
 # file-backed: next_port runs in a command substitution (a subshell), so a
 # plain shell variable increment would not persist to the parent — every call
 # would return the same port. A file survives the subshell.
@@ -54,37 +58,42 @@ next_port() {
   return 1
 }
 
-# start_fake <port> <server_name> [VAR=value ...] — launch the fixture and wait
-# for it to actually accept connections (bounded), so the test never races bind.
+# start_fake <server_name> [VAR=value ...] — launch the fixture on a port the
+# kernel picks at bind time (--port 0), and set FAKE_PORT to the port it bound.
 # Extra `VAR=value` knobs (e.g. FAKE_SERVER_SSE=1) are passed THROUGH `env`, not
 # as a bash command prefix: an assignment arriving via "$@" expansion is parsed
 # as a command NAME (→ "command not found"), so the fixture would never launch.
 # `env VAR=value … cmd` interprets the assignments correctly.
+#
+# THE RACE THIS REMOVES (C3e, CI run 37937864183). This used to take a port
+# from next_port and wait up to ~6 s for it to LISTEN, then go on regardless.
+# next_port only proves that nothing listens on a port. That is not proof the
+# fake can bind it: the band sits inside Linux's ephemeral range (32768-60999),
+# and a loopback socket left there by an earlier connection can hold the port.
+# The fake then died at bind, the wait ran out (the failing case took 9.8 s
+# against ~0.12 s for its neighbours), and the probe met a dead port: DOWN_NONE
+# where DOWN_FOREIGN was due. Now the kernel picks the port as it binds, the
+# fake reports it once it listens, and a fake that exits or never reports fails
+# the suite here, by name, instead of letting a probe run against nothing.
+FAKE_SEQ=0
 start_fake() {
-  local port="$1" name="$2"; shift 2
-  env MARKDOWN_VAULT_MCP_SERVER_NAME="$name" "$@" \
-    bash "$FAKE" serve --transport http --host 127.0.0.1 --port "$port" --http-path /mcp \
-    >/dev/null 2>&1 &
+  local name="$1"; shift
+  FAKE_SEQ=$((FAKE_SEQ + 1))
+  local port_file="$SANDBOX/.fake-port.$FAKE_SEQ"
+  env MARKDOWN_VAULT_MCP_SERVER_NAME="$name" FAKE_SERVER_PORT_FILE="$port_file" "$@" \
+    bash "$FAKE" serve --transport http --host 127.0.0.1 --port 0 --http-path /mcp \
+    >/dev/null 2>"$port_file.err" &
   local pid=$!
   FAKE_PIDS+=("$pid")
-  # Wait up to ~6s for the port to actually LISTEN. Use the socket table as the
-  # readiness ground truth, not a bash /dev/tcp connect: /dev/tcp connects can
-  # spuriously fail under a restricted-network sandbox even while the port is
-  # genuinely bound, which would let the probe run before the fixture is
-  # reachable. lsof ships with macOS; a stock Arch/Omarchy box has `ss` instead,
-  # so probe for whichever exists rather than assuming lsof.
   local i=0
-  while [ "$i" -lt 120 ]; do
-    if command -v lsof >/dev/null 2>&1; then
-      lsof -nP -iTCP:"$port" -sTCP:LISTEN -t >/dev/null 2>&1 && return 0
-    elif command -v ss >/dev/null 2>&1; then
-      ss -Hltn "sport = :$port" 2>/dev/null | grep -q . && return 0
-    else
-      return 0   # no socket tool at all — fall through to the caller's own wait
+  while [ ! -s "$port_file" ]; do
+    if ! kill -0 "$pid" 2>/dev/null || [ "$i" -ge 120 ]; then
+      echo "  ❌ FATAL: fake '$name' never reported a listening port: $(tail -n 1 "$port_file.err" 2>/dev/null)"
+      exit 1
     fi
     i=$((i + 1)); sleep 0.05
   done
-  return 0
+  FAKE_PORT=$(cat "$port_file")
 }
 
 # probe <cache> <port> <name> — run memory_probe with the given resolved env.
@@ -124,6 +133,23 @@ assert_status "the port it handed out is free" \
   "$(port_is_free "$GOT" && echo free || echo taken)" "free"
 kill "$ALLOC_SQUAT" 2>/dev/null
 
+echo "start_fake — a fake that dies is a loud stop, never a probe of a dead port:"
+# The C3e race: a fake that died at bind used to fall through to the probe,
+# which then read DOWN_NONE. FAKE_SERVER_REFUSE=1 makes the fixture exit
+# before it binds. start_fake must end the (sub)shell with FATAL, at once.
+stop_of() {
+  local out="$1"
+  if [ "${out#*fell through}" != "$out" ]; then echo fell-through
+  elif [ "${out#*FATAL}" != "$out" ]; then echo stopped
+  else echo no-fatal
+  fi
+}
+OUT=$( (start_fake myvault FAKE_SERVER_REFUSE=1; echo "fell through") 2>&1 )
+assert_status "a fake that exits before it binds stops the suite" "$(stop_of "$OUT")" "stopped"
+start_fake myvault; P=$FAKE_PORT
+assert_status "a live fake reports the port it listens on" \
+  "$( (exec 3<>"/dev/tcp/127.0.0.1/$P") 2>/dev/null && echo listening || echo dead)" "listening"
+
 echo "DOWN_NONE — nothing listening, no failure marker:"
 CACHE="$SANDBOX/none"; mkdir -p "$CACHE"
 assert_status "cold port reports DOWN_NONE" "$(probe "$CACHE" "$(next_port)" myvault)" "DOWN_NONE"
@@ -134,7 +160,7 @@ assert_status "failed-spawn port reports DOWN_FAILED" "$(probe "$CACHE" "$(next_
 
 echo "BUILDING — our vault answers, but the index sqlite isn't on disk yet:"
 CACHE="$SANDBOX/building"; mkdir -p "$CACHE"
-P=$(next_port); start_fake "$P" myvault
+start_fake myvault; P=$FAKE_PORT
 assert_status "identity match + no index → BUILDING" "$(probe "$CACHE" "$P" myvault)" "BUILDING"
 
 echo "UP — our vault answers and the index sqlite exists:"
@@ -143,28 +169,34 @@ assert_status "identity match + index present → UP" "$(probe "$CACHE" "$P" myv
 
 echo "DOWN_FOREIGN — a server is up but it is a DIFFERENT vault:"
 CACHE="$SANDBOX/foreign"; mkdir -p "$CACHE"
-P=$(next_port); start_fake "$P" some-other-vault
+start_fake some-other-vault; P=$FAKE_PORT
 assert_status "serverInfo.name mismatch → DOWN_FOREIGN" "$(probe "$CACHE" "$P" myvault)" "DOWN_FOREIGN"
 
 echo "DOWN_FOREIGN — a non-MCP process squats the port:"
 CACHE="$SANDBOX/squatter"; mkdir -p "$CACHE"
-P=$(next_port)
 # A plain TCP listener that accepts connections but answers nothing meaningful:
 # the probe's TCP pre-filter passes (port is open), but initialize gets no valid
 # response → DOWN_FOREIGN. Accept in a loop with a real backlog so repeated
-# connects (readiness check, then the probe itself) all succeed.
-python3 -c 'import socket,sys,time
+# connects all succeed. It binds a port the kernel picks (0) and writes it once
+# it listens, for the same reason start_fake does.
+python3 -c 'import os,socket,sys,time
 s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-s.bind(("127.0.0.1",int(sys.argv[1]))); s.listen(16)
+s.bind(("127.0.0.1",0)); s.listen(16)
+open(sys.argv[1]+".tmp","w").write(str(s.getsockname()[1])); os.replace(sys.argv[1]+".tmp",sys.argv[1])
 end=time.time()+10
 while time.time()<end:
     s.settimeout(end-time.time())
     try:
         c,_=s.accept(); c.close()
     except OSError:
-        break' "$P" >/dev/null 2>&1 &
-FAKE_PIDS+=("$!")
-i=0; while [ "$i" -lt 60 ]; do (exec 3<>"/dev/tcp/127.0.0.1/$P") 2>/dev/null && { exec 3>&- 2>/dev/null; break; }; i=$((i+1)); sleep 0.05; done
+        break' "$CACHE/.port" >/dev/null 2>&1 &
+SQUAT=$!; FAKE_PIDS+=("$SQUAT")
+i=0
+while [ ! -s "$CACHE/.port" ]; do
+  if ! kill -0 "$SQUAT" 2>/dev/null || [ "$i" -ge 120 ]; then echo "  ❌ FATAL: the squatter never reported a listening port"; exit 1; fi
+  i=$((i + 1)); sleep 0.05
+done
+P=$(cat "$CACHE/.port")
 assert_status "non-MCP squatter → DOWN_FOREIGN" "$(probe "$CACHE" "$P" myvault)" "DOWN_FOREIGN"
 
 echo "PORT_DRIFT — recorded server.port differs from the configured port:"
@@ -178,7 +210,7 @@ echo "SSE framing — server answers initialize as text/event-stream (event:/dat
 # The probe must strip the framing lines before jq, or a healthy server is
 # misclassified DOWN_FOREIGN. Drive the fixture's SSE path and assert UP.
 CACHE="$SANDBOX/sse"; mkdir -p "$CACHE"
-P=$(next_port); start_fake "$P" myvault FAKE_SERVER_SSE=1; touch "$CACHE/vault-index.sqlite"
+start_fake myvault FAKE_SERVER_SSE=1; P=$FAKE_PORT; touch "$CACHE/vault-index.sqlite"
 assert_status "SSE-framed initialize → UP (not DOWN_FOREIGN)" "$(probe "$CACHE" "$P" myvault)" "UP"
 
 echo "bearer token actually reaches the server (token-validating fixture):"
@@ -189,15 +221,15 @@ echo "bearer token actually reaches the server (token-validating fixture):"
 TOK='s3cr3t-probe-token'
 
 CACHE="$SANDBOX/auth-ok"; mkdir -p "$CACHE"; printf '%s' "$TOK" > "$CACHE/server.token"
-P=$(next_port); start_fake "$P" myvault FAKE_SERVER_REQUIRE_TOKEN="$TOK"; touch "$CACHE/vault-index.sqlite"
+start_fake myvault FAKE_SERVER_REQUIRE_TOKEN="$TOK"; P=$FAKE_PORT; touch "$CACHE/vault-index.sqlite"
 assert_status "correct token reaches the server → UP" "$(probe "$CACHE" "$P" myvault)" "UP"
 
 CACHE="$SANDBOX/auth-missing"; mkdir -p "$CACHE"   # no server.token at all
-P=$(next_port); start_fake "$P" myvault FAKE_SERVER_REQUIRE_TOKEN="$TOK"; touch "$CACHE/vault-index.sqlite"
+start_fake myvault FAKE_SERVER_REQUIRE_TOKEN="$TOK"; P=$FAKE_PORT; touch "$CACHE/vault-index.sqlite"
 assert_status "missing token → 401 → DOWN_FOREIGN" "$(probe "$CACHE" "$P" myvault)" "DOWN_FOREIGN"
 
 CACHE="$SANDBOX/auth-wrong"; mkdir -p "$CACHE"; printf 'not-the-token' > "$CACHE/server.token"
-P=$(next_port); start_fake "$P" myvault FAKE_SERVER_REQUIRE_TOKEN="$TOK"; touch "$CACHE/vault-index.sqlite"
+start_fake myvault FAKE_SERVER_REQUIRE_TOKEN="$TOK"; P=$FAKE_PORT; touch "$CACHE/vault-index.sqlite"
 assert_status "wrong token → 401 → DOWN_FOREIGN" "$(probe "$CACHE" "$P" myvault)" "DOWN_FOREIGN"
 
 echo "no token under set -u — must not abort (bash 3.2 empty-array regression):"
@@ -208,7 +240,7 @@ echo "no token under set -u — must not abort (bash 3.2 empty-array regression)
 # config and builds no array at all. Run the probe under `bash -u` with NO
 # server.token and assert it still reaches UP instead of aborting mid-probe.
 CACHE="$SANDBOX/notoken"; mkdir -p "$CACHE"
-P=$(next_port); start_fake "$P" myvault; touch "$CACHE/vault-index.sqlite"
+start_fake myvault; P=$FAKE_PORT; touch "$CACHE/vault-index.sqlite"
 GOT=$(CACHE_PATH="$CACHE" MEMORY_PORT="$P" MCP_NAME=myvault \
   bash -uc '. "'"$PROBE_LIB"'"; memory_probe')
 assert_status "no token + set -u → UP (no abort)" "$GOT" "UP"
@@ -239,7 +271,7 @@ fi
 
 echo "exit code mirrors health (0 for up, non-zero for down):"
 CACHE="$SANDBOX/rc"; mkdir -p "$CACHE"
-P=$(next_port); start_fake "$P" myvault; touch "$CACHE/vault-index.sqlite"
+start_fake myvault; P=$FAKE_PORT; touch "$CACHE/vault-index.sqlite"
 CACHE_PATH="$CACHE" MEMORY_PORT="$P" MCP_NAME=myvault bash -c '. "'"$PROBE_LIB"'"; memory_probe >/dev/null'
 [ "$?" -eq 0 ] && { PASS=$((PASS+1)); echo "  ✅ UP exits 0"; } || { FAIL=$((FAIL+1)); echo "  ❌ UP should exit 0"; }
 CACHE_PATH="$SANDBOX/none" MEMORY_PORT=18701 MCP_NAME=myvault bash -c '. "'"$PROBE_LIB"'"; memory_probe >/dev/null'

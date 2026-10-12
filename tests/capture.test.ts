@@ -8,7 +8,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { DUPLICATE_SCORE, MAX_NOTES, RRF_CEILING, capturePrompt, isCaptureDue, isNotFound, notesOf, thresholdOf } from '../hooks/mods/capture'
+import { DUPLICATE_SCORE, MAX_NOTES, RRF_CEILING, capturePrompt, isCaptureDue, isNotFound, notesOf, replacedText, thresholdOf, writeOutcome } from '../hooks/mods/capture'
 import type { World } from './memory-world'
 import { SERVER, memoryWorld, prompt, start, turn } from './memory-world'
 
@@ -123,6 +123,43 @@ describe('AC3: durable memory is captured with no visible turn and no prompt', (
     await turns($, w, 5)
     expect(writes(w)).toEqual([])
     expect(w.toasts).toEqual([])
+  })
+
+  // C3l: the write replaces any note at its path, so a note another session
+  // wrote after the read is lost to this write. created:false says so.
+  test('a write that answers created:false replaced another session\'s note: an error toast, and no save', async ($, on) => {
+    const w = memoryWorld(on)
+    w.fork = answered(JSON.stringify([NOTE]))
+    w.writeAnswer = 'replaced'
+    await $.session.start(start())
+    await turns($, w, 5)
+    expect(writes(w)).toHaveLength(1)
+    expect(w.toasts).toEqual([replacedText('decisions/2026-10-07-checkpoint-each-turn.md')])
+    expect(w.toasts.join('\n')).not.toContain('saved')
+  })
+
+  for (const writeAnswer of ['no-flag', 'error'] as const) {
+    test(`a write that answers ${writeAnswer === 'error' ? 'an error' : 'with no created flag'} is no save`, async ($, on) => {
+      const w = memoryWorld(on)
+      w.fork = answered(JSON.stringify([NOTE]))
+      w.writeAnswer = writeAnswer
+      await $.session.start(start())
+      await turns($, w, 5)
+      expect(writes(w)).toHaveLength(1)
+      expect(w.toasts).toEqual([])
+    })
+  }
+
+  test('writeOutcome reads the created flag, and nothing else counts as a save', () => {
+    const answer = (text: string, isError = false) => ({ isError, content: [{ type: 'text', text }] })
+    expect(writeOutcome(answer('{"path":"a.md","created":true}'))).toBe('created')
+    expect(writeOutcome(answer('{"path":"a.md","created":false}'))).toBe('replaced')
+    expect(writeOutcome(answer('{"path":"a.md"}'))).toBe('unconfirmed')
+    expect(writeOutcome(answer('{"created":"true"}'))).toBe('unconfirmed')
+    expect(writeOutcome(answer('not json'))).toBe('unconfirmed')
+    expect(writeOutcome(answer('null'))).toBe('unconfirmed')
+    expect(writeOutcome(answer('{"created":true}', true))).toBe('unconfirmed')
+    expect(writeOutcome({ isError: false, content: [{ type: 'text', text: 'note' }, { type: 'text', text: '{"created":true}' }] })).toBe('created')
   })
 
   for (const readFails of ['error', 'reject'] as const) {

@@ -15,9 +15,8 @@
 // helper dispatch and a top-level `claude -p --agent` run (which carries the
 // review-lens fan-out and the scheduled pipeline) are not. WORKBENCH_ORCHESTRATOR=0
 // and /orchestrator off stand the gate down. The gate reads the mode from
-// $.state and $.store through orchestratorOn in hooks/register.ts, and never
-// through $.workbench.orchestratorIsOn(), which answers off when no legacy
-// file can be named.
+// $.state and $.store through orchestratorOn in hooks/register.ts, so a
+// legacy file that cannot be named never stands it down.
 // A blank prompt, and the two machine-built shapes `Item ID: <n>` and
 // `Repo sweep: <owner/repo>`, pass: briefCheck names them by their shape.
 //

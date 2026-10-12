@@ -18,7 +18,7 @@ Read before drafting (a proposal must obey these):
 ## Step 1 — Load the evaluation and the rejection ledger
 
 1. **Find the source report.** If the user passed a path, use it. Else read the most recent `learnings/YYYY-MM-DD-eval.md`. If none exists, stop and tell the user to run `/workbench-core:evaluate-decisions` first.
-2. **Load the rejection ledger** `proposals/rejected.md` (create lazily if absent). It records previously-rejected proposals so the same one is never re-surfaced. Before drafting, note its entries.
+2. **Load the rejection ledger** `proposals/rejected.md` (create lazily if absent: decide it is absent by a `read` of that path, and `edit` it once it exists, never `write` it again). After the write, check `created` in its answer. `false` means the write replaced a note another writer had just made: that is an error, so report the path and do not write over it again. It records previously-rejected proposals so the same one is never re-surfaced. Before drafting, note its entries.
 3. If the latest report has `status: signed-off` already and the user didn't pass a new one, say so and stop — there is nothing new to propose.
 
 ## Step 2 — Draft proposals (Propose)
@@ -40,7 +40,7 @@ For each proposal capture: the exact target path, the precise proposed write/edi
 
 ## Step 3 — Write the proposal digest (the review queue)
 
-Write via MCP `write` to `proposals/YYYY-MM-DD.md`. The digest **is** the sign-off review queue — each item carries an explicit decision box and status, so the file is the durable record of what was proposed and what the user decided:
+Write via MCP `write` to `proposals/YYYY-MM-DD.md`. The memory `write` replaces any note at its path, so `read` that exact path first. If a digest is already there (an earlier run today), `edit` it to add this run's items rather than replace it. After the write, check `created` in its answer. `false` means the write replaced a note another writer had just made: that is an error, so report the path and do not write over it again. The digest **is** the sign-off review queue — each item carries an explicit decision box and status, so the file is the durable record of what was proposed and what the user decided:
 
 ```markdown
 ---
@@ -85,7 +85,7 @@ Phase 1 has **no auto-accept** — every proposal goes through a question. The u
 
 ## Step 5 — Apply approved proposals
 
-- **Vault memory** (`correction`, `new-process`, `promote` staying in the vault): apply via MCP `edit` (corrections — never overwrite a doc to change one field) or `write` (new `feedback` doc with proper frontmatter per `vault-conventions.md`). Cross-link to the evidence and the source evaluation per `linking-synthesis.md`.
+- **Vault memory** (`correction`, `new-process`, `promote` staying in the vault): apply via MCP `edit` (corrections — never overwrite a doc to change one field) or `write` (new `feedback` doc with proper frontmatter per `vault-conventions.md`). Before a new doc's `write`, `read` its path or `search` for its name. If a note is there, `edit` it or pick another path. After the write, check `created` in its answer. `false` means the write replaced a note another writer had just made: that is an error, so report the path and do not write over it again. Cross-link to the evidence and the source evaluation per `linking-synthesis.md`.
 - **Repo files** (`claude-md-rule`, `new-skill`, a `promote` landing in `CLAUDE.md`): do not edit them from this context. A repository change is development work, so it goes to Dr. Watson in Direct mode through `/workbench-dev-team:orchestrate`, with a six-slot brief. `Workdir:` is the repository. `Goal:` is the approved change in behaviour. `Context:` quotes the approved proposal and its evidence. `Acceptance:` lists the behaviour the approved proposal asks for, as criteria the change is graded against. `Done when:` is the change made and tested, with the tree left uncommitted. Watson hands back the diff and a proposed message. Once the user has reviewed the tree, the orchestrator asks them to approve the commit through `AskUserQuestion`, as one question on its own. Their answer is the approval. The permission prompt that follows is only a backstop. If `workbench-dev-team` is not installed, report each approved repo change with the file it belongs in, and leave it for the user. This skill's sign-off governs *what gets learned*. It never replaces review of the code change.
 - **`skill-learning`**: hand the entry to `/workbench-core:compact-learnings` for integration into the `SKILL.md` (don't reimplement that flow here).
 - Update each applied item's `Status` in the digest as you go, so the digest stays an accurate ledger.

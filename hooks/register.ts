@@ -53,12 +53,14 @@ import type { CheckpointMode } from './mods/checkpoint'
 import { checkpointRequest, endTimeoutOf } from './mods/checkpoint'
 import { NUDGE, intakeShown } from './mods/intake'
 import { learningsPath, withLearnings } from './mods/learnings'
+import type { PromptLane } from './mods/prompt-rules'
 import {
   HARNESS_MEMORY,
   OMITS_CLAUDE_MD,
   contributionPathsOf,
   contributionsOf,
   promptLaneOf,
+  rulesOwnersOf,
   sectionsFor,
   splicedBodiesOf,
   subagentContextOf,
@@ -722,29 +724,35 @@ async function vaultRoot($: EngineInterface): Promise<string | undefined> {
   return vaultRootMemo
 }
 
-// The workbench sections for this load (hooks/mods/prompt-rules.ts), read once
-// and kept: every prompt.compose and SubagentStart answers from the one
-// reading, so the bytes cannot change within a load. session.start reads them
-// again, as a reload does. A reading that fails gives the rules alone, the
-// agent lane's set: losing the rules is the worse failure, and a lane that
-// cannot be read may be an unattended one, which gets no memory routing.
-let sectionsMemo: Promise<PromptComposeSection[]> | undefined
-function workbenchSections($: EngineInterface): Promise<PromptComposeSection[]> {
-  sectionsMemo ??= readSections($).catch(() => sectionsFor('agent', undefined))
-  return sectionsMemo
+// The workbench sections for this load (hooks/mods/prompt-rules.ts): the lane
+// and each sibling plugin's session-warmup.md, read once and kept, so every
+// prompt.compose and SubagentStart answers from the one reading and the bytes
+// cannot change within a load. session.start reads them again, as a reload
+// does. A reading that fails gives the rules alone, the agent lane's set:
+// losing the rules is the worse failure, and a lane that cannot be read may be
+// an unattended one, which gets no memory routing.
+type SectionsReading = { lane: PromptLane; contributions: { plugin: string; text: string | undefined }[] }
+let sectionsMemo: Promise<SectionsReading> | undefined
+// The plugins that sent a `<plugin>:rules` section of their own at the last
+// compose. A sub-agent's start reads it, since its context names no section.
+let rulesOwners: ReadonlySet<string> = new Set()
+async function workbenchSections($: EngineInterface, owners: ReadonlySet<string> = rulesOwners): Promise<PromptComposeSection[]> {
+  sectionsMemo ??= readSections($).catch((): SectionsReading => ({ lane: 'agent', contributions: [] }))
+  const { lane, contributions } = await sectionsMemo
+  return sectionsFor(lane, contributionsOf(contributions.filter(({ plugin }) => !owners.has(plugin)).map(({ text }) => text)))
 }
 
 // The lane from the environment, and each sibling plugin's session-warmup.md.
 // A file that cannot be read is left out, and the rules stand without it.
-async function readSections($: EngineInterface): Promise<PromptComposeSection[]> {
+async function readSections($: EngineInterface): Promise<SectionsReading> {
   const lane = promptLaneOf(await $.env.get('WORKBENCH_SKIP_WARMUP'), await $.env.get('CLAUDE_CODE_AGENT'))
-  if (lane === 'none') return []
+  if (lane === 'none') return { lane, contributions: [] }
   const home = await $.env.get('HOME')
   const installed = home ? await readIfAny($, `${home}/.claude/plugins/installed_plugins.json`) : undefined
-  const paths = installed === undefined ? [] : contributionPathsOf(installed)
-  const texts: (string | undefined)[] = []
-  for (const path of paths) texts.push(await readIfAny($, path))
-  return sectionsFor(lane, contributionsOf(texts))
+  const sources = installed === undefined ? [] : contributionPathsOf(installed)
+  const contributions: SectionsReading['contributions'] = []
+  for (const { plugin, path } of sources) contributions.push({ plugin, text: await readIfAny($, path) })
+  return { lane, contributions }
 }
 
 const readIfAny = async ($: EngineInterface, path: string): Promise<string | undefined> =>
@@ -1402,7 +1410,8 @@ export const register: Register = on => {
   // session one. The answer is the same bytes on every render of the load.
   on('prompt.compose', async ($, e, next) => {
     const result = await next(e)
-    const ours = await workbenchSections($)
+    rulesOwners = rulesOwnersOf(result.sections)
+    const ours = await workbenchSections($, rulesOwners)
     return ours.length === 0 ? result : { sections: withShared(result.sections, ours) }
   })
 
@@ -1434,10 +1443,11 @@ export const register: Register = on => {
 
   // A sub-agent's system prompt is its own, so it gets the rules as context at
   // its start: its parent's sections, as the CLAUDE.md block and the router
-  // stub reached it before. An agent that leaves CLAUDE.md out gets none.
+  // stub reached it before. An agent that leaves CLAUDE.md out gets none, and
+  // so does a fork: it inherits its parent's system prompt, rules included.
   on('classic.SubagentStart', async ($, e, next) => {
     const result = await next(e)
-    if (OMITS_CLAUDE_MD.has(e.agent_type)) return result
+    if (OMITS_CLAUDE_MD.has(e.agent_type) || e.agent_type === 'fork') return result
     const text = subagentContextOf(await workbenchSections($))
     return text === undefined ? result : { ...result, additionalContext: [...(result.additionalContext ?? []), text] }
   })

@@ -30,7 +30,8 @@
 // A sub-agent gets its parent's set through SubagentStart, as the CLAUDE.md
 // block and the router stub reached the sub-agents that load CLAUDE.md. An
 // agent that leaves CLAUDE.md out (OMITS_CLAUDE_MD: Explore, Plan and the
-// rest) never saw either, and gets none.
+// rest) never saw either, and gets none. A fork inherits its parent's system
+// prompt, so it gets none either.
 //
 // The block an older warmup left in ~/.claude/CLAUDE.md is left out of the
 // first message at render time (splicedBodiesOf, withoutSplice), so the rules
@@ -121,9 +122,10 @@ export function promptLaneOf(skipWarmup: string | undefined, agent: string | und
 
 // Where each sibling plugin's session-warmup.md is, from the text of
 // ~/.claude/plugins/installed_plugins.json: every plugin of the claude-workbench
-// marketplace but this one, in the file's order, at its active install path.
-// A file that does not parse, or names no install path, gives none.
-export function contributionPathsOf(installed: string): string[] {
+// marketplace but this one, in the file's order, at its active install path,
+// with the plugin's name. A file that does not parse, or names no install
+// path, gives none.
+export function contributionPathsOf(installed: string): { plugin: string; path: string }[] {
   let parsed: unknown
   try {
     parsed = JSON.parse(installed)
@@ -132,13 +134,22 @@ export function contributionPathsOf(installed: string): string[] {
   }
   const plugins = (parsed as { plugins?: unknown } | null)?.plugins
   if (typeof plugins !== 'object' || plugins === null) return []
-  const paths: string[] = []
+  const paths: { plugin: string; path: string }[] = []
   for (const [key, installs] of Object.entries(plugins)) {
     if (!key.endsWith('@claude-workbench') || key.startsWith('workbench-core@')) continue
     const path = Array.isArray(installs) ? (installs[0] as { installPath?: unknown } | undefined)?.installPath : undefined
-    if (typeof path === 'string' && path.startsWith('/')) paths.push(`${path.replace(/\/+$/, '')}/session-warmup.md`)
+    if (typeof path === 'string' && path.startsWith('/')) paths.push({ plugin: key.slice(0, -'@claude-workbench'.length), path: `${path.replace(/\/+$/, '')}/session-warmup.md` })
   }
   return paths
+}
+
+// The plugins that send their rules as a section of their own,
+// `<plugin>:rules`, among the sections a compose answered. Such a plugin's
+// session-warmup.md is left out of the contributions, so its rules go out
+// once whichever of the two a release ships. The installed copy can be older
+// than the one that runs, so the file's presence alone says nothing.
+export function rulesOwnersOf(sections: readonly PromptComposeSection[]): ReadonlySet<string> {
+  return new Set(sections.flatMap(section => (section.id.endsWith(':rules') && section.id !== RULES_ID ? [section.id.slice(0, -':rules'.length)] : [])))
 }
 
 // The contributions as one section's text, blank-line separated, or undefined
@@ -160,13 +171,18 @@ export function sectionsFor(lane: PromptLane, contributions: string | undefined)
 
 // The engine's sections with ours after its last `shared` one, so every shared
 // section still comes before every session one. Ours already in the list (a
-// second compose of the same list) are not added twice.
+// second compose of the same list) are not added twice. The engine joins the
+// sections of one side with a blank line, but sends the two sides as they
+// are, so the last of ours ends in a blank line when a session section
+// follows it: its last sentence would run into the next text otherwise.
 export function withShared(sections: readonly PromptComposeSection[], ours: readonly PromptComposeSection[]): PromptComposeSection[] {
   const ids = new Set(ours.map(section => section.id))
   const theirs = sections.filter(section => !ids.has(section.id))
   const cut = theirs.findIndex(section => section.scope === 'session')
   const at = cut === -1 ? theirs.length : cut
-  return [...theirs.slice(0, at), ...ours, ...theirs.slice(at)]
+  const last = ours[ours.length - 1]
+  const placed = cut === -1 || last === undefined ? ours : [...ours.slice(0, -1), { ...last, text: `${last.text.replace(/\s+$/, '')}\n\n` }]
+  return [...theirs.slice(0, at), ...placed, ...theirs.slice(at)]
 }
 
 // What a sub-agent's SubagentStart adds: the sections' texts, or undefined

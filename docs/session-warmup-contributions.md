@@ -56,11 +56,16 @@ Mechanics worth knowing:
 - **Placement** is after core's own rules and memory routing, and before every
   per-session section of the system prompt.
 - **Lanes.** The main loop, `claude -p` and a top-level `--agent` run get it. A
-  summary-writer does not. A sub-agent gets its parent's copy at its start.
+  summary-writer does not. A sub-agent gets its parent's copy at its start. A
+  fork gets none, because it inherits its parent's system prompt.
 - **It is read once per load.** Every render in a session gets the same bytes. A
   plugin update reaches the next session, or the next reload.
 - **Uninstall is self-healing.** Removing your plugin removes your
   contribution from the next session on.
+- **A plugin with its own rules section is skipped.** When a plugin's hooks
+  module sends a `<plugin>:rules` section in `prompt.compose`, core leaves that
+  plugin's `session-warmup.md` out, so its rules go out once. Core sees only
+  the sections composed beneath its own hook.
 - **Missing or unreadable file = skipped**, silently. There is no error path,
   and no need for a guard.
 - **Up to 0.44, core spliced the contributions into `~/.claude/CLAUDE.md`**,

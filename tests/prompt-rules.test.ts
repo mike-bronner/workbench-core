@@ -23,6 +23,7 @@ import {
   contributionPathsOf,
   contributionsOf,
   promptLaneOf,
+  rulesOwnersOf,
   sectionsFor,
   splicedBodiesOf,
   withShared,
@@ -54,13 +55,13 @@ const INSTALLED_JSON = installed({
   'workbench-bujo@claude-workbench': [{ installPath: BUJO }],
 })
 
-type Engine = { files: Map<string, string>; clock: MockClock }
+type Engine = { files: Map<string, string>; clock: MockClock; beneath: PromptComposeSection[] }
 
 // The engine beneath the module. Its own prompt carries the date in a session
 // section, as the engine's environment section does, so a date change moves a
 // session section and never a shared one.
 function engine(on: On, env: Record<string, string> = {}): Engine {
-  const g: Engine = { files: new Map(), clock: mock.clock(on, { now: BEFORE_MIDNIGHT }) }
+  const g: Engine = { files: new Map(), clock: mock.clock(on, { now: BEFORE_MIDNIGHT }), beneath: [] }
   g.files.set(INSTALLED, INSTALLED_JSON)
   g.files.set(`${DEV_TEAM}/session-warmup.md`, DEV_TEAM_TEXT)
   g.files.set(`${BUJO}/session-warmup.md`, BUJO_TEXT)
@@ -85,6 +86,7 @@ function engine(on: On, env: Record<string, string> = {}): Engine {
     sections: [
       { id: 'intro', text: 'You are Claude Code.', scope: 'shared' as const },
       { id: 'tools', text: 'Use the tools.', scope: 'shared' as const },
+      ...g.beneath,
       { id: 'env_info_simple', text: `Today's date is ${new Date(g.clock.now()).toISOString().slice(0, 10)}.`, scope: 'session' as const },
       { id: 'context_management', text: 'Context is managed.', scope: 'session' as const },
     ],
@@ -143,6 +145,26 @@ describe('AC1: the workbench rules are shared sections, byte-identical across a 
     expect(withShared(first.sections, ours)).toEqual(first.sections)
   })
 
+  // The engine joins the sections of one side with a blank line and sends the
+  // two sides as they are, so the text at the cache boundary needs its own.
+  test('every section boundary in the composed text is a blank line', async ($, on) => {
+    const g = engine(on)
+    g.files.delete(`${DEV_TEAM}/session-warmup.md`)
+    g.files.delete(`${BUJO}/session-warmup.md`)
+    await $.session.start(start(true))
+    const { sections } = await $.prompt.compose(COMPOSE)
+    const side = (scope: string): string => sections.filter(section => section.scope === scope).map(section => section.text).join('\n\n')
+    const rendered = side('shared') + side('session')
+    for (const [i, section] of sections.slice(1).entries()) {
+      const before = sections[i]?.text.replace(/\n+$/, '') ?? ''
+      expect(rendered).toContain(`${before}\n\n${section.text}`)
+    }
+    // Core alone: the memory routing is the last shared section, and its last
+    // sentence stands apart from the session side.
+    expect(rendered).toContain("will not arrive on its own.\n\nToday's date")
+    expect(MEMORY.endsWith('will not arrive on its own.')).toBe(true)
+  })
+
   test('a list with no session section takes ours at its end', () => {
     const theirs: PromptComposeSection[] = [{ id: 'bare', text: 'x', scope: 'shared' }]
     expect(ids(withShared(theirs, sectionsFor('agent', undefined)))).toEqual(['bare', RULES_ID])
@@ -192,7 +214,7 @@ describe('the plugin contributions: each sibling plugin session-warmup.md, once'
     engine(on)
     await $.session.start(start(true))
     const plugins = (await $.prompt.compose(COMPOSE)).sections.find(section => section.id === PLUGINS_ID)
-    expect(plugins?.text).toBe(`${DEV_TEAM_TEXT.trim()}\n\n${BUJO_TEXT.trim()}`)
+    expect(plugins?.text.trimEnd()).toBe(`${DEV_TEAM_TEXT.trim()}\n\n${BUJO_TEXT.trim()}`)
     expect(plugins?.text).not.toContain('CORE-OWN-CANARY')
     expect(plugins?.text).not.toContain('OTHER-MARKETPLACE-CANARY')
   })
@@ -201,7 +223,7 @@ describe('the plugin contributions: each sibling plugin session-warmup.md, once'
     const g = engine(on)
     g.files.delete(`${DEV_TEAM}/session-warmup.md`)
     await $.session.start(start(true))
-    expect((await $.prompt.compose(COMPOSE)).sections.find(section => section.id === PLUGINS_ID)?.text).toBe(BUJO_TEXT.trim())
+    expect((await $.prompt.compose(COMPOSE)).sections.find(section => section.id === PLUGINS_ID)?.text.trimEnd()).toBe(BUJO_TEXT.trim())
     g.files.delete(`${BUJO}/session-warmup.md`)
     await $.session.start(start(true))
     expect(ids((await $.prompt.compose(COMPOSE)).sections)).toEqual(['intro', 'tools', RULES_ID, MEMORY_ID, 'env_info_simple', 'context_management'])
@@ -217,9 +239,41 @@ describe('the plugin contributions: each sibling plugin session-warmup.md, once'
     expect(ids(shared((await $.prompt.compose(COMPOSE)).sections))).toEqual(['intro', 'tools', RULES_ID, MEMORY_ID])
   })
 
+  // A plugin that sends its rules as a `<plugin>:rules` section of its own
+  // would send them twice if its session-warmup.md went out as well. The
+  // installed copy may be older than the one that runs, so the file is still
+  // there to read.
+  test('a plugin with its own rules section and a session-warmup.md contributes its rules once: the file is left out', async ($, on) => {
+    const g = engine(on)
+    g.beneath = [{ id: 'workbench-dev-team:rules', text: DEV_TEAM_TEXT.trim(), scope: 'shared' }]
+    await $.session.start(start(true))
+    const { sections } = await $.prompt.compose(COMPOSE)
+    expect(sections.find(section => section.id === PLUGINS_ID)?.text.trimEnd()).toBe(BUJO_TEXT.trim())
+    const rendered = sections.map(section => section.text).join('\n\n')
+    expect(rendered.split(DEV_TEAM_TEXT.trim())).toHaveLength(2)
+    // A sub-agent's copy leaves the file out too.
+    const [, text] = (await $.classic.SubagentStart(subagentStart('general-purpose'))).additionalContext ?? []
+    expect(text).not.toContain(DEV_TEAM_TEXT.trim())
+    expect(text).toContain(BUJO_TEXT.trim())
+  })
+
+  test('a plugin with only a session-warmup.md is still included, and so is one whose rules section is gone', async ($, on) => {
+    const g = engine(on)
+    g.beneath = [{ id: 'workbench-bujo:notes', text: 'Not rules.', scope: 'shared' }]
+    await $.session.start(start(true))
+    expect((await $.prompt.compose(COMPOSE)).sections.find(section => section.id === PLUGINS_ID)?.text.trimEnd()).toBe(`${DEV_TEAM_TEXT.trim()}\n\n${BUJO_TEXT.trim()}`)
+  })
+
+  test("the owners: each <plugin>:rules id but core's own", () => {
+    const section = (id: string): PromptComposeSection => ({ id, text: 'x', scope: 'shared' })
+    expect([...rulesOwnersOf([section('workbench-dev-team:rules'), section(RULES_ID), section('a:rules-extra'), section('rules'), section('b:notes')])]).toEqual([
+      'workbench-dev-team',
+    ])
+  })
+
   test('the paths: absolute install paths only, a trailing slash dropped', () => {
     expect(contributionPathsOf(installed({ 'a@claude-workbench': [{ installPath: '/x/' }], 'b@claude-workbench': [{ installPath: 'rel' }] }))).toEqual([
-      '/x/session-warmup.md',
+      { plugin: 'a', path: '/x/session-warmup.md' },
     ])
     expect(contributionPathsOf('null')).toEqual([])
     expect(contributionPathsOf('{"plugins":{"c@claude-workbench":"no list"}}')).toEqual([])
@@ -326,6 +380,15 @@ describe('a sub-agent gets its parent rules at its start', () => {
     for (const type of ['Explore', 'Plan', 'web-fetch', 'comment-thread-analyst', 'workbench-core:summary-writer', 'summary-writer']) {
       expect((await $.classic.SubagentStart(subagentStart(type))).additionalContext).toEqual(['BENEATH'])
     }
+  })
+
+  // A fork inherits its parent's system prompt, which carries the rules.
+  test('a fork gets nothing, and a plain sub-agent still gets the rules', async ($, on) => {
+    engine(on)
+    await $.session.start(start(true))
+    expect((await $.classic.SubagentStart(subagentStart('fork'))).additionalContext).toEqual(['BENEATH'])
+    const [, text] = (await $.classic.SubagentStart(subagentStart('general-purpose'))).additionalContext ?? []
+    expect(text).toContain(RULES)
   })
 
   test('the list holds every built-in the CLI defines with omitClaudeMd, and only those and summary-writer', () => {

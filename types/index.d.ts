@@ -19,8 +19,8 @@
 // isUnattended, callerLane, parseShell.
 
 // One slot of the six-slot dispatch brief: the header a brief writes at the
-// start of a line, and what the slot carries. hooks/lib/brief-template.sh holds
-// the same records for the bash gate.
+// start of a line, and what the slot carries. hooks/mods/brief.ts holds the
+// one definition.
 export type WorkbenchBriefSlot = {
   header: string
   description: string
@@ -188,7 +188,7 @@ export type WorkbenchShellParse = {
 export type Workbench = {
   // The six slots, in template order.
   briefSlots: () => Promise<readonly WorkbenchBriefSlot[]>
-  // The verdict hooks/agent-dispatch-gate.sh gives `prompt`. It reads the
+  // The verdict the agent dispatch gate gives `prompt`. It reads the
   // prompt alone: who dispatched it, and the orchestrator toggle, are the
   // caller's to weigh (orchestratorIsOn).
   briefCheck: (prompt: string) => Promise<WorkbenchBriefCheck>

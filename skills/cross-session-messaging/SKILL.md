@@ -138,5 +138,5 @@ instead: send to `main`.
 ## Related
 
 - `hooks/mods/guards.ts` (workbench-core) — the gate and its four branches.
-- `hooks/agent-dispatch-gate.sh` — the orchestrator boundary in the dispatch
+- `hooks/mods/dispatch.ts` (workbench-core) — the orchestrator boundary in the dispatch
   direction. Same line, drawn between the same two parties.

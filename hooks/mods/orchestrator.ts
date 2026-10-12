@@ -1,25 +1,27 @@
 // Orchestrator mode: whether the delegation reminder and the agent dispatch
-// gate are active for this session. ON by default.
+// gate (hooks/mods/dispatch.ts) are active for this session. ON by default.
 //
 // WHERE THE MODE LIVES. hooks/register.ts keeps it in $.state for the session,
 // and in $.store keyed by session id, so a resumed session in a new process
 // keeps it. The delegation reminder (hooks/mods/delegation.ts) reads it there,
-// through $.workbench.orchestratorIsOn(). The bash gate
-// hooks/agent-dispatch-gate.sh still reads the legacy file:
+// through $.workbench.orchestratorIsOn(). The agent dispatch gate reads it from
+// $.state and $.store through orchestratorOn, and never through
+// orchestratorIsOn, so a legacy file that cannot be named never stands it down.
+// The retired bash gates read a legacy file:
 //
 //   ${WORKBENCH_ORCHESTRATOR_STATE_DIR:-$HOME/.claude-workbench/orchestrator-mode}/<session_id>
 //
-// An existing file means off. So the module mirrors the mode into that file, and
-// the gate honours /orchestrator exactly as it honoured the old skill.
+// An existing file means off. The module still mirrors the mode into that
+// file, because session start honours it (below).
 //
 // ONLY MIKE SWITCHES IT. /orchestrator is a command, and its command.run hook
 // acts only on a run a person started: Enter at the prompt (`composer`) or the
 // Remote Control bridge. The model has no command to call, and the skill that
 // let it run the toggle is gone. The file is the one door left: a model that
-// creates it through Bash would stand the gates down. So before every main-loop
-// Write, NotebookEdit and Agent call, which are the calls the gates judge, the
-// module puts the file back in line with the mode Mike chose. Plugin tool.call
-// hooks run before the settings hooks, so the gates read the corrected file.
+// creates it through Bash could stand the gates down at the next session start.
+// So before every main-loop Write, NotebookEdit and Agent call, which are the
+// calls the gates judge, the module puts the file back in line with the mode
+// Mike chose.
 //
 // The legacy file is honoured at session start: a session whose file already
 // exists, and whose mode was never set through /orchestrator, starts off. That

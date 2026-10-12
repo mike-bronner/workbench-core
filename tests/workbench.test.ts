@@ -205,8 +205,8 @@ describe('AC9: isUnattended and callerLane read the one lane definition', () => 
 })
 
 describe('AC3: briefCheck gives the bash gate\'s verdict on every case of its suite', () => {
-  // tests/brief-cases.ts is generated from hooks/test-agent-dispatch-gate.sh
-  // by hooks/test-brief-parity.sh, which fails while it is stale.
+  // tests/brief-cases.ts is a frozen record of the retired bash gate's suite
+  // and its verdicts.
   test('the fixture carries the gate suite\'s cases', () => {
     expect(GATE_CASES.length).toBeGreaterThanOrEqual(40)
   })

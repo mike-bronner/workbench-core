@@ -164,6 +164,6 @@ Option B (AC1 met, AC2 met, AC3 partly met: no test harness for the UI path)."
 - **The criteria do not move silently.** If one turns out wrong, say so, restate
   it, and continue.
 - **A dispatch carries the criteria.** A brief to a sub-agent copies them into
-  its `Acceptance:` slot, which `hooks/agent-dispatch-gate.sh` requires.
+  its `Acceptance:` slot, which the agent dispatch gate requires.
 - **The report maps to the criteria.** Close by saying how each one was met, or
   why it was not.

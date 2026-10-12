@@ -143,6 +143,7 @@ import {
   toggleOf,
   withMode,
 } from './mods/orchestrator'
+import { denyOf as dispatchDenyOf, hintOf as dispatchHintOf } from './mods/dispatch'
 import { REMIND_STORE_KEY, hasDotPart, isInRoots, isWholeFileWrite, reminderOf, remindedOf, splitTarget, targetOf } from './mods/delegation'
 import {
   ASKS_NOTHING,
@@ -401,6 +402,26 @@ async function delegationReminder($: EngineInterface, e: { tool: string; agentId
   if (!isFirst) return undefined
   await $.store.set(REMIND_STORE_KEY, { ...stored, [id]: now })
   return reminderOf(await hasDevTeam($, home))
+}
+
+// The agent dispatch gate's verdict for one main-loop Agent call: a refusal, a
+// hint, or neither. The brief check is pure (checkBrief), so the only failures
+// are the reads around it, and any that rejects reaches the tool.call hook's
+// .catch, which refuses Agent because Agent is in GUARDED. The dev-team probe
+// only adds a line to a refusal, so a failed probe drops the line.
+async function dispatchVerdict($: EngineInterface, prompt: unknown): Promise<{ deny?: string; hint?: string }> {
+  // The mode is read from $.state and $.store, never through orchestratorIsOn:
+  // that answers off when no legacy file can be named (HOME unset, or a session
+  // id that cannot name a file), and a missing legacy path must not stand this
+  // gate down.
+  if ((await $.workbench.callerLane({})) !== 'main') return {}
+  if ((await $.env.get('WORKBENCH_ORCHESTRATOR')) === '0' || !(await orchestratorOn($))) return {}
+  const text = typeof prompt === 'string' ? prompt : ''
+  const check = checkBrief(text)
+  if (check.isComplete) return check.shape === 'brief' ? { hint: dispatchHintOf(text) } : {}
+  const home = await $.env.get('HOME')
+  const hasTeam = home ? await hasDevTeam($, home).catch(() => false) : false
+  return { deny: dispatchDenyOf(check.missing, BRIEF_SLOTS, hasTeam) }
 }
 
 async function probeMemory($: EngineInterface): Promise<void> {
@@ -1261,10 +1282,9 @@ export const register: Register = on => {
       const checked = await checkVaultWrite($, e as VaultCall, vaultTool)
       return 'deny' in checked ? checked : next(checked.call as typeof e)
     }
-    // The Agent call the bash dispatch gate judges reads the legacy file next,
-    // so it is put back in line with the mode Mike chose first. A file the
-    // model wrote to stand the gate down is removed here. A whole-file write
-    // keeps the file in line too, before the delegation reminder reads the mode.
+    // A main-loop Agent call or whole-file write puts the legacy file back in
+    // line with the mode Mike chose first, so a file the model wrote to stand
+    // the gates down is removed before a later session start honours it.
     if (e.agentId === undefined && (isWholeFileWrite(e.tool) || e.tool === 'Agent')) {
       // One caught expression: a rejected seed must not throw the hook, which
       // the engine would skip, leaving the gates an unmirrored file.
@@ -1273,7 +1293,15 @@ export const register: Register = on => {
         .catch(() => true)
         .then(isOn => mirror($, isOn))
         .catch(() => undefined)
-      if (e.tool === 'Agent') return next(e)
+      // The agent dispatch gate (hooks/mods/dispatch.ts). It fails closed: a
+      // read that rejects throws to this hook's .catch, which refuses Agent.
+      // The hint is advice and never blocks.
+      if (e.tool === 'Agent') {
+        const { deny, hint } = await dispatchVerdict($, (e as { prompt?: unknown }).prompt)
+        if (deny !== undefined) return { deny }
+        const result = await next(e)
+        return result.deny !== undefined || hint === undefined ? result : { ...result, context: [...(result.context ?? []), hint] }
+      }
       // The delegation reminder is advice, never a guard: it gives no verdict,
       // and it fails open to silence, where every guard above fails closed. It
       // is judged after the write has gone through the engine, so neither a

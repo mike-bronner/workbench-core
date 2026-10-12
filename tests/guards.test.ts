@@ -100,8 +100,8 @@ describe('the provisioning guard', () => {
     expect(await refusal($, b, { tool: 'ExitWorktree', action: 'remove' })).toBe(EXIT_WORKTREE_REFUSAL)
     expect(await refusal($, b, { tool: 'ExitWorktree', action: 'keep' })).toBeUndefined()
     expect(await refusal($, b, { tool: 'Agent', prompt: 'x', description: 'x', isolation: 'worktree' })).toBe(AGENT_WORKTREE_REFUSAL)
-    expect(await refusal($, b, { tool: 'Agent', prompt: 'x', description: 'x', isolation: 'remote' })).toBeUndefined()
-    expect(await refusal($, b, { tool: 'Agent', prompt: 'x', description: 'x' })).toBeUndefined()
+    expect(await refusal($, b, { tool: 'Agent', prompt: 'Item ID: 1', description: 'x', isolation: 'remote' })).toBeUndefined()
+    expect(await refusal($, b, { tool: 'Agent', prompt: 'Item ID: 1', description: 'x' })).toBeUndefined()
   })
 
   const REFUSED = [

@@ -128,7 +128,7 @@ describe('AC4: the model cannot switch it off', () => {
       const b = bench(on)
       await $.session.start(start())
       b.files.set(LEGACY, '')
-      await $.tool.call({ tool, file_path: '/x', content: '', notebook_path: '/x.ipynb', new_source: '', description: 'd', prompt: 'p' } as never)
+      await $.tool.call({ tool, file_path: '/x', content: '', notebook_path: '/x.ipynb', new_source: '', description: 'd', prompt: 'Item ID: 1' } as never)
       expect(b.calls).toEqual([{ tool, legacyExists: false }])
     })
   }
@@ -138,7 +138,7 @@ describe('AC4: the model cannot switch it off', () => {
     await $.session.start(start())
     await $.command.run(run('orchestrator', 'off'))
     b.files.delete(LEGACY)
-    await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'p' } as never)
+    await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'Item ID: 1' } as never)
     expect(b.calls).toEqual([{ tool: 'Agent', legacyExists: true }])
   })
 
@@ -173,7 +173,7 @@ describe('AC4: the model cannot switch it off', () => {
     b.dirs.add(LEGACY)
     await $.session.start(start())
     expect(lastLine(b)).toBe('orch on')
-    await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'p' } as never)
+    await $.tool.call({ tool: 'Agent', description: 'd', prompt: 'Item ID: 1' } as never)
     expect(b.dirs.has(LEGACY)).toBe(false)
     expect(b.runs).toContainEqual(['rm', '-rf', '--', LEGACY])
     expect(b.calls).toEqual([{ tool: 'Agent', legacyExists: false }])

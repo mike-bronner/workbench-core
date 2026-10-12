@@ -857,6 +857,28 @@ describe('AC7: what the reader cannot read is named, never left out', () => {
     ['local X=$(cat f); [[ $X -eq 1 ]]', ['expansion']],
     ['X=$(cat f); declare -i Y=X', ['expansion']],
     ['for X in $(cat f); do echo $((X)); done', ['expansion']],
+    // A [ ] subscript bash evaluates: in an expansion, in an assignment name,
+    // and in a name argument, quoted or not.
+    ['read X < f; echo "${a[X]}"', ['expansion']],
+    ['read X < f; a[X]=1', ['expansion']],
+    ['read X < f; a[X]+=1', ['expansion']],
+    ['read X < f; Y=1 a[X]=1', ['expansion']],
+    ['read X < f; declare a[X]=1', ['expansion']],
+    ["read X < f; unset 'a[$X]'", ['expansion']],
+    ["read X < f; read 'a[$X]' < g", ['expansion']],
+    ["read X < f; mapfile -t 'a[$X]' < g", ['expansion']],
+    ["read X < f; printf -v 'a[$X]' 1", ['expansion']],
+    ["read X < f; printf -v'a[$X]' 1", ['expansion']],
+    ["read X < f; test -v 'a[$X]'", ['expansion']],
+    ["read X < f; [[ -v 'a[$X]' ]]", ['expansion']],
+    ["read X < f; wait -p 'a[$X]'", ['expansion']],
+    ["read X < f; getopts ab 'a[$X]'", ['expansion']],
+    ['N=$(cat f); echo $((N + 1))', ['expansion']],
+    ["read X < f; a=([X]=1)", ['expansion']],
+    ["read X < f; a+=([X]=1)", ['expansion']],
+    ["read X < f; echo \"${#a[X]}\"", ['expansion']],
+    ["read X < f; export 'a[$X]'", ['expansion']],
+    ["read X < f; [[ -R 'a[$X]' ]]", ['expansion']],
   ]
   for (const [line, unknowns] of UNREAD) {
     test(`unread: ${JSON.stringify(line)}`, () => {
@@ -890,6 +912,18 @@ describe('AC7: what the reader cannot read is named, never left out', () => {
       'for ((i=0;i<3;i++)); do echo $i; done',
       'read X < f; [[ $X == y ]]',
       'read X < f; echo "${#X}"',
+      // A [ ] bash never evaluates as a subscript: a quoted argument, a
+      // glob, or a case pattern.
+      "X=$(echo a); echo '[x]'",
+      "X=$(gh pr list --jq '.[0].number')",
+      "X=$(echo a); tr '[:upper:]' '[:lower:]'",
+      'X=$(echo a); case "$X" in [0-9]*) ;; esac',
+      "X=$(echo a); grep -E '^[a-z]+$' f",
+      "X=$(echo a); sed 's/[ab]/c/' f",
+      "X=$(echo a); awk '{print $1}' f",
+      'X=$(cat f); ls [abc]*',
+      'X=$(cat f); a=(one two)',
+      "X=$(echo a); echo '${s:X}'",
       'unset X',
       "read X < f; printf '%s\\n' \"$X\"",
       // A plain variable in front of a literal path names a known command.

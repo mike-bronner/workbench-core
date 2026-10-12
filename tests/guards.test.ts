@@ -663,6 +663,19 @@ describe('decision A: a line whose command the reader cannot name is refused by 
     'select X in a; do ((REPLY)); done',
     'X=$(<f); ((X))',
     'echo "${X:-$(cat f)}"; ((Y))',
+    // A [ ] subscript bash evaluates, even in a quoted name argument.
+    'read X < f; echo "${a[X]}"',
+    'read X < f; a[X]=1',
+    'read X < f; declare a[X]=1',
+    "read X < f; unset 'a[$X]'",
+    "read X < f; read 'a[$X]' < g",
+    "read X < f; printf -v 'a[$X]' 1",
+    'N=$(cat f); echo $((N + 1))',
+    "read X < f; a=([X]=1)",
+    "read X < f; a+=([X]=1)",
+    "read X < f; echo \"${#a[X]}\"",
+    "read X < f; export 'a[$X]'",
+    "read X < f; [[ -R 'a[$X]' ]]",
   ]
   for (const line of REFUSED) {
     test(`refuses ${JSON.stringify(line)}`, async ($, on) => {
@@ -694,6 +707,17 @@ describe('decision A: a line whose command the reader cannot name is refused by 
     'i=0; i=$((i+1)); echo $i',
     'n=$(wc -l < f); echo $n',
     'echo $((2+3))',
+    // A [ ] bash never evaluates as a subscript: a quoted argument, a glob,
+    // or a case pattern.
+    "X=$(echo a); echo '[x]'",
+    "X=$(gh pr list --jq '.[0].number')",
+    "X=$(echo a); tr '[:upper:]' '[:lower:]'",
+    'X=$(echo a); case "$X" in [0-9]*) ;; esac',
+    "X=$(echo a); grep -E '^[a-z]+$' f",
+    "X=$(echo a); sed 's/[ab]/c/' f",
+    "X=$(echo a); awk '{print $1}' f",
+    'X=$(cat f); ls [abc]*',
+    'X=$(cat f); a=(one two)',
     // The pipeline's paths: a plain variable before a literal path.
     '"${CLAUDE_PLUGIN_ROOT}/scripts/x.sh"',
     '"$HOME/bin/x"',

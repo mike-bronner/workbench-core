@@ -1206,27 +1206,38 @@ function takesInput(statement: ShellStatement): boolean {
 }
 
 // Whether a statement has an arithmetic context, beside the $(( )), $[ ] and
-// (( )) the lexer notes: let, declare -i or typeset -i, a [ ] subscript, a
-// ${s:X} offset, or a numeric operator inside [[ ]]. A name taken from a
-// value counts too, as bash evaluates a subscript in it: ${!X}, a variable
-// name argument that holds a $ or a substitution, or `-v $X` in a test.
+// (( )) the lexer notes: let, declare -i or typeset -i, a ${s:X} offset, a
+// numeric operator inside [[ ]], or a [ ] subscript where bash evaluates
+// one. That is in a word the shell expands (`${a[X]}`), in an assignment
+// name (`a[X]=v`), or in a name argument to a builtin that takes one, quoted
+// or not (`unset 'a[$i]'`). A [ ] anywhere else is text: a quoted jq, tr or
+// grep argument, a glob, or a case pattern. A name taken from a value counts
+// too, as bash evaluates a subscript in it: ${!X}, a variable name argument
+// that holds a $ or a substitution, or `-v $X` in a test.
 function arithmeticIn(raw: Raw, statement: ShellStatement): boolean {
   if (statement.name === 'let') return true
   if (statement.words.some(word => word.includes('${!'))) return true
   const isExpanded = (i: number) => raw.expanding.includes(i)
+  const hasSubscript = (word: string) => /\[[^\]]*\]/.test(word)
   const takesNames = ['read', 'mapfile', 'readarray', 'unset', 'declare', 'typeset', 'local', 'export', 'readonly'].includes(statement.name)
-  if (takesNames && statement.args.some((_, i) => isExpanded(statement.nameAt + 1 + i))) return true
-  // printf -v, test -v, [ -v, [[ -v and wait -p take a name, in the next word
-  // or attached to the option (`-vNAME`).
-  const letter = statement.name === 'wait' ? 'p' : 'v'
+  if (takesNames && statement.args.some((arg, i) => isExpanded(statement.nameAt + 1 + i) || hasSubscript(arg))) return true
+  // printf -v, test -v or -R, [ -v or -R, [[ -v or -R and wait -p take a
+  // name, in the next word or attached to the option (`-vNAME`).
+  const letter = statement.name === 'wait' ? 'p' : statement.name === 'printf' ? 'v' : '[vR]'
   const isNamed = ['printf', 'test', '[', 'wait'].includes(statement.name) || raw.isTest
   const option = new RegExp(`^-\\w*${letter}$`)
   const attached = new RegExp(`^-\\w*${letter}.`)
-  if (isNamed && statement.words.some((word, i) => (option.test(word) && isExpanded(i + 1)) || (attached.test(word) && isExpanded(i)))) return true
+  const isNameExpanded = (i: number) => isExpanded(i) || hasSubscript(statement.words[i] ?? '')
+  if (isNamed && statement.words.some((word, i) => (option.test(word) && isNameExpanded(i + 1)) || (attached.test(word) && isNameExpanded(i)))) return true
   // getopts stores into a name.
-  if (statement.name === 'getopts' && statement.args.some((_, i) => isExpanded(statement.nameAt + 1 + i))) return true
+  if (statement.name === 'getopts' && statement.args.some((arg, i) => isExpanded(statement.nameAt + 1 + i) || hasSubscript(arg))) return true
   if (['declare', 'typeset', 'local', 'export', 'readonly'].includes(statement.name) && statement.args.some(arg => /^-\w*i/.test(arg))) return true
-  if (statement.words.some(word => /\[[^\]]*\]/.test(word) || /\$\{[^}]*:(?![-=+?])/.test(word))) return true
+  if (statement.words.some((word, i) => isExpanded(i) && (hasSubscript(word) || /\$\{[^}]*:(?![-=+?])/.test(word)))) return true
+  // An assignment name, before the command or standing as one: `a[X]=v`
+  // does not match ASSIGNMENT, so it reads as a command name. A compound
+  // assignment's `a=([X]=1)` index is evaluated too.
+  const head = statement.nameAt === -1 ? statement.words : statement.words.slice(0, statement.nameAt + 1)
+  if (head.some(word => /^[A-Za-z_]\w*\[[^\]]*\]\+?=/.test(word) || /^[A-Za-z_]\w*\+?=\(.*\[[^\]]*\]/.test(word))) return true
   return raw.isTest && statement.words.some(word => /^-(eq|ne|lt|le|gt|ge)$/.test(word))
 }
 

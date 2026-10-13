@@ -119,13 +119,13 @@ Reference points:
 
 | | Size |
 |---|---|
-| Core's gates, scratch-roots, commit and comment section (`workbench-core:rules`) | ~4.5 KB |
+| Core's gates, scratch-roots, commit, comment, review and secrets section (`workbench-core:rules`) | ~5.9 KB |
 | Core's memory-routing section (`workbench-core:memory`) | ~2.0 KB |
 | Core's warmup output | 0 |
 | A real observed Dispatch tick's total SessionStart hook output | ~20.9 KB |
 | The 2026-07-08 bloat incident | **57 KB** |
 
-The first two are measured, not estimated: 4,455 characters on 2026-10-12
+The first two are measured, not estimated: 5,889 characters on 2026-10-13
 and 1,970 characters on 2026-10-08. Re-measure rather than re-estimate:
 `RULES.length` and `MEMORY.length` in `hooks/mods/prompt-rules.ts`, and
 `wc -c` of the warmup's stdout in a sandbox `HOME`, which is empty.

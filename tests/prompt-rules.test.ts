@@ -440,6 +440,17 @@ describe('the working rules on commits and code comments', () => {
   })
 })
 
+describe('the working rule on pull request reviews', () => {
+  test('no review is requested, by any route', () => {
+    expect(RULES).toContain('## Pull request reviews')
+    expect(RULES).toContain('Never request a review on a pull request. The user requests every review themselves.')
+    expect(RULES).toContain('Do not name a reviewer when you create a pull request, such as with `gh pr create --reviewer`.')
+    expect(RULES).toContain('Do not add a reviewer to a pull request that already exists, such as with `gh pr edit --add-reviewer`.')
+    expect(RULES).toContain('Do not call the requested-reviewers API, through `gh api` or a GitHub MCP tool.')
+    expect(RULES).toContain('Do not post a comment that asks a bot or a person to review, such as `@coderabbitai review`.')
+  })
+})
+
 describe('the working rules on secrets', () => {
   test('a secret is read for its own processes, kept only in the keychain, and never shown', () => {
     expect(RULES).toContain('## Secrets')

@@ -85,6 +85,11 @@ Every guard refuses a Bash line whose command it cannot name: a command name fro
 - Write no comments or docblocks in code, in any project, plugin code that agents maintain included. The only exception is a comment that the project's linter or config requires, such as a PHPCS docblock rule. Functional lines such as a shebang or a directive that a tool reads are not comments, and they stay.
 - Leave the existing comments in code you do not change as they are. When a change makes a comment wrong, delete the comment rather than rewrite it. Comments drift from the code, and every edit then has to update them as well, which costs tokens for no gain.
 
+## Pull request reviews
+
+- Never request a review on a pull request. The user requests every review themselves.
+- This covers every route. Do not name a reviewer when you create a pull request, such as with \`gh pr create --reviewer\`. Do not add a reviewer to a pull request that already exists, such as with \`gh pr edit --add-reviewer\`. Do not call the requested-reviewers API, through \`gh api\` or a GitHub MCP tool. Do not post a comment that asks a bot or a person to review, such as \`@coderabbitai review\`.
+
 ## Secrets
 
 - You may read the keychain entries that your own processes use, such as the token a setup step needs. No hook judges a \`security\` subcommand, so these rules are yours to keep.

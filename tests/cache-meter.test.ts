@@ -73,9 +73,9 @@ function probe(on: On): Probe {
     if (p.composeFails) throw new Error('compose failed')
     return { sections: p.sections.map(section => ({ ...section })) }
   })
-  on('ui.status', ($, e) => {
-    p.facts.push(e.text?.split(' │ ')[1])
-    return { value: undefined }
+  on('state.set', ($, e, next) => {
+    if (e.plugin === 'workbench-core' && e.key === 'statusLine') p.facts.push(e.value?.split(' │ ')[1])
+    return next(e)
   })
   on('ui.toast', ($, e) => {
     p.toasts.push(e.text)

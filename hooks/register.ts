@@ -187,6 +187,8 @@ const delegationReminded = atom({ plugin: 'workbench-core', key: 'delegationRemi
 const commitApproval = atom({ plugin: 'workbench-core', key: 'commitApproval' } as const, 'none')
 // Whether a schedule opened the current turn, so a commit in it is not gated.
 const turnScheduled = atom({ plugin: 'workbench-core', key: 'turnScheduled' } as const, false)
+const turnForwards = atom({ plugin: 'workbench-core', key: 'turnForwards' } as const, false)
+const statusLine = atom({ plugin: 'workbench-core', key: 'statusLine' } as const, null)
 const learnings = atom({ plugin: 'workbench-core', key: 'learnings' } as const, {})
 const replyRows = atom({ plugin: 'workbench-core', key: 'replyRows' } as const, null)
 const notices = atom({ plugin: 'workbench-core', key: 'notices' } as const, [])
@@ -270,7 +272,7 @@ async function drawStatus($: EngineInterface): Promise<void> {
   const line = lineOf(isMetered ? statusOf(figures) : undefined, [...cacheFactsOf(await read($, cache)), ...facts])
   if (line === undefined && !hasDrawn) return
   hasDrawn = true
-  $.ui.status(line)
+  await update($, statusLine, () => line ?? null)
 }
 
 // The legacy file the bash gates read for this session, or undefined when the
@@ -1219,7 +1221,12 @@ export const register: Register = on => {
   on('prompt.submit', async ($, e, next) => {
     await update($, commitApproval, approval => (isPersonOrigin(e.origin) || approval === 'commit' ? 'none' : approval))
     if (isPersonOrigin(e.origin) && !isScheduledFire(e.text)) await update($, intake, state => ({ ...state, task: state.task + 1 }))
-    if (e.turnId !== undefined) return next(e)
+    const isNotification = e.origin.kind === 'task-notification'
+    if (e.turnId !== undefined) {
+      if (isNotification) await update($, turnForwards, () => true)
+      return next(e)
+    }
+    await update($, turnForwards, () => isNotification)
     await update($, turnAttended, () => isAttendedPrompt(e.origin, e.text))
     await update($, turnScheduled, () => e.origin.kind === 'scheduled-trigger' || isScheduledFire(e.text))
     await update($, reprompted, () => false)
@@ -1262,7 +1269,7 @@ export const register: Register = on => {
       if (isGated && bundlesCommit(e.questions)) return { deny: BUNDLE_REFUSAL }
       // The question rule. A call no message holds (another plugin's
       // $.ui.ask) is let through: there is no message to read the context from.
-      if (e.agentId === undefined && sessionAttended === true && (await read($, turnAttended))) {
+      if (e.agentId === undefined && sessionAttended === true && (await read($, turnAttended)) && (await read($, turnForwards))) {
         const messages = await $.session.messages({ as: 'api' })
         if (hasContextBefore(messages, e.tool_use_id) === false) return { deny: REFUSAL_REASON }
       }
@@ -1320,6 +1327,7 @@ export const register: Register = on => {
         const { deny, hint } = await dispatchVerdict($, (e as { prompt?: unknown }).prompt)
         if (deny !== undefined) return { deny }
         const result = await next(e)
+        if (result.deny === undefined && (result.result as { status?: unknown } | undefined)?.status === 'completed') await update($, turnForwards, () => true)
         return result.deny !== undefined || hint === undefined ? result : { ...result, context: [...(result.context ?? []), hint] }
       }
       // The delegation reminder is advice, never a guard: it gives no verdict,
@@ -1419,6 +1427,13 @@ export const register: Register = on => {
     const { Markdown } = $.ui.resolve(e)
     // h() over an element constructor always builds an element.
     return h(Markdown, { text: (await read($, pane)).text }) as RenderElement
+  })
+
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const line = await read($, statusLine)
+    if (line === null || e.props.hasSurvey) return next(e)
+    const { Text } = $.ui.resolve(e)
+    return h(Text, { dimColor: true }, line) as RenderElement
   })
 
   // Each main-loop API request, priced from its own usage once the response is

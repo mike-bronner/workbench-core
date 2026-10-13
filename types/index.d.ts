@@ -330,6 +330,8 @@ declare module 'claude-code' {
       // Whether a schedule opened the current turn: the scheduled-trigger
       // origin, or the `<scheduled-task ` wrapper. The commit rule skips it.
       turnScheduled: boolean
+      turnForwards: boolean
+      statusLine: string | null
       // When this session first started, in ms. A reload keeps it.
       startedAt: number
       // The mtime of the warmup notices file last shown, in ms.

@@ -60,9 +60,9 @@ export function world(on: On, env: Record<string, string>): World {
     return { turnId: e.turnId, index: e.index, answer: STREAMED, toolUses: [], stopReason, usage: w.stepUsage }
   })
   on('classic.Stop', () => w.stopBeneath)
-  on('ui.status', ($, e) => {
-    w.statuses.push(e.text?.split(' │ ')[0])
-    return { value: undefined }
+  on('state.set', ($, e, next) => {
+    if (e.plugin === 'workbench-core' && e.key === 'statusLine') w.statuses.push(e.value?.split(' │ ')[0])
+    return next(e)
   })
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('model.classify', ($, e) => {

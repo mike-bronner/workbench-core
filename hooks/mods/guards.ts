@@ -336,7 +336,7 @@ export function summaryWriterRefusal(parse: ShellParse): string | undefined {
 
 const CREDENTIAL_ADVICE =
   'Work without it. If the task really needs this file, stop and ask Mike: he runs the step himself with the ! prefix. ' +
-  'Never link, copy or read a keychain or a credential to make a run authenticate, and never run the same read through another program to get around this guard.'
+  'Never link, copy or read a keychain folder or a credential to make a run authenticate, and never run the same read through another program to get around this guard.'
 
 const credential = (what: string, where: string): string => `Credential guard (workbench-core): this call touches ${what}${where}. ${CREDENTIAL_ADVICE}`
 
@@ -374,10 +374,6 @@ const CLAUDE_CREDENTIALS = /(^|[\s"'=:(/])\.credentials\.json($|[\s"';)])/i
 const DOTENV = /\.env(?![A-Za-z0-9_-])/i
 const DOTENV_WORD = /(?<!\$)\.env(?![A-Za-z0-9_-])/i
 const TEMPLATE = /\.env[^/]*\.(example|sample|template|dist|defaults?)$/i
-// The keychain commands that read a secret out: Claude's own credentials sit
-// in the login keychain on macOS.
-const SECRET_READS: ReadonlySet<string> = new Set(['find-generic-password', 'find-internet-password', 'dump-keychain', 'export', 'export-item'])
-
 // Programs that read file contents, or link or copy a file. A protected path
 // alone does not refuse: `ls ~/.ssh` lists names and shows no secret.
 const READERS = [
@@ -469,15 +465,6 @@ const isDevice = (target: string): boolean => {
   return /^\/+dev(\/|$)/.test(path) && !/^\/+dev\/null$/.test(path)
 }
 
-// `security -i`, or `-p`, which implies it, reads its subcommands from its input.
-const isInteractiveSecurity = (s: Statement): boolean => {
-  for (const arg of s.args) {
-    if (!arg.startsWith('-')) return false
-    if (/^-[A-Za-z]*[ip]/.test(arg)) return true
-  }
-  return s.args.length === 0
-}
-
 // The refusal for a Bash line, or undefined.
 // `regularTargets` holds the bodyTargets the caller found missing or regular
 // files; with none given, no heredoc body is exempt.
@@ -489,8 +476,6 @@ export function credentialRefusal(
 ): string | undefined {
   const texts = textsOf(parse).map(collapsed)
   const dirs = homeDirsRe(home)
-  const security = parse.statements.find(s => s.name === 'security' && (s.args.some(a => SECRET_READS.has(a)) || isInteractiveSecurity(s)))
-  if (security !== undefined) return credential('a secret in the macOS keychain', ' through security')
   const hasReader = texts.some(text => READER.test(text))
   if (hasReader) {
     if (texts.some(text => dirs.test(text))) return credential('a protected credential folder (~/.ssh, ~/.aws, ~/.gnupg)', '')
@@ -510,9 +495,7 @@ export function credentialRefusal(
       dirs.test(text) ||
       KEYCHAINS.test(text) ||
       CLAUDE_CREDENTIALS.test(text) ||
-      DOTENV.test(text) ||
-      /(?<![A-Za-z0-9_-])security(?![A-Za-z0-9_-])/i.test(text) ||
-      piecesOf(text).some(piece => SECRET_READS.has(piece)),
+      DOTENV.test(text),
   )
   if (isSubject && line.length > MAX_INPUT) return credential('a credential path in a command longer than 200,000 characters', '')
   if (isSubject && isPartlyRead(parse)) return credential('a credential path', `. ${unreadNote}`)

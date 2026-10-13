@@ -363,6 +363,11 @@ assert_jq "every autoMode entry has a rule" "$SHIPPED_RAILS" \
   '[.autoMode.allow[] | select(.rule == null)] | length' "0"
 assert_jq "every autoMode entry has a why"  "$SHIPPED_RAILS" \
   '[.autoMode.allow[] | select(.why  == null)] | length' "0"
+IN_PROJECT='.autoMode.allow[] | select(.rule | startswith("Deleting or restoring files inside the project repository"))'
+assert_jq "one autoMode entry allows in-project deletes" "$SHIPPED_RAILS" "[$IN_PROJECT] | length" "1"
+for term in 'git rm' 'git restore' 'cd <repo>;' 'outside that working tree' "repository's \`.git\` directory" 'git push --force' 'history rewrite' 'destructive-scope hook'; do
+  T="$term" assert_jq "the in-project delete entry names: $term" "$SHIPPED_RAILS" "[$IN_PROJECT | .rule | contains(env.T)] | .[0]" "true"
+done
 
 # THE FIVE SCOPE-ABLE VERBS ARE GATED BY A HOOK AND BY NO RULE AT ALL.
 #

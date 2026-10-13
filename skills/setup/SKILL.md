@@ -178,7 +178,7 @@ Output is `kind<TAB>rule<TAB>why`. Render it as two short tables — 🔴 deny a
 
 - **deny** — hard wall. Blocks before the classifier, in every mode, with no prompt and no override.
 - **ask** — always prompts, even in `auto`, even when a narrower allow rule matches.
-- **autoMode.allow** — a third kind, on a different layer: prose exceptions to the auto-mode classifier's built-in *soft-deny* rules. The shipped entry lets the `workbench-dev-team` Dispatch task launch its agents.
+- **autoMode.allow** — a third kind, on a different layer: prose exceptions to the auto-mode classifier's built-in *soft-deny* rules. The shipped entries let the `workbench-dev-team` Dispatch task launch its agents, and let a session delete or restore files inside its own project repository, never outside it, never its `.git`, and never a force push or history rewrite.
 
 Three behaviours worth calling out by name:
 

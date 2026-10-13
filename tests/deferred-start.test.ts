@@ -43,7 +43,6 @@ function engine(on: On): Engine {
   on('fs.exists', ($, e) => ({ value: g.files.has(e.path) }))
   on('fs.read', ($, e) => ({ value: g.files.get(e.path) ?? '' }))
   on('fs.stat', () => ({ value: { kind: 'file' as const, size: 0, mtimeMs: g.clock.now(), isLink: false } }))
-  on('ui.status', () => ({ value: undefined }))
   on('ui.toast', ($, e) => {
     g.toasts.push(e.text)
     return { value: undefined }

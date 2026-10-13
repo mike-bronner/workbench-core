@@ -64,7 +64,7 @@ These hooks guard every session. Each deny explains its own way through, so read
 | Destructive database guard | Database resets, drops, and destructive SQL are refused. |
 | Provisioning guard | Agents do not create worktrees or databases, and do not destroy a worktree they did not create. |
 | Vault git guard | Git writes aimed at the memory vault are refused. |
-| Credential guard | Reading, linking or copying \`~/.ssh\`, \`~/.aws\`, \`~/.gnupg\`, \`.env\` files, a keychain folder, or Claude's credential store is refused. |
+| Credential guard | Reading, linking or copying \`~/.ssh\`, \`~/.aws\`, \`~/.gnupg\`, \`.env\` files, a keychain folder such as \`~/Library/Keychains\`, or Claude's credential store is refused. It judges no \`security\` subcommand, only the paths a line names: the secrets rules below cover the keychain entries. |
 | Outbound prose guard | \`gh\`, board-MCP and GitHub-MCP prose must pass the output style's mechanical checks. |
 | Peer message gate | A sub-agent messages only its orchestrator or the agents it spawned. |
 | Whole-disk search guard | A search (\`find\`, \`fd\`, \`rg\`, \`grep -r\`, \`mdfind\`, \`Grep\`, \`Glob\`) may not start at \`/\`, a home folder, \`~/Library\`, \`/Users\`, \`/System\`, \`/Library\`, \`/Applications\`, \`/Volumes\`, \`/private\`, \`/var\`, \`/opt\` or \`/usr\`. |
@@ -83,7 +83,14 @@ Every guard refuses a Bash line whose command it cannot name: a command name fro
 - The one exception is content that must never ship, such as a secret or a stray build artifact. Leave it out, and tell the user about it in one sentence. Never leave a file out silently.
 - This rule sets what a commit contains. It does not change who approves a commit or when.
 - Write no comments or docblocks in code, in any project, plugin code that agents maintain included. The only exception is a comment that the project's linter or config requires, such as a PHPCS docblock rule. Functional lines such as a shebang or a directive that a tool reads are not comments, and they stay.
-- Leave the existing comments in code you do not change as they are. When a change makes a comment wrong, delete the comment rather than rewrite it. Comments drift from the code, and every edit then has to update them as well, which costs tokens for no gain.`
+- Leave the existing comments in code you do not change as they are. When a change makes a comment wrong, delete the comment rather than rewrite it. Comments drift from the code, and every edit then has to update them as well, which costs tokens for no gain.
+
+## Secrets
+
+- You may read the keychain entries that your own processes use, such as the token a setup step needs. No hook judges a \`security\` subcommand, so these rules are yours to keep.
+- Store a secret only in the macOS keychain. Never put one in your memory, the vault, a document, a file, a config, a commit message or any other store.
+- Never show a secret. Do not print, echo, log or trace one, and do not paste one into the transcript or into a tool's output.
+- Always pass a secret through a variable, straight to the program that needs it, and on its input rather than its arguments, which the process list shows. For example, run \`X=$(security find-generic-password -s <service> -a <account> -w)\` and then \`printf 'Authorization: Bearer %s' "$X" | curl -H @- …\`.`
 
 // The search mode is left to the server: its default picks hybrid when the
 // vault has embeddings and keyword when it does not, and naming one broke that

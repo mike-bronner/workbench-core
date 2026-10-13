@@ -82,7 +82,6 @@ function engine(on: On, env: Record<string, string> = {}): Engine {
     if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
     return { value: text }
   })
-  on('ui.status', () => ({ value: undefined }))
   on('prompt.compose', () => ({
     sections: [
       { id: 'intro', text: 'You are Claude Code.', scope: 'shared' as const },
@@ -270,7 +269,6 @@ describe('the lanes get what the copies they replace reached', () => {
     on('command.register', ($, e) => ({ value: { command: e.name } }))
     on('store.get', () => ({ value: undefined }))
     on('fs.list', () => ({ value: [] }))
-    on('ui.status', () => ({ value: undefined }))
     on('env.get', () => {
       throw new Error('env unavailable')
     })
@@ -439,6 +437,24 @@ describe('the working rules on commits and code comments', () => {
     expect(RULES).toContain('Functional lines such as a shebang or a directive that a tool reads are not comments, and they stay.')
     expect(RULES).toContain('Leave the existing comments in code you do not change as they are.')
     expect(RULES).toContain('When a change makes a comment wrong, delete the comment rather than rewrite it.')
+  })
+})
+
+describe('the working rules on secrets', () => {
+  test('a secret is read for its own processes, kept only in the keychain, and never shown', () => {
+    expect(RULES).toContain('## Secrets')
+    expect(RULES).toContain('You may read the keychain entries that your own processes use')
+    expect(RULES).toContain('Store a secret only in the macOS keychain. Never put one in your memory, the vault, a document, a file, a config, a commit message or any other store.')
+    expect(RULES).toContain('Never show a secret. Do not print, echo, log or trace one, and do not paste one into the transcript or into a tool\'s output.')
+    expect(RULES).toContain('Always pass a secret through a variable, straight to the program that needs it, and on its input rather than its arguments')
+    expect(RULES).toContain(`printf 'Authorization: Bearer %s' "$X" | curl -H @- …`)
+    expect(RULES).not.toContain('curl -H "Authorization: Bearer $X"')
+  })
+
+  test('the Credential guard row claims no keychain read', () => {
+    const row = RULES.split('\n').find(line => line.startsWith('| Credential guard |')) ?? ''
+    expect(row).toContain('a keychain folder such as `~/Library/Keychains`')
+    expect(row).toContain('It judges no `security` subcommand, only the paths a line names')
   })
 })
 

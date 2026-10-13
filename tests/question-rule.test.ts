@@ -1,7 +1,3 @@
-// The question rule (hooks/register.ts, hooks/mods/question-rule.ts): a prose
-// question gets one re-prompt, and an AskUserQuestion with no prose before it
-// is refused, in an attended main-session turn and nowhere else.
-
 import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
@@ -166,15 +162,20 @@ describe('AC2: rhetorical and quoted questions draw no re-prompt', () => {
 const askTest = (name: string, body: ($: Engine, on: On) => Promise<void>): void =>
   test(name, { plugins: [ID_RECORDER] }, body)
 
-describe('AC3: an AskUserQuestion with no prose before it is refused', () => {
-  askTest('a call with nothing visible before it is refused with the reason', async ($, on) => {
+const NOTIFICATION = { kind: 'task-notification' } as const
+const NARRATION = { type: 'thinking', thinking: '', signature: 'narration' }
+const AGENT = { tool: 'Agent' as const, description: 'research', prompt: 'look into it' }
+
+describe('AC3: an AskUserQuestion that forwards a sub-agent question with no prose before it is refused', () => {
+  askTest('a call with nothing visible before it, in a notification turn, is refused with the reason', async ($, on) => {
     const w = world(on, ATTENDED)
     w.blocksBefore = [{ type: 'thinking', thinking: '' }]
     await $.session.start(start(true))
-    await $.prompt.submit(prompt('pick one'))
+    await $.prompt.submit(prompt('task done', NOTIFICATION))
     const result = await $.tool.call(ASK)
     expect(result.deny).toBe(REFUSAL_REASON)
-    expect(REFUSAL_REASON).toContain('Write the context Mike needs to answer first')
+    expect(REFUSAL_REASON).toContain('Ask that sub-agent through SendMessage for the context Mike needs')
+    expect(REFUSAL_REASON).toContain('write that context in prose directly above the call, and call AskUserQuestion again')
     expect(w.asked).toBe(0)
   })
 
@@ -182,7 +183,7 @@ describe('AC3: an AskUserQuestion with no prose before it is refused', () => {
     const w = world(on, ATTENDED)
     w.blocksBefore = [{ type: 'text', text: '  \n ' }]
     await $.session.start(start(true))
-    await $.prompt.submit(prompt('pick one'))
+    await $.prompt.submit(prompt('task done', NOTIFICATION))
     expect((await $.tool.call(ASK)).deny).toBe(REFUSAL_REASON)
   })
 
@@ -190,7 +191,7 @@ describe('AC3: an AskUserQuestion with no prose before it is refused', () => {
     const w = world(on, ATTENDED)
     w.blocksBefore = [{ type: 'text', text: 'Reading the config first.' }, { type: 'tool_use', id: 'other', name: 'Read', input: {} }]
     await $.session.start(start(true))
-    await $.prompt.submit(prompt('pick one'))
+    await $.prompt.submit(prompt('task done', NOTIFICATION))
     expect((await $.tool.call(ASK)).deny).toBe(REFUSAL_REASON)
   })
 
@@ -198,7 +199,7 @@ describe('AC3: an AskUserQuestion with no prose before it is refused', () => {
     const w = world(on, ATTENDED)
     w.blocksBefore = [{ type: 'text', text: 'Two ways forward.' }, { type: 'thinking', thinking: '' }]
     await $.session.start(start(true))
-    await $.prompt.submit(prompt('pick one'))
+    await $.prompt.submit(prompt('task done', NOTIFICATION))
     expect((await $.tool.call(ASK)).deny).toBeUndefined()
     expect(w.asked).toBe(1)
   })
@@ -207,9 +208,67 @@ describe('AC3: an AskUserQuestion with no prose before it is refused', () => {
     const w = world(on, ATTENDED)
     w.blocksBefore = null
     await $.session.start(start(true))
-    await $.prompt.submit(prompt('pick one'))
+    await $.prompt.submit(prompt('task done', NOTIFICATION))
     expect((await $.tool.call(ASK)).deny).toBeUndefined()
     expect(w.asked).toBe(1)
+  })
+
+  askTest('a notification folded into a running turn makes the turn forward', async ($, on) => {
+    const w = world(on, ATTENDED)
+    w.blocksBefore = []
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('go'))
+    expect((await $.tool.call(ASK)).deny).toBeUndefined()
+    await $.prompt.submit({ ...prompt('task done', NOTIFICATION), turnId: 't' })
+    expect((await $.tool.call(ASK)).deny).toBe(REFUSAL_REASON)
+  })
+
+  askTest('a sub-agent that completes and hands back its report makes the turn forward, whatever the call asked for', async ($, on) => {
+    on('tool.call', { tool: 'Agent' }, () => ({ result: { status: 'completed', content: [] } as never }))
+    const w = world(on, { WORKBENCH_ORCHESTRATOR: '0' })
+    w.blocksBefore = []
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('go'))
+    expect((await $.tool.call(AGENT)).deny).toBeUndefined()
+    expect((await $.tool.call(ASK)).deny).toBe(REFUSAL_REASON)
+  })
+
+  askTest('a background sub-agent launch hands nothing back, so the turn does not forward', async ($, on) => {
+    on('tool.call', { tool: 'Agent' }, () => ({ result: { status: 'async_launched', agentId: 'a1' } as never }))
+    const w = world(on, { WORKBENCH_ORCHESTRATOR: '0' })
+    w.blocksBefore = []
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('go'))
+    expect((await $.tool.call(AGENT)).deny).toBeUndefined()
+    expect((await $.tool.call({ ...AGENT, run_in_background: true })).deny).toBeUndefined()
+    expect((await $.tool.call(ASK)).deny).toBeUndefined()
+  })
+})
+
+describe('an AskUserQuestion the main session raises on its own is never refused for context', () => {
+  for (const [name, blocks] of [
+    ['a narration thinking block', [NARRATION]],
+    ['nothing', []],
+    ['whitespace-only text', [{ type: 'text', text: ' ' }]],
+  ] as const) {
+    askTest(`a composer turn with ${name} before the call runs it`, async ($, on) => {
+      const w = world(on, ATTENDED)
+      w.blocksBefore = [...blocks]
+      await $.session.start(start(true))
+      await $.prompt.submit(prompt('pick one'))
+      expect((await $.tool.call(ASK)).deny).toBeUndefined()
+      expect(w.asked).toBe(1)
+    })
+  }
+
+  askTest('the next prompt Mike sends ends the forwarding turn', async ($, on) => {
+    const w = world(on, ATTENDED)
+    w.blocksBefore = [NARRATION]
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    expect((await $.tool.call(ASK)).deny).toBe(REFUSAL_REASON)
+    await $.prompt.submit(prompt('pick one'))
+    expect((await $.tool.call(ASK)).deny).toBeUndefined()
   })
 
   test('hasContextBefore reads the message that holds the call, and only it', () => {
@@ -247,7 +306,7 @@ describe('AC4: only a turn a person can answer is re-prompted or refused', () =>
       await $.session.start(start(true))
       await $.prompt.submit(prompt('go', { kind }))
       expect((await $.classic.Stop(stop(ASKING))).block).toBe(REPROMPT_REASON)
-      expect((await $.tool.call(ASK)).deny).toBe(REFUSAL_REASON)
+      expect((await $.tool.call(ASK)).deny).toBe(kind === 'task-notification' ? REFUSAL_REASON : undefined)
     })
   }
 
@@ -256,7 +315,7 @@ describe('AC4: only a turn a person can answer is re-prompted or refused', () =>
     w.label = ASKS_USER
     w.blocksBefore = []
     await $.session.start(start(true))
-    await $.prompt.submit(prompt('go'))
+    await $.prompt.submit(prompt('go', NOTIFICATION))
     expect((await $.classic.Stop(stop(ASKING))).block).toBe(REPROMPT_REASON)
     expect((await $.tool.call(ASK)).deny).toBe(REFUSAL_REASON)
   })

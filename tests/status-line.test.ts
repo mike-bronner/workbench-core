@@ -5,7 +5,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { REPROMPT_REASON } from '../hooks/mods/question-rule'
 import { COMPACT_AT, ROW_BUDGET, factsOf, learningsAfter, lineOf, noticesOf, rowsOf, skillNameOf } from '../hooks/mods/status-line'
-import { DAY, NOTICES, START, bench, lastLine, paneShows, run, start, turn } from './bench'
+import { DAY, NOTICES, START, bandShows, bench, lastLine, paneShows, run, start, turn } from './bench'
 
 const NOTICE_FILE = '# Warmup notices\n\n_Written by session-warmup.sh at startup session start._\n\n## ⚠ Pending session summaries (3)\n\ntext\n\n## ⚠ Output style out of date\n\nmore\n'
 const SETTLE = 3000
@@ -44,6 +44,36 @@ describe('AC5: memory-status and the toggle run as commands, with no model turn'
     on('command.run', { command: 'other' }, () => ({ text: 'theirs' }))
     await $.session.start(start())
     expect((await $.command.run(run('other'))).text).toBe('theirs')
+  })
+})
+
+describe('the status line is drawn in the band above the prompt, under no plugin label', () => {
+  test('the band shows the whole line, and the engine status line is never set', async ($, on) => {
+    const statuses: (string | undefined)[] = []
+    on('ui.status', ($, e) => {
+      statuses.push(e.text)
+      return { value: undefined }
+    })
+    const b = bench(on)
+    b.scripts['memory-health.sh'] = () => 'UP\n'
+    await $.session.start(start())
+    await b.clock.advance(SETTLE)
+    expect(lastLine(b)).toBe('mem UP · orch on')
+    expect(await bandShows($, 'mem UP · orch on')).toBe(true)
+    expect(statuses).toEqual([])
+  })
+
+  test('the band passes to the engine before a line is drawn, and yields to a survey', async ($, on) => {
+    on('ui.render', ($, e) => h($.ui.resolve(e).Text, {}, 'engine band') as never)
+    const b = bench(on)
+    b.scripts['memory-health.sh'] = () => 'UP\n'
+    expect(await bandShows($, 'orch on')).toBe(false)
+    expect(await bandShows($, 'engine band')).toBe(true)
+    await $.session.start(start())
+    expect(await bandShows($, 'orch on')).toBe(true)
+    expect(await bandShows($, 'engine band')).toBe(false)
+    expect(await bandShows($, 'orch on', true)).toBe(false)
+    expect(await bandShows($, 'engine band', true)).toBe(true)
   })
 })
 

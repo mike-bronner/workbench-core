@@ -51,16 +51,6 @@ async function portRefusal($: Engine, b: Bench, call: Record<string, unknown>): 
   return result.deny
 }
 
-// Each command the port lets through that its oracle refused, all of them
-// shown harmless by a sandboxed run under bash and zsh. Keyed by guard. The
-// classes they fall in:
-//   - a credential path, a .env word, `security` or a writer word only in a
-//     comment, which runs nothing
-//   - a heredoc body holding `$.env.get`, which is no file
-//   - `$.env` in a word: the hooks module's own `$.env.get`, which is no file
-//   - a word that only looks like a dotenv name (`.envln`, `.envrcx/...`)
-//   - a creation verb that is an argument of a command that does not exist
-//   - a line bash and zsh both refuse to parse, so nothing runs
 const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
   'credential-guard': [
     "\n;<<'EOF'\nconst h = await $.env.get('HOME')\nEOF\n cp",
@@ -72,6 +62,7 @@ const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
     "x/.ssh/id_rsa security .env.example\ncp $.env.getDeveloper/.aws|sudo\nprintf %s",
     "~/.claude/.credentials.json app.env .envrc;# sudo node -e",
     "~/.ssh # grep x }",
+    "<<'EOF'\nconst h = await $.env.get('HOME')\nEOF\n head -c 10\nsecurity #",
   ],
   'provisioning-guard': [
     "\"SELECT 'create database'\" env -i { create\\\ndb",

@@ -3,14 +3,7 @@
 //
 // Mike reads replies in an 80x50 terminal. A question left in prose scrolls
 // away, and a dialog with no context right above it cannot be answered without
-// scrolling back. The output style states the rule (rule 4). hooks/register.ts
-// enforces its two halves with the functions below:
-//
-//   classic.Stop             A reply that leaves a question in prose gets one
-//                            correction turn: the stop is blocked with a reason
-//                            that tells the model to re-ask through the tool.
-//   tool.call                An AskUserQuestion call with no prose immediately
-//   (AskUserQuestion)        before it, in the same message, is refused.
+// scrolling back. The output style states the rule (rule 4).
 //
 // Pure functions only: the engine follows `$` into no imported function.
 
@@ -22,11 +15,12 @@ export const REPROMPT_REASON =
   'dialog always offers Other.'
 
 export const REFUSAL_REASON =
-  'AskUserQuestion was refused: no prose comes immediately before this call ' +
-  'in the same message. Write the context Mike needs to answer first, in ' +
-  'prose directly above the call, then call AskUserQuestion again. He reads ' +
-  'in an 80x50 terminal, and a dialog with no context right above it cannot ' +
-  'be answered without scrolling back.'
+  'AskUserQuestion was refused: this turn forwards a question a sub-agent ' +
+  'handed back, and no prose comes immediately before this call in the same ' +
+  'message. Ask that sub-agent through SendMessage for the context Mike needs ' +
+  'to answer. Then write that context in prose directly above the call, and ' +
+  'call AskUserQuestion again. He reads in an 80x50 terminal, and a dialog ' +
+  'with no context right above it cannot be answered without scrolling back.'
 
 // The labels the classifier picks from. Each one names its meaning, because
 // the classifier reads the labels and the text, and nothing else.

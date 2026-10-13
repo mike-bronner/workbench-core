@@ -204,9 +204,9 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     if (script === undefined) throw new Error(`no script ${name}`)
     return { value: ran(script(e.argv)) }
   })
-  on('ui.status', ($, e) => {
-    b.lines.push(e.text)
-    return { value: undefined }
+  on('state.set', ($, e, next) => {
+    if (e.plugin === 'workbench-core' && e.key === 'statusLine') b.lines.push(e.value ?? undefined)
+    return next(e)
   })
   on('ui.toast', ($, e) => {
     b.toasts.push(e.text)
@@ -280,6 +280,18 @@ export async function paneShows($: Engine, surface: 'terminal' | 'desktop', text
     props: { title: 'pane', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: {} } as never,
   })
   const isShown = (await drawn.find({ type: 'Markdown', text })) !== undefined
+  await drawn.unmount()
+  return isShown
+}
+
+export async function bandShows($: Engine, text: string, hasSurvey = false): Promise<boolean> {
+  const drawn = await $.ui.mount({
+    plugin: 'workbench-core',
+    surface: 'terminal',
+    component: 'AbovePrompt',
+    props: { hasSurvey, isWorking: false, maxRows: 10, bodyColumns: 75, scroll: {}, view: {} } as never,
+  })
+  const isShown = (await drawn.find({ type: 'Text', text })) !== undefined
   await drawn.unmount()
   return isShown
 }

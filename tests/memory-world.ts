@@ -111,7 +111,6 @@ export function memoryWorld(on: On, env: Record<string, string> = {}): World {
     w.files.set(e.path, e.text)
     return { value: undefined }
   })
-  on('ui.status', () => ({ value: undefined }))
   on('ui.toast', ($, e) => {
     w.toasts.push(e.text)
     return { value: undefined }

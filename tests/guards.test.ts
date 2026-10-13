@@ -235,12 +235,9 @@ describe('AC4: the credential guard', () => {
     'cp -R ~/Library/Keychains /scratch/k',
     'cat ~/Library/Keychains/login.keychain-db',
     'ditto /Users/mike/Library/Keychains /scratch/home/Library/Keychains',
-    // Claude's credential store: the file, and the keychain item.
     'cat ~/.claude/.credentials.json',
     'cp "$CLAUDE_CONFIG_DIR/.credentials.json" /scratch/config/',
     'ln -s ~/.claude/.credentials.json /scratch/config/.credentials.json',
-    'security find-generic-password -s "Claude Code-credentials" -w',
-    'security dump-keychain',
     // A heredoc body any program but a plain cat or tee writing a file may read.
     'xargs cat <<EOF\n.env\nEOF',
     // A device target or another descriptor sends the body on to the pipe.
@@ -278,10 +275,6 @@ describe('AC4: the credential guard', () => {
     'ln -s /dev/stdout out; cat > out <<EOF\n.env\nEOF',
     // A relative target after a cd lands where the reader does not follow.
     'cd sub && cat > notes.txt <<EOF\n.env\nEOF',
-    // security reading its subcommands from its input.
-    "printf 'find-generic-password -w -s x\\n' | security -i",
-    'security -p "> " < cmds.txt',
-    'security',
     // Case, doubled slashes, `.` and `..`: APFS reads them all as the same path.
     'cat ~/library/keychains/login.keychain-db',
     'cat ~/Library//Keychains/login.keychain-db',
@@ -293,6 +286,12 @@ describe('AC4: the credential guard', () => {
     'cat ~/.claude//.CREDENTIALS.json',
     'cat .ENV',
     'cat ./.env',
+    'security import ~/.ssh/id_rsa -k login.keychain',
+    'security dump-keychain ~/Library/Keychains/login.keychain-db',
+    'security import $HOME/.aws/credentials',
+    'security import ${HOME}/.gnupg/pubring.kbx',
+    'security import .env',
+    'security import ~/.claude/.credentials.json',
   ]
   const ALLOWED = [
     'ls ~/.ssh',
@@ -305,7 +304,14 @@ describe('AC4: the credential guard', () => {
     'cat > notes.txt <<EOF\n.env\nEOF',
     'cat > /dev/stdout > notes.txt <<EOF\n.env\nEOF',
     'cat > /repo/notes.txt <<EOF\n.env\nEOF',
-    'security find-certificate -a',
+    'security find-generic-password -s "Claude Code-credentials" -w',
+    'X=$(security find-generic-password -s the-index-mcp -a client-id -w)',
+    'security add-generic-password -s github-cli -a token -w "$X" -U',
+    'security delete-generic-password -s github-cli -a token',
+    'security dump-keychain',
+    'security export -k login.keychain -o /scratch/k.p12',
+    "printf 'find-generic-password -w -s x\\n' | security -i",
+    'security',
   ]
   for (const line of REFUSED) {
     test(`refuses ${JSON.stringify(line)}`, async ($, on) => {
@@ -376,11 +382,10 @@ describe('AC4: the credential guard', () => {
     }
   })
 
-  // security and its secret-reading subcommands are the guard's subject too.
-  test('security, or a secret-reading subcommand, in a line the reader cannot read whole is refused', () => {
-    expect(credentialRefusal('echo find-generic-password -w "x', HOME)).toContain('could not read all')
-    expect(credentialRefusal('echo security "x', HOME)).toContain('could not read all')
-    expect(credentialRefusal('echo find-certificate "x', HOME)).toBeUndefined()
+  test('security, or a secret-reading subcommand, in a line the reader cannot read whole is not the guard\'s subject', () => {
+    expect(credentialRefusal('echo find-generic-password -w "x', HOME)).toBeUndefined()
+    expect(credentialRefusal('echo security "x', HOME)).toBeUndefined()
+    expect(credentialRefusal(`echo ${'x'.repeat(200_001)}; security dump-keychain`, HOME)).toBeUndefined()
   })
 
   test('a credential path in a line the reader cannot read whole is refused', () => {

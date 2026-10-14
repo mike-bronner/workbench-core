@@ -9,7 +9,7 @@ check rebuilds the list from its two sources and compares:
   - the CLI's built-in agents, read from the pinned CLI binary. Each built-in
     is a minified object literal, `{agentType:"Explore",...,source:"built-in",
     ...,omitClaudeMd:!0,getSystemPrompt:...}`, whose agentType is a string or
-    a name declared once as `X="web-fetch"`.
+    a name declared once as `X="web-fetch"` in its `// @bun` bundle chunk.
   - this plugin's own agents/*.md with `omitClaudeMd: true` in the
     frontmatter, each under its bare name and its `<plugin>:` name.
 
@@ -21,6 +21,7 @@ Usage: omit-claude-md-check.py <claude binary> [plugin root]
 Exit 0 when the lists match, 1 on drift, 2 when a source cannot be read.
 """
 
+import bisect
 import json
 import re
 import sys
@@ -33,6 +34,7 @@ END = re.compile(rb'getSystemPrompt|agentType:')
 BUILT_IN = b'source:"built-in"'
 OMITS = re.compile(rb'omitClaudeMd:(?:!0|true)\b')
 ANCHOR = 'general-purpose'
+CHUNK = b'// @bun'
 
 
 class Unreadable(Exception):
@@ -40,6 +42,7 @@ class Unreadable(Exception):
 
 
 def built_in_omitters(binary: bytes) -> set[str]:
+    starts = [0] + [m.start() for m in re.finditer(re.escape(CHUNK), binary)] + [len(binary)]
     found: set[str] = set()
     seen_anchor = False
     for m in DEFINITION.finditer(binary):
@@ -49,18 +52,17 @@ def built_in_omitters(binary: bytes) -> set[str]:
             continue
         seen_anchor = seen_anchor or m.group(1) == f'"{ANCHOR}"'.encode()
         if OMITS.search(body):
-            found.add(resolve(binary, m.group(1)))
+            i = bisect.bisect_right(starts, m.start())
+            found.add(resolve(binary[starts[i - 1]:starts[i]], m.group(1)))
     if not seen_anchor:
         raise Unreadable(f'no {ANCHOR!r} built-in agent found: the CLI binary layout is not one this check can read')
     return found
 
 
-def resolve(binary: bytes, token: bytes) -> str:
+def resolve(chunk: bytes, token: bytes) -> str:
     if token.startswith(b'"'):
         return token[1:-1].decode()
-    # A minified name declared as a string constant. The binary may hold the
-    # bundle more than once, so equal values count as one.
-    values = {v.decode(errors='replace') for v in re.findall(rb'(?<![\w$.])' + re.escape(token) + rb'="([^"\\]*)"', binary)}
+    values = {v.decode(errors='replace') for v in re.findall(rb'(?<![\w$.])' + re.escape(token) + rb'="([^"\\]*)"', chunk)}
     if len(values) != 1:
         raise Unreadable(f'agentType {token.decode()} resolves to {sorted(values) or "no string"}')
     return values.pop()

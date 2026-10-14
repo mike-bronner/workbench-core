@@ -18,6 +18,9 @@ FAIL=0
 GP='Wv={agentType:"general-purpose",whenToUse:a,tools:["*"],source:"built-in",baseDir:"built-in",getSystemPrompt:()=>b};'
 EXPLORE='Xv={agentType:"Explore",whenToUse:c,source:"built-in",baseDir:"built-in",model:"inherit",omitClaudeMd:!0,getSystemPrompt:()=>d};'
 FETCH='var Tv="web-fetch",fBn=g(Tv);var Lht={agentType:Tv,whenToUse:`long text`,source:"built-in",maxTurns:15,omitClaudeMd:!0,getSystemPrompt:e};'
+FLAG='var Tv="flag",hBn=g(Tv);'
+BUN='// @bun
+'
 PLUGIN_AGENT='{agentType:"runner",source:"plugin",omitClaudeMd:!0,getSystemPrompt:f};'
 
 # plugin_root <dir> <OMITS_CLAUDE_MD entries> [an agent file's omitClaudeMd value]
@@ -52,7 +55,9 @@ next_root() { n=$((n + 1)); r="$SANDBOX/case$n"; }
 
 echo "a list that matches the definitions passes:"
 next_root; plugin_root "$r" "'Explore', 'web-fetch'"
-check "built-ins by string and by declared name" 0 "$GP$EXPLORE$FETCH" "$r"
+check "built-ins by string and by declared name, in one chunk as 2.1.292 bundles them" 0 "$GP$EXPLORE$FETCH" "$r"
+next_root; plugin_root "$r" "'Explore', 'web-fetch'"
+check "a declared name read in its own chunk when another chunk gives it another string" 0 "$BUN$FLAG$BUN$GP$EXPLORE$FETCH$BUN$FLAG" "$r"
 next_root; plugin_root "$r" "'Explore', 'writer', 'demo:writer'" true
 check "a plugin agent counts under its bare and plugin names" 0 "$GP$EXPLORE" "$r"
 next_root; plugin_root "$r" "'Explore'"
@@ -77,6 +82,10 @@ next_root; plugin_root "$r" "'Explore', 'web-fetch'"
 check "a declared name with two values" 2 "$GP$EXPLORE$FETCH;var Tv=\"other\";" "$r"
 next_root; plugin_root "$r" "'Explore'"
 check "a declared name with no value" 2 "$GP${EXPLORE}{agentType:Qz,source:\"built-in\",omitClaudeMd:!0,getSystemPrompt:h};" "$r"
+next_root; plugin_root "$r" "'Explore', 'web-fetch'"
+check "a declared name with two values in its own chunk" 2 "$BUN$GP$EXPLORE$BUN$FLAG$FETCH" "$r"
+next_root; plugin_root "$r" "'Explore', 'web-fetch'"
+check "a declared name whose value sits only in another chunk" 2 "${BUN}var Tv=\"web-fetch\";$BUN$GP${EXPLORE}var Lht={agentType:Tv,source:\"built-in\",omitClaudeMd:!0,getSystemPrompt:e};" "$r"
 next_root; plugin_root "$r" "'Explore'"; printf 'export const OTHER = 1\n' > "$r/hooks/mods/prompt-rules.ts"
 check "no OMITS_CLAUDE_MD in prompt-rules.ts" 2 "$GP$EXPLORE" "$r"
 next_root; plugin_root "$r" "'Explore'"

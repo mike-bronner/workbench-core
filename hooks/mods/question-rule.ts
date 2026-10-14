@@ -75,3 +75,100 @@ export function hasContextBefore(messages: readonly ApiMessage[], id: string | u
   }
   return undefined
 }
+
+export function shownTextOf(messages: readonly ApiMessage[], id: string | undefined): string | undefined {
+  if (id === undefined) return undefined
+  const blocksOf = (message: ApiMessage | undefined) => (Array.isArray(message?.content) ? message.content : undefined)
+  const textOf = (blocks: readonly ApiBlock[]) => blocks.filter(block => block.type === 'text').map(block => String(block.text ?? ''))
+  for (let m = messages.length - 1; m >= 0; m--) {
+    const content = blocksOf(messages[m]) ?? []
+    const at = content.findIndex(block => block.type === 'tool_use' && block.id === id)
+    if (at === -1) continue
+    const texts = textOf(content.slice(0, at))
+    for (let k = m - 1; k >= 0; k--) {
+      const blocks = blocksOf(messages[k])
+      if (messages[k]?.role === 'assistant') texts.unshift(...textOf(blocks ?? []))
+      else if (blocks === undefined || blocks.some(block => block.type !== 'tool_result')) break
+    }
+    return texts.join('\n')
+  }
+  return undefined
+}
+
+export const LABEL_REFUSAL =
+  'AskUserQuestion was refused: an option label is only a letter, a number, or ' +
+  '"Option N". The dialog can cover the reply, so Mike reads each label on its ' +
+  'own. Name what each option does in plain words, such as "Keep the current ' +
+  'fan rule", and call AskUserQuestion again.'
+
+export const FORWARD_REFUSAL =
+  'AskUserQuestion was refused: this turn forwards a decision a sub-agent ' +
+  'handed back, and this reply does not render its options. Mike cannot see ' +
+  'the hand-back. Render the options in prose above the call first: one table ' +
+  'with the columns Option, Pros, Cons, and Grade, with one row per option, ' +
+  'then the sentence that names the recommendation and its grade. Then call ' +
+  'AskUserQuestion again.'
+
+export const unshownReason = (refs: readonly string[]): string =>
+  `AskUserQuestion was refused: the question refers to ${refs.join(', ')}, which ` +
+  'the visible text of this reply does not show. Mike sees only that text, ' +
+  "never a sub-agent's hand-back. Render it in prose above the call first: the " +
+  'options table with the columns Option, Pros, Cons, and Grade, with one row ' +
+  'per option, then the sentence that names the recommendation. Then call ' +
+  'AskUserQuestion again, with labels that say what each option does.'
+
+type AskOption = { label?: unknown; description?: unknown }
+type AskQuestion = { question?: unknown; options?: unknown }
+
+const BARE_LABEL = /^\s*(?:option\s+)?(?:[a-z]|\d+)\s*[.):]?\s*(?:\(recommended\))?\s*$/i
+const OPTION_IDS = /\b[Oo]ptions?\s+((?:[A-Z]|\d+)(?:\s*(?:,|\/|\+|&|or|and)\s*(?:[A-Z]|\d+)\b)*)(?![\w'’])/g
+const LETTER_IDS = /(?<![\w'’])[A-E](?:\s*(?:\+|\/|&|,|or|and)\s*[A-E](?![\w'’]))+/g
+const TABLE_REF = /\b(?:the|that|this|its|his|their)\s+(?:options\s+)?table\b|\btable\s+(?:above|below)\b/i
+const GRADE_REF = /\b(?:the|those|its|his|their)\s+grades\b|\bas\s+graded\b/i
+const AGENT_REF =
+  /\b(?:Watson|Holmes|Lestrade|sub-?agent|agent|reviewer)(?:['’]s)?\s+(?:own\s+)?(?:options?|proposals?|alternatives|choices)\b|\boptions?\s+(?:that\s+)?(?:Watson|Holmes|Lestrade|the\s+sub-?agent|the\s+agent)\s+(?:proposed|gave|suggested|returned|handed\s+back|graded)\b/i
+const GRADE = /\b(?:all|partly|not)\s+met\b/i
+
+const optionsOf = (question: AskQuestion): AskOption[] => (Array.isArray(question?.options) ? (question.options as AskOption[]) : [])
+
+const textsOf = (question: AskQuestion): string[] =>
+  [question?.question, ...optionsOf(question).flatMap(option => [option?.label, option?.description])].filter(
+    (text): text is string => typeof text === 'string',
+  )
+
+const isItemFor = (shown: string, id: string): boolean =>
+  new RegExp(`^[ \\t]*(?:\\|[ \\t]*)?(?:[-*+][ \\t]+|#{1,6}[ \\t]+)?(?:\\*\\*|__)?(?:[Oo]ption[ \\t]+)?${id}(?:\\*\\*|__)?[ \\t]*(?:[:.)|]|\\*\\*|[ \\t]+[-–—])`, 'm').test(shown)
+
+function tableRowsOf(shown: string, isGraded: boolean): number {
+  const lines = shown.split('\n').map(line => line.trim())
+  let best = 0
+  lines.forEach((line, at) => {
+    if (!/^\|.*\|$/.test(line) || !/^\|?\s*:?-{3,}/.test(lines[at + 1] ?? '')) return
+    if (isGraded && !/\|\s*Grade\s*\|/i.test(line)) return
+    let rows = 0
+    while (/^\|.*\|$/.test(lines[at + 2 + rows] ?? '')) rows++
+    best = Math.max(best, rows)
+  })
+  return best
+}
+
+export function unshownOf(questions: unknown, shown: string, isForwarding: boolean): string | undefined {
+  if (!Array.isArray(questions)) return undefined
+  const asked = questions as AskQuestion[]
+  if (asked.some(question => optionsOf(question).some(option => typeof option?.label === 'string' && BARE_LABEL.test(option.label)))) return LABEL_REFUSAL
+  const text = asked.flatMap(textsOf).join('\n')
+  const ids = [...text.matchAll(OPTION_IDS)].flatMap(match => (match[1] ?? '').match(/[A-Z]|\d+/g) ?? [])
+  const letters = [...text.matchAll(LETTER_IDS)].flatMap(match => match[0].match(/[A-E]/g) ?? [])
+  const refs = [...new Set([...ids, ...letters])].filter(id => !isItemFor(shown, id)).map(id => `option ${id}`)
+  if (TABLE_REF.test(text) && tableRowsOf(shown, false) === 0) refs.push('a table')
+  if ((GRADE_REF.test(text) || AGENT_REF.test(text)) && tableRowsOf(shown, true) === 0) refs.push("a sub-agent's graded options")
+  if (refs.length > 0) return unshownReason(refs)
+  const isDecision = (question: AskQuestion) => {
+    const options = optionsOf(question)
+    return options.length >= 3 || options.some(option => typeof option?.description === 'string' && GRADE.test(option.description))
+  }
+  const decisions = asked.filter(isDecision)
+  if (!isForwarding || decisions.length === 0) return undefined
+  const isRendered = decisions.every(question => tableRowsOf(shown, true) >= optionsOf(question).length) && /\brecommend/i.test(shown)
+  return isRendered ? undefined : FORWARD_REFUSAL
+}

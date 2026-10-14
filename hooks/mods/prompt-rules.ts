@@ -60,6 +60,7 @@ These hooks guard every session. Each deny explains its own way through, so read
 |---|---|
 | Delegation gate | Whole-file work belongs in a sub-agent. It never denies: a main-agent \`Write\` or \`NotebookEdit\` goes ahead with a reminder, once per session. Plans and scratch roots draw none. The user's \`/orchestrator off\` silences it. |
 | Agent dispatch gate | A main-agent \`Agent\` dispatch must carry the six-slot brief. |
+| Project scope guard | A main-agent \`Agent\` dispatch of any type but \`Explore\` and \`Plan\` must name a \`Workdir:\` inside this project, a git worktree of its repository, or a scratch root. |
 | Destructive scope guard | The destructive commands below run only when every target resolves inside the project or a scratch root. |
 | Destructive database guard | Database resets, drops, and destructive SQL are refused. |
 | Provisioning guard | Agents do not create worktrees or databases, and do not destroy a worktree they did not create. |
@@ -76,6 +77,12 @@ Every guard refuses a Bash line whose command it cannot name: a command name fro
 - A scratch root is the session scratchpad, \`~/Developer/scratchpad\`, or a \`mktemp -d\` sandbox. Make new scratch in the session scratchpad or \`~/Developer/scratchpad\`. Never create it anywhere under \`/tmp\` outside your session scratchpad, and do not put new scratch in an old \`claude-*scratch*\` folder there either.
 - \`rm\`, \`rmdir\`, \`git reset --hard\`, \`git clean\`, \`git stash clear\`/\`drop\`, and git commands that discard working-tree changes (such as \`git restore\`, \`git checkout -- <path>\`, or \`git mv -f\`, also through an alias) run with no prompt when every path they act on resolves inside the project or a scratch root. \`rm\` and \`rmdir\` may also remove a leftover \`/tmp/claude-*scratch*\` folder you own, the folder itself included. It is not a root, so \`git\` verbs there are still denied.
 - Outside those roots the guard DENIES, and so does any target it cannot read: a \`$variable\`, a glob, \`bash -c\`, \`ssh\`, \`xargs\`, \`find -delete\`, or a loop body. Spell paths out literally and keep the delete its own command. Never hand the user a \`!\` command to delete your own scratch. A target outside every root that is not scratch is the user's call, and they run it with the \`!\` prefix.
+
+## One project per session
+
+- A session works only for its own project, the repository it started in. That project's live session owns its context, its work in progress, its review and its commits.
+- Work for another project goes to that project's session. Do not dispatch an agent into it, and do not edit it. Run \`ListAgents\`, find the session named after that project, and send it the finding and the acceptance criteria with \`SendMessage\`, as \`/workbench-core:cross-session-messaging\` describes. When no session for that project is live, ask the user.
+- \`Explore\` and \`Plan\` only read, so they may still read other projects.
 
 ## Commits and code comments
 

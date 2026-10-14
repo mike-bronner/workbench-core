@@ -97,7 +97,7 @@ The [hooks module](#the-hooks-module) enforces rule 4 without loading it. Its re
 
 The task-intake routine is not a rule, so it does not live in the output style. It is a procedure, and its one copy is `skills/intake/SKILL.md`. The style carries a one-line pointer to it, and `hooks/test-intake.sh` fails if the style starts restating it. See [Task intake](#task-intake).
 
-The workbench facts the agents need (the gates, what each protects, the scratch roots, the commit scope, the no-comments rule, the no-review-requests rule, the secrets rules, and the memory routing) are not rules of the persona, so they do not live in the output style either. The [hooks module](#the-workbench-rules-in-the-system-prompt) sends them as shared system-prompt sections, and gives a sub-agent that loads CLAUDE.md the same text at its start. Each gate's deny carries its own recovery text. Nothing is written into `~/.claude/CLAUDE.md` any more.
+The workbench facts the agents need (the gates, what each protects, the scratch roots, the one-project rule, the commit scope, the no-comments rule, the no-review-requests rule, the secrets rules, and the memory routing) are not rules of the persona, so they do not live in the output style either. The [hooks module](#the-workbench-rules-in-the-system-prompt) sends them as shared system-prompt sections, and gives a sub-agent that loads CLAUDE.md the same text at its start. Each gate's deny carries its own recovery text. Nothing is written into `~/.claude/CLAUDE.md` any more.
 
 **Retiring the old alias.** If your shell profile has `alias claude='claude --append-system-prompt-file ~/.claude/system-overrides.md'`, the CLI refuses to start when that file is missing. So the warmup never deletes it. It rewrites an existing file to a one-line stub with no rules, never creates one, and posts a startup notice until the file is gone. Finish the retirement in this order:
 
@@ -190,7 +190,8 @@ core/
 │   ├── mods/                   — the module's pure logic: brief, lane, orchestrator, question-rule,
 │   │                             request-meter, cache-meter, status-line, commit-approval, vault-write,
 │   │                             pending-summaries, shell (the shell reader behind parseShell),
-│   │                             checkpoint, capture, recall, learnings, intake, prompt-rules, guards
+│   │                             checkpoint, capture, recall, learnings, intake, prompt-rules, guards,
+│   │                             project-scope
 │   ├── session-log.sh          — raw log capture + summary-writer dispatch (not at SessionEnd or per turn)
 │   ├── session-warmup.sh       — retention cleanup + dead-marker sweep + session reconciler + notices;
 │   │                             summary drain + Chat-skill scan run deferred; prints nothing
@@ -404,6 +405,26 @@ The hint gives **no verdict**: the call goes through the normal permission flow,
 Like the delegation gate, it is sidesteppable and deliberately so. Slot headers are cheap to bolt onto a 17,000-character prompt, and the gate will pass it. What survives that is the receiving agent's own check on substance, which is where the judgement belongs.
 
 Tests: `tests/dispatch.test.ts` (the deny naming every missing slot and each slot alone, the dev-team line, a complete brief, the blank and machine-built shapes and the prefix-smuggling counter-case, sub-agent and `--agent` callers, `/orchestrator off` and `WORKBENCH_ORCHESTRATOR=0`, each hint marker and its absence on an outcome brief, and the refusal when the gate cannot read the lane), and `tests/workbench.test.ts`, which holds the slot check to every case of the retired bash gate's suite, recorded in `tests/brief-cases.ts`.
+
+### Project scope guard
+
+**A session works only for its own project.** Mike runs one interactive session per project, and `ListAgents` shows the others as peers named after their projects. Each one owns its repository's context, its work in progress, its review and its commits. Work for another project goes to that project's session through `SendMessage`, as `/workbench-core:cross-session-messaging` describes, or to Mike when no session for it is live. The vault has carried this rule since 2026-09-24. A workbench-core session broke it on 2026-09-24, 2026-09-29 and 2026-10-14 by dispatching Watson into workbench-dev-team while that project's session was live, so Mike asked for a guard beside the prose. The rule is in the One project per session section of the [workbench rules](#the-workbench-rules-in-the-system-prompt), and this guard enforces it on dispatches (`hooks/mods/project-scope.ts`, judged in the `tool.call` hook of `hooks/register.ts` right after the agent dispatch gate).
+
+**What it judges.** A main-loop `Agent` call of any type except `Explore` and `Plan`, a missing type and `fork` included. It reads every absolute path on the brief's `Workdir:` line, with `~` read from `HOME`, and refuses the call unless each one resolves to one of these:
+
+- the session's project folder, or the top of its repository;
+- any git worktree of the same repository, wherever it lives, such as under `~/Developer/worktrees` (the two share one `git rev-parse --git-common-dir`);
+- a scratch root, read as the [destructive scope guard](#permission-safety-rails) reads it (`scope-facts.sh roots`): the session scratchpad, `~/Developer/scratchpad`, and the per-user temporary folder a bare `mktemp -d` uses.
+
+A path that does not exist yet is judged by its deepest existing folder, and a `..` below that folder makes it unreadable. A `Workdir:` line with no absolute path the guard can resolve is refused too, with a note to write the path out.
+
+**What it leaves alone.** `Explore` and `Plan` only read, so a root-cause analysis across many projects keeps working. A sub-agent's own fan-out (a Holmes lens, say) and a top-level `--agent` run are not main-session dispatches. A prompt with no `Workdir:` line, such as the `Item ID:` and `Repo sweep:` shapes of the scheduled pipeline, carries nothing to judge. A session that is not a project passes every dispatch: its root is in no git repository, or the repository's top is the home folder itself, as a dotfiles repository makes it. `/orchestrator off` does not stand this guard down, because it guards ownership rather than the shape of a brief.
+
+**The refusal names the way through.** It names the session's project, the `Workdir:` and the project that folder belongs to (the top of its repository, or the folder itself). It tells the session to run `ListAgents`, send the finding and the acceptance criteria to that project's session with `SendMessage`, and ask Mike when none is live.
+
+**It fails closed.** A git or file system read that fails throws to the hook's `.catch`, which refuses the call, because `Agent` is a guarded tool.
+
+Tests: `tests/project-scope.test.ts` (each work type refused outside the project, a folder in no repository, `~`, several paths on one line, an unreadable `Workdir:`, `/orchestrator off`, a failed git read; the project, a new folder in it, a worktree outside the project folder, a session started in a worktree, and a scratch root allowed; `Explore` and `Plan` never judged; a non-project session, the pipeline shapes, a sub-agent's and a top-level run's dispatch left alone).
 
 ### Task intake
 
@@ -808,7 +829,7 @@ The [hooks module](#the-hooks-module) puts the workbench rules into the system p
 
 | Section | Holds | Lanes |
 |---|---|---|
-| `workbench-core:rules` | The gate table, the scratch roots, how the destructive scope guard reads a command, and four working rules: a commit takes every uncommitted file in one commit, code carries no comments a linter does not require, no agent requests a pull request review by any route because the user requests every review, and a secret is kept only in the macOS keychain and never shown | Main loop, `claude -p`, top-level `--agent` |
+| `workbench-core:rules` | The gate table, the scratch roots, how the destructive scope guard reads a command, and five working rules: a session works only for its own project and hands other work to that project's session, a commit takes every uncommitted file in one commit, code carries no comments a linter does not require, no agent requests a pull request review by any route because the user requests every review, and a secret is kept only in the macOS keychain and never shown | Main loop, `claude -p`, top-level `--agent` |
 | `workbench-core:memory` | The memory routing: the vault is the store, capture without asking, recall first, query the task | Main loop and `claude -p` |
 | `workbench-core:plugins` | Each sibling workbench plugin's `session-warmup.md`, verbatim (see [docs/session-warmup-contributions.md](docs/session-warmup-contributions.md)) | Main loop, `claude -p`, top-level `--agent` |
 
@@ -957,6 +978,8 @@ The first four were bash hooks until batch C1, and those hooks are now retired.
 
 The [destructive database guard](#destructive-database-guard) runs in the same hook, with its logic in `hooks/mods/destructive-database.ts`. It was a bash hook until batch C2, and that hook is now retired.
 
+The [project scope guard](#project-scope-guard) runs in the same hook, on a main-loop `Agent` call right after the agent dispatch gate, with its logic in `hooks/mods/project-scope.ts`. It is new, and replaced no bash hook.
+
 The [vault git guard](#vault-git-guard) runs in the same hook, after the database guard, with its logic in `hooks/mods/vault-git.ts`. It was a bash hook until batch C2, and that hook is now retired the same way.
 
 The [outbound prose guard](#outbound-prose-guard) runs in the same hook, on Bash after the vault git guard and on the board and GitHub MCP prose tools, with its logic in `hooks/mods/outbound-prose.ts`. It was a bash hook until batch C3a. Its tests are the recorded cases in `tests/guard-corpus/guard-cases.ts`: each body the bash hook refused, with the body files of the sandbox it ran in, written as `/sandbox`. `tests/guard-corpus.test.ts` replays each one with its files in place, and the port must refuse it.
@@ -990,10 +1013,16 @@ The [outbound prose guard](#outbound-prose-guard) runs in the same hook, on Bash
 
 The output style carries the rule. Every question to Mike goes through `AskUserQuestion`, with its context written in prose immediately above the call, in the same message. Each option's description carries its grade and any warning. A question with no fixed choices still fits the tool, because the dialog always offers Other. A reply fits about 40 rows at 80 columns. Each question is asked right after the context it depends on first appears, and is not held for the end of the reply with that context restated. A verdict with no question can still close a reply. `docs/rule-history.md` records why each of those rules was added.
 
-The [hooks module](#the-hooks-module) enforces the two halves, in an attended main-session turn only:
+The [hooks module](#the-hooks-module) enforces it in three checks, in an attended main-session turn only:
 
 - **A reply that leaves a question in prose gets one correction turn.** A `classic.Stop` hook blocks the stop, and its reason tells the model to re-ask through the tool. Code fences, inline code, quoted lines, and double-quoted spans are stripped first, so a question shown rather than asked never counts. A reply with no question mark and no asking phrase ("let me know", "should I") is let stand with no model call. The rest goes to `$.model.classify`, which tells a question for Mike from a rhetorical one. If the classifier fails, or answers with neither label, the reply counts as asking when its last line ends on a question mark.
 - **An `AskUserQuestion` call that forwards a sub-agent's question, with no prose immediately before it, is refused.** A turn forwards once a background task's notification opened it or arrived in it, or a foreground `Agent` call handed its report back in it. The reason tells the orchestrator to ask that sub-agent through `SendMessage` for the missing context, then to ask again with that context above the call. A question the main session raises on its own is not checked, because the prose before it can arrive as a thinking block the engine labels narration, which the check reads as no context. Thinking blocks do not count as context, because Mike never sees them. A call no message holds, such as another plugin's `$.ui.ask`, is let through.
+- **An `AskUserQuestion` call that names options the reply does not show is refused.** Mike never sees a sub-agent's hand-back, and the dialog can cover the prose, so the check reads only the visible text of the reply: every assistant text block since the last prompt, past tool results, and never a thinking block. The check is structural, with no model call. It refuses three shapes, in any attended turn, and each reason says what to render first:
+  - An option label that is only a letter, a number or "Option N", such as "B" or "Option 2". It is refused even when a table above shows it, because the label must stand on its own.
+  - A question, label or description that names options by letter or number ("option 2", "B + A stopgap", "options A and C"), points at a table or its grades, or names a sub-agent's options or proposal ("Watson's option"), when the reply does not show them. A letter or number counts as shown when a table row, list item or heading in the reply starts with it. A table counts when the reply holds a Markdown table, and grades or a sub-agent's options count when that table has a Grade column.
+  - In a forwarding turn, a decision whose options are not rendered above the call. A decision is a question with three or more options, or one whose descriptions carry a grade ("all met", "partly met", "not met"). It needs a table with a Grade column, at least one row per option, and the word "recommend" in the reply.
+
+  A yes or no question, the commit question, and a question with no options pass, and so does a decision the main session raises on its own when it names no option it does not show.
 
 **It fires at most once per turn.** The engine's `stop_hook_active` flag and a per-turn flag in `$.state` both stop a second re-prompt. A synchronous block from another Stop hook stands alone. An `asyncRewake` Stop hook of another plugin runs in the background after the stop and never shows as a block. A turn the rule re-prompts can therefore also get such a wake afterwards. That wake arrives with `stop_hook_active` set, so its own stop is never re-prompted. The memory capture checkpoint opens no turn at all: it is a fork ([Pre-shed capture](#pre-shed-capture)).
 

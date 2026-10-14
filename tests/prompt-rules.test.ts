@@ -440,6 +440,22 @@ describe('the working rules on commits and code comments', () => {
   })
 })
 
+describe('the working rule on one project per session', () => {
+  test('a session works only for its own project, and hands other work to its session', () => {
+    expect(RULES).toContain('## One project per session')
+    expect(RULES).toContain('A session works only for its own project, the repository it started in.')
+    expect(RULES).toContain('Work for another project goes to that project\'s session. Do not dispatch an agent into it, and do not edit it.')
+    expect(RULES).toContain('send it the finding and the acceptance criteria with `SendMessage`, as `/workbench-core:cross-session-messaging` describes. When no session for that project is live, ask the user.')
+    expect(RULES).toContain('`Explore` and `Plan` only read, so they may still read other projects.')
+  })
+
+  test('the gates table lists the project scope guard', () => {
+    const row = RULES.split('\n').find(line => line.startsWith('| Project scope guard |')) ?? ''
+    expect(row).toContain('any type but `Explore` and `Plan`')
+    expect(row).toContain('inside this project, a git worktree of its repository, or a scratch root')
+  })
+})
+
 describe('the working rule on pull request reviews', () => {
   test('no review is requested, by any route', () => {
     expect(RULES).toContain('## Pull request reviews')

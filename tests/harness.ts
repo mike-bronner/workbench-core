@@ -106,8 +106,8 @@ export const ASK = {
       question: 'Which approach?',
       header: 'Approach',
       options: [
-        { label: 'A', description: 'first' },
-        { label: 'B', description: 'second' },
+        { label: 'Keep the parser', description: 'first' },
+        { label: 'Rewrite the parser', description: 'second' },
       ],
       multiSelect: false,
     },

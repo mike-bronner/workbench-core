@@ -2,7 +2,19 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { ASKS_NOTHING, ASKS_USER, REFUSAL_REASON, REPROMPT_REASON, hasContextBefore, proseOf } from '../hooks/mods/question-rule'
+import {
+  ASKS_NOTHING,
+  ASKS_USER,
+  FORWARD_REFUSAL,
+  LABEL_REFUSAL,
+  REFUSAL_REASON,
+  REPROMPT_REASON,
+  hasContextBefore,
+  proseOf,
+  shownTextOf,
+  unshownOf,
+  unshownReason,
+} from '../hooks/mods/question-rule'
 import { ASK, COMPOSER, ID_RECORDER, prompt, start, stop, world } from './harness'
 
 const ATTENDED = {}
@@ -278,6 +290,209 @@ describe('an AskUserQuestion the main session raises on its own is never refused
     expect(hasContextBefore([{ role: 'assistant', content: [{ type: 'text', text: 'Earlier.' }] }, { role: 'assistant', content: [call] }], 'q')).toBe(false)
     expect(hasContextBefore([{ role: 'assistant', content: [call] }], 'other')).toBeUndefined()
     expect(hasContextBefore([{ role: 'assistant', content: [call] }], undefined)).toBeUndefined()
+  })
+})
+
+const TABLE = [
+  'Watson found three ways to fix the parser.',
+  '',
+  '| Option            | Pros        | Cons          | Grade             |',
+  '|-------------------|-------------|---------------|-------------------|',
+  '| A: Patch the lexer | Small diff | Keeps the bug class | All met     |',
+  '| B: New tokenizer  | Clean       | Large diff    | AC2 partly met    |',
+  '| C: Regex fallback | Fast        | Fragile       | AC1 not met       |',
+  '',
+  'I recommend A (all met), because it fixes the bug with the least change.',
+].join('\n')
+
+const decision = (options: { label: string; description: string }[], question = 'How should the parser be fixed?') => ({
+  tool: 'AskUserQuestion' as const,
+  questions: [{ question, header: 'Parser', options, multiSelect: false }],
+})
+
+const PLAIN = decision([
+  { label: 'Patch the lexer', description: 'Small diff. All met.' },
+  { label: 'New tokenizer', description: 'Clean, large diff. AC2 partly met.' },
+  { label: 'Regex fallback', description: 'Fast, fragile. AC1 not met.' },
+])
+
+describe('AC2: a question that names options the reply does not show is refused', () => {
+  for (const [name, call] of [
+    ['a letter label', decision([{ label: 'B', description: 'the tokenizer' }, { label: 'Patch the lexer', description: 'small' }])],
+    ['an "Option 2" label', decision([{ label: 'Option 2', description: 'the tokenizer' }, { label: 'Patch the lexer', description: 'small' }])],
+    ['a letter label marked recommended', decision([{ label: 'A (Recommended)', description: 'all met' }, { label: 'Patch the lexer', description: 'small' }])],
+  ] as const) {
+    askTest(`${name} is refused even with the table shown, because the dialog can cover it`, async ($, on) => {
+      const w = world(on, ATTENDED)
+      w.blocksBefore = [{ type: 'text', text: TABLE }]
+      await $.session.start(start(true))
+      await $.prompt.submit(prompt('fix the parser'))
+      expect((await $.tool.call(call)).deny).toBe(LABEL_REFUSAL)
+      expect(LABEL_REFUSAL).toContain('Name what each option does in plain words')
+      expect(w.asked).toBe(0)
+    })
+  }
+
+  for (const [name, call, ref] of [
+    ['a question that names an option', decision([{ label: 'Yes', description: 'go' }, { label: 'No', description: 'stop' }], "Go with Watson's option 2?"), "option 2, a sub-agent's graded options"],
+    ['a label that combines letters', decision([{ label: 'B + A stopgap', description: 'both' }, { label: 'Patch the lexer', description: 'small' }]), 'option B, option A'],
+    ['a description that names options', decision([{ label: 'Ship the fix', description: 'Same as options A and C' }, { label: 'Hold it', description: 'wait' }]), 'option A, option C'],
+    ['a pointer at a table', decision([{ label: 'Ship the fix', description: 'The first row of the table above' }, { label: 'Hold it', description: 'wait' }]), 'a table'],
+    ['a pointer at the grades', decision([{ label: 'Ship the fix', description: 'Best of the grades, as graded' }, { label: 'Hold it', description: 'wait' }]), "a sub-agent's graded options"],
+    ["a pointer at a sub-agent's proposal", decision([{ label: 'Ship the fix', description: "Watson's proposal" }, { label: 'Hold it', description: 'wait' }]), "a sub-agent's graded options"],
+  ] as const) {
+    askTest(`${name}, in a turn Mike opened, is refused when the reply shows only a summary`, async ($, on) => {
+      const w = world(on, ATTENDED)
+      w.blocksBefore = [{ type: 'text', text: 'Watson finished. He found a parser fix.' }]
+      await $.session.start(start(true))
+      await $.prompt.submit(prompt('fix the parser'))
+      const result = await $.tool.call(call)
+      expect(result.deny).toBe(unshownReason([...ref.split(', ')]))
+      expect(result.deny).toContain('Render it in prose above the call first: the options table')
+      expect(w.asked).toBe(0)
+    })
+  }
+
+  askTest('a forwarded decision with only a one-line summary above it is refused', async ($, on) => {
+    const w = world(on, ATTENDED)
+    w.blocksBefore = [{ type: 'text', text: 'Watson has three options for the parser. I recommend the first.' }]
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    expect((await $.tool.call(PLAIN)).deny).toBe(FORWARD_REFUSAL)
+    expect(FORWARD_REFUSAL).toContain('one table with the columns Option, Pros, Cons, and Grade')
+    expect(w.asked).toBe(0)
+  })
+
+  askTest('a forwarded decision whose table has fewer rows than options is refused', async ($, on) => {
+    const w = world(on, ATTENDED)
+    w.blocksBefore = [{ type: 'text', text: TABLE.split('\n').filter(line => !line.startsWith('| C')).join('\n') }]
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    expect((await $.tool.call(PLAIN)).deny).toBe(FORWARD_REFUSAL)
+  })
+
+  askTest('a forwarded decision with its table but no recommendation is refused', async ($, on) => {
+    const w = world(on, ATTENDED)
+    w.blocksBefore = [{ type: 'text', text: TABLE.split('\n').filter(line => !line.startsWith('I recommend')).join('\n') }]
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    expect((await $.tool.call(PLAIN)).deny).toBe(FORWARD_REFUSAL)
+  })
+
+  askTest('a forwarded two-option decision whose descriptions carry grades needs its table too', async ($, on) => {
+    const w = world(on, ATTENDED)
+    w.blocksBefore = [{ type: 'text', text: 'Two ways. I recommend the first.' }]
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    const call = decision([
+      { label: 'Patch the lexer', description: 'All met.' },
+      { label: 'New tokenizer', description: 'AC2 partly met.' },
+    ])
+    expect((await $.tool.call(call)).deny).toBe(FORWARD_REFUSAL)
+  })
+
+  askTest('a forwarded decision whose table has no Grade column is refused', async ($, on) => {
+    const w = world(on, ATTENDED)
+    w.blocksBefore = [{ type: 'text', text: TABLE.replace('| Grade             |', '| Notes             |') }]
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    expect((await $.tool.call(PLAIN)).deny).toBe(FORWARD_REFUSAL)
+  })
+
+  askTest('a forwarded three-option decision with no grades in it still needs its table', async ($, on) => {
+    const w = world(on, ATTENDED)
+    w.blocksBefore = [{ type: 'text', text: 'Watson found three fixes. I recommend the lexer patch.' }]
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    const call = decision([
+      { label: 'Patch the lexer', description: 'Small diff' },
+      { label: 'New tokenizer', description: 'Large diff' },
+      { label: 'Regex fallback', description: 'Fragile' },
+    ])
+    expect((await $.tool.call(call)).deny).toBe(FORWARD_REFUSAL)
+  })
+
+  askTest('a table from an earlier reply does not count', async ($, on) => {
+    const w = world(on, ATTENDED)
+    w.blocksBefore = [{ type: 'text', text: 'Back to the parser.' }]
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    expect((await $.tool.call(PLAIN)).deny).toBe(FORWARD_REFUSAL)
+  })
+})
+
+describe('AC3: a question whose options are shown, or that names none, runs', () => {
+  askTest('a forwarded sub-agent decision with its table and recommendation rendered above it runs', async ($, on) => {
+    const w = world(on, ATTENDED)
+    w.blocksBefore = [{ type: 'text', text: TABLE }]
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    expect((await $.tool.call(PLAIN)).deny).toBeUndefined()
+    expect(w.asked).toBe(1)
+  })
+
+  askTest('a question that names an option the table shows runs', async ($, on) => {
+    const w = world(on, ATTENDED)
+    w.blocksBefore = [{ type: 'text', text: TABLE }]
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    const call = decision(
+      [
+        { label: 'Patch the lexer', description: 'Option A. All met.' },
+        { label: 'New tokenizer', description: 'Option B. AC2 partly met.' },
+        { label: 'Regex fallback', description: 'Option C, per the table above. AC1 not met.' },
+      ],
+      "Go with Watson's option A?",
+    )
+    expect((await $.tool.call(call)).deny).toBeUndefined()
+  })
+
+  for (const [name, call] of [
+    ['a plain yes/no', decision([{ label: 'Yes', description: 'Push the branch' }, { label: 'No', description: 'Hold it' }], 'Push the branch now?')],
+    ['the commit question', decision([{ label: 'Not yet', description: 'Keep reviewing' }, { label: 'Commit it', description: 'Commit and push' }], 'Is your review done?')],
+    ['an open question with no options', decision([], 'What should the new flag be called?')],
+  ] as const) {
+    askTest(`${name}, forwarded with a line of context, runs`, async ($, on) => {
+      const w = world(on, ATTENDED)
+      w.blocksBefore = [{ type: 'text', text: 'Watson finished the parser fix, and all tests pass.' }]
+      await $.session.start(start(true))
+      await $.prompt.submit(prompt('task done', NOTIFICATION))
+      expect((await $.tool.call(call)).deny).toBeUndefined()
+      expect(w.asked).toBe(1)
+    })
+  }
+
+  askTest('a three-option question the main session raises on its own needs no table', async ($, on) => {
+    const w = world(on, ATTENDED)
+    w.blocksBefore = [{ type: 'text', text: 'Which repo next?' }]
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('what next'))
+    const call = decision([
+      { label: 'workbench-core', description: 'the hooks' },
+      { label: 'workbench-dev-team', description: 'the agents' },
+      { label: 'the vault', description: 'notes' },
+    ])
+    expect((await $.tool.call(call)).deny).toBeUndefined()
+  })
+
+  test('shownTextOf reads every assistant text since the last prompt, past tool results', () => {
+    const call = { type: 'tool_use', id: 'q' }
+    const messages = [
+      { role: 'user', content: [{ type: 'text', text: 'go' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'Table.' }, { type: 'tool_use', id: 'r' }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'r' }] },
+      { role: 'assistant', content: [{ type: 'thinking', thinking: 'Hidden.' }, { type: 'text', text: 'Pick.' }, call] },
+    ]
+    expect(shownTextOf(messages, 'q')).toBe('Table.\nPick.')
+    expect(shownTextOf([{ role: 'assistant', content: [{ type: 'text', text: 'Old.' }] }, ...messages], 'q')).toBe('Table.\nPick.')
+    expect(shownTextOf([{ role: 'user', content: 'prompt' } as never, { role: 'assistant', content: [call] }], 'q')).toBe('')
+    expect(shownTextOf(messages, 'other')).toBeUndefined()
+    expect(shownTextOf(messages, undefined)).toBeUndefined()
+  })
+
+  test('unshownOf lets malformed input and article letters through', () => {
+    expect(unshownOf(undefined, '', true)).toBeUndefined()
+    expect(unshownOf([{ question: 'A good fix, or a fast one?', options: [{ label: 'A good fix', description: 'A slow, safe change' }] }], '', false)).toBeUndefined()
   })
 })
 

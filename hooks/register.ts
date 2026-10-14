@@ -144,6 +144,7 @@ import {
   withMode,
 } from './mods/orchestrator'
 import { denyOf as dispatchDenyOf, hintOf as dispatchHintOf } from './mods/dispatch'
+import { isInScope, isWorkType, outsideDenyOf, unreadableDenyOf, workdirPathsOf } from './mods/project-scope'
 import { REMIND_STORE_KEY, hasDotPart, isInRoots, isWholeFileWrite, reminderOf, remindedOf, splitTarget, targetOf } from './mods/delegation'
 import {
   ASKS_NOTHING,
@@ -156,6 +157,8 @@ import {
   hasCandidate,
   hasContextBefore,
   proseOf,
+  shownTextOf,
+  unshownOf,
 } from './mods/question-rule'
 import { NAME as PENDING, REFUSAL as PENDING_REFUSAL, USAGE as PENDING_USAGE, outcomeOf, reportOf as pendingReportOf, requestOf } from './mods/pending-summaries'
 import { EMPTY, countRequest, countTurn, statusOf } from './mods/request-meter'
@@ -934,22 +937,76 @@ async function scopeOf($: EngineInterface, line: string, parse: WorkbenchShellPa
   const bare: ScopeContext = { cwd, home, roots: [], tmp: undefined, markers: undefined }
   const quick = stepOf(() => scopeVerdict(line, parse, bare, getterOf(new Map())))
   if ('value' in quick) return quick.value
+  const { project, roots, fields } = await scopeRootsOf($)
+  const ctx: ScopeContext = {
+    cwd,
+    home,
+    roots: [...new Set([...(project !== null && project !== '/' ? [project] : []), ...roots])],
+    tmp: fields.find(([kind]) => kind === 'tmp')?.[1],
+    markers: fields.find(([kind]) => kind === 'markers')?.[1],
+  }
+  return settled($, get => scopeVerdict(line, parse, ctx, get))
+}
+
+async function scopeRootsOf($: EngineInterface): Promise<{ project: Fact; roots: string[]; fields: string[][] }> {
   const { stdout } = await $.process.run(['bash', factsScript($), 'roots', await $.session.id()], { timeoutMs: 10_000 })
   const fields = stdout
     .split('\n')
     .map(row => row.split('\t'))
     .filter(([, path]) => path?.startsWith('/'))
   const project = await answerFact($, dirKey(await $.session.root()))
-  const roots = [...new Set([...(project !== null && project !== '/' ? [project] : []), ...fields.filter(([kind]) => kind === 'root').map(([, path]) => path as string)])]
-  const ctx: ScopeContext = {
-    cwd,
-    home,
-    roots,
-    tmp: fields.find(([kind]) => kind === 'tmp')?.[1],
-    markers: fields.find(([kind]) => kind === 'markers')?.[1],
-  }
-  return settled($, get => scopeVerdict(line, parse, ctx, get))
+  return { project, roots: fields.filter(([kind]) => kind === 'root').map(([, path]) => path as string), fields }
 }
+
+async function repoOf($: EngineInterface, dir: string): Promise<{ top: string; common: string } | undefined> {
+  const { exitCode, stdout } = await $.process.run(['git', '-C', dir, 'rev-parse', '--path-format=absolute', '--show-toplevel', '--git-common-dir'], { timeoutMs: 10_000 })
+  const [top = '', common = ''] = stdout.split('\n')
+  if (exitCode !== 0 || !top.startsWith('/') || !common.startsWith('/')) return undefined
+  const real = await answerFact($, dirKey(common))
+  return real === null ? undefined : { top, common: real }
+}
+
+async function physicalWorkdir($: EngineInterface, path: string): Promise<{ path: string; existing: string } | undefined> {
+  let dir = path.replace(/\/+$/, '') || '/'
+  let rest = ''
+  for (;;) {
+    const real = await answerFact($, dirKey(dir))
+    if (real !== null) {
+      if (hasDotPart(rest)) return undefined
+      return { path: rest === '' ? real : `${real.replace(/\/+$/, '')}/${rest}`, existing: real }
+    }
+    if (dir === '/' || dir === '') return undefined
+    const cut = dir.lastIndexOf('/')
+    rest = rest === '' ? dir.slice(cut + 1) : `${dir.slice(cut + 1)}/${rest}`
+    dir = dir.slice(0, cut) || '/'
+  }
+}
+
+async function projectScopeOf($: EngineInterface, e: { prompt?: unknown; subagent_type?: unknown }): Promise<string | undefined> {
+  if (!isWorkType(e.subagent_type)) return undefined
+  if ((await $.workbench.callerLane({})) !== 'main') return undefined
+  const home = await $.env.get('HOME')
+  const workdirs = workdirPathsOf(e.prompt, home)
+  if (workdirs === undefined) return undefined
+  const { project, roots } = await scopeRootsOf($)
+  if (project === null || project === '/') return undefined
+  const repo = await repoOf($, project)
+  const realHome = home?.startsWith('/') ? await answerFact($, dirKey(home)) : null
+  if (repo === undefined || repo.top === realHome) return undefined
+  if (workdirs.length === 0) return projectDenyOf(repo.top, undefined)
+  for (const workdir of workdirs) {
+    const found = await physicalWorkdir($, workdir)
+    if (found === undefined) return projectDenyOf(repo.top, undefined)
+    if (isInScope(found.path, [project, repo.top, ...roots])) continue
+    const target = await repoOf($, found.existing)
+    if (target?.common === repo.common) continue
+    return projectDenyOf(repo.top, { workdir, target: target?.top ?? found.path })
+  }
+  return undefined
+}
+
+const projectDenyOf = (project: string, outside: { workdir: string; target: string } | undefined): string =>
+  outside === undefined ? unreadableDenyOf(project) : outsideDenyOf(project, outside.workdir, outside.target)
 
 // The database guard reads a fact only for a SQL file a client is fed, so an
 // ordinary line asks for none.
@@ -1269,9 +1326,13 @@ export const register: Register = on => {
       if (isGated && bundlesCommit(e.questions)) return { deny: BUNDLE_REFUSAL }
       // The question rule. A call no message holds (another plugin's
       // $.ui.ask) is let through: there is no message to read the context from.
-      if (e.agentId === undefined && sessionAttended === true && (await read($, turnAttended)) && (await read($, turnForwards))) {
+      if (e.agentId === undefined && sessionAttended === true && (await read($, turnAttended))) {
+        const isForwarding = await read($, turnForwards)
         const messages = await $.session.messages({ as: 'api' })
-        if (hasContextBefore(messages, e.tool_use_id) === false) return { deny: REFUSAL_REASON }
+        if (isForwarding && hasContextBefore(messages, e.tool_use_id) === false) return { deny: REFUSAL_REASON }
+        const shown = shownTextOf(messages, e.tool_use_id)
+        const refusal = shown === undefined ? undefined : unshownOf(e.questions, shown, isForwarding)
+        if (refusal !== undefined) return { deny: refusal }
       }
       const result = await next(e)
       if (isGated && result.deny === undefined && isCommitPick(e.questions, result.result)) await update($, commitApproval, () => 'commit')
@@ -1326,6 +1387,8 @@ export const register: Register = on => {
       if (e.tool === 'Agent') {
         const { deny, hint } = await dispatchVerdict($, (e as { prompt?: unknown }).prompt)
         if (deny !== undefined) return { deny }
+        const outside = await projectScopeOf($, e as { prompt?: unknown; subagent_type?: unknown })
+        if (outside !== undefined) return { deny: outside }
         const result = await next(e)
         if (result.deny === undefined && (result.result as { status?: unknown } | undefined)?.status === 'completed') await update($, turnForwards, () => true)
         return result.deny !== undefined || hint === undefined ? result : { ...result, context: [...(result.context ?? []), hint] }

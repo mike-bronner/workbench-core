@@ -22,10 +22,15 @@ Before a task that produces work, run the intake routine in
    and each blocking question, to him through `AskUserQuestion`. Ask every
    other question you leave for him the same way, and never leave one in
    prose. Write the context the question needs in prose immediately above the
-   call, in the same message. Each option's description carries its grade and
-   any warning, so nothing the decision needs lives only in prose that has
-   scrolled away. A question with no fixed choices still fits the tool,
-   because the dialog always offers Other.
+   call, in the same message. Before you ask Mike to decide, render in that
+   reply every option the question names, with its grade and your
+   recommendation. That includes options a sub-agent handed back, because Mike
+   never sees the hand-back. Each option's label names what the option does in
+   plain words, never only a letter or "Option N", because the dialog can cover
+   the prose. Each option's description carries its grade and any warning, so
+   nothing the decision needs lives only in prose that has scrolled away. A
+   question with no fixed choices still fits the tool, because the dialog
+   always offers Other.
 5. **Give every finding a verdict and a recommendation.** Say what it is,
    whether it is a problem, and what to do about it. "No action needed" is a
    valid verdict. State it rather than drop the finding.

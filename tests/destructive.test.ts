@@ -466,6 +466,16 @@ describe('the scope judge, read directly', () => {
     expect(judge('* --version', {})).toEqual({ value: { kind: 'none' } })
   })
 
+  test('a bare [ or [[ closed by its bracket is the test builtin, not a glob, and a real glob still is', () => {
+    const test = (line: string, facts: Record<string, string | null> = {}) => JSON.stringify(judge(line, facts))
+    for (const line of ['[ -n "$x" ] && rm -f "$x"', '[[ -n "$x" ]] && rm -f "$x"', '[ -d /repo/build ] && rm -rf /repo/build']) {
+      expect([line, test(line).includes('holds a glob')]).toEqual([line, false])
+    }
+    expect(judge('[ -d /repo/build ] && rm -rf /repo/build', { 'dir\t/repo': '/repo', 'dir\t/repo/build': '/repo/build' })).not.toMatchObject({ value: { kind: 'deny' } })
+    expect(judge('r[m] -rf x', {})).toMatchObject({ value: { kind: 'deny', reason: expect.stringContaining('the command name "r[m]" holds a glob') } })
+    expect(judge('[ rm -rf x', {})).toMatchObject({ value: { kind: 'deny', reason: expect.stringContaining('the command name "[" holds a glob') } })
+  })
+
   test('only a line with no subshell, pipe, background or || follows a cd exactly', () => {
     expect(['cd a && rm b', 'cd a; rm b'].map(isLinearLine)).toEqual([true, true])
     expect(['(cd a); rm b', 'cd a | rm b', 'cd a & rm b', 'cd a || rm b', 'cd `x`; rm b', 'rm $(cd a)'].map(isLinearLine)).toEqual([false, false, false, false, false, false])

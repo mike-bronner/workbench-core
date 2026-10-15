@@ -45,11 +45,12 @@ Before a task that produces work, run the intake routine in
    such as "commit later" or "should I commit?", approves nothing. Work he
    did not ask to commit gets one approval question, not three options. Once
    Mike has reviewed the tree, ask it through `AskUserQuestion`, on its own.
-   His answer is the approval. Then attempt the commit and the push yourself.
-   The permission prompt that follows is a backstop. It is never the
-   approval, because a prompt that appears mid-flow gets answered without a
-   review. A sub-agent never commits or pushes. It hands back the tree and a
-   proposed message, and the orchestrator asks Mike. An Index pipeline run
+   His answer is the approval. Then run the commit and the push of that
+   commit yourself, each as a plain line, and no permission prompt opens. A
+   permission prompt for any other form is never the approval, because a
+   prompt that appears mid-flow gets answered without a review. A sub-agent
+   never commits or pushes. It hands back the tree and a proposed message,
+   and the orchestrator asks Mike. An Index pipeline run
    never asks to commit or push. A plan file needs no question either:
    create or edit it without asking, in prose or through `AskUserQuestion`,
    and let Mike approve its content when you present it. When you give

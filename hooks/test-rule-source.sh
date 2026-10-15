@@ -83,14 +83,11 @@ has "rule 6 takes a typed request as the approval"  "When Mike's own prompt asks
 has "rule 6 ends it at the next prompt"             'his next prompt ends the approval'
 has "rule 6 writes a plan file with no question"    'A plan file needs no question either: create or edit it without asking, in prose or through `AskUserQuestion`'
 has "rule 6 approves nothing on a negated prompt"   'A prompt that negates, defers or asks, such as "commit later" or "should I commit\?", approves nothing'
-# The approval is Mike's answer to one AskUserQuestion, asked alone after his
-# review. The permission prompt is only a backstop, because a prompt that
-# appears mid-flow gets answered without a review. A sub-agent never commits,
-# and the Index pipeline never asks.
 has "rule 6 asks one approval question"             'one approval question, not three options'
 has "rule 6 asks it alone, after the review"        'reviewed the tree, ask it through `AskUserQuestion`, on its own'
 has "rule 6 names the answer as the approval"       'His answer is the approval'
-has "rule 6 keeps the prompt a backstop"            'permission prompt that follows is a backstop\. It is never the approval'
+has "rule 6 runs a picked commit with no prompt"     'run the commit and the push of that commit yourself, each as a plain line, and no permission prompt opens'
+has "rule 6 never takes a prompt as the approval"    'A permission prompt for any other form is never the approval'
 has "rule 6 keeps sub-agents from committing"       'A sub-agent never commits or pushes'
 has "rule 6 leaves the question to the orchestrator" 'the orchestrator asks Mike'
 has "rule 6 keeps the Index pipeline silent"        'An Index pipeline run never asks to commit or push'

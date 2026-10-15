@@ -9,7 +9,9 @@ import {
   LABEL_REFUSAL,
   REFUSAL_REASON,
   REPROMPT_REASON,
+  agentResultForwards,
   hasContextBefore,
+  notificationForwards,
   proseOf,
   shownTextOf,
   unshownOf,
@@ -175,6 +177,11 @@ const askTest = (name: string, body: ($: Engine, on: On) => Promise<void>): void
   test(name, { plugins: [ID_RECORDER] }, body)
 
 const NOTIFICATION = { kind: 'task-notification' } as const
+const notification = (summary: string, result?: string) =>
+  ['<task-notification>', '<task-id>a1</task-id>', '<status>completed</status>', `<summary>${summary}</summary>`, ...(result === undefined ? [] : [`<result>${result}</result>`]), '</task-notification>'].join('\n')
+const HANDED_BACK = notification('Agent "Fix the parser" finished', 'Two ways to fix the parser remain. Which one should I take?')
+const COMMAND_DONE = notification('Background command "Watch the CI checks" completed (exit code 0)')
+const REPORTED = notification('Agent "Fix the parser" finished', 'The parser is fixed. Every suite passes, and the tree is uncommitted.')
 const NARRATION = { type: 'thinking', thinking: '', signature: 'narration' }
 const AGENT = { tool: 'Agent' as const, description: 'research', prompt: 'look into it' }
 
@@ -183,7 +190,7 @@ describe('AC3: an AskUserQuestion that forwards a sub-agent question with no pro
     const w = world(on, ATTENDED)
     w.blocksBefore = [{ type: 'thinking', thinking: '' }]
     await $.session.start(start(true))
-    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
     const result = await $.tool.call(ASK)
     expect(result.deny).toBe(REFUSAL_REASON)
     expect(REFUSAL_REASON).toContain('Ask that sub-agent through SendMessage for the context Mike needs')
@@ -195,7 +202,7 @@ describe('AC3: an AskUserQuestion that forwards a sub-agent question with no pro
     const w = world(on, ATTENDED)
     w.blocksBefore = [{ type: 'text', text: '  \n ' }]
     await $.session.start(start(true))
-    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
     expect((await $.tool.call(ASK)).deny).toBe(REFUSAL_REASON)
   })
 
@@ -203,7 +210,7 @@ describe('AC3: an AskUserQuestion that forwards a sub-agent question with no pro
     const w = world(on, ATTENDED)
     w.blocksBefore = [{ type: 'text', text: 'Reading the config first.' }, { type: 'tool_use', id: 'other', name: 'Read', input: {} }]
     await $.session.start(start(true))
-    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
     expect((await $.tool.call(ASK)).deny).toBe(REFUSAL_REASON)
   })
 
@@ -211,7 +218,7 @@ describe('AC3: an AskUserQuestion that forwards a sub-agent question with no pro
     const w = world(on, ATTENDED)
     w.blocksBefore = [{ type: 'text', text: 'Two ways forward.' }, { type: 'thinking', thinking: '' }]
     await $.session.start(start(true))
-    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
     expect((await $.tool.call(ASK)).deny).toBeUndefined()
     expect(w.asked).toBe(1)
   })
@@ -220,7 +227,7 @@ describe('AC3: an AskUserQuestion that forwards a sub-agent question with no pro
     const w = world(on, ATTENDED)
     w.blocksBefore = null
     await $.session.start(start(true))
-    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
     expect((await $.tool.call(ASK)).deny).toBeUndefined()
     expect(w.asked).toBe(1)
   })
@@ -231,12 +238,12 @@ describe('AC3: an AskUserQuestion that forwards a sub-agent question with no pro
     await $.session.start(start(true))
     await $.prompt.submit(prompt('go'))
     expect((await $.tool.call(ASK)).deny).toBeUndefined()
-    await $.prompt.submit({ ...prompt('task done', NOTIFICATION), turnId: 't' })
+    await $.prompt.submit({ ...prompt(HANDED_BACK, NOTIFICATION), turnId: 't' })
     expect((await $.tool.call(ASK)).deny).toBe(REFUSAL_REASON)
   })
 
-  askTest('a sub-agent that completes and hands back its report makes the turn forward, whatever the call asked for', async ($, on) => {
-    on('tool.call', { tool: 'Agent' }, () => ({ result: { status: 'completed', content: [] } as never }))
+  askTest('a sub-agent that completes and hands back a question makes the turn forward', async ($, on) => {
+    on('tool.call', { tool: 'Agent' }, () => ({ result: { status: 'completed', content: [{ type: 'text', text: 'Should I keep the old parser?' }] } as never }))
     const w = world(on, { WORKBENCH_ORCHESTRATOR: '0' })
     w.blocksBefore = []
     await $.session.start(start(true))
@@ -254,6 +261,204 @@ describe('AC3: an AskUserQuestion that forwards a sub-agent question with no pro
     expect((await $.tool.call(AGENT)).deny).toBeUndefined()
     expect((await $.tool.call({ ...AGENT, run_in_background: true })).deny).toBeUndefined()
     expect((await $.tool.call(ASK)).deny).toBeUndefined()
+  })
+})
+
+const GRADED = [
+  'Two ways remain.',
+  '',
+  '| Option | Pros | Cons | Grade |',
+  '|--------|------|------|-------|',
+  '| Patch the lexer | Small | Keeps the class | All met |',
+  '| New tokenizer | Clean | Large | AC2 partly met |',
+].join('\n')
+
+const agentReturns = (on: On, result: unknown) => on('tool.call', { tool: 'Agent' }, () => ({ result: result as never }))
+
+describe('AC1: a turn forwards only when a hand-back asks Mike something', () => {
+  for (const [name, text] of [
+    ['a background command', COMMAND_DONE],
+    ['a sub-agent whose report asks nothing', REPORTED],
+    ['a sub-agent that has not reported yet', notification('Agent "x" finished', 'This agent has not reported yet: it is waiting on its own background work.')],
+  ] as const) {
+    askTest(`a notification from ${name} opens a turn that does not forward`, async ($, on) => {
+      const w = world(on, ATTENDED)
+      w.blocksBefore = []
+      await $.session.start(start(true))
+      await $.prompt.submit(prompt(text, NOTIFICATION))
+      expect((await $.tool.call(ASK)).deny).toBeUndefined()
+      expect(w.asked).toBe(1)
+    })
+
+    askTest(`a notification from ${name} folded into a running turn does not make it forward`, async ($, on) => {
+      const w = world(on, ATTENDED)
+      w.blocksBefore = []
+      await $.session.start(start(true))
+      await $.prompt.submit(prompt('go'))
+      await $.prompt.submit({ ...prompt(text, NOTIFICATION), turnId: 't' })
+      expect((await $.tool.call(ASK)).deny).toBeUndefined()
+    })
+  }
+
+  askTest('a folded notification that asks nothing leaves a forwarding turn forwarding', async ($, on) => {
+    const w = world(on, ATTENDED)
+    w.blocksBefore = []
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
+    await $.prompt.submit({ ...prompt(COMMAND_DONE, NOTIFICATION), turnId: 't' })
+    expect((await $.tool.call(ASK)).deny).toBe(REFUSAL_REASON)
+  })
+
+  askTest('a foreground sub-agent whose report asks nothing does not make the turn forward', async ($, on) => {
+    agentReturns(on, { status: 'completed', content: [{ type: 'text', text: 'The parser is fixed. Run `which?` to check.' }] })
+    const w = world(on, { WORKBENCH_ORCHESTRATOR: '0' })
+    w.blocksBefore = []
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('go'))
+    expect((await $.tool.call(AGENT)).deny).toBeUndefined()
+    expect((await $.tool.call(ASK)).deny).toBeUndefined()
+  })
+
+  test('notificationForwards reads only the result, and to the end when it is left open', () => {
+    expect(notificationForwards(HANDED_BACK)).toBe(true)
+    expect(notificationForwards(COMMAND_DONE)).toBe(false)
+    expect(notificationForwards('<task-notification><summary>Did it pass?</summary></task-notification>')).toBe(false)
+    expect(notificationForwards('<result>Done.\nShall I push')).toBe(true)
+    expect(notificationForwards('<result>Done.</result> Shall I push')).toBe(false)
+    expect(notificationForwards('<result>Quoted </result> text.\nWhich one?</result>')).toBe(true)
+    expect(notificationForwards(`<result>${GRADED}</result>`)).toBe(true)
+  })
+})
+
+describe('AC2: a turn that forwards a question or a decision still needs prose above the call', () => {
+  for (const [name, text] of [
+    ['a question', 'Should I keep the old parser?'],
+    ['a request', 'Let me know which parser to keep.'],
+    ['a graded table', GRADED],
+  ] as const) {
+    askTest(`a foreground sub-agent that hands back ${name} makes the turn forward`, async ($, on) => {
+      agentReturns(on, { status: 'completed', content: [{ type: 'text', text }] })
+      const w = world(on, { WORKBENCH_ORCHESTRATOR: '0' })
+      w.blocksBefore = []
+      await $.session.start(start(true))
+      await $.prompt.submit(prompt('go'))
+      expect((await $.tool.call(AGENT)).deny).toBeUndefined()
+      expect((await $.tool.call(ASK)).deny).toBe(REFUSAL_REASON)
+    })
+
+    askTest(`a notification that hands back ${name} makes the turn forward`, async ($, on) => {
+      const w = world(on, ATTENDED)
+      w.blocksBefore = []
+      await $.session.start(start(true))
+      await $.prompt.submit(prompt(notification('Agent "x" finished', text), NOTIFICATION))
+      expect((await $.tool.call(ASK)).deny).toBe(REFUSAL_REASON)
+    })
+  }
+
+  askTest('a foreground sub-agent result whose report cannot be read makes the turn forward', async ($, on) => {
+    agentReturns(on, { status: 'completed' })
+    const w = world(on, { WORKBENCH_ORCHESTRATOR: '0' })
+    w.blocksBefore = []
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('go'))
+    expect((await $.tool.call(AGENT)).deny).toBeUndefined()
+    expect((await $.tool.call(ASK)).deny).toBe(REFUSAL_REASON)
+  })
+
+  test('agentResultForwards reads the text blocks, and fails closed on a result it cannot read', () => {
+    expect(agentResultForwards({ content: [{ type: 'text', text: 'Done.' }] })).toBe(false)
+    expect(agentResultForwards({ content: [{ type: 'image' }, { type: 'text', text: 'Which one?' }] })).toBe(true)
+    expect(agentResultForwards({ content: 'Which one?' })).toBe(true)
+    expect(agentResultForwards(undefined)).toBe(true)
+  })
+})
+
+const ASKS = [
+  'Two ways remain.\n> Should we drop the loader?',
+  'Ask Mike: "Keep or drop it?"',
+  'Decision needed: keep or drop the loader.',
+  'Mike must choose between A and B.',
+  'Blocked on the retry window.',
+  'Two ways remain.\n> Decision needed: keep or drop the loader.',
+]
+
+describe('AC11: an ask in a blockquote, in quotes, or in a decision statement still forwards', () => {
+  test('each ask reads as asking, from a notification and from an Agent result', () => {
+    for (const text of ASKS) {
+      expect([text, notificationForwards(notification('Agent "x" finished', text))]).toEqual([text, true])
+      expect([text, agentResultForwards({ content: [{ type: 'text', text }] })]).toEqual([text, true])
+    }
+  })
+
+  test('a report that mentions design decisions forwards: the accepted cost of the decision words', () => {
+    const text = 'The parser is fixed. The design decisions are in the commit body.'
+    expect(notificationForwards(notification('Agent "x" finished', text))).toBe(true)
+    expect(agentResultForwards({ content: [{ type: 'text', text }] })).toBe(true)
+  })
+
+  for (const text of ASKS) {
+    askTest(`a notification whose report says ${JSON.stringify(text)} forwards`, async ($, on) => {
+      const w = world(on, ATTENDED)
+      w.blocksBefore = []
+      await $.session.start(start(true))
+      await $.prompt.submit(prompt(notification('Agent "x" finished', text), NOTIFICATION))
+      expect((await $.tool.call(ASK)).deny).toBe(REFUSAL_REASON)
+    })
+
+    askTest(`a foreground report that says ${JSON.stringify(text)} forwards`, async ($, on) => {
+      agentReturns(on, { status: 'completed', content: [{ type: 'text', text }] })
+      const w = world(on, { WORKBENCH_ORCHESTRATOR: '0' })
+      w.blocksBefore = []
+      await $.session.start(start(true))
+      await $.prompt.submit(prompt('go'))
+      expect((await $.tool.call(AGENT)).deny).toBeUndefined()
+      expect((await $.tool.call(ASK)).deny).toBe(REFUSAL_REASON)
+    })
+  }
+})
+
+describe('AC12: a report of finished work still does not forward', () => {
+  test('finished-work reports read as asking nothing', () => {
+    for (const text of [
+      'The parser is fixed. Every suite passes, and the tree is uncommitted.',
+      'The loader is dropped, as decided in the brief. I chose the smaller diff.',
+      'Done.\n```\nif (x?.y) ask("which?")\n```\nRun `which?` to check.',
+      'Done.\n> Quoted from the brief: keep the loader.',
+    ]) {
+      expect(notificationForwards(notification('Agent "x" finished', text))).toBe(false)
+      expect(agentResultForwards({ content: [{ type: 'text', text }] })).toBe(false)
+    }
+  })
+})
+
+describe('AC4: the tru-data shape passes', () => {
+  askTest('own questions, prose above the call, a memory call and a finished background task in the turn', async ($, on) => {
+    on('tool.call', { tool: 'mcp__plugin_workbench-core_memory__search' }, () => ({ result: { content: [{ type: 'text', text: '{"result":[]}' }] } as never }))
+    const w = world(on, ATTENDED)
+    w.blocksBefore = [{ type: 'text', text: 'Intake found four gaps in its own design. The first is the retry window.' }]
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('run intake on the KPI snapshot backfill'))
+    expect((await $.tool.call({ tool: 'mcp__plugin_workbench-core_memory__search', query: 'kpi snapshot' } as never)).deny).toBeUndefined()
+    await $.prompt.submit({ ...prompt(COMMAND_DONE, NOTIFICATION), turnId: 't' })
+    await $.prompt.submit({ ...prompt(REPORTED, NOTIFICATION), turnId: 't' })
+    expect((await $.tool.call(ASK)).deny).toBeUndefined()
+    w.blocksBefore = []
+    expect((await $.tool.call(ASK)).deny).toBeUndefined()
+    expect(w.asked).toBe(2)
+  })
+})
+
+describe('AC3: prose right above the call counts, in the same message or an adjacent one of the same reply', () => {
+  const call = { type: 'tool_use', id: 'q' }
+  test('a text block in the assistant message right above the call counts', () => {
+    expect(hasContextBefore([{ role: 'user', content: [{ type: 'text', text: 'go' }] }, { role: 'assistant', content: [{ type: 'text', text: 'Context.' }] }, { role: 'assistant', content: [call] }], 'q')).toBe(true)
+    expect(hasContextBefore([{ role: 'assistant', content: [{ type: 'text', text: 'Context.' }] }, { role: 'assistant', content: [{ type: 'thinking' }] }, { role: 'assistant', content: [call] }], 'q')).toBe(true)
+  })
+
+  test('an adjacent message that ends on a tool call, blank text or nothing does not count', () => {
+    expect(hasContextBefore([{ role: 'assistant', content: [{ type: 'text', text: 'Context.' }, { type: 'tool_use', id: 'r' }] }, { role: 'assistant', content: [call] }], 'q')).toBe(false)
+    expect(hasContextBefore([{ role: 'assistant', content: [{ type: 'text', text: ' ' }] }, { role: 'assistant', content: [call] }], 'q')).toBe(false)
+    expect(hasContextBefore([{ role: 'user', content: [{ type: 'text', text: 'Context?' }] }, { role: 'assistant', content: [call] }], 'q')).toBe(false)
   })
 })
 
@@ -277,17 +482,17 @@ describe('an AskUserQuestion the main session raises on its own is never refused
     const w = world(on, ATTENDED)
     w.blocksBefore = [NARRATION]
     await $.session.start(start(true))
-    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
     expect((await $.tool.call(ASK)).deny).toBe(REFUSAL_REASON)
     await $.prompt.submit(prompt('pick one'))
     expect((await $.tool.call(ASK)).deny).toBeUndefined()
   })
 
-  test('hasContextBefore reads the message that holds the call, and only it', () => {
+  test('hasContextBefore reads the reply that holds the call, and no earlier step', () => {
     const call = { type: 'tool_use', id: 'q' }
     expect(hasContextBefore([{ role: 'assistant', content: [{ type: 'text', text: 'Context.' }, call] }], 'q')).toBe(true)
     expect(hasContextBefore([{ role: 'assistant', content: [{ type: 'redacted_thinking' }, call] }], 'q')).toBe(false)
-    expect(hasContextBefore([{ role: 'assistant', content: [{ type: 'text', text: 'Earlier.' }] }, { role: 'assistant', content: [call] }], 'q')).toBe(false)
+    expect(hasContextBefore([{ role: 'assistant', content: [{ type: 'text', text: 'Earlier.' }, { type: 'tool_use', id: 'r' }] }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'r' }] }, { role: 'assistant', content: [call] }], 'q')).toBe(false)
     expect(hasContextBefore([{ role: 'assistant', content: [call] }], 'other')).toBeUndefined()
     expect(hasContextBefore([{ role: 'assistant', content: [call] }], undefined)).toBeUndefined()
   })
@@ -357,7 +562,7 @@ describe('AC2: a question that names options the reply does not show is refused'
     const w = world(on, ATTENDED)
     w.blocksBefore = [{ type: 'text', text: 'Watson has three options for the parser. I recommend the first.' }]
     await $.session.start(start(true))
-    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
     expect((await $.tool.call(PLAIN)).deny).toBe(FORWARD_REFUSAL)
     expect(FORWARD_REFUSAL).toContain('one table with the columns Option, Pros, Cons, and Grade')
     expect(w.asked).toBe(0)
@@ -367,7 +572,7 @@ describe('AC2: a question that names options the reply does not show is refused'
     const w = world(on, ATTENDED)
     w.blocksBefore = [{ type: 'text', text: TABLE.split('\n').filter(line => !line.startsWith('| C')).join('\n') }]
     await $.session.start(start(true))
-    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
     expect((await $.tool.call(PLAIN)).deny).toBe(FORWARD_REFUSAL)
   })
 
@@ -375,7 +580,7 @@ describe('AC2: a question that names options the reply does not show is refused'
     const w = world(on, ATTENDED)
     w.blocksBefore = [{ type: 'text', text: TABLE.split('\n').filter(line => !line.startsWith('I recommend')).join('\n') }]
     await $.session.start(start(true))
-    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
     expect((await $.tool.call(PLAIN)).deny).toBe(FORWARD_REFUSAL)
   })
 
@@ -383,7 +588,7 @@ describe('AC2: a question that names options the reply does not show is refused'
     const w = world(on, ATTENDED)
     w.blocksBefore = [{ type: 'text', text: 'Two ways. I recommend the first.' }]
     await $.session.start(start(true))
-    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
     const call = decision([
       { label: 'Patch the lexer', description: 'All met.' },
       { label: 'New tokenizer', description: 'AC2 partly met.' },
@@ -395,7 +600,7 @@ describe('AC2: a question that names options the reply does not show is refused'
     const w = world(on, ATTENDED)
     w.blocksBefore = [{ type: 'text', text: TABLE.replace('| Grade             |', '| Notes             |') }]
     await $.session.start(start(true))
-    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
     expect((await $.tool.call(PLAIN)).deny).toBe(FORWARD_REFUSAL)
   })
 
@@ -403,7 +608,7 @@ describe('AC2: a question that names options the reply does not show is refused'
     const w = world(on, ATTENDED)
     w.blocksBefore = [{ type: 'text', text: 'Watson found three fixes. I recommend the lexer patch.' }]
     await $.session.start(start(true))
-    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
     const call = decision([
       { label: 'Patch the lexer', description: 'Small diff' },
       { label: 'New tokenizer', description: 'Large diff' },
@@ -416,7 +621,7 @@ describe('AC2: a question that names options the reply does not show is refused'
     const w = world(on, ATTENDED)
     w.blocksBefore = [{ type: 'text', text: 'Back to the parser.' }]
     await $.session.start(start(true))
-    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
     expect((await $.tool.call(PLAIN)).deny).toBe(FORWARD_REFUSAL)
   })
 })
@@ -426,7 +631,7 @@ describe('AC3: a question whose options are shown, or that names none, runs', ()
     const w = world(on, ATTENDED)
     w.blocksBefore = [{ type: 'text', text: TABLE }]
     await $.session.start(start(true))
-    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
     expect((await $.tool.call(PLAIN)).deny).toBeUndefined()
     expect(w.asked).toBe(1)
   })
@@ -435,7 +640,7 @@ describe('AC3: a question whose options are shown, or that names none, runs', ()
     const w = world(on, ATTENDED)
     w.blocksBefore = [{ type: 'text', text: TABLE }]
     await $.session.start(start(true))
-    await $.prompt.submit(prompt('task done', NOTIFICATION))
+    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
     const call = decision(
       [
         { label: 'Patch the lexer', description: 'Option A. All met.' },
@@ -456,7 +661,7 @@ describe('AC3: a question whose options are shown, or that names none, runs', ()
       const w = world(on, ATTENDED)
       w.blocksBefore = [{ type: 'text', text: 'Watson finished the parser fix, and all tests pass.' }]
       await $.session.start(start(true))
-      await $.prompt.submit(prompt('task done', NOTIFICATION))
+      await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
       expect((await $.tool.call(call)).deny).toBeUndefined()
       expect(w.asked).toBe(1)
     })
@@ -519,7 +724,7 @@ describe('AC4: only a turn a person can answer is re-prompted or refused', () =>
       w.label = ASKS_USER
       w.blocksBefore = []
       await $.session.start(start(true))
-      await $.prompt.submit(prompt('go', { kind }))
+      await $.prompt.submit(prompt(kind === 'task-notification' ? HANDED_BACK : 'go', { kind }))
       expect((await $.classic.Stop(stop(ASKING))).block).toBe(REPROMPT_REASON)
       expect((await $.tool.call(ASK)).deny).toBe(kind === 'task-notification' ? REFUSAL_REASON : undefined)
     })
@@ -530,7 +735,7 @@ describe('AC4: only a turn a person can answer is re-prompted or refused', () =>
     w.label = ASKS_USER
     w.blocksBefore = []
     await $.session.start(start(true))
-    await $.prompt.submit(prompt('go', NOTIFICATION))
+    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
     expect((await $.classic.Stop(stop(ASKING))).block).toBe(REPROMPT_REASON)
     expect((await $.tool.call(ASK)).deny).toBe(REFUSAL_REASON)
   })
@@ -548,7 +753,7 @@ describe('AC4: only a turn a person can answer is re-prompted or refused', () =>
   askTest('a scheduled fire that arrives as a notification', ($, on) =>
     expectSilent($, on, ATTENDED, true, '<scheduled-task name="dispatch" file="x.md">\nrun</scheduled-task>', { kind: 'task-notification' }))
   askTest('a notification turn in a non-interactive session', ($, on) =>
-    expectSilent($, on, ATTENDED, false, 'task done', { kind: 'task-notification' }))
+    expectSilent($, on, ATTENDED, false, HANDED_BACK, { kind: 'task-notification' }))
   askTest('a scheduled trigger', ($, on) => expectSilent($, on, ATTENDED, true, 'tick', { kind: 'scheduled-trigger' }))
   askTest('a peer message', ($, on) => expectSilent($, on, ATTENDED, true, 'hi', { kind: 'peer' }))
 

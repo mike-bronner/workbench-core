@@ -9,7 +9,7 @@ import type { On } from 'claude-code'
 
 import type { WorkbenchShellStatement } from '../types'
 import { commandsOf as commitCommandsOf } from '../hooks/mods/commit-approval'
-import { WRAPPERS, commandsOf, parseShell, shellScriptOf } from '../hooks/mods/shell'
+import { WRAPPERS, commandsOf, decodedOf, expandingOf, parseShell, shellScriptOf } from '../hooks/mods/shell'
 import { bench, caller, start } from './bench'
 import { CAUGHT, LET_THROUGH, OVER_COUNTED } from './commit-corpus'
 import { PARSER_CASES } from './shell-cases'
@@ -988,5 +988,62 @@ describe('AC7: what the reader cannot read is named, never left out', () => {
   test('an unterminated heredoc is reported unterminated', () => {
     expect(only('cat <<EOF\nno end').heredocs[0]).toMatchObject({ isTerminated: false, body: 'no end' })
     expect(only('cat <<EOF').heredocs[0]).toMatchObject({ isTerminated: false, body: '' })
+  })
+})
+
+describe('expandingOf: which words of a statement the shell expands', () => {
+  const marks = (line: string, at = 0): readonly number[] | undefined => {
+    const statement = parseShell(line).statements.at(at)
+    return statement === undefined ? undefined : expandingOf(statement)
+  }
+
+  test('single quotes, a backslash and $\'…\' expand nothing', () => {
+    expect(marks("echo 'a $X' b")).toEqual([])
+    expect(marks('echo \\$X')).toEqual([])
+    expect(marks("echo $'a $X\\n'")).toEqual([])
+  })
+
+  test('an unquoted or double-quoted $, ${…}, $(…) and a backtick expand', () => {
+    expect(marks('echo $X "$Y" plain')).toEqual([1, 2])
+    expect(marks('echo "${X}" x')).toEqual([1])
+    expect(marks('echo "$(date)" `date` x', -1)).toEqual([1, 2])
+    expect(marks("echo 'q($o)' \"$O\"")).toEqual([2])
+  })
+
+  test('a heredoc body is not a word of the command, quoted or not', () => {
+    expect(marks("cat <<'EOF' a\n$X\nEOF")).toEqual([])
+    expect(marks('cat <<EOF "$A"\n$X\nEOF')).toEqual([1])
+  })
+
+  test('each statement keeps its own marks, and the shape parseShell returns is unchanged', () => {
+    expect(marks('a $X; b c', 1)).toEqual([])
+    expect(marks('a $X; b "$C"', 1)).toEqual([1])
+    expect(Object.keys(parseShell('echo $X').statements[0] ?? {}).sort()).toEqual(
+      ['args', 'assignments', 'depth', 'escaped', 'heredocs', 'isCertain', 'isPlaced', 'name', 'nameAt', 'redirects', 'source', 'subcommandAt', 'words', 'wrappers'].sort(),
+    )
+  })
+
+  test('an index counts from the first word, past assignments, and holds in nested statements', () => {
+    expect(marks('A=1 echo $X')).toEqual([2])
+    expect(marks('A="$Y" echo x')).toEqual([0])
+    const nested = parseShell("bash -c 'A=1 echo plain $X'").statements
+    expect(nested.map(st => st.name)).toEqual(['bash', 'echo'])
+    expect(nested.map(st => expandingOf(st))).toEqual([[], [3]])
+    const substituted = parseShell('echo "$(printf %s $Y)" plain').statements
+    expect(substituted.map(st => st.name)).toEqual(['printf', 'echo'])
+    expect(substituted.map(st => expandingOf(st))).toEqual([[2], [1]])
+  })
+
+  test('decodedOf marks a word with a backslash escape or a $\'…\' string, and nothing else', () => {
+    const decoded = (line: string) => decodedOf(parseShell(line).statements[0] as WorkbenchShellStatement)
+    expect(decoded("g\\h $'gh' 'q' \"d\" plain")).toEqual([0, 1])
+    expect(decoded('echo a\\\nb')).toEqual([])
+    expect(decoded("A=\\x echo $'\\x41'")).toEqual([0, 2])
+    expect(decodedOf({ ...(parseShell('echo x').statements[0] as WorkbenchShellStatement) })).toBeUndefined()
+  })
+
+  test('a statement the reader did not make has no marks', () => {
+    const copy = { ...(parseShell('echo $X').statements[0] as WorkbenchShellStatement) }
+    expect(expandingOf(copy)).toBeUndefined()
   })
 })

@@ -561,6 +561,7 @@ type Raw = {
   // The indices in `words` of each word that holds a `$` or backtick the
   // shell expands (unquoted or inside double quotes).
   expanding: number[]
+  decoded: number[]
   // Whether the command stands inside a [[ ]] test, wholly or in part.
   isTest: boolean
 }
@@ -633,8 +634,10 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
   let redirects: ShellRedirect[] = []
   let heredocs: ShellHeredoc[] = []
   let expanding: number[] = []
+  let decoded: number[] = []
   // Whether the word holds a `$` inside double quotes.
   let isExpanding = false
+  let isDecoded = false
   let word = ''
   let hasWord = false
   // Where the command's first character stands in `line`, or -1.
@@ -675,6 +678,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       const isReserved = isHead && isBare
       words.push(word)
       if (isExpanding || word.includes(UNQUOTED)) expanding.push(words.length - 1)
+      if (isDecoded) decoded.push(words.length - 1)
       // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
       if (exact && isReserved && word === 'case') caseAt = words.length - 1
       if (exact && isReserved && word === '[[') isTest = true
@@ -698,6 +702,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     hasWord = false
     isBare = true
     isExpanding = false
+    isDecoded = false
   }
   const endCommand = () => {
     endWord()
@@ -716,6 +721,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
         depth,
         isCertain: !isUncertain && !['then', 'else', 'elif', 'do', 'case', 'for', 'select', 'function'].includes(head),
         expanding,
+        decoded,
         isTest: wasTest,
         ...(isPiped && last !== undefined ? { pipedFrom: last } : {}),
       }
@@ -735,6 +741,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     redirects = []
     heredocs = []
     expanding = []
+    decoded = []
     start = -1
   }
   // A substitution's commands go in the list, and the outer word goes on.
@@ -778,6 +785,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     if (c === '\\') {
       isBare = false
       if (next !== '\n') {
+        isDecoded = true
         word += next ?? ''
         hasWord = true
         if (next === '>' || next === '<') redirects.push(...textual(next))
@@ -836,6 +844,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       continue
     } else if (c === '$' && next === "'") {
       isBare = false
+      isDecoded = true
       const end = closingAnsiQuote(line, i + 2)
       if (end === line.length) reading.unknowns.add('quote')
       const raw = line.slice(i + 2, end)
@@ -1078,6 +1087,9 @@ function subcommandAt(name: string, args: readonly string[]): number {
   return -1
 }
 
+const EXPANDING = new WeakMap<ShellStatement, readonly number[]>()
+const DECODED = new WeakMap<ShellStatement, readonly number[]>()
+
 // A statement from one lexed command, or undefined for one that holds nothing
 // but keywords.
 function statementOf(raw: Raw, reading: Reading): ShellStatement | undefined {
@@ -1115,7 +1127,7 @@ function statementOf(raw: Raw, reading: Reading): ShellStatement | undefined {
   if (nameAt !== -1 && isExpanded((marked[nameAt] as string).replaceAll(ESCAPED, ''))) reading.unknowns.add('expansion')
   if (nameAt === -1 && assignments.length === 0 && raw.redirects.length === 0) return undefined
   const args = nameAt === -1 ? [] : words.slice(nameAt + 1)
-  return {
+  const statement: ShellStatement = {
     words,
     nameAt,
     name,
@@ -1131,7 +1143,14 @@ function statementOf(raw: Raw, reading: Reading): ShellStatement | undefined {
     source: raw.source,
     depth: raw.depth,
   }
+  EXPANDING.set(statement, [...raw.expanding])
+  DECODED.set(statement, [...raw.decoded])
+  return statement
 }
+
+export const expandingOf = (statement: ShellStatement): readonly number[] | undefined => EXPANDING.get(statement)
+
+export const decodedOf = (statement: ShellStatement): readonly number[] | undefined => DECODED.get(statement)
 
 // What a shell's arguments run, read as the shell reads its options: with -c
 // (in any cluster), the first operand after the options is the script, `--`

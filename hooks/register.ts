@@ -103,8 +103,11 @@ import type { Action, Commit, Refs, RequestedCall } from './mods/commit-approval
 import {
   BUNDLE_REFUSAL,
   PATHSPEC_REFUSAL,
+  RELEASE_REFUSAL,
   SHARED_LINE_REFUSAL,
   UNREAD_TREE_REFUSAL,
+  agentReleaseRefusalOf,
+  agentUnreadRefusalOf,
   approvalAfter,
   bundlesCommit,
   dirOf,
@@ -116,7 +119,7 @@ import {
   pickWritesOf,
   readLine,
   refusalOf,
-  releasesOf,
+  releaseCountOf,
   requestedOf,
   shapeOf,
   unnamedOf,
@@ -172,10 +175,12 @@ import {
   LABELS,
   REFUSAL_REASON,
   REPROMPT_REASON,
+  agentResultForwards,
   classifierText,
   endsOnQuestion,
   hasCandidate,
   hasContextBefore,
+  notificationForwards,
   proseOf,
   shownTextOf,
   unshownOf,
@@ -504,6 +509,23 @@ async function isCommitGated($: EngineInterface, sessionAttended: boolean | unde
   const lane = await $.workbench.callerLane(agentId === undefined ? {} : { agentId }).catch((): WorkbenchCallerLane => 'main')
   if (lane !== 'main') return false
   return !(await read($, turnScheduled))
+}
+
+async function isAgentLane($: EngineInterface, agentId: string | undefined, sessionAttended: boolean | undefined): Promise<boolean> {
+  if (agentId !== undefined || sessionAttended === false || (await $.env.get('WORKBENCH_DEV_TEAM_PIPELINE')) === '1') return true
+  return (await $.workbench.callerLane({}).catch((): WorkbenchCallerLane => 'main')) !== 'main'
+}
+
+async function releaseRefusalOf($: EngineInterface, line: string, agentId: string | undefined, sessionAttended: boolean | undefined): Promise<string | undefined> {
+  const agentRelease = agentReleaseRefusalOf(line)
+  if (agentRelease !== undefined && (await isAgentLane($, agentId, sessionAttended))) return agentRelease
+  if (releaseCountOf(line) === 0 || !(await isCommitGated($, sessionAttended, agentId))) return undefined
+  return (await read($, turnRequest)).includes('release') ? undefined : RELEASE_REFUSAL
+}
+
+async function unreadRefusalOf($: EngineInterface, line: string, agentId: string | undefined, sessionAttended: boolean | undefined): Promise<string | undefined> {
+  const refusal = agentUnreadRefusalOf(line)
+  return refusal !== undefined && (await isAgentLane($, agentId, sessionAttended)) ? refusal : undefined
 }
 
 // HEAD and the push target of the repository at `dir`, each undefined when git
@@ -1365,12 +1387,12 @@ export const register: Register = on => {
     const isMike = isPersonOrigin(e.origin) && !isScheduledFire(e.text)
     await update($, turnRequest, request => (isMike ? requestedOf(e.text) : e.turnId === undefined ? [] : request))
     if (isMike) await update($, intake, state => ({ ...state, task: state.task + 1 }))
-    const isNotification = e.origin.kind === 'task-notification'
+    const forwards = e.origin.kind === 'task-notification' && notificationForwards(e.text)
     if (e.turnId !== undefined) {
-      if (isNotification) await update($, turnForwards, () => true)
+      if (forwards) await update($, turnForwards, () => true)
       return next(e)
     }
-    await update($, turnForwards, () => isNotification)
+    await update($, turnForwards, () => forwards)
     await update($, turnAttended, () => isAttendedPrompt(e.origin, e.text))
     await update($, turnScheduled, () => e.origin.kind === 'scheduled-trigger' || isScheduledFire(e.text))
     await update($, reprompted, () => false)
@@ -1399,9 +1421,12 @@ export const register: Register = on => {
   })
 
   on('tool.call', async ($, e, next) => {
-    // The guards judge first, in every lane. One that throws refuses the call.
     const verdict = await guardVerdict($, e as Guarded, sessionAttended === true).catch(() => ({ deny: GUARD_FAILED }))
     if (verdict !== undefined && 'deny' in verdict) return { deny: verdict.deny }
+    const release = e.tool === 'Bash' ? await releaseRefusalOf($, e.command, e.agentId, sessionAttended).catch(() => GUARD_FAILED) : undefined
+    if (release !== undefined) return { deny: release }
+    const unread = e.tool === 'Bash' ? await unreadRefusalOf($, e.command, e.agentId, sessionAttended).catch(() => GUARD_FAILED) : undefined
+    if (unread !== undefined) return { deny: unread }
     if (verdict !== undefined) {
       const result = await next(e)
       return result.deny !== undefined ? result : { ...result, context: [...(result.context ?? []), verdict.advise] }
@@ -1433,7 +1458,7 @@ export const register: Register = on => {
     // A content search in the main loop gets recall's block beside its result.
     if (e.tool === 'Bash') {
       const { writes, dir: steps, commit } = readLine(e.command)
-      const releases = releasesOf(e.command)
+      const releases = releaseCountOf(e.command)
       if (writes.commits + writes.pushes + releases === 0 || !(await isCommitGated($, sessionAttended, e.agentId))) {
         return withScanRecall($, 'Bash', e.command, e.agentId, await next(e))
       }
@@ -1481,7 +1506,8 @@ export const register: Register = on => {
         const outside = await projectScopeOf($, e as { prompt?: unknown; subagent_type?: unknown })
         if (outside !== undefined) return { deny: outside }
         const result = await next(e)
-        if (result.deny === undefined && (result.result as { status?: unknown } | undefined)?.status === 'completed') await update($, turnForwards, () => true)
+        const output = result.result as { status?: unknown } | undefined
+        if (result.deny === undefined && output?.status === 'completed' && agentResultForwards(output)) await update($, turnForwards, () => true)
         return result.deny !== undefined || hint === undefined ? result : { ...result, context: [...(result.context ?? []), hint] }
       }
       // The delegation reminder is advice, never a guard: it gives no verdict,
@@ -1557,7 +1583,12 @@ export const register: Register = on => {
     if (result.decision !== undefined || e.tool_name !== 'Bash' || e.agent_id !== undefined) return result
     const command = (e.tool_input as { command?: unknown } | null | undefined)?.command
     if (typeof command !== 'string' || !(await isCommitGated($, sessionAttended, undefined))) return result
-    return (await isApprovedLine($, command, await read($, turnRequest))) ? { ...result, decision: { behavior: 'allow' } } : result
+    const approval = await read($, commitApproval)
+    const { writes } = readLine(command)
+    const isOne = writes.commits <= 1 && writes.pushes <= 1
+    const picked: Action[] = !isOne ? [] : approval === 'commit' ? ['commit'] : approval === 'push' ? ['push'] : []
+    const approved = [...new Set([...(await read($, turnRequest)), ...picked])]
+    return (await isApprovedLine($, command, approved)) ? { ...result, decision: { behavior: 'allow' } } : result
   })
 
   on('command.run', async ($, e, next) => {

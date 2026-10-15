@@ -57,7 +57,8 @@
 // Pure functions only: the engine follows `$` into no imported function.
 
 import type { WorkbenchShellStatement as ShellStatement } from '../../types'
-import { ASSIGNMENT, GIT_VALUE_OPTIONS, KEYWORDS, SHELLS, WRAPPERS, commandsOf, isEscaped, isExpanded, nameOf, parseShell, shellScriptOf } from './shell'
+import { hiddenCommandRefusal, isPartlyRead } from './guards'
+import { ASSIGNMENT, GIT_VALUE_OPTIONS, KEYWORDS, SHELLS, WRAPPERS, commandsOf, decodedOf, expandingOf, isEscaped, isExpanded, nameOf, parseShell, shellScriptOf } from './shell'
 
 export { commandsOf }
 
@@ -81,6 +82,16 @@ export const RELEASE_REFUSAL =
   'This release was refused: Mike has not asked for a release in this turn. ' +
   'Only a prompt of his own that asks for a release approves one, for the turn ' +
   'it opened. A "Commit it" pick approves no release. Ask first.'
+
+export const AGENT_RELEASE_REFUSAL =
+  'This release was refused: a sub-agent or a pipeline run does not publish a ' +
+  'release. Only a prompt Mike types in his own session approves one. So no ' +
+  'gh release command, releases endpoint or GraphQL Release mutation runs here. ' +
+  'A gh line whose command or subcommand is not written as plain text, and a ' +
+  'line the shell reader cannot read whole, are refused the same way, because ' +
+  'either may spell one. If the work needs a release, report that it is ready, ' +
+  'and leave it to the session that dispatched you. For any other gh command, ' +
+  'write gh and its subcommand as plain words.'
 
 export const ONE_REFUSAL =
   'This line runs more than one git commit, more than one git push, or more ' +
@@ -385,17 +396,201 @@ export const pickWritesOf = (writes: Writes, request: readonly Action[]): Writes
 })
 
 const RELEASE_API = /(^|\/)releases(\/|$|\?)/
-const API_WRITE = /^(-x|--method|-f|--field|--raw-field|--input)(=|$)/
+const API_WRITE = /^(-x|--method|-f|--field|--raw-field|--input)(=|$)|^-[xf]\S/
+const RELEASE_MUTATION = /createrelease/
+const isExpansion = (word: string): boolean => /[$`]/.test(word)
+
+const ghWordsOf = (st: ShellStatement): string[] | undefined => {
+  const at = st.words.findIndex(word => nameOf(word) === 'gh')
+  return at === -1 ? undefined : st.words.slice(at + 1).map(word => word.toLowerCase())
+}
+
+const isRelease = (rest: readonly string[], line: string): boolean => {
+  const sub = rest.indexOf('release')
+  if (sub !== -1 && rest.slice(sub + 1).includes('create')) return true
+  if (!rest.includes('api')) return false
+  if (rest.includes('graphql') && /createrelease/i.test(line)) return true
+  return (rest.some(word => RELEASE_API.test(word)) && rest.some(word => API_WRITE.test(word))) || rest.some(word => RELEASE_MUTATION.test(word))
+}
+
+const GH_LONG_VALUES: ReadonlySet<string> = new Set([
+  '--repo', '--hostname', '--method', '--field', '--raw-field', '--header', '--input', '--jq', '--template', '--cache', '--preview',
+])
+const GH_SHORT_VALUES: ReadonlySet<string> = new Set(['R', 'X', 'H', 'f', 'F', 'q', 't', 'p'])
+const GH_FIELDS: ReadonlySet<string> = new Set(['-f', '-F', '--field', '--raw-field'])
+const REFUSED_GROUPS: ReadonlySet<string> = new Set(['release', 'alias', 'extension', 'extensions', 'ext'])
+const BRACE_EXPANSION = /\{[^{}]*(,|\.\.)[^{}]*\}/
+const GLOB = /[*?[]/
+const RELEASE_MUTATION_NAME = /[a-z_]release\s*[({]/i
+const PLAIN_OPTION = /^--?[A-Za-z][A-Za-z0-9-]*$/
+
+type GhOption = { name: string; value?: string; valueAt?: number }
+
+function readGh(args: readonly string[]): { options: GhOption[]; positionals: number[] } {
+  const options: GhOption[] = []
+  const positionals: number[] = []
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i] ?? ''
+    if (word === '--') {
+      for (let k = i + 1; k < args.length; k++) positionals.push(k)
+      break
+    }
+    if (word.startsWith('--')) {
+      const eq = word.indexOf('=')
+      const name = (eq === -1 ? word : word.slice(0, eq)).toLowerCase()
+      if (eq !== -1) options.push({ name, value: word.slice(eq + 1), valueAt: i })
+      else if (GH_LONG_VALUES.has(name)) options.push({ name, value: args[i + 1] ?? '', valueAt: ++i })
+      else options.push({ name })
+      continue
+    }
+    if (!word.startsWith('-') || word === '-') {
+      positionals.push(i)
+      continue
+    }
+    for (let k = 1; k < word.length; k++) {
+      const letter = word[k] as string
+      if (!GH_SHORT_VALUES.has(letter)) {
+        options.push({ name: `-${letter}` })
+        continue
+      }
+      const rest = word.slice(k + 1)
+      options.push(rest === '' ? { name: `-${letter}`, value: args[i + 1] ?? '', valueAt: ++i } : { name: `-${letter}`, value: rest, valueAt: i })
+      break
+    }
+  }
+  return { options, positionals }
+}
+
+const optionHeadOf = (word: string): string => {
+  if (word.startsWith('--')) return word.split('=')[0] ?? ''
+  for (let k = 1; k < word.length; k++) {
+    if (!/[A-Za-z]/.test(word[k] as string) || GH_SHORT_VALUES.has(word[k] as string)) return word.slice(0, k + 1)
+  }
+  return word
+}
+
+const takesNextValue = (word: string): boolean => {
+  if (word.startsWith('--')) return !word.includes('=') && GH_LONG_VALUES.has(word.toLowerCase())
+  return GH_SHORT_VALUES.has(word.at(-1) ?? '') && optionHeadOf(word) === word
+}
+
+const plainOf = (st: ShellStatement): ((at: number) => boolean) => {
+  const expanding = expandingOf(st)
+  const decoded = decodedOf(st)
+  return at => {
+    const word = st.words[at] ?? ''
+    const expands = expanding === undefined ? isExpansion(word) : expanding.includes(at)
+    const isDecoded = decoded === undefined || decoded.includes(at)
+    return !expands && !isDecoded && !st.escaped.includes(at) && !BRACE_EXPANSION.test(word) && !GLOB.test(word)
+  }
+}
+
+const hasPlainCommand = (st: ShellStatement): boolean => {
+  const isPlain = plainOf(st)
+  if (!isPlain(st.nameAt)) return false
+  const end = st.subcommandAt === -1 ? st.args.length - 1 : st.subcommandAt
+  for (let j = 0; j <= end; j++) {
+    const word = st.args[j] ?? ''
+    if (!word.startsWith('-') || word === '-') {
+      if (!isPlain(st.nameAt + 1 + j)) return false
+      continue
+    }
+    if (st.escaped.includes(st.nameAt + 1 + j) || !PLAIN_OPTION.test(optionHeadOf(word))) return false
+    if (takesNextValue(word)) j++
+  }
+  return true
+}
+
+const mayRunGh = (st: ShellStatement, isAgent: boolean): boolean => {
+  if (st.nameAt === -1 || st.words[st.nameAt] === '[' || st.words[st.nameAt] === '[[') return false
+  if (st.name === 'gh') return true
+  const word = st.words[st.nameAt] ?? ''
+  if (st.escaped.includes(st.nameAt) && word.includes('\\')) return true
+  if (BRACE_EXPANSION.test(word)) return /g/i.test(word) && /h/i.test(word)
+  return isAgent && GLOB.test(word)
+}
+
+const groupOf = (st: ShellStatement): string => (st.subcommandAt === -1 ? '' : (st.args[st.subcommandAt] ?? '').toLowerCase())
+
+const apiOf = (st: ShellStatement) => {
+  const { options, positionals } = readGh(st.args)
+  const endpointAt = positionals[1]
+  const methods = options.filter(option => option.name === '-X' || option.name === '--method')
+  const fields = options.filter(option => GH_FIELDS.has(option.name))
+  const canWrite = methods.some(method => (method.value ?? '').toUpperCase() !== 'GET') || fields.length > 0 || options.some(option => option.name === '--input')
+  return { endpointAt, endpoint: endpointAt === undefined ? '' : (st.args[endpointAt] ?? ''), methods, fields, options, canWrite }
+}
+
+const isHiddenApiCall = (st: ShellStatement): boolean => {
+  const isPlain = plainOf(st)
+  const hidden = (j: number | undefined) => j !== undefined && !isPlain(st.nameAt + 1 + j)
+  const api = apiOf(st)
+  if (api.canWrite && hidden(api.endpointAt)) return true
+  if (api.methods.some(method => hidden(method.valueAt))) return true
+  const expanding = expandingOf(st)
+  const expands = (j: number | undefined) => j !== undefined && (expanding === undefined ? isExpansion(st.args[j] ?? '') : expanding.includes(st.nameAt + 1 + j))
+  return /graphql/i.test(api.endpoint) && api.fields.some(field => /^query=/i.test(field.value ?? '') && expands(field.valueAt))
+}
+
+const isAgentApiRelease = (st: ShellStatement, line: string): boolean => {
+  const api = apiOf(st)
+  if (RELEASE_API.test(api.endpoint.toLowerCase())) return true
+  if (/\bmutation\b/i.test(line) && RELEASE_MUTATION_NAME.test(line)) return true
+  if (!/graphql/i.test(api.endpoint)) return false
+  if (/\\u[0-9a-f]{4}/i.test(line)) return true
+  if (api.options.some(option => option.name === '--input') && st.heredocs.length === 0) return true
+  return api.fields.some(field => /(^|=)@/.test(field.value ?? ''))
+}
+
+const isAgentRisk = (st: ShellStatement, line: string): boolean => {
+  if (!mayRunGh(st, true)) return false
+  if (st.name !== 'gh' || !hasPlainCommand(st)) return true
+  const group = groupOf(st)
+  if (REFUSED_GROUPS.has(group)) return true
+  return group === 'api' && (isHiddenApiCall(st) || isAgentApiRelease(st, line))
+}
+
+const isPlainRelease = (st: ShellStatement, line: string): boolean => {
+  const rest = ghWordsOf(st)
+  return rest !== undefined && isRelease(rest, line)
+}
+
+const isUnreadRelease = (st: ShellStatement, line: string): boolean => {
+  if (!mayRunGh(st, false)) return false
+  if (st.name !== 'gh' || !hasPlainCommand(st)) return true
+  if (isRelease(st.args.map(word => word.toLowerCase()), line)) return false
+  const verbAt = st.subcommandAt + 1
+  return groupOf(st) === 'release' && verbAt < st.args.length && !plainOf(st)(st.nameAt + 1 + verbAt)
+}
+
+const isPlainReleaseCreate = (st: ShellStatement): boolean => hasPlainCommand(st) && plainOf(st)(st.nameAt + 2)
 
 export function releasesOf(line: string): number {
-  return parseShell(line).statements.filter(st => {
-    const at = st.words.findIndex(word => nameOf(word) === 'gh')
-    if (at === -1) return false
-    const rest = st.words.slice(at + 1).map(word => word.toLowerCase())
-    const sub = rest.indexOf('release')
-    if (sub !== -1 && rest.slice(sub + 1).includes('create')) return true
-    return rest.includes('api') && rest.some(word => RELEASE_API.test(word)) && rest.some(word => API_WRITE.test(word))
-  }).length
+  return parseShell(line).statements.filter(st => isPlainRelease(st, line)).length
+}
+
+export function unreadReleasesOf(line: string): number {
+  return parseShell(line).statements.filter(st => isUnreadRelease(st, line)).length
+}
+
+export function releaseCountOf(line: string): number {
+  return parseShell(line).statements.filter(st => isPlainRelease(st, line) || isUnreadRelease(st, line)).length
+}
+
+export const UNREAD_LINE_REFUSAL =
+  'Workbench guards (workbench-core): the shell reader cannot read all of this line, such as an escape it ' +
+  'does not decode, a substitution left open, or scripts nested too deep, so no guard can tell what it runs. ' +
+  'Write the line out plainly, with every escape, quote and substitution closed, and run it again.'
+
+export function agentReleaseRefusalOf(line: string): string | undefined {
+  const parse = parseShell(line)
+  if (releasesOf(line) > 0 || parse.statements.some(st => isAgentRisk(st, line))) return AGENT_RELEASE_REFUSAL
+  return isPartlyRead(parse) && hiddenCommandRefusal(parse) === undefined && parse.statements.some(st => mayRunGh(st, true)) ? AGENT_RELEASE_REFUSAL : undefined
+}
+
+export function agentUnreadRefusalOf(line: string): string | undefined {
+  const parse = parseShell(line)
+  return isPartlyRead(parse) && hiddenCommandRefusal(parse) === undefined ? UNREAD_LINE_REFUSAL : undefined
 }
 
 const LEAD_WORDS: ReadonlySet<string> = new Set([
@@ -484,7 +679,7 @@ const callOf = (st: ShellStatement): RequestedCall | undefined => {
   if (st.name === 'gh') {
     const [group, verb] = st.args
     const isOtherRepo = st.args.some(arg => /^(-R|--repo)/.test(arg))
-    return st.subcommandAt === 0 && group === 'release' && verb === 'create' && !isOtherRepo ? { action: 'release' } : undefined
+    return st.subcommandAt === 0 && group === 'release' && verb === 'create' && !isOtherRepo && isPlainReleaseCreate(st) ? { action: 'release' } : undefined
   }
   if (st.name !== 'git' || st.subcommandAt < 0) return undefined
   const dir = gitDirOf(st.args.slice(0, st.subcommandAt))

@@ -156,7 +156,7 @@ const isReadable = (word: string): boolean => word !== '' && !UNREADABLE.test(wo
 const DELETE_WORD = /(^|[^A-Za-z0-9])(rm|rmdir|delete)([^A-Za-z0-9]|$)/i
 export function mentionsScopeSubject(line: string): boolean {
   const text = line.replaceAll('\\\n', '').replace(/["'\\]/g, '')
-  if (DELETE_WORD.test(text)) return true
+  if (DELETE_WORD.test(text) || DELETE_WORD.test(text.replace(/[[\]]/g, ''))) return true
   const words = text.split(/[\s;&|()<>`$]+/).filter(Boolean)
   for (let i = 0; i < words.length; i++) {
     if (nameOf(words[i] as string) !== 'git') continue
@@ -865,7 +865,9 @@ export function scopeVerdict(line: string, parse: ShellParse, ctx: ScopeContext,
     // A glob or an expansion in the command word runs whatever it expands to,
     // such as the first file in the folder: on a line that names a destructive
     // verb, that may be rm.
-    if (isSubject && !isReadable(s.words[s.nameAt] ?? '')) {
+    const command = s.words[s.nameAt] ?? ''
+    const isTestBuiltin = (command === '[' && s.words.at(-1) === ']') || (command === '[[' && s.words.at(-1) === ']]')
+    if (isSubject && !isTestBuiltin && !isReadable(command)) {
       denies.push(scopeDeny(`the command name "${s.words[s.nameAt]}" holds a glob, a variable or a substitution, so it may be any program`))
       continue
     }

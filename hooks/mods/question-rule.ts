@@ -17,7 +17,7 @@ export const REPROMPT_REASON =
 export const REFUSAL_REASON =
   'AskUserQuestion was refused: this turn forwards a question a sub-agent ' +
   'handed back, and no prose comes immediately before this call in the same ' +
-  'message. Ask that sub-agent through SendMessage for the context Mike needs ' +
+  'reply. Ask that sub-agent through SendMessage for the context Mike needs ' +
   'to answer. Then write that context in prose directly above the call, and ' +
   'call AskUserQuestion again. He reads in an 80x50 terminal, and a dialog ' +
   'with no context right above it cannot be answered without scrolling back.'
@@ -59,18 +59,17 @@ export function endsOnQuestion(prose: string): boolean {
 type ApiBlock = { type: string; [field: string]: unknown }
 type ApiMessage = { role: string; content: readonly ApiBlock[] }
 
-// Whether prose comes immediately before the tool_use `id`, in the message
-// that made it. Thinking blocks are skipped, because Mike never sees them.
-// Undefined when no message holds the call, such as an AskUserQuestion another
-// plugin raised through $.ui.ask.
 export function hasContextBefore(messages: readonly ApiMessage[], id: string | undefined): boolean | undefined {
   if (id === undefined) return undefined
+  const blocksOf = (message: ApiMessage | undefined) => (Array.isArray(message?.content) ? message.content : [])
   for (let m = messages.length - 1; m >= 0; m--) {
-    const content = messages[m]?.content ?? []
+    const content = blocksOf(messages[m])
     const at = content.findIndex(block => block.type === 'tool_use' && block.id === id)
     if (at === -1) continue
-    const before = content.slice(0, at).filter(block => !/thinking$/.test(block.type))
-    const last = before[before.length - 1]
+    let before = content.slice(0, at)
+    for (let k = m - 1; k >= 0 && messages[k]?.role === 'assistant'; k--) before = [...blocksOf(messages[k]), ...before]
+    const shown = before.filter(block => !/thinking$/.test(block.type))
+    const last = shown[shown.length - 1]
     return last?.type === 'text' && String(last.text ?? '').trim() !== ''
   }
   return undefined
@@ -171,4 +170,25 @@ export function unshownOf(questions: unknown, shown: string, isForwarding: boole
   if (!isForwarding || decisions.length === 0) return undefined
   const isRendered = decisions.every(question => tableRowsOf(shown, true) >= optionsOf(question).length) && /\brecommend/i.test(shown)
   return isRendered ? undefined : FORWARD_REFUSAL
+}
+
+const DECISION = /\b(decide|decision|decisions|choose|must pick|blocked on|needs? (your|mike's|his) (call|answer|input|pick))\b/i
+
+const asksMike = (handBack: string): boolean => {
+  const text = handBack.replace(/(```|~~~)[\s\S]*?(\1|$)/g, '').replace(/`[^`\n]*`/g, '')
+  return hasCandidate(text) || DECISION.test(text) || tableRowsOf(handBack, true) > 0
+}
+
+export function notificationForwards(text: string): boolean {
+  const start = text.indexOf('<result>')
+  if (start === -1) return false
+  const end = text.lastIndexOf('</result>')
+  return asksMike(text.slice(start + '<result>'.length, end > start ? end : undefined))
+}
+
+export function agentResultForwards(result: unknown): boolean {
+  const content = (result as { content?: unknown } | null | undefined)?.content
+  if (!Array.isArray(content)) return true
+  const texts = (content as ApiBlock[]).filter(block => block?.type === 'text').map(block => String(block.text ?? ''))
+  return asksMike(texts.join('\n'))
 }

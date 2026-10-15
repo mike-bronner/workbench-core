@@ -439,6 +439,7 @@ describe('the working rules on commits and code comments', () => {
     expect(RULES).toContain('A prompt that negates, defers or asks approves nothing')
     expect(RULES).toContain('never a peer, channel, scheduled, SDK or plugin turn, and never a sub-agent')
     expect(RULES).toContain('A "Commit it" pick approves one commit and the push of that commit.')
+    expect(RULES).toContain('Run both in the same plain forms, and no permission prompt opens. A pick never approves a release.')
     expect(RULES).not.toMatch(/typed "commit it"[^.]*does not count/i)
     expect(RULES).toContain('Run each approved action as a plain line, and no permission prompt opens')
     expect(RULES).toContain('`git -C <path>` is fine when the path is inside this project or one of its worktrees.')

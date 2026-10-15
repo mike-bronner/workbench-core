@@ -22,10 +22,10 @@ const POINTER = 'The plan is in ~/.claude/plans/loader.md for details.'
 
 type Call = Record<string, unknown> & { tool: string }
 
-async function session($: Engine, on: Parameters<typeof bench>[0]): Promise<Bench> {
+async function session($: Engine, on: Parameters<typeof bench>[0], isInteractive = false): Promise<Bench> {
   const b = bench(on, { env: { HOME } })
   b.scripts['vault-resolve.sh'] = () => `root\t${VAULT}\n`
-  await $.session.start(start(false))
+  await $.session.start(start(isInteractive))
   return b
 }
 
@@ -107,7 +107,7 @@ describe('the outbound prose guard', () => {
   })
 
   test('a graphql query from a file or standard input is read before the mutation test', async ($, on) => {
-    const b = await session($, on)
+    const b = await session($, on, true)
     const mutation = `mutation { addComment(input: {body: "${SEMI}"}) { clientMutationId } }`
     b.files.set('/repo/m.graphql', mutation)
     b.files.set('/repo/q.graphql', `query { viewer { login } } # ${SEMI}`)
@@ -308,7 +308,7 @@ describe('the outbound prose guard', () => {
   })
 
   test('a graphql mutation\'s variables are read under any name, and a query\'s are not', async ($, on) => {
-    const b = await session($, on)
+    const b = await session($, on, true)
     const mutation = 'mutation { addComment(input: {subjectId: "I_1"}) { clientMutationId } }'
     b.files.set('/repo/m.graphql', mutation)
     b.files.set('/repo/q.graphql', 'query { viewer { login } }')

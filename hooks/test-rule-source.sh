@@ -79,6 +79,10 @@ has "rule 5 keeps \"no action needed\" a verdict"   'No action needed" is a vali
 has "rule 6 limits options to a real fork"          'real fork that Mike has not decided'
 has "rule 6 keeps options before irreversible acts" 'outward-facing or irreversible action'
 has "rule 6 exempts commits and pushes from options" 'Commits and ordinary pushes are the exception'
+has "rule 6 takes a typed request as the approval"  "When Mike's own prompt asks for a commit, a push or a release, or any mix of them, that prompt approves the actions it names, for the turn it opened"
+has "rule 6 ends it at the next prompt"             'his next prompt ends the approval'
+has "rule 6 writes a plan file with no question"    'A plan file needs no question either: create or edit it without asking, in prose or through `AskUserQuestion`'
+has "rule 6 approves nothing on a negated prompt"   'A prompt that negates, defers or asks, such as "commit later" or "should I commit\?", approves nothing'
 # The approval is Mike's answer to one AskUserQuestion, asked alone after his
 # review. The permission prompt is only a backstop, because a prompt that
 # appears mid-flow gets answered without a review. A sub-agent never commits,
@@ -151,6 +155,7 @@ lacks() { # desc, extended-regex
   if printf '%s' "$FLAT" | grep -qiE -- "$2"; then no "$1" "found: $2"; else ok "$1"; fi
 }
 lacks "no three options before every change" 'three options and a recommendation before making changes'
+lacks "no typed request refused as approval" 'typed "commit it"[^.]*(does not|no longer) count'
 lacks "no hard 20-word sentence cap"         '20 words'
 lacks "no emoji at the same density"         'same density'
 lacks "no drift test"                        'drift test'

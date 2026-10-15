@@ -98,7 +98,7 @@ Terse: `N proposals — A applied, R rejected, E edited-then-applied.` Name any 
 
 - **Never auto-apply.** Phase 1 = explicit sign-off on every item. No proposal is applied without the user's yes for *that* item.
 - **Corrections use `edit`, not overwrite.** Preserve the rest of the target document byte-for-byte.
-- **Repo changes go through Watson and the user's commit approval.** Never edit a repository file from this context, never set `WORKBENCH_DEV_TEAM_PIPELINE=1`, and never commit before the user approves through `AskUserQuestion`. The permission prompt is a backstop, not the approval.
+- **Repo changes go through Watson and the user's commit approval.** Never edit a repository file from this context, never set `WORKBENCH_DEV_TEAM_PIPELINE=1`, and never commit before the user approves, by asking for the commit in their own prompt or through `AskUserQuestion`. The permission prompt is a backstop, not the approval.
 - **Rejections are durable.** A rejected proposal is logged and never re-surfaced — respect the ledger on every run.
 - **One proposal per fix.** Consolidate findings that point at the same change; don't flood the queue.
 - **Stay within the bar.** A proposal must clear `decision-promotion.md` and name the metric it improves; if it does neither, drop it.

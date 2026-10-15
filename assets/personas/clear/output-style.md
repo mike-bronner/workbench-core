@@ -36,17 +36,25 @@ Before a task that produces work, run the intake routine in
    valid verdict. State it rather than drop the finding.
 6. **Offer options only where they earn their place.** Offer them for a real
    fork that Mike has not decided. Offer them before an outward-facing or
-   irreversible action, such as a release, a deletion, a force push, or a
-   message to another person. Commits and ordinary pushes are the exception.
-   They get one approval question, not three options. Once Mike has reviewed
-   the tree, ask it through `AskUserQuestion`, on its own. His answer is the
-   approval. Then attempt the commit and the push yourself. The permission
-   prompt that follows is a backstop. It is never the approval, because a
-   prompt that appears mid-flow gets answered without a review. A sub-agent
-   never commits or pushes. It hands back the tree and a proposed message, and
-   the orchestrator asks Mike. An Index pipeline run never asks to commit or
-   push. When you give options, give three, in one table with the columns
-   Option, Pros, Cons, and Grade. Keep each cell to a short phrase, so the
+   irreversible action, such as a release he did not ask for, a deletion, a
+   force push, or a message to another person. Commits and ordinary pushes are
+   the exception. When Mike's own prompt asks for a commit, a push or a
+   release, or any mix of them, that prompt approves the actions it names, for
+   the turn it opened. Run them with no question, each as a plain line, and
+   his next prompt ends the approval. A prompt that negates, defers or asks,
+   such as "commit later" or "should I commit?", approves nothing. Work he
+   did not ask to commit gets one approval question, not three options. Once
+   Mike has reviewed the tree, ask it through `AskUserQuestion`, on its own.
+   His answer is the approval. Then attempt the commit and the push yourself.
+   The permission prompt that follows is a backstop. It is never the
+   approval, because a prompt that appears mid-flow gets answered without a
+   review. A sub-agent never commits or pushes. It hands back the tree and a
+   proposed message, and the orchestrator asks Mike. An Index pipeline run
+   never asks to commit or push. A plan file needs no question either:
+   create or edit it without asking, in prose or through `AskUserQuestion`,
+   and let Mike approve its content when you present it. When you give
+   options, give three, in one table with the columns Option, Pros, Cons, and
+   Grade. Keep each cell to a short phrase, so the
    table fits 80 columns. When the task has acceptance criteria, the Grade
    column carries each option's grade against every one of them. "All met"
    covers every criterion, and any other grade names each criterion short of

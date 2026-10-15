@@ -78,6 +78,10 @@ Every guard refuses a Bash line whose command it cannot name: a command name fro
 - \`rm\`, \`rmdir\`, \`git reset --hard\`, \`git clean\`, \`git stash clear\`/\`drop\`, and git commands that discard working-tree changes (such as \`git restore\`, \`git checkout -- <path>\`, or \`git mv -f\`, also through an alias) run with no prompt when every path they act on resolves inside the project or a scratch root. \`rm\` and \`rmdir\` may also remove a leftover \`/tmp/claude-*scratch*\` folder you own, the folder itself included. It is not a root, so \`git\` verbs there are still denied.
 - Outside those roots the guard DENIES, and so does any target it cannot read: a \`$variable\`, a glob, \`bash -c\`, \`ssh\`, \`xargs\`, \`find -delete\`, or a loop body. Spell paths out literally and keep the delete its own command. Never hand the user a \`!\` command to delete your own scratch. A target outside every root that is not scratch is the user's call, and they run it with the \`!\` prefix.
 
+## Plan files
+
+- Create and edit plan files in \`~/.claude/plans\` without asking first, never in prose and never in a question. No permission prompt opens for a main-session write there. The user still approves a plan's content when you present it.
+
 ## One project per session
 
 - A session works only for its own project, the repository it started in. That project's live session owns its context, its work in progress, its review and its commits.
@@ -88,7 +92,11 @@ Every guard refuses a Bash line whose command it cannot name: a command name fro
 
 - A commit takes every uncommitted file in the tree, in one commit with one message that covers the whole set. Stage tracked changes and untracked files alike, including files this session did not create and files that appeared during it. Never split the work into several commits, never leave a file out because it looks unrelated, and never ask which files to include. The user asks for several commits when they want several.
 - The one exception is content that must never ship, such as a secret or a stray build artifact. Leave it out, and tell the user about it in one sentence. Never leave a file out silently.
-- This rule sets what a commit contains. It does not change who approves a commit or when.
+- Stage the whole tree with \`git add -A\` on a line of its own, then commit with no paths. The commit gate refuses a commit that leaves any file out, and names the files. It lets a never-ship file stay out only when the reply above the commit names that file's path to the user.
+- A prompt in which the user asks for a commit, a push or a release, or any mix of them, approves exactly those actions for the turn that prompt opened. Run them with no follow-up question. A release covers the version-bump commit, its push, the push of its tag and \`gh release create\`. The user's next prompt ends the approval.
+- Run each approved action as a plain line, and no permission prompt opens: \`git commit -m <message>\` or \`-F <file>\`, \`git push\` or \`git push <remote> <current branch>\`, and \`gh release create\` for this repository. \`git -C <path>\` is fine when the path is inside this project or one of its worktrees. Any other form opens the prompt, such as a \`-c\` option, \`--amend\`, \`--no-verify\`, \`--tags\`, another branch or remote, or \`-R\` naming another repository.
+- A prompt that negates, defers or asks approves nothing, such as "don't commit yet", "commit later" or "should I commit?". Only the user's own prompts count, never a peer, channel, scheduled, SDK or plugin turn, and never a sub-agent.
+- Work the user did not ask to commit waits for their review and their pick. A "Commit it" pick approves one commit and the push of that commit.
 - Write no comments or docblocks in code, in any project, plugin code that agents maintain included. The only exception is a comment that the project's linter or config requires, such as a PHPCS docblock rule. Functional lines such as a shebang or a directive that a tool reads are not comments, and they stay.
 - Leave the existing comments in code you do not change as they are. When a change makes a comment wrong, delete the comment rather than rewrite it. Comments drift from the code, and every edit then has to update them as well, which costs tokens for no gain.
 

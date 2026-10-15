@@ -60,6 +60,9 @@ export type Bench = {
   // what @{push} points at. A directory not here, or a field left out, makes
   // git fail, as outside a repository or with no push target.
   repos: Record<string, { head?: string; pushed?: string }>
+  trees: Record<string, string | null>
+  shown?: string
+  permissionBeneath: Record<string, unknown>
   // What each Bash call that reaches the engine does, such as moving a repo's
   // HEAD as a commit would, and whether it reports an error.
   onBash?: (command: string) => { isError?: boolean } | void
@@ -115,6 +118,8 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     inputs: [],
     dialog: {},
     repos: {},
+    trees: {},
+    permissionBeneath: {},
     cwd: '/repo',
     root: '/repo',
     decision: 'ask',
@@ -183,6 +188,10 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     b.runs.push(e.argv)
     const modeled = b.run?.(e.argv)
     if (modeled !== undefined) return { value: { ...ran(modeled.stdout), exitCode: modeled.exitCode } }
+    if (e.argv[0] === 'git' && e.argv[1] === '-C' && e.argv[3] === 'status') {
+      const tree = b.trees[e.argv[2] ?? '']
+      return { value: tree === null ? { ...ran(''), exitCode: 128 } : ran(tree ?? '') }
+    }
     // With no modeled world, the destructive-scope guard's facts say that
     // nothing but the filesystem root exists, and git answers nothing.
     if ((e.argv[1] ?? '').endsWith('/scope-facts.sh')) return { value: ran(e.argv[2] === 'dir' && e.argv[3] === '/' ? '/\n' : e.argv[2] === 'entry' ? 'missing\n' : '') }
@@ -233,7 +242,12 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
   })
   // No message holds a call here, so the question rule lets every
   // AskUserQuestion through: tests/question-rule.test.ts covers the rule.
-  on('session.messages', () => ({ value: [] }) as never)
+  on('session.messages', () => {
+    if (b.shown === undefined) return { value: [] } as never
+    const call = { type: 'tool_use', id: b.store.get('tool_use_id'), name: 'Bash', input: {} }
+    return { value: [{ role: 'user', content: [{ type: 'text', text: 'go' }] }, { role: 'assistant', content: [{ type: 'text', text: b.shown }, call] }] } as never
+  })
+  on('classic.PermissionRequest', () => b.permissionBeneath as never)
   return b
 }
 

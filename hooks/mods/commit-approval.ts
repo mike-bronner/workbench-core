@@ -1,24 +1,3 @@
-// The commit approval rule: a main-session `git commit` or `git push` happens
-// only after Mike picks "Commit it" in AskUserQuestion, the commit question is
-// asked alone, and one pick approves one commit and the push of that commit.
-//
-// The output style states the rule (rule 6), and workbench-dev-team's
-// git-commit skill holds the mechanics ("Committing and pushing"). Approval is
-// per commit, never standing (vault: feedback/commit-approval-is-per-commit-
-// never-standing). Claude Code's permission prompt for `git commit *` and
-// `git push *` is the mechanical backstop, and a prompt that appears mid-flow
-// gets answered without a review. hooks/register.ts enforces the checkable half
-// with the functions below:
-//
-//   tool.call (Bash)             A commit needs an unused "Commit it" pick. A
-//                                push needs the commit that pick approved,
-//                                run before it. Any prompt ends an unused
-//                                pick, and Mike's own ends the push too.
-//   tool.call (AskUserQuestion)  A call that offers a commit option beside
-//                                another question is refused. A "Commit it"
-//                                pick is recorded.
-//
-// Whether Mike's review is done needs judgement, so that half stays prose.
 // The check never decides which tool the model uses: it governs what a commit
 // needs, and a command that only mentions git is let through.
 //
@@ -77,29 +56,63 @@
 //
 // Pure functions only: the engine follows `$` into no imported function.
 
-import { ASSIGNMENT, GIT_VALUE_OPTIONS, KEYWORDS, SHELLS, WRAPPERS, commandsOf, isEscaped, nameOf, shellScriptOf } from './shell'
+import type { WorkbenchShellStatement as ShellStatement } from '../../types'
+import { ASSIGNMENT, GIT_VALUE_OPTIONS, KEYWORDS, SHELLS, WRAPPERS, commandsOf, isEscaped, isExpanded, nameOf, parseShell, shellScriptOf } from './shell'
 
 export { commandsOf }
 
 export const COMMIT_REFUSAL =
-  'This git commit was refused: no unused "Commit it" pick from Mike approves ' +
-  'it. Ask first. Once he says his review is done, ask the commit question ' +
-  'through AskUserQuestion, alone, with the branch and the proposed message, ' +
-  'and run the commit again after he picks "Commit it". One pick approves one ' +
-  'commit and the push of that commit. Any prompt ends a pick not yet used ' +
-  'for its commit. A typed ' +
-  '"commit it" in chat does not count.'
+  'This git commit was refused: Mike has not approved it. A prompt of his own ' +
+  'that asks for a commit or a release approves the commits of the turn it ' +
+  'opened. Ask first for work he did not ask to commit. Once he says his ' +
+  'review is done, ask the commit question through AskUserQuestion, alone, ' +
+  'with the branch and the proposed message, and run the commit again after ' +
+  'he picks "Commit it". One pick approves one commit and the push of that ' +
+  'commit. Any prompt ends a pick not yet used for its commit.'
 
 export const PUSH_REFUSAL =
-  'This git push was refused: it does not follow a commit Mike approved with ' +
-  'a "Commit it" pick. Ask first. One pick approves one commit and the push of ' +
-  'that commit, in that order. Mike\'s next prompt ends a push left by an ' +
-  'approved commit.'
+  'This git push was refused: Mike has not approved it. A prompt of his own ' +
+  'that asks for a push or a release approves the pushes of the turn it ' +
+  'opened. Ask first for any other push. A "Commit it" pick approves one ' +
+  'commit and the push of that commit, in that order. Mike\'s next prompt ends a push ' +
+  'left by an approved commit.'
+
+export const RELEASE_REFUSAL =
+  'This release was refused: Mike has not asked for a release in this turn. ' +
+  'Only a prompt of his own that asks for a release approves one, for the turn ' +
+  'it opened. A "Commit it" pick approves no release. Ask first.'
 
 export const ONE_REFUSAL =
-  'This line runs more than one git commit, or more than one git push. One ' +
-  '"Commit it" pick approves one commit and the push of that commit. Run them ' +
-  'as separate lines, and ask first for each further commit.'
+  'This line runs more than one git commit, more than one git push, or more ' +
+  'than one release. Run each as a line of its own. One "Commit it" pick ' +
+  'approves one commit and the push of that commit, so ask first for each ' +
+  'further commit that no request of Mike\'s covers.'
+
+export const UNREAD_TREE_REFUSAL =
+  'This git commit was refused: the gate cannot read which files it leaves ' +
+  'out, because it cannot tell which repository the line commits in, or how ' +
+  'the commit is spelled. Run the commit as a plain line of its own, such as ' +
+  '`git -C <absolute repository path> commit -F <message file>`.'
+
+export const PATHSPEC_REFUSAL =
+  'This git commit was refused: it names paths or picks hunks, so it leaves ' +
+  'the rest of the tree out. A commit takes every uncommitted file. Stage the ' +
+  'whole tree with `git add -A` on a line of its own, then commit with no paths.'
+
+export const SHARED_LINE_REFUSAL =
+  'This git commit was refused: another git command on its line may change ' +
+  'what is staged after the gate reads the tree, such as `git reset`, ' +
+  '`git restore --staged` or `git rm --cached`. Run the commit on a line of ' +
+  'its own, after the staging is done.'
+
+export const leftOutRefusal =(paths: readonly string[]): string =>
+  `This git commit was refused: it leaves these files out of the commit: ${paths.join(', ')}. ` +
+  'A commit takes every uncommitted file in the tree, tracked changes and ' +
+  'untracked files alike. Stage the whole tree with `git add -A` on a line of ' +
+  'its own, then run the commit again. The one exception is content that must ' +
+  'never ship, such as a secret or a stray build artifact. To leave such a ' +
+  'file out, name its path to Mike in your reply, with the reason, before you ' +
+  'run the commit again.'
 
 export const BUNDLE_REFUSAL =
   'AskUserQuestion was refused: it offers a commit option beside another ' +
@@ -132,10 +145,11 @@ const MAX_DEPTH = 4
 // push runs: the steps from the session's directory (`cd` targets, then git's
 // -C values), null when a step is a substitution or a variable the reader
 // cannot follow, and undefined until a commit or push is found.
-export type Line = { writes: Writes; dir: readonly string[] | null | undefined }
+export type Commit = { dir: readonly string[] | null; args: readonly string[] | null }
+export type Line = { writes: Writes; dir: readonly string[] | null | undefined; commit?: Commit }
 // `isUnfollowed` is set by any directory change the walk does not record.
 // `isCompat` reads the line as the gate before the shared reader did (readLine).
-type Walk = { writes: Writes; cds: string[]; dir: string[] | null | undefined; isUnfollowed: boolean; isCompat: boolean }
+type Walk = { writes: Writes; cds: string[]; dir: string[] | null | undefined; commit?: Commit; isUnfollowed: boolean; isCompat: boolean }
 
 // The command words that move the shell or change its environment: a
 // directory change, or a sourced file, which may set GIT_DIR.
@@ -168,9 +182,10 @@ const ENV_CHDIR = /^(-[A-Za-z]*C|--chdir(=|$))/
 const stepsOf = (steps: string[]): string[] | null =>
   steps.some(step => step.includes('$') || step === '-' || isEscaped(step)) ? null : steps
 
-function found(walk: Walk, writes: Writes, steps: string[]): void {
+function found(walk: Walk, writes: Writes, steps: string[], args: readonly string[] | null = null): void {
   walk.writes = sum(walk.writes, writes)
   if (walk.dir === undefined) walk.dir = stepsOf(steps)
+  if (writes.commits > 0 && walk.commit === undefined) walk.commit = { dir: stepsOf(steps), args }
 }
 
 // One simple command, behind any wrapper, assignment, shell script or global
@@ -247,7 +262,7 @@ function walkCommand(words: readonly string[], depth: number, isHere: boolean, w
     }
     if (!word.startsWith('-')) {
       const sub = word.toLowerCase()
-      if (sub === 'commit') found(walk, { commits: 1, pushes: 0 }, steps)
+      if (sub === 'commit') found(walk, { commits: 1, pushes: 0 }, steps, words.slice(i + 1))
       else if (sub === 'push') found(walk, { commits: 0, pushes: 1 }, steps)
       else if (aliased !== NONE) found(walk, aliased, steps)
       return
@@ -309,11 +324,13 @@ export function readLine(line: string): Line {
     // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
     const walk: Walk = { writes: NONE, cds: [], dir: undefined, isUnfollowed: false, isCompat }
     walkLine(line, 0, true, walk)
-    return { writes: walk.writes, dir: walk.isUnfollowed && walk.dir !== undefined ? null : walk.dir }
+    const commit = walk.commit && (walk.isUnfollowed ? { ...walk.commit, dir: null } : walk.commit)
+    return { writes: walk.writes, dir: walk.isUnfollowed && walk.dir !== undefined ? null : walk.dir, ...(commit ? { commit } : {}) }
   }) as [Line, Line]
   const writes = { commits: Math.max(exact.writes.commits, compat.writes.commits), pushes: Math.max(exact.writes.pushes, compat.writes.pushes) }
   const isSame = JSON.stringify(exact) === JSON.stringify(compat)
-  return { writes, dir: isSame ? exact.dir : writes.commits + writes.pushes > 0 ? null : undefined }
+  const commit = writes.commits === 0 ? {} : { commit: isSame && exact.commit ? exact.commit : { dir: null, args: null } }
+  return { writes, dir: isSame ? exact.dir : writes.commits + writes.pushes > 0 ? null : undefined, ...commit }
 }
 
 // How many commits and pushes a Bash command line runs.
@@ -349,10 +366,213 @@ export type Approval = 'none' | 'commit' | 'push'
 
 // Why a line that commits or pushes is refused at this approval, or undefined
 // when it may run.
-export function refusalOf(writes: Writes, approval: Approval): string | undefined {
-  if (writes.commits > 1 || writes.pushes > 1) return ONE_REFUSAL
-  if (writes.commits === 1) return approval === 'commit' ? undefined : COMMIT_REFUSAL
-  return approval === 'push' ? undefined : PUSH_REFUSAL
+export function refusalOf(writes: Writes, releases: number, approval: Approval, request: readonly Action[]): string | undefined {
+  if (writes.commits > 1 || writes.pushes > 1 || releases > 1) return ONE_REFUSAL
+  if (releases === 1 && !request.includes('release')) return RELEASE_REFUSAL
+  if (writes.commits === 1 && approval !== 'commit' && !grants(request, 'commit')) return COMMIT_REFUSAL
+  const isPickPush = approval === 'push' || (approval === 'commit' && writes.commits === 1)
+  if (writes.pushes === 1 && !isPickPush && !grants(request, 'push')) return PUSH_REFUSAL
+  return undefined
+}
+
+export type Action = 'commit' | 'push' | 'release'
+
+const grants = (request: readonly Action[], action: 'commit' | 'push'): boolean => request.includes(action) || request.includes('release')
+
+export const pickWritesOf = (writes: Writes, request: readonly Action[]): Writes => ({
+  commits: grants(request, 'commit') ? 0 : writes.commits,
+  pushes: grants(request, 'push') ? 0 : writes.pushes,
+})
+
+const RELEASE_API = /(^|\/)releases(\/|$|\?)/
+const API_WRITE = /^(-x|--method|-f|--field|--raw-field|--input)(=|$)/
+
+export function releasesOf(line: string): number {
+  return parseShell(line).statements.filter(st => {
+    const at = st.words.findIndex(word => nameOf(word) === 'gh')
+    if (at === -1) return false
+    const rest = st.words.slice(at + 1).map(word => word.toLowerCase())
+    const sub = rest.indexOf('release')
+    if (sub !== -1 && rest.slice(sub + 1).includes('create')) return true
+    return rest.includes('api') && rest.some(word => RELEASE_API.test(word)) && rest.some(word => API_WRITE.test(word))
+  }).length
+}
+
+const LEAD_WORDS: ReadonlySet<string> = new Set([
+  'please', 'pls', 'plz', 'ok', 'okay', 'yes', 'yep', 'yeah', 'sure', 'great', 'good', 'cool', 'nice', 'perfect',
+  'awesome', 'excellent', 'thanks', 'thank', 'you', 'alright', 'all', 'right', 'now', 'so', 'and', 'then', 'also',
+  'just', 'go', 'ahead', 'lgtm', 'looks', 'fine', 'done', 'finally', 'next',
+])
+const OBJECT_STARTS: ReadonlySet<string> = new Set(['it', 'this', 'that', 'these', 'those', 'them', 'everything', 'all', 'origin', 'main', 'master', 'again'])
+const MAX_REQUEST_LINES = 5
+const MAX_REQUEST_WORDS = 80
+const CONNECTORS: ReadonlySet<string> = new Set(['and', 'then', '&', '+', 'also', 'finally', 'please', 'now'])
+const RELEASE_VERBS: ReadonlySet<string> = new Set(['cut', 'create', 'make', 'do', 'publish', 'ship', 'tag'])
+const ACTION_WORD = /\b(commit(s|ted|ting)?|push(es|ed|ing)?|releas(e|es|ed|ing))\b/i
+const VETO_WORD =
+  /\b(not|no|never|nothing|don't|dont|do not|doesn't|didn't|won't|wouldn't|shouldn't|can't|cannot|without|later|yet|after|afterwards|before|once|when|whenever|until|till|unless|if|whether|should|would|could|might|may|maybe|perhaps|wait|hold|tomorrow|soon|eventually|instead)\b/i
+
+const verbAt = (words: readonly string[], i: number): [Action, number] | undefined => {
+  const word = words[i]
+  if (word === 'commit' || word === 'push' || word === 'release') return [word, i + 1]
+  if (!RELEASE_VERBS.has(word ?? '')) return undefined
+  let k = i + 1
+  while (['a', 'the', 'new'].includes(words[k] ?? '')) k++
+  return words[k] === 'release' ? ['release', k + 1] : undefined
+}
+
+const actionsOf = (words: readonly string[]): Action[] =>
+  words.flatMap((word, i) => {
+    const verb = verbAt(words, i)
+    const before = words.slice(0, i)
+    if (verb === undefined || !(before.every(lead => LEAD_WORDS.has(lead)) || CONNECTORS.has(words[i - 1] ?? ''))) return []
+    const after = words[verb[1]]
+    return after === undefined || CONNECTORS.has(after) || OBJECT_STARTS.has(after) || /^v?\d/.test(after) ? [verb[0]] : []
+  })
+
+export function requestedOf(prompt: string): Action[] {
+  const text = prompt
+    .replace(/```[\s\S]*?(```|$)/g, ' ')
+    .replace(/<([a-z][\w-]*)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/^\s*>.*$/gm, ' ')
+    .replace(/[’‘]/g, "'")
+    .replace(/"[^"\n]*"|“[^”\n]*”|`[^`\n]*`/g, ' ')
+  if (text.split('\n').filter(line => line.trim() !== '').length > MAX_REQUEST_LINES) return []
+  if (text.split(/\s+/).filter(Boolean).length > MAX_REQUEST_WORDS) return []
+  const actions = new Set<Action>()
+  for (const sentence of text.split(/\n|;|(?<=[.!?])\s/)) {
+    for (const clause of sentence.split(/,|\b(?:but|however|though|although|except)\b/i)) {
+      if (!ACTION_WORD.test(clause)) continue
+      if (sentence.includes('?') || VETO_WORD.test(sentence)) return []
+      for (const action of actionsOf(clause.toLowerCase().match(/[a-z0-9'_\-/]+(?:\.[a-z0-9]+)*|[&+]/g) ?? [])) actions.add(action)
+    }
+  }
+  return [...actions]
+}
+
+export type RequestedCall = { action: 'commit'; dir?: string } | { action: 'push'; dir?: string; remote?: string; ref?: string } | { action: 'release' }
+
+const PLAIN_COMMIT_VALUES: ReadonlySet<string> = new Set(['-m', '--message', '-F', '--file', '-am'])
+const PLAIN_COMMIT_FLAGS: ReadonlySet<string> = new Set(['-a', '--all', '-q', '--quiet'])
+
+const isPlainCommit = (args: readonly string[]): boolean => {
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i] as string
+    if (PLAIN_COMMIT_VALUES.has(word)) {
+      if (args[++i] === undefined) return false
+    } else if (!PLAIN_COMMIT_FLAGS.has(word) && !/^--(message|file)=./.test(word)) {
+      return false
+    }
+  }
+  return true
+}
+
+const isPlainRef = (word: string): boolean => /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(word) && !word.split('/').includes('..')
+
+const gitDirOf = (globals: readonly string[]): string | undefined | null => {
+  if (globals.length === 0) return undefined
+  const [option, dir = ''] = globals
+  return globals.length === 2 && option === '-C' && dir.startsWith('/') && !hasDotStep(dir) ? dir : null
+}
+
+const hasDotStep = (path: string): boolean => path.split('/').some(part => part === '.' || part === '..')
+
+const callOf = (st: ShellStatement): RequestedCall | undefined => {
+  const isPlain =
+    st.depth === 0 && st.nameAt === 0 && st.isPlaced && st.escaped.length === 0 && st.redirects.length === 0 && st.heredocs.length === 0 && !st.words.some(isExpanded)
+  if (!isPlain) return undefined
+  if (st.name === 'gh') {
+    const [group, verb] = st.args
+    const isOtherRepo = st.args.some(arg => /^(-R|--repo)/.test(arg))
+    return st.subcommandAt === 0 && group === 'release' && verb === 'create' && !isOtherRepo ? { action: 'release' } : undefined
+  }
+  if (st.name !== 'git' || st.subcommandAt < 0) return undefined
+  const dir = gitDirOf(st.args.slice(0, st.subcommandAt))
+  if (dir === null) return undefined
+  const sub = st.args[st.subcommandAt]
+  const rest = st.args.slice(st.subcommandAt + 1)
+  const at = dir === undefined ? {} : { dir }
+  if (sub === 'commit') return isPlainCommit(rest) ? { action: 'commit', ...at } : undefined
+  if (sub !== 'push') return undefined
+  if (rest.length === 0) return { action: 'push', ...at }
+  const [remote = '', ref = ''] = rest
+  return rest.length === 2 && isPlainRef(remote) && isPlainRef(ref) ? { action: 'push', ...at, remote, ref } : undefined
+}
+
+export function requestedCallsOf(line: string, request: readonly Action[]): RequestedCall[] | undefined {
+  const parse = parseShell(line)
+  if (parse.unknowns.length > 0 || parse.statements.length === 0) return undefined
+  const calls = parse.statements.map(callOf)
+  const isNamed = (call: RequestedCall | undefined): call is RequestedCall =>
+    call !== undefined && (call.action === 'release' ? request.includes('release') : grants(request, call.action))
+  return calls.every(isNamed) ? calls : undefined
+}
+
+const INDEX_SAFE: ReadonlySet<string> = new Set(['commit', 'add', 'push', 'status', 'diff', 'log', 'show', 'rev-parse'])
+
+export function changesIndexBeside(line: string): boolean {
+  return parseShell(line).statements.some(st => {
+    const at = st.words.findIndex(word => nameOf(word) === 'git')
+    if (at === -1) return false
+    const sub = st.name === 'git' && st.subcommandAt >= 0 ? st.args[st.subcommandAt]?.toLowerCase() : undefined
+    return sub === undefined || !INDEX_SAFE.has(sub)
+  })
+}
+
+const COMMIT_VALUE_OPTIONS: ReadonlySet<string> = new Set([
+  '-m', '--message', '-F', '--file', '-C', '--reuse-message', '-c', '--reedit-message', '--author', '--date', '-t',
+  '--template', '--cleanup', '--fixup', '--squash', '--trailer',
+])
+const PARTIAL_OPTIONS = ['--pathspec-from-file', '--patch', '--interactive', '--only', '--include']
+const isPartialOption = (word: string): boolean => /^--[^=]/.test(word) && PARTIAL_OPTIONS.some(option => option.startsWith(word.split('=')[0] as string))
+
+export function shapeOf(args: readonly string[]): { isAll: boolean; isPartial: boolean } {
+  let isAll = false
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i] as string
+    if (word === '--') return { isAll, isPartial: i + 1 < args.length }
+    if (!word.startsWith('-') || word === '-' || isPartialOption(word)) return { isAll, isPartial: true }
+    if (word === '--all') isAll = true
+    if (word.startsWith('--')) {
+      if (COMMIT_VALUE_OPTIONS.has(word)) i++
+      continue
+    }
+    for (let k = 1; k < word.length; k++) {
+      const flag = word[k] as string
+      if (flag === 'a') isAll = true
+      if ('oip'.includes(flag)) return { isAll, isPartial: true }
+      if ('mFCct'.includes(flag)) {
+        if (k === word.length - 1) i++
+        break
+      }
+      if ('Su'.includes(flag)) break
+    }
+  }
+  return { isAll, isPartial: false }
+}
+
+export function leftOutOf(status: string, isAll: boolean): string[] {
+  const fields = status.split('\0')
+  const paths: string[] = []
+  for (let i = 0; i < fields.length; i++) {
+    const entry = fields[i] as string
+    if (entry.length < 4) continue
+    const [x, y, path] = [entry[0] as string, entry[1] as string, entry.slice(3)]
+    if ('RC'.includes(x) || 'RC'.includes(y)) i++
+    const isTaken = y === ' ' || (isAll && x !== '?' && 'MDT'.includes(y))
+    if (!isTaken) paths.push(path)
+  }
+  return paths
+}
+
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+export function unnamedOf(paths: readonly string[], shown: string): string[] {
+  return paths.filter(path => {
+    const parts = path.split('/')
+    const names = [path, ...parts.slice(0, -1).map((_, k) => `${parts.slice(0, k + 1).join('/')}/`)]
+    return !names.some(name => new RegExp(`(^|[\\s\`'"(\\[])${escapeRegExp(name)}(?=$|[\\s\`'",.;:!?)\\]])`).test(shown))
+  })
 }
 
 // The repository's state around a line: HEAD, and what the branch's push

@@ -12,6 +12,7 @@ import {
   COMMIT_REFUSAL,
   ONE_REFUSAL,
   PUSH_REFUSAL,
+  UNREAD_TREE_REFUSAL,
   bundlesCommit,
   commandsOf,
   dirOf,
@@ -217,7 +218,7 @@ describe('AC1: one "Commit it" pick allows one commit, then the push of that com
     'declare -x "CDPATH=/x"; cd other; git commit -m x; false',
     'cd other; git commit -m x; false',
   ]) {
-    test(`a commit that lands where the walk did not follow uses the pick up: ${JSON.stringify(line)}`, async ($, on) => {
+    test(`a commit where the walk did not follow is refused, as its tree cannot be read, and the pick stays: ${JSON.stringify(line)}`, async ($, on) => {
       const b = bench(on)
       b.repos['/repo'] = { head: 'c1', pushed: 'c1' }
       const other = { head: 'o1', pushed: 'o1' }
@@ -228,9 +229,10 @@ describe('AC1: one "Commit it" pick allows one commit, then the push of that com
       }
       await session($)
       await pick($, b)
-      expect(await bash($, b, line)).toBeUndefined()
+      expect(await bash($, b, line)).toBe(UNREAD_TREE_REFUSAL)
       expect(b.runs.filter(argv => argv[0] === 'git')).toEqual([])
-      expect(await bash($, b, 'git commit -m y')).toBe(COMMIT_REFUSAL)
+      expect(other.head).toBe('o1')
+      expect(await bash($, b, 'git commit -m y')).toBeUndefined()
     })
   }
 
@@ -266,8 +268,8 @@ describe('AC1: one "Commit it" pick allows one commit, then the push of that com
     await session($)
     await pick($, b)
     expect(await bash($, b, "$'\\x63d' ../other; git commit -m x")).toBe(ONE_REFUSAL)
-    expect(await bash($, b, "$'\\x67it' push")).toBeUndefined()
-    expect(await bash($, b, 'git commit -m y')).toBe(COMMIT_REFUSAL)
+    expect(await bash($, b, "$'\\x67it' push")).toBe(UNREAD_TREE_REFUSAL)
+    expect(await bash($, b, 'git commit -m y')).toBeUndefined()
   })
 
   test('a bare relative cd is unknown, and a /, ~ or ./ target is followed', async ($, on) => {
@@ -300,7 +302,7 @@ describe('AC1: one "Commit it" pick allows one commit, then the push of that com
     'git -C .. commit -m x; false',
     'cd ~/../other; git commit -m x; false',
   ]) {
-    test(`a .. is not followed, as the shell and git resolve it apart through a symlink: ${JSON.stringify(line)}`, async ($, on) => {
+    test(`a .. is not followed, as the shell and git resolve it apart through a symlink, so the commit is refused: ${JSON.stringify(line)}`, async ($, on) => {
       const b = bench(on)
       const landed = { head: 'r1', pushed: 'r1' }
       b.repos['/repo/other'] = landed
@@ -312,9 +314,9 @@ describe('AC1: one "Commit it" pick allows one commit, then the push of that com
       }
       await session($)
       await pick($, b)
-      expect(await bash($, b, line)).toBeUndefined()
+      expect(await bash($, b, line)).toBe(UNREAD_TREE_REFUSAL)
       expect(b.runs.filter(argv => argv[0] === 'git')).toEqual([])
-      expect(await bash($, b, 'git commit -m y')).toBe(COMMIT_REFUSAL)
+      expect(landed.head).toBe('r1')
     })
   }
 
@@ -367,7 +369,7 @@ describe('AC1: one "Commit it" pick allows one commit, then the push of that com
     }
   })
 
-  test('a directory the reader cannot follow reads no refs: GIT_DIR, --git-dir, --work-tree, env -C, popd, and a cd in a subshell', async ($, on) => {
+  test('a commit in a directory the reader cannot follow is refused, and reads nothing: GIT_DIR, --git-dir, --work-tree, env -C, popd, and a cd in a subshell', async ($, on) => {
     const b = bench(on)
     await session($)
     for (const line of [
@@ -383,9 +385,9 @@ describe('AC1: one "Commit it" pick allows one commit, then the push of that com
     ]) {
       b.runs.length = 0
       await pick($, b)
-      expect(await bash($, b, line)).toBeUndefined()
+      expect(await bash($, b, line)).toBe(UNREAD_TREE_REFUSAL)
       expect(b.runs.filter(argv => argv[0] === 'git')).toEqual([])
-      expect(await bash($, b, 'git commit -m y')).toBe(COMMIT_REFUSAL)
+      expect(await bash($, b, 'git commit -m y')).toBeUndefined()
     }
   })
 
@@ -457,13 +459,17 @@ describe('AC1: one "Commit it" pick allows one commit, then the push of that com
     }
   })
 
-  test('a directory the reader cannot follow reads no refs, and the commit is taken as landed', async ($, on) => {
+  test('a directory the reader cannot follow reads no refs: a commit there is refused, and a push there is taken as done', async ($, on) => {
     const b = bench(on)
     await session($)
     await pick($, b)
-    expect(await bash($, b, 'git -C "$(git rev-parse --show-toplevel)" commit -m x')).toBeUndefined()
+    expect(await bash($, b, 'git -C "$(git rev-parse --show-toplevel)" commit -m x')).toBe(UNREAD_TREE_REFUSAL)
     expect(b.runs.some(argv => argv[0] === 'git')).toBe(false)
-    expect(await bash($, b, 'git commit -m y')).toBe(COMMIT_REFUSAL)
+    expect(await bash($, b, 'git commit -m y')).toBeUndefined()
+    b.runs.length = 0
+    expect(await bash($, b, 'git -C "$(git rev-parse --show-toplevel)" push')).toBeUndefined()
+    expect(b.runs.some(argv => argv[0] === 'git')).toBe(false)
+    expect(await bash($, b, 'git push')).toBe(PUSH_REFUSAL)
   })
 
   test('a new pick approves the next commit', async ($, on) => {
@@ -506,7 +512,7 @@ describe('AC1: one "Commit it" pick allows one commit, then the push of that com
     const b = bench(on)
     await session($)
     await pick($, b)
-    await $.prompt.submit(prompt('commit it'))
+    await $.prompt.submit(prompt('thanks, that reads well'))
     expect(await bash($, b, 'git commit -m x')).toBe(COMMIT_REFUSAL)
     await pick($, b)
     await $.prompt.submit({ ...prompt('wait, one more thing'), turnId: 'running' })

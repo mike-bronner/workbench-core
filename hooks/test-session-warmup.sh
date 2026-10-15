@@ -358,7 +358,8 @@ assert_contains "the table names the destructive scope guard" "$GATE_ROWS" "Dest
 # true. Registration is checked as well as the file, because a guard that
 # hooks/register.ts never runs is a file that runs never.
 if [ -f "$REPO_ROOT/hooks/mods/destructive-scope.ts" ] \
-   && [ "$(grep -cE "^  on\('tool\.check', \{ tool: 'Bash' \}" "$REPO_ROOT/hooks/register.ts")" = "1" ] \
+   && [ "$(grep -cE "^  on\('tool\.check', " "$REPO_ROOT/hooks/register.ts")" = "1" ] \
+   && grep -q "if (e.tool !== 'Bash') return next(e)" "$REPO_ROOT/hooks/register.ts" \
    && grep -q "await scopeOf(\$, command, parse" "$REPO_ROOT/hooks/register.ts"; then
   PASS=$((PASS + 1)); echo "  ✅ the guard is registered once, so the promise holds"
 else

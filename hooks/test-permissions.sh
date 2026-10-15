@@ -413,12 +413,13 @@ if [ -f "$REPO_ROOT_RAILS/hooks/mods/destructive-scope.ts" ]; then
 else
   FAIL=$((FAIL + 1)); echo "  ❌ the five are gone and no guard ships — these verbs are gated by nothing"
 fi
-SCOPE_CHECKS=$(grep -cE "^  on\('tool\.check', \{ tool: 'Bash' \}" "$REPO_ROOT_RAILS/hooks/register.ts")
+SCOPE_CHECKS=$(grep -cE "^  on\('tool\.check', " "$REPO_ROOT_RAILS/hooks/register.ts")
 if [ "$SCOPE_CHECKS" = "1" ] && grep -q "from './mods/destructive-scope'" "$REPO_ROOT_RAILS/hooks/register.ts" \
+   && grep -q "if (e.tool !== 'Bash') return next(e)" "$REPO_ROOT_RAILS/hooks/register.ts" \
    && grep -q "await scopeOf(\$, command, parse" "$REPO_ROOT_RAILS/hooks/register.ts"; then
-  PASS=$((PASS + 1)); echo "  ✅ the guard is registered once on Bash (hooks/register.ts)"
+  PASS=$((PASS + 1)); echo "  ✅ the guard runs once, in the one tool.check hook, on Bash (hooks/register.ts)"
 else
-  FAIL=$((FAIL + 1)); echo "  ❌ hooks/register.ts does not run the guard from one Bash tool.check hook"
+  FAIL=$((FAIL + 1)); echo "  ❌ hooks/register.ts does not run the guard from its one tool.check hook, on Bash"
 fi
 
 # Credential paths are guarded by the credential guard in the hooks module

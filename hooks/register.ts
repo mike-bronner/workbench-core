@@ -99,8 +99,28 @@ import {
   recordOf,
   withChurn,
 } from './mods/cache-meter'
-import type { Refs } from './mods/commit-approval'
-import { BUNDLE_REFUSAL, approvalAfter, bundlesCommit, dirOf, isCommitPick, readLine, refusalOf } from './mods/commit-approval'
+import type { Action, Commit, Refs, RequestedCall } from './mods/commit-approval'
+import {
+  BUNDLE_REFUSAL,
+  PATHSPEC_REFUSAL,
+  SHARED_LINE_REFUSAL,
+  UNREAD_TREE_REFUSAL,
+  approvalAfter,
+  bundlesCommit,
+  dirOf,
+  isCommitPick,
+  changesIndexBeside,
+  requestedCallsOf,
+  leftOutOf,
+  leftOutRefusal,
+  pickWritesOf,
+  readLine,
+  refusalOf,
+  releasesOf,
+  requestedOf,
+  shapeOf,
+  unnamedOf,
+} from './mods/commit-approval'
 import { isAttendedPrompt, isAttendedSession, isScheduledFire, laneOf } from './mods/lane'
 import { parseShell } from './mods/shell'
 import {
@@ -188,6 +208,7 @@ const delegationReminded = atom({ plugin: 'workbench-core', key: 'delegationRemi
 // the push left, or used up. Any prompt ends an unused pick, and Mike's own
 // prompt ends the push left too.
 const commitApproval = atom({ plugin: 'workbench-core', key: 'commitApproval' } as const, 'none')
+const turnRequest = atom({ plugin: 'workbench-core', key: 'turnRequest' } as const, [])
 // Whether a schedule opened the current turn, so a commit in it is not gated.
 const turnScheduled = atom({ plugin: 'workbench-core', key: 'turnScheduled' } as const, false)
 const turnForwards = atom({ plugin: 'workbench-core', key: 'turnForwards' } as const, false)
@@ -493,6 +514,70 @@ async function refsOf($: EngineInterface, dir: string): Promise<Refs> {
       .run(['git', '-C', dir, 'rev-parse', '--verify', '--quiet', name], { timeoutMs: 10_000 })
       .then(({ exitCode, stdout }) => (exitCode === 0 && stdout.trim() !== '' ? stdout.trim() : undefined), () => undefined)
   return { head: await ref('HEAD'), pushed: await ref('@{push}') }
+}
+
+const PLAN_FILE = 'A plan file in the login home\'s .claude/plans folder, written by the main session.'
+
+async function isPlanFile($: EngineInterface, input: unknown): Promise<boolean> {
+  if ((await $.workbench.callerLane({})) !== 'main') return false
+  const path = targetOf((input ?? {}) as { file_path?: unknown })
+  const real = path === '' ? undefined : await physicalTarget($, path)
+  if (real === undefined || real !== path) return false
+  return isInRoots(real, (await $.workbench.scratchRoots()).filter(root => /\/\.claude\/plans$/.test(root)))
+}
+
+async function isApprovedLine($: EngineInterface, line: string, request: readonly Action[]): Promise<boolean> {
+  const calls = requestedCallsOf(line, request)
+  if (calls === undefined) return false
+  for (const call of calls) {
+    if (!(await isApprovedCall($, call, request))) return false
+  }
+  return true
+}
+
+async function isApprovedCall($: EngineInterface, call: RequestedCall, request: readonly Action[]): Promise<boolean> {
+  if (call.action === 'release') return (await $.env.get('GH_REPO')) === undefined
+  const dir = call.dir === undefined ? await $.session.cwd() : await projectDirOf($, call.dir)
+  if (dir === undefined) return false
+  if (call.action === 'commit' || call.ref === undefined) return true
+  const git = (args: string[]) =>
+    $.process
+      .run(['git', '-C', dir, ...args], { timeoutMs: 10_000 })
+      .then(({ exitCode, stdout }) => (exitCode === 0 && stdout.trim() !== '' ? stdout.trim() : undefined), () => undefined)
+  const branch = await git(['symbolic-ref', '--short', '-q', 'HEAD'])
+  if (branch === undefined || call.remote !== (await git(['config', '--get', `branch.${branch}.remote`]))) return false
+  if (call.ref === branch || call.ref === `refs/heads/${branch}`) return true
+  if (!request.includes('release')) return false
+  const tagged = await git(['rev-parse', '--verify', '-q', `refs/tags/${call.ref.replace(/^refs\/tags\//, '')}^{commit}`])
+  return tagged !== undefined && tagged === (await git(['rev-parse', '--verify', '-q', 'HEAD']))
+}
+
+async function projectDirOf($: EngineInterface, path: string): Promise<string | undefined> {
+  const project = await answerFact($, dirKey(await $.session.root()))
+  const real = await answerFact($, dirKey(path))
+  if (project === null || project === '/' || real === null) return undefined
+  const repo = await repoOf($, project)
+  if (repo === undefined) return undefined
+  if (isInScope(real, [project, repo.top])) return real
+  return (await repoOf($, real))?.common === repo.common ? real : undefined
+}
+
+async function treeRefusalOf($: EngineInterface, line: string, commit: Commit | undefined, toolUseId: string | undefined): Promise<string | undefined> {
+  if (commit === undefined || commit.args === null) return UNREAD_TREE_REFUSAL
+  const shape = shapeOf(commit.args)
+  if (shape.isPartial) return PATHSPEC_REFUSAL
+  if (changesIndexBeside(line)) return SHARED_LINE_REFUSAL
+  const dir = dirOf(commit.dir, await $.session.cwd(), await $.env.get('HOME'))
+  if (dir === undefined) return UNREAD_TREE_REFUSAL
+  const status = await $.process
+    .run(['git', '-C', dir, 'status', '--porcelain=v1', '-z', '--untracked-files=all'], { timeoutMs: 10_000 })
+    .then(({ exitCode, stdout, isStdoutTruncated }) => (exitCode === 0 && !isStdoutTruncated ? stdout : undefined), () => undefined)
+  if (status === undefined) return UNREAD_TREE_REFUSAL
+  const leftOut = leftOutOf(status, shape.isAll)
+  if (leftOut.length === 0) return undefined
+  const shown = await $.session.messages({ as: 'api' }).then(messages => shownTextOf(messages, toolUseId), () => undefined)
+  const unnamed = unnamedOf(leftOut, shown ?? '')
+  return unnamed.length === 0 ? undefined : leftOutRefusal(unnamed)
 }
 
 type VaultCall = Record<string, unknown> & { path?: unknown }
@@ -1277,7 +1362,9 @@ export const register: Register = on => {
   // person opened gets recall's block beside the prompt, at the tail.
   on('prompt.submit', async ($, e, next) => {
     await update($, commitApproval, approval => (isPersonOrigin(e.origin) || approval === 'commit' ? 'none' : approval))
-    if (isPersonOrigin(e.origin) && !isScheduledFire(e.text)) await update($, intake, state => ({ ...state, task: state.task + 1 }))
+    const isMike = isPersonOrigin(e.origin) && !isScheduledFire(e.text)
+    await update($, turnRequest, request => (isMike ? requestedOf(e.text) : e.turnId === undefined ? [] : request))
+    if (isMike) await update($, intake, state => ({ ...state, task: state.task + 1 }))
     const isNotification = e.origin.kind === 'task-notification'
     if (e.turnId !== undefined) {
       if (isNotification) await update($, turnForwards, () => true)
@@ -1320,8 +1407,6 @@ export const register: Register = on => {
       return result.deny !== undefined ? result : { ...result, context: [...(result.context ?? []), verdict.advise] }
     }
     if (e.tool === 'AskUserQuestion') {
-      // The commit approval rule: the commit question is asked alone, and a
-      // "Commit it" pick is what approves the commit.
       const isGated = await isCommitGated($, sessionAttended, e.agentId)
       if (isGated && bundlesCommit(e.questions)) return { deny: BUNDLE_REFUSAL }
       // The question rule. A call no message holds (another plugin's
@@ -1347,12 +1432,18 @@ export const register: Register = on => {
     // as landed.
     // A content search in the main loop gets recall's block beside its result.
     if (e.tool === 'Bash') {
-      const { writes, dir: steps } = readLine(e.command)
-      if (writes.commits + writes.pushes === 0 || !(await isCommitGated($, sessionAttended, e.agentId))) {
+      const { writes, dir: steps, commit } = readLine(e.command)
+      const releases = releasesOf(e.command)
+      if (writes.commits + writes.pushes + releases === 0 || !(await isCommitGated($, sessionAttended, e.agentId))) {
         return withScanRecall($, 'Bash', e.command, e.agentId, await next(e))
       }
-      const refusal = refusalOf(writes, await read($, commitApproval))
+      const request = await read($, turnRequest)
+      const refusal = refusalOf(writes, releases, await read($, commitApproval), request)
       if (refusal !== undefined) return { deny: refusal }
+      const treeRefusal = writes.commits === 1 ? await treeRefusalOf($, e.command, commit, e.tool_use_id) : undefined
+      if (treeRefusal !== undefined) return { deny: treeRefusal }
+      const pickWrites = pickWritesOf(writes, request)
+      if (pickWrites.commits + pickWrites.pushes === 0) return next(e)
       const dir = dirOf(steps, await $.session.cwd(), await $.env.get('HOME'))
       const before = dir === undefined ? undefined : await refsOf($, dir)
       const result = await next(e)
@@ -1360,7 +1451,7 @@ export const register: Register = on => {
       const output = result.result as { backgroundTaskId?: unknown } | undefined
       const isBackground = e.run_in_background === true || output?.backgroundTaskId !== undefined
       const after = dir === undefined || isBackground ? undefined : await refsOf($, dir)
-      await update($, commitApproval, () => approvalAfter(writes, before, after, result.isError === true))
+      await update($, commitApproval, () => approvalAfter(pickWrites, before, after, result.isError === true))
       return result
     }
     // The vault write checks, in every lane: a sub-agent or a summary-writer
@@ -1442,7 +1533,13 @@ export const register: Register = on => {
   // delete inside the roots runs without the prompt the mode would give it,
   // unless a settings rule or a hook asked for one. tool.call above has
   // already refused every target nobody can read.
-  on('tool.check', { tool: 'Bash' }, async ($, e, next) => {
+  on('tool.check', async ($, e, next) => {
+    if (e.tool === 'Write' || e.tool === 'Edit') {
+      const beneath = await next(e)
+      if (beneath.decision !== 'ask' || beneath.hook !== undefined || e.agentId !== undefined) return beneath
+      return (await isPlanFile($, e.input).catch(() => false)) ? { decision: 'allow', reason: PLAN_FILE } : beneath
+    }
+    if (e.tool !== 'Bash') return next(e)
     const command = (e.input as { command?: unknown } | null | undefined)?.command
     if (typeof command !== 'string') return next(e)
     const parse = parseShell(command)
@@ -1454,6 +1551,14 @@ export const register: Register = on => {
     if (scope.kind === 'allow' && beneath.decision === 'ask' && beneath.rule === undefined && beneath.hook === undefined) return { decision: 'allow', reason: IN_SCOPE }
     return beneath
   }).catch(() => ({ decision: 'deny' as const, reason: GUARD_FAILED }))
+
+  on('classic.PermissionRequest', async ($, e, next) => {
+    const result = await next(e)
+    if (result.decision !== undefined || e.tool_name !== 'Bash' || e.agent_id !== undefined) return result
+    const command = (e.tool_input as { command?: unknown } | null | undefined)?.command
+    if (typeof command !== 'string' || !(await isCommitGated($, sessionAttended, undefined))) return result
+    return (await isApprovedLine($, command, await read($, turnRequest))) ? { ...result, decision: { behavior: 'allow' } } : result
+  })
 
   on('command.run', async ($, e, next) => {
     if (!OURS.has(e.command)) return next(e)
@@ -1619,6 +1724,7 @@ export const register: Register = on => {
       await update($, cache, () => EMPTY_CACHE)
       await update($, replyRows, () => null)
       await update($, commitApproval, () => 'none')
+      await update($, turnRequest, () => [])
       await update($, capture, () => ({ turns: 0, hasFired: false, written: [] }))
       await update($, recall, () => ({ seen: [], queries: [] }))
       await update($, intake, () => ({ task: 0, checked: 0 }))

@@ -327,6 +327,7 @@ declare module 'claude-code' {
       // once used up. Any prompt ends `commit`, and only Mike's own prompt
       // ends `push` (hooks/mods/commit-approval.ts).
       commitApproval: 'none' | 'commit' | 'push'
+      turnRequest: readonly ('commit' | 'push' | 'release')[]
       // Whether a schedule opened the current turn: the scheduled-trigger
       // origin, or the `<scheduled-task ` wrapper. The commit rule skips it.
       turnScheduled: boolean

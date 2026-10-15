@@ -428,7 +428,26 @@ describe('the working rules on commits and code comments', () => {
     expect(RULES).toContain('Stage tracked changes and untracked files alike, including files this session did not create and files that appeared during it.')
     expect(RULES).toContain('Never split the work into several commits, never leave a file out because it looks unrelated, and never ask which files to include.')
     expect(RULES).toContain('The one exception is content that must never ship, such as a secret or a stray build artifact. Leave it out, and tell the user about it in one sentence. Never leave a file out silently.')
-    expect(RULES).toContain('It does not change who approves a commit or when.')
+    expect(RULES).toContain('Stage the whole tree with `git add -A` on a line of its own, then commit with no paths.')
+    expect(RULES).toContain("It lets a never-ship file stay out only when the reply above the commit names that file's path to the user.")
+    expect(RULES).not.toContain('It does not change who approves a commit or when.')
+  })
+
+  test('a prompt that asks for a commit, a push or a release approves those actions for its turn', () => {
+    expect(RULES).toContain('A prompt in which the user asks for a commit, a push or a release, or any mix of them, approves exactly those actions for the turn that prompt opened.')
+    expect(RULES).toContain("The user's next prompt ends the approval.")
+    expect(RULES).toContain('A prompt that negates, defers or asks approves nothing')
+    expect(RULES).toContain('never a peer, channel, scheduled, SDK or plugin turn, and never a sub-agent')
+    expect(RULES).toContain('A "Commit it" pick approves one commit and the push of that commit.')
+    expect(RULES).not.toMatch(/typed "commit it"[^.]*does not count/i)
+    expect(RULES).toContain('Run each approved action as a plain line, and no permission prompt opens')
+    expect(RULES).toContain('`git -C <path>` is fine when the path is inside this project or one of its worktrees.')
+  })
+
+  test('a plan file is written with no question and no prompt', () => {
+    expect(RULES).toContain('## Plan files')
+    expect(RULES).toContain('Create and edit plan files in `~/.claude/plans` without asking first, never in prose and never in a question.')
+    expect(RULES).toContain("The user still approves a plan's content when you present it.")
   })
 
   test('code carries no comments, short of what a linter requires', () => {

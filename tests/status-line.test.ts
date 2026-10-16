@@ -9,6 +9,8 @@ import { DAY, NOTICES, START, bandShows, bench, lastLine, paneShows, run, start,
 
 const NOTICE_FILE = '# Warmup notices\n\n_Written by session-warmup.sh at startup session start._\n\n## ⚠ Pending session summaries (3)\n\ntext\n\n## ⚠ Output style out of date\n\nmore\n'
 const SETTLE = 3000
+const REPAIR = '/hooks/lib/false-bare.sh'
+const othersOf = (runs: readonly (readonly string[])[]) => runs.filter(argv => !argv[1]?.endsWith(REPAIR))
 
 describe('AC5: memory-status and the toggle run as commands, with no model turn', () => {
   test('the four commands are registered at session start', async ($, on) => {
@@ -104,7 +106,7 @@ describe('AC6: the status line carries the workbench facts beside the meter', ()
     b.scripts['memory-health.sh'] = () => 'UP\n'
     await $.session.start(start(false))
     await b.clock.advance(SETTLE + 60_000)
-    expect(b.runs).toEqual([])
+    expect(othersOf(b.runs)).toEqual([])
     expect(b.toasts).toEqual([])
   })
 
@@ -167,7 +169,7 @@ describe('AC6: the status line carries the workbench facts beside the meter', ()
     await $.session.start(start())
     await $.tool.call({ tool: 'Skill', skill: '../secret' })
     await $.tool.call({ tool: 'Skill', skill: 'x:.hidden' })
-    expect(b.runs).toEqual([])
+    expect(othersOf(b.runs)).toEqual([])
   })
 
   test('the facts read in a fixed order, and nothing unknown shows', () => {

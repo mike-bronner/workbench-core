@@ -1,6 +1,5 @@
 ---
-description: Periodic health-and-repair pass over the memory vault — rescue files skipped for missing frontmatter, repair broken links, conservatively connect orphans, repair vault-index drift, flag duplicates for human review, and write an audit report. Run monthly via the scheduled-tasks MCP, or manually any time.
-disable-model-invocation: true
+description: Monthly health-and-repair pass over the memory vault, ending in an audit report. Use when the monthly memory-lint scheduled task runs, or when asked to lint or repair the vault.
 context: fork
 ---
 

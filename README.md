@@ -191,7 +191,7 @@ core/
 │   │                             request-meter, cache-meter, status-line, commit-approval, vault-write,
 │   │                             pending-summaries, shell (the shell reader behind parseShell),
 │   │                             checkpoint, capture, recall, learnings, intake, prompt-rules, guards,
-│   │                             project-scope
+│   │                             project-scope, false-bare
 │   ├── session-log.sh          — raw log capture + summary-writer dispatch (not at SessionEnd or per turn)
 │   ├── session-warmup.sh       — retention cleanup + dead-marker sweep + session reconciler + notices;
 │   │                             summary drain + Chat-skill scan run deferred; prints nothing
@@ -206,7 +206,8 @@ core/
 │   │                             (mkdir locks a crashed holder cannot block for good),
 │   │                             scan-query (a scan's own query, for the module's scan recall),
 │   │                             shell_parse (shared tokeniser),
-│   │                             scope-facts (the disk facts the destructive-scope guard asks for)
+│   │                             scope-facts (the disk facts the destructive-scope guard asks for),
+│   │                             false-bare (puts core.bare back to false on a working-tree repository)
 │   └── fixtures/               — test fixtures (fake-server stub, no real server)
 ├── docs/
 │   ├── session-warmup-contributions.md — how plugins contribute warmup text
@@ -689,6 +690,31 @@ psql -d app <<'SQL' ... SQL             a heredoc body
 
 Tests: `tests/guards.test.ts` pins each rule class, each surface, the read-only commands and the two exclusions, in both directions. `tests/guard-corpus.test.ts` holds the guard to the cases the retired bash guard refused, from the 174 cases of its own suite and 600 seeded random lines.
 
+### False-bare guard
+
+At 06:15 on 2026-10-16, Claude Desktop created a session worktree for this repository. In the same step it turned on `extensions.worktreeConfig` and wrote `core.bare = true` into the main checkout's shared `.git/config`. After that, every git command in the checkout failed with `this operation must be run in a work tree`, and a finished fix could not be committed. The desktop log shows the worktree creation, but not the git command that wrote the flag.
+
+The desktop app wrote the flag outside any tool call, so a guard on agent commands alone would not have caught it. The guard has two halves:
+
+| Half | Where it runs | What it does |
+|---|---|---|
+| Repair | `session.start`, and `tool.call` before a Bash line that runs git | sets `core.bare` back to `false` on a false bare, and shows Mike a one-line toast naming the repository |
+| Refusal | `tool.call`, in the Bash guard chain after the provisioning guard | refuses an agent command that sets `core.bare` to true on any repository, or that runs `git init --bare` on a `.git` folder |
+
+**A false bare is a repository whose git directory is a `.git` folder holding an index file, with `core.bare` true in its shared `config` or in its `config.worktree`.** `hooks/lib/false-bare.sh` reads the common git directory of the folder it is given, so a session in a worktree repairs the main checkout that the worktree shares its config with. Claude Desktop turned on `extensions.worktreeConfig` in the same incident, and with that on, the main checkout also reads `.git/config.worktree`. So the script checks and repairs both files. It reads and writes each with `git config --file`, so git's own refusal to work in the tree cannot stop it. It prints the repaired repository, or nothing.
+
+**A real bare repository is never changed.** Most have a git directory that is not named `.git`, so the script stops before it reads the flag. A deliberate bare clone at `<folder>/.git`, the layout used for a bare clone with worktrees beside it, has no index file. A main checkout that has been used has one, because the first `git add` or checkout writes it. So the script stops when the index file is missing, and the clone stays byte for byte the same. Repairing that clone would make its tracked files show as deleted. The cost of the rule: a false bare in a new repository that never had an index is not repaired.
+
+**The repair runs in every lane, and only a person's session gets the toast.** At session start the repair runs on the session folder before any tool call, and the toast waits the 3 seconds the other start-up notices wait. Before a Bash line that runs git, including git nested in `bash -c` or `sudo`, the repair runs on the session folder again. That costs up to three short git reads per git line. A repair that fails is ignored, and the call goes on.
+
+**The refusal reads `git config` in each of its set forms**: the legacy `git config core.bare <value>`, `git config set`, `--add`, `--replace-all`, `--file`, `--global` and `--type`. It reads the words after the shell takes out the quotes, so `core."bare"`, `'core.ba're` and `core.ba\re` are refused like `core.bare`. It skips git's own options before the subcommand, so `git -C config config core.bare true` is read as a `config` call. It reads them in every statement, behind `cd`, `sudo`, `env` and `bash -c`, and through `ssh`, `docker`, `find -exec` and the other runners. Every value but `false`, `no`, `off`, `0` and an empty string counts as true, so a variable is refused. The read forms (`--get`, `get`, `--list`) and `--unset` still run. A line the reader cannot read whole that names `core.bare` is refused. So is one longer than 200,000 characters. A statement with no word that holds `git`, once quotes and backslashes are taken out of each word, is skipped before the runner scan. So `ssh box 'g""it config core.bare true'` is still read, so a long `find` or `xargs` line that runs no git costs no measurable time. `git -c core.bare=true` changes no file, so it runs.
+
+**`git init --bare` on an existing git folder writes `core.bare = true`, which is the incident state, so the refusal covers it.** It refuses `git init --bare` when its target folder is named `.git`. The target is the folder argument, the `--git-dir` value, a `GIT_DIR=` assignment in front of git (`GIT_DIR=.git git init --bare`, `env GIT_DIR=/repo/.git git init --bare`), or the last `-C` folder when no folder argument is given. A `--git-dir` option wins over `GIT_DIR`, as it does in git. A global `--bare` counts like `init --bare`. `git init --bare /srv/new.git` makes a new bare repository and runs. So do `git init` and `git --git-dir=.git init` with no `--bare`, which leave `core.bare` false. The refusal reads the folder name only. It does not follow a `cd` into a `.git` folder, or an `export GIT_DIR=.git` in an earlier statement, before a bare `git init --bare`. The refusal tells the agent to leave `core.bare` alone, and to ask Mike when a repository really must become bare.
+
+**No worktree is created or removed for this.** The stray desktop worktree is Mike's to remove. Claude should never create worktrees: the [provisioning guard](#provisioning-guard) holds that rule.
+
+Tests: `hooks/test-false-bare.sh` runs the script on real repositories: a repair from a subfolder, each true spelling, a folder that shares the main checkout's config as a worktree does (through `GIT_DIR` and `GIT_COMMON_DIR`, so no worktree is made), `core.bare` in `config.worktree` alone and in both files, two real bare repositories and a bare clone at `<folder>/.git` left byte for byte the same, a config the script cannot write (exit 1, no repository named), and a healthy repository, a plain folder and a missing folder left alone. `tests/false-bare.test.ts` covers the repair at session start and before a git line, the worktree session, the unattended lane at start and before a git line, a repair that fails or prints something other than a path (no toast in either case), the refusal's place in the Bash guard chain, and, as direct calls to the pure function, each set form and `init --bare` form refused and each read form allowed.
+
 ### Logging pipeline
 
 ```
@@ -987,6 +1013,8 @@ The [destructive database guard](#destructive-database-guard) runs in the same h
 The [project scope guard](#project-scope-guard) runs in the same hook, on a main-loop `Agent` call right after the agent dispatch gate, with its logic in `hooks/mods/project-scope.ts`. It is new, and replaced no bash hook.
 
 The [vault git guard](#vault-git-guard) runs in the same hook, after the database guard, with its logic in `hooks/mods/vault-git.ts`. It was a bash hook until batch C2, and that hook is now retired the same way.
+
+The [false-bare guard](#false-bare-guard) runs in the same hook, on Bash after the provisioning guard, with its logic in `hooks/mods/false-bare.ts`. Its repair half also runs at `session.start`. It is new, and replaced no bash hook.
 
 The [outbound prose guard](#outbound-prose-guard) runs in the same hook, on Bash after the vault git guard and on the board and GitHub MCP prose tools, with its logic in `hooks/mods/outbound-prose.ts`. It was a bash hook until batch C3a. Its tests are the recorded cases in `tests/guard-corpus/guard-cases.ts`: each body the bash hook refused, with the body files of the sandbox it ran in, written as `/sandbox`. `tests/guard-corpus.test.ts` replays each one with its files in place, and the port must refuse it.
 
@@ -1361,7 +1389,7 @@ Runs on every `startup` warmup:
 | `/workbench-core:intake` | The task-intake routine for an interactive session — goal, context, an interview limited to real gaps, acceptance criteria shown before work starts, and three options from different angles graded against every criterion. See [Task intake](#task-intake) |
 | `/workbench-core:cross-session-messaging` | The protocol for messaging another Claude Code session — when to reach out, what a message carries, the receive-side rule that keeps a human in the loop, and which sends a sub-agent may make. Paired with the [peer message gate](#peer-message-gate) |
 
-**Only the user starts most of them.** `setup`, `log-now`, `compact-learnings`, `memory-lint`, and `install-chat-skills` carry `disable-model-invocation: true`, which takes each one out of the skill listing the model reads in every session. A slash command at the start of a prompt still runs them, the monthly `/workbench-core:memory-lint` task included. `evaluate-decisions` and `propose-upgrades` stay in the listing, because the nightly decision-quality task asks the model to run them in prose. Every listed description is sent in every session, so each is kept short and still says when to use the skill: the four listed descriptions total 963 bytes, down from 1,560.
+**Only the user starts most of them.** `setup`, `log-now`, `compact-learnings`, and `install-chat-skills` carry `disable-model-invocation: true`, which takes each one out of the skill listing the model reads in every session. They are interactive, so only a person starts them. A scheduled run cannot start a skill that carries the flag: the model calls it through the Skill tool, and the tool refuses it. So every skill a scheduled task runs stays in the listing. `memory-lint` stays in, because the monthly `/workbench-core:memory-lint` task invokes it. `evaluate-decisions` and `propose-upgrades` stay in, because the nightly decision-quality task asks the model to run them in prose. Every listed description is sent in every session, so each is kept short and still says when to use the skill: the five listed descriptions total 1,140 bytes. `hooks/test-skill-listing.sh` checks the flags and that total against the skill files.
 
 **The batch skills run in a forked context.** `memory-lint` and `evaluate-decisions` carry `context: fork`, so a run's tool calls and reads stay in a sub-agent, and only its report comes back to the session. `compact-learnings` does not fork, by Mike's decision, for the same reason as `propose-upgrades`: it asks about each entry through `AskUserQuestion` and hands integration to Dr. Watson, and a forked sub-agent can do neither. `propose-upgrades` does not fork, because it walks the user's sign-off.
 

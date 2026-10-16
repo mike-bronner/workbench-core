@@ -125,6 +125,7 @@ import {
   unnamedOf,
 } from './mods/commit-approval'
 import { isAttendedPrompt, isAttendedSession, isScheduledFire, laneOf } from './mods/lane'
+import { bareSetRefusal, repairedNotice, runsGit } from './mods/false-bare'
 import { parseShell } from './mods/shell'
 import {
   AGENT_WORKTREE_REFUSAL,
@@ -459,6 +460,18 @@ async function probeMemory($: EngineInterface): Promise<void> {
   const health = healthOf(stdout)
   if (health !== undefined) await $.state.set(MEMORY_HEALTH, health)
   await drawStatus($)
+}
+
+async function repairFalseBare($: EngineInterface, dir: string): Promise<string | undefined> {
+  const { stdout } = await $.process.run(['bash', `${$.plugin.root}/hooks/lib/false-bare.sh`, dir], { timeoutMs: 10_000 })
+  const repo = stdout.trim()
+  return repo.startsWith('/') ? repo : undefined
+}
+
+async function repairBeforeGit($: EngineInterface, line: unknown, isAttended: boolean): Promise<void> {
+  if (typeof line !== 'string' || !line.includes('git') || !runsGit(parseShell(line))) return
+  const repo = await repairFalseBare($, await $.session.cwd())
+  if (repo !== undefined && isAttended) $.ui.toast(repairedNotice(repo), { timeoutMs: 10_000 })
 }
 
 const noticesFile = async ($: EngineInterface): Promise<string | undefined> => {
@@ -1237,6 +1250,7 @@ async function guardVerdict($: EngineInterface, e: Guarded, isAttended: boolean)
         hiddenCommandRefusal(parse) ??
         credentialRefusal(line, home, parse, await regularFiles($, bodyTargets(parse), home)) ??
         provisioningRefusal(line, parse) ??
+        bareSetRefusal(line, parse) ??
         ((await $.env.get('WORKBENCH_SUMMARY_WRITER')) === '1' ? summaryWriterRefusal(parse) : undefined) ??
         (await databaseOf($, line, parse, home)) ??
         (await vaultGitOf($, line, parse, home)) ??
@@ -1336,8 +1350,10 @@ export const register: Register = on => {
     // A reload keeps $.state, so the line is drawn again from it.
     await orchestratorOn($).catch(() => undefined)
     await drawStatus($)
+    const repaired = await repairFalseBare($, await $.session.cwd()).catch(() => undefined)
     // Nobody reads a status line or a toast in an unattended run.
     if (sessionAttended) {
+      if (repaired !== undefined) $.clock.after(SETTLE_MS, () => $.ui.toast(repairedNotice(repaired), { timeoutMs: 10_000 }))
       // Each read is caught on its own, so one that fails stops neither.
       $.clock.after(SETTLE_MS, () => {
         void probeMemory($).catch(() => undefined)
@@ -1427,6 +1443,7 @@ export const register: Register = on => {
     if (release !== undefined) return { deny: release }
     const unread = e.tool === 'Bash' ? await unreadRefusalOf($, e.command, e.agentId, sessionAttended).catch(() => GUARD_FAILED) : undefined
     if (unread !== undefined) return { deny: unread }
+    if (e.tool === 'Bash') await repairBeforeGit($, e.command, sessionAttended === true).catch(() => undefined)
     if (verdict !== undefined) {
       const result = await next(e)
       return result.deny !== undefined ? result : { ...result, context: [...(result.context ?? []), verdict.advise] }

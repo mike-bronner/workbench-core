@@ -765,9 +765,6 @@ describe('decision A: a line whose command the reader cannot name is refused by 
   })
 })
 
-// Raises two guarded calls the first time $.session.cwd() is asked, and
-// stores each answer under `inner`. An inline plugin runs in an environment of
-// its own, so everything it uses is written inside it.
 const REENTRANT: Plugin = {
   name: 'reentrant',
   tier: 'append',
@@ -778,6 +775,7 @@ const REENTRANT: Plugin = {
         isInside = true
         const calls = [
           { tool: 'Bash', command: 'ls' },
+          { tool: 'Read', file_path: '/repo/README.md' },
           { tool: 'SendMessage', to: 'main', message: 'x' },
           { tool: 'mcp__the-index__add_comment', id: 1, body: 'Fixed it.' },
         ]
@@ -807,24 +805,23 @@ describe('the guards fail closed', () => {
     expect(reached).toEqual([])
   })
 
-  // A tool call raised beneath the hook's own `$` call meets the hook's
-  // .catch, with the hook not run: a guarded call is refused there too. A
-  // plugin below this one raises two calls while the hook waits on
-  // $.session.cwd(), and hands each answer over through the store. A plugin
-  // may not raise an Agent call through $.tool.call, so Agent's place in the
-  // guarded set is pinned on its own.
-  test("the hook's .catch refuses a guarded call it could not judge, SendMessage and a board-MCP prose tool included", { plugins: [REENTRANT] }, async ($, on) => {
+  test("a guarded call raised beneath the hook's own $ call is refused, SendMessage and a board-MCP prose tool included", { plugins: [REENTRANT] }, async ($, on) => {
     mock.env(on, { HOME })
     const inner: unknown[] = []
+    const reached: string[] = []
     on('session.cwd', () => ({ value: '/repo' }))
     on('store.set', ($2, e) => {
       if (e.key === 'inner') inner.push(e.value)
       return { value: undefined }
     })
-    on('tool.call', () => ({ result: {} as never }))
+    on('tool.call', ($2, e) => {
+      reached.push(e.tool)
+      return { result: {} as never }
+    })
     await $.tool.call({ tool: 'Bash', command: 'find /repo -name x' } as never)
-    expect(inner).toHaveLength(3)
+    expect(inner).toHaveLength(4)
     for (const deny of inner) expect(deny).toContain('could not finish')
+    expect(reached).toEqual(['Bash'])
   })
 
   test('a board-MCP prose call whose guard throws is refused', async ($, on) => {

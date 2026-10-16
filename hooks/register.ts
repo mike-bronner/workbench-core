@@ -155,7 +155,7 @@ import type { Fact, FactGetter, ScopeContext, ScopeVerdict } from './mods/destru
 import { NO_ONE_TO_ASK, dirKey, getterOf, needsScope, scopeVerdict, stepOf } from './mods/destructive-scope'
 import { needsVaultGit, vaultGitRefusal } from './mods/vault-git'
 import type { BodyPart } from './mods/outbound-prose'
-import { UNREAD_BODY, bashBodies, isProseTool, mcpBody, proseFindings, proseOfJson, proseRefusal } from './mods/outbound-prose'
+import { PROSE_TOOL_SUFFIXES, UNREAD_BODY, bashBodies, isProseTool, mcpBody, proseFindings, proseOfJson, proseRefusal } from './mods/outbound-prose'
 import {
   REFUSAL,
   STORE_KEY,
@@ -927,6 +927,8 @@ const GUARD_FAILED =
 
 type Guarded = Record<string, unknown> & { tool: string; agentId?: string }
 
+const JUDGED_TOOL = new RegExp(`^(${[...GUARDED].join('|')})$|^mcp__.*(${PROSE_TOOL_SUFFIXES.join('|')})$`)
+
 const IN_SCOPE = 'Destructive-scope guard (workbench-core): every path this command destroys lies inside the project or a scratch root.'
 
 // Each root with where it lands once its symbolic links are followed. A path
@@ -1436,7 +1438,17 @@ export const register: Register = on => {
     return { ...result, block: REPROMPT_REASON }
   })
 
+  const judging = new Set<string>()
+  on('tool.call', { tool: JUDGED_TOOL }, async ($, e, next) => {
+    try {
+      return await next(e)
+    } finally {
+      judging.delete(e.tool_use_id)
+    }
+  })
+
   on('tool.call', async ($, e, next) => {
+    if (JUDGED_TOOL.test(e.tool)) judging.add(e.tool_use_id)
     const verdict = await guardVerdict($, e as Guarded, sessionAttended === true).catch(() => ({ deny: GUARD_FAILED }))
     if (verdict !== undefined && 'deny' in verdict) return { deny: verdict.deny }
     const release = e.tool === 'Bash' ? await releaseRefusalOf($, e.command, e.agentId, sessionAttended).catch(() => GUARD_FAILED) : undefined
@@ -1567,6 +1579,8 @@ export const register: Register = on => {
     // here, and a call already passed on keeps its answer.
     next.called ? next(e) : GUARDED.has(e.tool) || isProseTool(e.tool) ? { deny: GUARD_FAILED } : next(e),
   )
+
+  on('tool.call', { tool: JUDGED_TOOL }, ($, e, next) => (judging.has(e.tool_use_id) ? next(e) : { deny: GUARD_FAILED }))
 
   // The destructive-scope guard's other two verdicts, given where the engine
   // decides whether a call may run (hooks/mods/destructive-scope.ts). A

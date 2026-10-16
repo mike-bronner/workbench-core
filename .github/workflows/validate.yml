@@ -167,7 +167,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # PINNED with the CLI: @anthropic-ai/claude-code 2.1.292 declares
+      # PINNED with the CLI: @anthropic-ai/claude-code 2.1.301 declares
       # engines.node ">=22.0.0", and the runner image's default Node floats.
       # Bump the two together.
       - uses: actions/setup-node@v6
@@ -177,7 +177,7 @@ jobs:
       - name: Install the Claude Code CLI (pinned)
         run: |
           set -euo pipefail
-          CLAUDE_CODE_VERSION=2.1.292
+          CLAUDE_CODE_VERSION=2.1.301
           node --version
           npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
           claude --version

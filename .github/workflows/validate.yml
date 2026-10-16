@@ -158,10 +158,7 @@ jobs:
   # empty HOME and CLAUDE_CONFIG_DIR, 859 tests passed and validate passed.
   # PINNED, like shellcheck above: the mods API moves between releases, and a
   # floating CLI would turn this job red with no change here. Bump it
-  # deliberately. The type-check needs the engine's types, which the CLI lays
-  # into .claude-plugin/types/ only when a session loads the plugin. A headless
-  # session with no account still loads it before it stops at the login check,
-  # so the type-check step starts one for that and nothing else.
+  # deliberately.
   plugin-tests:
     runs-on: ubuntu-latest
     steps:
@@ -210,7 +207,7 @@ jobs:
           mkdir -p "$home"
           # Lays the types, then exits 1 at the login check. That exit is
           # expected, so only the types it leaves behind are checked.
-          HOME="$home" CLAUDE_CONFIG_DIR="$home/.claude" \
+          HOME="$home" CLAUDE_CONFIG_DIR="$home/.claude" CLAUDE_CODE_PLUGIN_DIR_WATCH=1 \
             claude -p 'lay the types' --plugin-dir "$PWD" < /dev/null || true
           for t in claude-code claude-code-tools claude-code-mcp; do
             [ -f ".claude-plugin/types/$t/index.d.ts" ] \

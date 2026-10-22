@@ -130,7 +130,11 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
   on('session.id', () => ({ value: sessionId }))
   on('session.cwd', () => ({ value: b.cwd }))
   on('session.root', () => ({ value: b.root }))
-  on('tool.check', () => ({ decision: b.decision }))
+  const dialogs = new Map<string, string>()
+  on('tool.check', ($, e) => {
+    if (e.tool_use_id !== undefined) dialogs.set(e.tool_use_id, JSON.stringify([e.tool, e.input]))
+    return { decision: b.decision }
+  })
   on('prompt.submit', ($, e) => ({ text: e.text }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
   on('command.register', ($, e) => {
@@ -226,6 +230,7 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     return { value: { isPlaced: true } }
   })
   on('tool.call', ($, e) => {
+    dialogs.delete(e.tool_use_id)
     // What the gates' `[ -f ] && [ ! -L ]` reads: a regular file, no link.
     b.calls.push({ tool: e.tool, legacyExists: b.files.has(LEGACY) && !b.links.has(LEGACY) })
     b.inputs.push({ ...e })
@@ -247,7 +252,12 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     const call = { type: 'tool_use', id: b.store.get('tool_use_id'), name: 'Bash', input: {} }
     return { value: [{ role: 'user', content: [{ type: 'text', text: 'go' }] }, { role: 'assistant', content: [{ type: 'text', text: b.shown }, call] }] } as never
   })
-  on('classic.PermissionRequest', () => b.permissionBeneath as never)
+  on('classic.PermissionRequest', ($, e) => {
+    const id = [...dialogs].find(([, call]) => call === JSON.stringify([e.tool_name, e.tool_input]))?.[0]
+    const isDialog = id !== undefined && dialogs.delete(id)
+    const beneath = b.permissionBeneath as { decision?: unknown }
+    return (isDialog && beneath.decision === undefined ? { ...beneath, decision: { behavior: 'allow' } } : beneath) as never
+  })
   return b
 }
 

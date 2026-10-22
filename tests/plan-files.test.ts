@@ -119,3 +119,73 @@ describe('AC5: a main-session plan file is written with no permission prompt', (
     expect(await check($, 'Write', `${PLANS}/x.md`)).toBe('ask')
   })
 })
+
+const asked = async ($: Engine, tool: string, file_path: string, agentId?: string): Promise<unknown> =>
+  (
+    (await $.classic.PermissionRequest({
+      hook_event_name: 'PermissionRequest',
+      session_id: SID,
+      transcript_path: '/t.jsonl',
+      cwd: '/repo',
+      permission_mode: 'plan',
+      tool_name: tool,
+      tool_input: { file_path, content: 'x', old_string: 'a', new_string: 'b' },
+      ...(agentId ? { agent_id: agentId, agent_type: 'watson' } : {}),
+    } as never)) as { decision?: unknown }
+  ).decision
+
+const ALLOW = { behavior: 'allow' }
+
+describe('AC2: in plan mode, where the engine sets the allow aside, the dialog for a plan file is answered', () => {
+  for (const [tool, path] of [
+    ['Write', `${PLANS}/another-sessions-plan.md`],
+    ['Edit', `${PLANS}/old.md`],
+    ['Write', `${PLANS}/sub/deeper/plan.md`],
+  ] as const) {
+    test(`${tool} ${path} gets allow`, async ($, on) => {
+      await session($, on)
+      expect(await asked($, tool, path)).toEqual(ALLOW)
+    })
+  }
+
+  for (const [name, path] of [
+    ['a symlinked folder inside plans', `${PLANS}/escape/x.md`],
+    ['a symlinked file inside plans', `${PLANS}/linked.md`],
+    ['a path that climbs out', `${PLANS}/../../../outside/x.md`],
+    ['a plans lookalike', `${PLANS}-evil/x.md`],
+    ['a relative path', '.claude/plans/x.md'],
+    ['a project file', '/repo/a.ts'],
+  ] as const) {
+    test(`still gets the dialog: ${name}`, async ($, on) => {
+      await session($, on)
+      expect(await asked($, 'Write', path)).toBeUndefined()
+    })
+  }
+
+  test('other tools still get the dialog', async ($, on) => {
+    await session($, on)
+    expect(await asked($, 'NotebookEdit', `${PLANS}/x.ipynb`)).toBeUndefined()
+  })
+
+  test("a sub-agent's write still gets the dialog", async ($, on) => {
+    await session($, on)
+    expect(await asked($, 'Write', `${PLANS}/x.md`, 'a1')).toBeUndefined()
+  })
+
+  test('a top-level --agent run still gets the dialog', async ($, on) => {
+    await session($, on, { env: { HOME, CLAUDE_CODE_AGENT: 'watson' } })
+    expect(await asked($, 'Write', `${PLANS}/x.md`)).toBeUndefined()
+  })
+
+  test('a decision from a PermissionRequest hook beneath stands', async ($, on) => {
+    const b = await session($, on)
+    b.permissionBeneath = { decision: { behavior: 'deny', message: 'no' } }
+    expect(await asked($, 'Write', `${PLANS}/x.md`)).toEqual({ behavior: 'deny', message: 'no' })
+  })
+
+  test('a resolver that cannot run means no plans root, so the dialog shows', async ($, on) => {
+    const b = await session($, on)
+    delete b.scripts['scratch-roots.sh']
+    expect(await asked($, 'Write', `${PLANS}/x.md`)).toBeUndefined()
+  })
+})

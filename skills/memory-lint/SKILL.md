@@ -179,6 +179,7 @@ For each skipped file:
    | `projects/` path | `project` |
    | `infrastructure/` path | `infrastructure` |
    | `skills/*.learnings.md` | `skill-learnings` |
+   | `meetings/` path | `meeting` |
    | `feedback_*.md` filename | `feedback` |
    | `maintenance/` path | `maintenance` |
    | None of the above | infer from content; match the conventions visible in healthy sibling files |

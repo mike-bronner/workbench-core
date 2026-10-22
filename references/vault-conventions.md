@@ -68,7 +68,7 @@ must have both, and `type` takes one value from the fixed list below.
 ```yaml
 ---
 name: "Short descriptive title"
-type: session|decision|topic|identity|project|insight|skill-learnings|index|maintenance|infrastructure|feedback|reference|proposal|learnings
+type: session|decision|topic|identity|project|insight|skill-learnings|index|maintenance|infrastructure|feedback|reference|proposal|learnings|meeting
 ---
 ```
 
@@ -112,6 +112,7 @@ topics/          — topical synthesis pages (current state per theme)
 projects/        — project context and system designs
 insights/        — durable patterns and working principles
 sessions/        — session logs (.log.md) and summaries (.summary.md)
+meetings/        — FluidVoice meeting notes, one per meeting id (meeting-writer)
 skills/          — per-skill learnings files
 infrastructure/  — systems and tools documentation
 maintenance/     — memory-lint audit reports

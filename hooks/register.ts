@@ -186,6 +186,22 @@ import {
   shownTextOf,
   unshownOf,
 } from './mods/question-rule'
+import {
+  DOORBELL_MS,
+  FV_SERVE,
+  RUN_TIMEOUT_MS,
+  SCRIPT as MEETING_SCRIPT,
+  NO_DISPATCH_REFUSAL,
+  UNREAD_NOTE_REFUSAL,
+  WRITER_TOOL_REFUSAL,
+  idRefusal,
+  isInside,
+  meetingIdOf,
+  meetingWriterPathRefusal,
+  meetingWriterRefusal,
+  meetingsDirOf,
+  overwriteRefusal,
+} from './mods/meetings'
 import { NAME as PENDING, REFUSAL as PENDING_REFUSAL, USAGE as PENDING_USAGE, outcomeOf, reportOf as pendingReportOf, requestOf } from './mods/pending-summaries'
 import { EMPTY, countRequest, countTurn, statusOf } from './mods/request-meter'
 import { countOf, factsOf, healthOf, learningsAfter, lineOf, noticesOf, rowsOf, skillNameOf } from './mods/status-line'
@@ -680,6 +696,66 @@ async function meterCache($: EngineInterface, usage: TurnUsage, isAttended: bool
   const home = await $.env.get('HOME')
   const file = home === undefined ? undefined : recordFileOf(home, await $.session.id())
   if (file !== undefined) await $.fs.write(file, recordOf(state)).catch(() => undefined)
+}
+
+async function meetingsDir($: EngineInterface): Promise<string | undefined> {
+  if ((await $.env.get('WORKBENCH_SKIP_WARMUP')) === '1') return undefined
+  const home = await $.env.get('HOME')
+  if (home === undefined || !(await $.fs.exists(FV_SERVE))) return undefined
+  const dir = meetingsDirOf(home)
+  const entry = await $.fs.stat(dir).catch(() => undefined)
+  return entry?.kind === 'dir' ? dir : undefined
+}
+
+let isMeetingRunning = false
+let isMeetingDue = false
+let isDoorbellSet = false
+
+async function meetingNotes($: EngineInterface): Promise<void> {
+  if (isMeetingRunning) {
+    isMeetingDue = true
+    return
+  }
+  isMeetingRunning = true
+  try {
+    do {
+      isMeetingDue = false
+      await $.process.run(['bash', `${$.plugin.root}/scripts/${MEETING_SCRIPT}`], { timeoutMs: RUN_TIMEOUT_MS }).catch(() => undefined)
+    } while (isMeetingDue)
+  } finally {
+    isMeetingRunning = false
+  }
+}
+
+function ringDoorbell($: EngineInterface): void {
+  if (isDoorbellSet) return
+  isDoorbellSet = true
+  $.clock.after(DOORBELL_MS, () => {
+    isDoorbellSet = false
+    void meetingNotes($).catch(() => undefined)
+  })
+}
+
+async function meetingWriterVaultRefusal($: EngineInterface, call: VaultCall, tool: VaultTool): Promise<string | undefined> {
+  if ((await $.env.get('WORKBENCH_MEETING_WRITER')) !== '1') return undefined
+  const path = String(call.path)
+  const outside = meetingWriterPathRefusal(path)
+  if (outside !== undefined) return outside
+  if (tool !== 'write') return WRITER_TOOL_REFUSAL
+  const dispatched = await $.env.get('WORKBENCH_MEETING_ID')
+  const fields = call.frontmatter as Record<string, unknown> | undefined
+  const incoming = typeof fields?.meeting_id === 'string' ? fields.meeting_id : meetingIdOf(typeof call.content === 'string' ? call.content : '')
+  const unmatched = idRefusal(path, dispatched, incoming)
+  if (unmatched !== undefined || dispatched === undefined) return unmatched ?? NO_DISPATCH_REFUSAL
+  const root = await vaultRoot($).catch(() => undefined)
+  if (root === undefined) return UNREAD_NOTE_REFUSAL
+  const file = `${root}/${path}`
+  const existing = await $.fs
+    .exists(file)
+    .then(isThere => (isThere ? $.fs.read(file) : undefined))
+    .catch(() => null)
+  if (existing === null) return UNREAD_NOTE_REFUSAL
+  return overwriteRefusal(path, dispatched, existing)
 }
 
 // The warmup's deferred half (hooks/session-warmup.sh --deferred): the
@@ -1254,6 +1330,7 @@ async function guardVerdict($: EngineInterface, e: Guarded, isAttended: boolean)
         provisioningRefusal(line, parse) ??
         bareSetRefusal(line, parse) ??
         ((await $.env.get('WORKBENCH_SUMMARY_WRITER')) === '1' ? summaryWriterRefusal(parse) : undefined) ??
+        ((await $.env.get('WORKBENCH_MEETING_WRITER')) === '1' ? meetingWriterRefusal(parse) : undefined) ??
         (await databaseOf($, line, parse, home)) ??
         (await vaultGitOf($, line, parse, home)) ??
         (await bashProseOf($, line, parse, home))
@@ -1381,6 +1458,7 @@ export const register: Register = on => {
     // `clear` too, which starts a new transcript under a new session id.
     if (typeof e.transcript_path === 'string' && e.transcript_path !== '') await $.state.set(TRANSCRIPT, e.transcript_path)
     const result = await next(e)
+    const meetings = await meetingsDir($).catch(() => undefined)
     if (e.source === 'startup' || e.source === 'resume') {
       const payload = JSON.stringify({ source: e.source, session_id: e.session_id })
       $.clock.after(DEFERRED_MS, () => {
@@ -1388,7 +1466,15 @@ export const register: Register = on => {
           .then(() => (sessionAttended === true ? deliverNotices($) : undefined))
           .catch(() => undefined)
       })
+      if (meetings !== undefined) $.clock.after(DEFERRED_MS, () => void meetingNotes($).catch(() => undefined))
     }
+    return meetings === undefined ? result : { ...result, watchPaths: [...(result.watchPaths ?? []), meetings] }
+  })
+
+  on('classic.FileChanged', async ($, e, next) => {
+    const result = await next(e)
+    const meetings = await meetingsDir($).catch(() => undefined)
+    if (meetings !== undefined && typeof e.file_path === 'string' && isInside(e.file_path, meetings)) ringDoorbell($)
     return result
   })
 
@@ -1513,7 +1599,9 @@ export const register: Register = on => {
     const vaultTool = vaultToolOf(e.tool)
     if (vaultTool !== undefined) {
       const checked = await checkVaultWrite($, e as VaultCall, vaultTool)
-      return 'deny' in checked ? checked : next(checked.call as typeof e)
+      if ('deny' in checked) return checked
+      const refusal = await meetingWriterVaultRefusal($, checked.call, vaultTool)
+      return refusal !== undefined ? { deny: refusal } : next(checked.call as typeof e)
     }
     // A main-loop Agent call or whole-file write puts the legacy file back in
     // line with the mode Mike chose first, so a file the model wrote to stand
@@ -1611,7 +1699,11 @@ export const register: Register = on => {
 
   on('classic.PermissionRequest', async ($, e, next) => {
     const result = await next(e)
-    if (result.decision !== undefined || e.tool_name !== 'Bash' || e.agent_id !== undefined) return result
+    if (result.decision !== undefined || e.agent_id !== undefined) return result
+    if (e.tool_name === 'Write' || e.tool_name === 'Edit') {
+      return (await isPlanFile($, e.tool_input).catch(() => false)) ? { ...result, decision: { behavior: 'allow' } } : result
+    }
+    if (e.tool_name !== 'Bash') return result
     const command = (e.tool_input as { command?: unknown } | null | undefined)?.command
     if (typeof command !== 'string' || !(await isCommitGated($, sessionAttended, undefined))) return result
     const approval = await read($, commitApproval)

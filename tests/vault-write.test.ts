@@ -98,7 +98,7 @@ describe('AC4: a new note needs a valid name and type', () => {
   })
 
   test('every type a workbench skill or agent writes is on the list', () => {
-    for (const type of ['session', 'decision', 'topic', 'insight', 'feedback', 'reference', 'maintenance', 'index', 'skill-learnings', 'proposal', 'learnings', 'infrastructure', 'identity', 'project']) {
+    for (const type of ['session', 'decision', 'topic', 'insight', 'feedback', 'reference', 'maintenance', 'index', 'skill-learnings', 'proposal', 'learnings', 'infrastructure', 'identity', 'project', 'meeting']) {
       expect(TYPES).toContain(type)
     }
   })

@@ -55,6 +55,7 @@ export const TYPES: readonly string[] = [
   'reference',
   'proposal',
   'learnings',
+  'meeting',
 ]
 
 export const PATH_REFUSAL =

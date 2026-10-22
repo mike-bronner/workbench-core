@@ -8,8 +8,7 @@ check rebuilds the list from its two sources and compares:
 
   - the CLI's built-in agents, read from the pinned CLI binary. Each built-in
     is a minified object literal, `{agentType:"Explore",...,source:"built-in",
-    ...,omitClaudeMd:!0,getSystemPrompt:...}`, whose agentType is a string or
-    a name declared once as `X="web-fetch"` in its `// @bun` bundle chunk.
+    ...,omitClaudeMd:!0,getSystemPrompt:...}`.
   - this plugin's own agents/*.md with `omitClaudeMd: true` in the
     frontmatter, each under its bare name and its `<plugin>:` name.
 
@@ -41,8 +40,13 @@ class Unreadable(Exception):
     pass
 
 
+IMPORT = re.compile(rb'import\{([^}]*)\}from"')
+EXPORT = re.compile(rb'export\{([^}]*)\}')
+
+
 def built_in_omitters(binary: bytes) -> set[str]:
     starts = [0] + [m.start() for m in re.finditer(re.escape(CHUNK), binary)] + [len(binary)]
+    chunks = [binary[starts[i - 1]:starts[i]] for i in range(1, len(starts))]
     found: set[str] = set()
     seen_anchor = False
     for m in DEFINITION.finditer(binary):
@@ -52,17 +56,33 @@ def built_in_omitters(binary: bytes) -> set[str]:
             continue
         seen_anchor = seen_anchor or m.group(1) == f'"{ANCHOR}"'.encode()
         if OMITS.search(body):
-            i = bisect.bisect_right(starts, m.start())
-            found.add(resolve(binary[starts[i - 1]:starts[i]], m.group(1)))
+            found.add(resolve(chunks, bisect.bisect_right(starts, m.start()) - 1, m.group(1)))
     if not seen_anchor:
         raise Unreadable(f'no {ANCHOR!r} built-in agent found: the CLI binary layout is not one this check can read')
     return found
 
 
-def resolve(chunk: bytes, token: bytes) -> str:
+def bindings(clause: bytes) -> list[tuple[bytes, bytes]]:
+    pairs = [part.strip().split(b' as ') for part in clause.split(b',') if part.strip()]
+    return [(p[0].strip(), p[-1].strip()) for p in pairs]
+
+
+def declared(chunk: bytes, name: bytes) -> set[str]:
+    return {v.decode(errors='replace') for v in re.findall(rb'(?<![\w$.])' + re.escape(name) + rb'="([^"\\]*)"', chunk)}
+
+
+def resolve(chunks: list[bytes], at: int, token: bytes) -> str:
     if token.startswith(b'"'):
         return token[1:-1].decode()
-    values = {v.decode(errors='replace') for v in re.findall(rb'(?<![\w$.])' + re.escape(token) + rb'="([^"\\]*)"', chunk)}
+    values = declared(chunks[at], token)
+    for clause in IMPORT.finditer(chunks[at]):
+        for exported, local in bindings(clause.group(1)):
+            if local != token:
+                continue
+            sources = [(chunk, inner) for chunk in chunks for e in EXPORT.finditer(chunk) for inner, outer in bindings(e.group(1)) if outer == exported]
+            if len(sources) != 1:
+                raise Unreadable(f'agentType {token.decode()} is imported as {exported.decode()}, which {len(sources)} chunks export')
+            values |= declared(*sources[0])
     if len(values) != 1:
         raise Unreadable(f'agentType {token.decode()} resolves to {sorted(values) or "no string"}')
     return values.pop()

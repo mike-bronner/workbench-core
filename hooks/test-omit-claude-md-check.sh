@@ -22,6 +22,10 @@ FLAG='var Tv="flag",hBn=g(Tv);'
 BUN='// @bun
 '
 PLUGIN_AGENT='{agentType:"runner",source:"plugin",omitClaudeMd:!0,getSystemPrompt:f};'
+EXPORTS_FETCH='var IE="web-fetch";export{IE,zq};'
+EXPORTS_FETCH_AS='var k="web-fetch";export{a,k as IE};'
+IMPORTS_FETCH='import{IE,uin}from"/$bunfs/root/chunk-a.js";var Lht={agentType:IE,source:"built-in",omitClaudeMd:!0,getSystemPrompt:e};'
+IMPORTS_FETCH_AS='import{IE as Tv}from"/$bunfs/root/chunk-a.js";var Lht={agentType:Tv,source:"built-in",omitClaudeMd:!0,getSystemPrompt:e};'
 
 # plugin_root <dir> <OMITS_CLAUDE_MD entries> [an agent file's omitClaudeMd value]
 plugin_root() {
@@ -58,6 +62,10 @@ next_root; plugin_root "$r" "'Explore', 'web-fetch'"
 check "built-ins by string and by declared name, in one chunk as 2.1.292 bundles them" 0 "$GP$EXPLORE$FETCH" "$r"
 next_root; plugin_root "$r" "'Explore', 'web-fetch'"
 check "a declared name read in its own chunk when another chunk gives it another string" 0 "$BUN$FLAG$BUN$GP$EXPLORE$FETCH$BUN$FLAG" "$r"
+next_root; plugin_root "$r" "'Explore', 'web-fetch'"
+check "an imported name read in the one chunk that exports it, as 2.1.304 bundles them" 0 "$BUN$EXPORTS_FETCH$BUN$FLAG$BUN$GP$EXPLORE$IMPORTS_FETCH" "$r"
+next_root; plugin_root "$r" "'Explore', 'web-fetch'"
+check "an imported name renamed on both sides" 0 "$BUN$EXPORTS_FETCH_AS$BUN$GP$EXPLORE$IMPORTS_FETCH_AS" "$r"
 next_root; plugin_root "$r" "'Explore', 'writer', 'demo:writer'" true
 check "a plugin agent counts under its bare and plugin names" 0 "$GP$EXPLORE" "$r"
 next_root; plugin_root "$r" "'Explore'"
@@ -74,6 +82,8 @@ next_root; plugin_root "$r" "'Explore', 'writer'" true
 check "a plugin agent missing its plugin name" 1 "$GP$EXPLORE" "$r"
 next_root; plugin_root "$r" "'Explore', 'general-purpose'"
 check "a built-in without the flag in the list" 1 "$GP$EXPLORE" "$r"
+next_root; plugin_root "$r" "'Explore'"
+check "an imported built-in missing from the list" 1 "$BUN$EXPORTS_FETCH$BUN$GP$EXPLORE$IMPORTS_FETCH" "$r"
 
 echo "a source it cannot read fails closed:"
 next_root; plugin_root "$r" "'Explore'"
@@ -86,6 +96,12 @@ next_root; plugin_root "$r" "'Explore', 'web-fetch'"
 check "a declared name with two values in its own chunk" 2 "$BUN$GP$EXPLORE$BUN$FLAG$FETCH" "$r"
 next_root; plugin_root "$r" "'Explore', 'web-fetch'"
 check "a declared name whose value sits only in another chunk" 2 "${BUN}var Tv=\"web-fetch\";$BUN$GP${EXPLORE}var Lht={agentType:Tv,source:\"built-in\",omitClaudeMd:!0,getSystemPrompt:e};" "$r"
+next_root; plugin_root "$r" "'Explore', 'web-fetch'"
+check "an imported name no chunk exports" 2 "$BUN$FLAG$BUN$GP$EXPLORE$IMPORTS_FETCH" "$r"
+next_root; plugin_root "$r" "'Explore', 'web-fetch'"
+check "an imported name two chunks export" 2 "$BUN$EXPORTS_FETCH$BUN${EXPORTS_FETCH_AS}$BUN$GP$EXPLORE$IMPORTS_FETCH" "$r"
+next_root; plugin_root "$r" "'Explore', 'web-fetch'"
+check "an imported name its exporter gives no string" 2 "${BUN}var IE=g(1);export{IE};$BUN$GP$EXPLORE$IMPORTS_FETCH" "$r"
 next_root; plugin_root "$r" "'Explore'"; printf 'export const OTHER = 1\n' > "$r/hooks/mods/prompt-rules.ts"
 check "no OMITS_CLAUDE_MD in prompt-rules.ts" 2 "$GP$EXPLORE" "$r"
 next_root; plugin_root "$r" "'Explore'"

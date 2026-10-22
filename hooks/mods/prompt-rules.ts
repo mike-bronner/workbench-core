@@ -142,6 +142,8 @@ export const OMITS_CLAUDE_MD: ReadonlySet<string> = new Set([
   'comment-thread-analyst',
   'summary-writer',
   'workbench-core:summary-writer',
+  'meeting-writer',
+  'workbench-core:meeting-writer',
 ])
 
 // A sub-agent's system prompt may still carry the harness's own memory section,

@@ -537,7 +537,7 @@ describe('a sub-agent gets its parent rules at its start', () => {
   test('an agent that leaves CLAUDE.md out gets nothing: Explore, Plan, and the rest', async ($, on) => {
     engine(on)
     await $.session.start(start(true))
-    for (const type of ['Explore', 'Plan', 'web-fetch', 'comment-thread-analyst', 'workbench-core:summary-writer', 'summary-writer']) {
+    for (const type of ['Explore', 'Plan', 'web-fetch', 'comment-thread-analyst', 'workbench-core:summary-writer', 'summary-writer', 'workbench-core:meeting-writer', 'meeting-writer']) {
       expect((await $.classic.SubagentStart(subagentStart(type))).additionalContext).toEqual(['BENEATH'])
     }
   })
@@ -551,8 +551,17 @@ describe('a sub-agent gets its parent rules at its start', () => {
     expect(text).toContain(RULES)
   })
 
-  test('the list holds every built-in the CLI defines with omitClaudeMd, and only those and summary-writer', () => {
-    expect([...OMITS_CLAUDE_MD].sort()).toEqual(['Explore', 'Plan', 'comment-thread-analyst', 'summary-writer', 'web-fetch', 'workbench-core:summary-writer'])
+  test("the list holds every built-in the CLI defines with omitClaudeMd, and only those and core's own writers", () => {
+    expect([...OMITS_CLAUDE_MD].sort()).toEqual([
+      'Explore',
+      'Plan',
+      'comment-thread-analyst',
+      'meeting-writer',
+      'summary-writer',
+      'web-fetch',
+      'workbench-core:meeting-writer',
+      'workbench-core:summary-writer',
+    ])
   })
 
   test("in an --agent run, a sub-agent gets that lane's set", async ($, on) => {

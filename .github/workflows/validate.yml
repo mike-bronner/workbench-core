@@ -153,9 +153,7 @@ jobs:
           exit "$fail"
 
   # The hooks module's tests (tests/*.test.ts) and the manifest check. Both run
-  # in the Claude Code CLI's own test kit and need no account: measured
-  # 2026-10-07 with the npm package of this version, under `env -i` with an
-  # empty HOME and CLAUDE_CONFIG_DIR, 859 tests passed and validate passed.
+  # in the Claude Code CLI's own test kit and need no account.
   # PINNED, like shellcheck above: the mods API moves between releases, and a
   # floating CLI would turn this job red with no change here. Bump it
   # deliberately.
@@ -164,9 +162,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # PINNED with the CLI: @anthropic-ai/claude-code 2.1.301 declares
-      # engines.node ">=22.0.0", and the runner image's default Node floats.
-      # Bump the two together.
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
@@ -174,7 +169,7 @@ jobs:
       - name: Install the Claude Code CLI (pinned)
         run: |
           set -euo pipefail
-          CLAUDE_CODE_VERSION=2.1.301
+          CLAUDE_CODE_VERSION=2.1.308
           node --version
           npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
           claude --version

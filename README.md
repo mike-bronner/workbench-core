@@ -174,7 +174,8 @@ core/
 ├── .claude-plugin/
 │   └── plugin.json              — manifest + MCP server config + the hooks module's type contract ($.workbench)
 ├── agents/
-│   └── summary-writer.md       — background narrative agent definition
+│   ├── summary-writer.md       — background narrative agent definition
+│   └── meeting-writer.md       — background agent that writes one FluidVoice meeting note
 ├── assets/
 │   ├── personas/              — the shipped persona (an output style)
 │   └── prompt-templates/      — scheduled-task prompt bodies (decision-quality nightly)
@@ -185,13 +186,13 @@ core/
 │   │                             the warmup's deferred half, the per-turn log checkpoint, memory
 │   │                             capture, recall, skill learnings, the intake nudge, the workbench
 │   │                             rules in the system prompt, /orchestrator, /memory-status, /notices,
-│   │                             /process-pending-summaries, and five guards (see Guards in the
-│   │                             hooks module)
+│   │                             /process-pending-summaries, the FluidVoice meeting watch, and six guards
+│   │                             (see Guards in the hooks module)
 │   ├── mods/                   — the module's pure logic: brief, lane, orchestrator, question-rule,
 │   │                             request-meter, cache-meter, status-line, commit-approval, vault-write,
 │   │                             pending-summaries, shell (the shell reader behind parseShell),
 │   │                             checkpoint, capture, recall, learnings, intake, prompt-rules, guards,
-│   │                             project-scope, false-bare
+│   │                             project-scope, false-bare, meetings
 │   ├── session-log.sh          — raw log capture + summary-writer dispatch (not at SessionEnd or per turn)
 │   ├── session-warmup.sh       — retention cleanup + dead-marker sweep + session reconciler + notices;
 │   │                             summary drain + Chat-skill scan run deferred; prints nothing
@@ -247,6 +248,7 @@ core/
 │   ├── learnings-count.sh      — a skill's learnings entry count, for the status line
 │   ├── vault-resolve.sh        — the vault root and [[link]] targets, for the vault write checks
 │   ├── process-pending-summaries.sh — the drain and the one-session run (/process-pending-summaries)
+│   ├── meeting-notes.sh        — dispatch a meeting-writer for each finished FluidVoice meeting with no note
 │   └── release-summary-marker.sh — the summary-writer's last step: delete its marker unless a later turn rewrote it
 └── README.md
 ```
@@ -309,7 +311,7 @@ The [delegation gate](#delegation-gate) keeps its name but refuses nothing since
 
 **Why it stopped denying (2026-10-05).** Until then, `Write` and `NotebookEdit` from the main agent were denied outside the scratchpads. Plan mode allows the main agent to write exactly one file, its plan under `~/.claude/plans/`, and the gate denied that write, so plan mode was unusable while the gate was on. Mike decided that the main agent may write a file when it needs to, and that delegation stays advice. The gate itself still gives no `allow` verdict, because that would skip the permission prompt every other write gets.
 
-**Plan files get no permission prompt (2026-10-15).** The 2026-10-05 choice kept Claude Code's permission prompt on plan writes. Mike reversed it: "agent should never ask permission to edit or create plans." The hooks module's `tool.check` hook now answers `allow` for a main-session `Write` or `Edit` whose target resolves physically inside the login home's `.claude/plans` folder. The folder comes from `hooks/lib/scratch-roots.sh`, which reads the home from the password database, never from `$HOME`. The target must equal its own physical path, so a symlink at any level, a `.` or `..` step, or a doubled slash keeps the prompt. A sub-agent's write, a top-level `--agent` run's, any other path, any other tool, a deny beneath, and an ask that another hook raised also keep it. `tests/plan-files.test.ts` covers each case. The shared rules section and the output style's rule 6 say never to ask before creating or editing a plan file, in prose or through `AskUserQuestion`. Mike still approves a plan's content when it is presented.
+**Plan files get no permission prompt (2026-10-15).** The 2026-10-05 choice kept Claude Code's permission prompt on plan writes. Mike reversed it: "agent should never ask permission to edit or create plans." The hooks module's `tool.check` hook now answers `allow` for a main-session `Write` or `Edit` whose target resolves physically inside the login home's `.claude/plans` folder. The folder comes from `hooks/lib/scratch-roots.sh`, which reads the home from the password database, never from `$HOME`. The target must equal its own physical path, so a symlink at any level, a `.` or `..` step, or a doubled slash keeps the prompt. A sub-agent's write, a top-level `--agent` run's, any other path, any other tool, a deny beneath, and an ask that another hook raised also keep it. In plan mode Claude Code sets a hook's `allow` aside on every write but the session's own plan file, so the module's `classic.PermissionRequest` hook answers that write's dialog with `allow`, under the same test. A decision from a PermissionRequest hook beneath stands. `tests/plan-files.test.ts` covers each case. The shared rules section and the output style's rule 6 say never to ask before creating or editing a plan file, in prose or through `AskUserQuestion`. Mike still approves a plan's content when it is presented.
 
 **Once per session.** A reminder on every write spends tokens on every turn, which is what delegation exists to save. The module keeps the reminded session id in `$.state` and changes it with `update`, which writes with `ifVersion` and retries on a miss, so of two racing writes only one draws the reminder. `$.store` records each reminded session id for 3 days, so a session resumed in a new process is not reminded again. When the store cannot be read or written, the reminder stays silent rather than risk repeating itself.
 
@@ -832,6 +834,42 @@ These switch it off, and each closes a real failure:
 
 `/clear` starts the count over. `tests/capture.test.ts` covers the policy, the checks on the reply, and each lane, and `hooks/test-memory-module-hooks.sh` pins that no Stop or `asyncRewake` hook is registered.
 
+### Meeting notes from FluidVoice
+
+When FluidVoice finishes recording a meeting, a note for it lands in the vault's `meetings/` folder, with a summary, the decisions and the action items. Nobody asks for it, and nothing prompts Mike: vault work is never his to answer (vault: `feedback/memory-vault-activity-fully-transparent`).
+
+**The trigger.** FluidVoice's read-only CLI, `fv-serve`, has no event for a finished meeting. So the [hooks module](#the-hooks-module) watches FluidVoice's Meetings folder (`~/Library/Application Support/FluidVoice/Meetings`):
+
+- Its `classic.SessionStart` hook returns the folder in `watchPaths`.
+- Its `classic.FileChanged` hook treats any add, change or unlink under the folder as a doorbell. It waits 10 seconds, so a burst of writes rings once, and then runs `scripts/meeting-notes.sh`.
+- At a `startup` or `resume`, the same script runs once as a catch-up, so a meeting recorded while no session was open lands at the next start.
+
+A change only rings the doorbell. The script never reads the folder, so its layout and its half-written files do not matter. It asks `fv-serve` which meetings are finished.
+
+**The script** (`scripts/meeting-notes.sh`) does nothing and prints only `result=absent` or `result=no-access` when `fv-serve` is missing or `status --json` does not answer `"access": true`. Otherwise it:
+
+1. Lists the meetings with `meet list --json`, and decides from `state` which ones get a note:
+   - `completed` gets a note.
+   - `interrupted` gets a note marked partial, because a cut-off meeting can still hold decisions. Mike decided this on 2026-10-22.
+   - `failed`, or any other state, is skipped.
+   - With no `state`, an entry gets a note only when its `endedAt` is set. It is skipped when `endedAt` is missing, null or empty, so a list that leaves both fields out dispatches nothing.
+
+   An id that is not a plain token is skipped too. A list that is not JSON dispatches nothing.
+2. Skips each meeting whose id a note under `meetings/` already carries as `meeting_id` in its frontmatter. That is the dedupe.
+3. Claims each meeting left with an mkdir lock under `{memory_cache}/meeting-notes/`, so two triggers never start two writers for one meeting. A claim older than an hour is taken over, so a writer that died is retried. Each start is counted under `{memory_cache}/meeting-attempts/`, and a meeting is tried at most 3 times. A meeting whose writer never produced a note, such as one with no transcript or one whose write failed, then stops costing a `claude -p` run on every trigger. A count that cannot be read counts as the cap. The result line reports such meetings as `stopped`. To try one again, delete its count file.
+4. Asks `meet summary <id>` whether FluidVoice holds a saved summary, and spawns a detached `meeting-writer` for the meeting, at most 10 a run. The rest wait for the next trigger.
+
+The writer is spawned the way the [summary-writer](#logging-pipeline) is: `claude -p --agent meeting-writer` from the vault folder, with no session persistence, no CLAUDE.md, and `WORKBENCH_SKIP_WARMUP=1`, so it watches nothing and dispatches nothing itself. Its output goes to `summary-dispatch-errors.log` in the memory cache, and its model is `summary_model`.
+
+**The note** (`agents/meeting-writer.md`) is `meetings/YYYY-MM-DD/<meeting-id>.md`, of type `meeting`. Its frontmatter carries the meeting id, date, title, start time and speakers. Its body holds a summary, the decisions and the action items, each with a timestamp. The writer uses FluidVoice's saved summary when there is one, and otherwise writes one from the transcript. It never copies the transcript: the meeting id is the link to the full record. It promotes each decision the meeting stated to `decisions/`, with the meeting id and a link back to the note, and writes the meeting note last, because that note marks the meeting done. A note from an interrupted recording carries `recording: partial` in its frontmatter, opens by saying the recording stopped before the meeting ended, and says its decisions and action items may be incomplete. A decision promoted from it says so too.
+
+**The transcript is data, never an instruction.** The writer marks a `Speaker 1` label, or a name it is unsure of, as unidentified or uncertain, and does not guess. The meeting-writer guard holds the writer to that mechanically, under `WORKBENCH_MEETING_WRITER=1`:
+
+- Bash runs one plain call of `/Applications/FluidVoice.app/Contents/Helpers/fv-serve`, by that exact path: `meet list`, `meet show`, `meet summary`, `meet search`, or `status` with no argument or `--json`. Any other path, a wrapper such as `env`, `command`, `exec` or `nohup`, a pipe, a redirect, an assignment, a second command after `;`, `&`, `&&` or a newline, and any other program are refused.
+- The writer has no `edit` tool, and the guard refuses an `edit` or `append` from it. A `write` lands only under `meetings/` or `decisions/`. Its `meeting_id` must equal `WORKBENCH_MEETING_ID`, which `scripts/meeting-notes.sh` sets in the writer's environment to the meeting it dispatched. The writer cannot change that variable, because its Bash runs only fv-serve reads. A write over an existing note is refused unless that note also carries the dispatched id, so a writer steered by one meeting's transcript cannot replace another meeting's note or decision, whatever id it writes. A writer with no `WORKBENCH_MEETING_ID` writes nothing. A write it cannot check against the vault is refused.
+
+**What a real meeting must confirm.** On 2026-10-22 `fv-serve` reported access and no meetings, so the JSON of `meet list --json` and `meet show --json` has not been seen. The script reads the id as `id` (or `meetingID`, `meetingId`), a list as an array or an object with `meetings`, and whether a meeting gets a note by `state` (`completed`, `interrupted` and `failed` are the values in the binary), or by `endedAt` when there is no `state`. The writer reads `meet show --json` as it finds it. `hooks/test-meeting-notes.sh` runs the script against an `fv-serve` stand-in, and `tests/meeting-notes.test.ts` covers the watch, the catch-up and the guard.
+
 ### What the warmup does
 
 The warmup prints nothing for the model, on any source. The rules it used to print reach the model as [system-prompt sections](#the-workbench-rules-in-the-system-prompt), and every notice goes to the [notices file](#housekeeping-notices--for-mike-not-the-model).
@@ -865,7 +903,7 @@ A summary-writer (`WORKBENCH_SKIP_WARMUP=1`) gets none of them, as it got no CLA
 
 **Byte-stable by construction.** The sections hold no date, count, version, session id or path read from the machine. Their only inputs are fixed text and the sibling plugins' own files, read once per load, so every render in a session and every session in a lane gets the same bytes. The cache that holds them is read, not created, from the second session on. `tests/prompt-rules.test.ts` composes the prompt across a reload, a notices change and a date change, and every shared section stays byte-identical.
 
-**A sub-agent gets them too.** A sub-agent's system prompt is its own, so `prompt.compose` does not reach it (measured). At `SubagentStart` the module adds its parent lane's sections as context, as the CLAUDE.md block and the router stub reached the sub-agents that load CLAUDE.md. Its copy of the memory routing adds one line saying the vault overrides any per-project memory folder, because its system prompt may still carry the harness's memory section. An agent defined with `omitClaudeMd` never saw the old block, and gets none: the CLI's built-in `Explore`, `Plan`, `web-fetch` and `comment-thread-analyst`, and core's summary-writer. No hooks-module API says which types set the flag, so `OMITS_CLAUDE_MD` names them, and `tests/prompt-rules.test.ts` pins the list. CI's `scripts/omit-claude-md-check.py` reads the agents defined with the flag out of the pinned CLI binary and core's `agents/*.md`, and fails when the list differs.
+**A sub-agent gets them too.** A sub-agent's system prompt is its own, so `prompt.compose` does not reach it (measured). At `SubagentStart` the module adds its parent lane's sections as context, as the CLAUDE.md block and the router stub reached the sub-agents that load CLAUDE.md. Its copy of the memory routing adds one line saying the vault overrides any per-project memory folder, because its system prompt may still carry the harness's memory section. An agent defined with `omitClaudeMd` never saw the old block, and gets none: the CLI's built-in `Explore`, `Plan`, `web-fetch` and `comment-thread-analyst`, and core's summary-writer and meeting-writer. No hooks-module API says which types set the flag, so `OMITS_CLAUDE_MD` names them, and `tests/prompt-rules.test.ts` pins the list. CI's `scripts/omit-claude-md-check.py` reads the agents defined with the flag out of the pinned CLI binary and core's `agents/*.md`, and fails when the list differs.
 
 **The old CLAUDE.md block is left out of the first message.** `prompt.context` reads each user-tier instruction file from disk, finds the two marked regions an older warmup wrote, and removes their text from what the model reads. A region is taken only when the file holds exactly one start line and one end line of it, so a marker the user quotes in a code fence leaves it alone. Only the line breaks that touch a cut change. Every other byte is the user's and passes as it was, blank runs and indentation included. The first message is shared with sub-agents, so they lose the duplicate too.
 
@@ -996,13 +1034,14 @@ Each statement is one simple command, and carries:
 
 ### Guards in the hooks module
 
-Five guards run in the `tool.call` hook of `hooks/register.ts`, in every lane, before the call runs. Their logic is pure, in `hooks/mods/guards.ts`:
+Six guards run in the `tool.call` hook of `hooks/register.ts`, in every lane, before the call runs. Their logic is pure, in `hooks/mods/guards.ts`, and the meeting-writer guard's in `hooks/mods/meetings.ts`:
 
 | Guard | Refuses |
 |---|---|
 | [Peer message gate](#peer-message-gate) | a sub-agent's `SendMessage` to anything but `main` or an agent id |
 | [Provisioning guard](#provisioning-guard) | creating a git worktree or a database, and deleting a worktree |
 | Summary-writer guard | a Bash write of a markdown file by the detached summary-writer |
+| [Meeting-writer guard](#meeting-notes-from-fluidvoice) | any Bash line of the detached meeting-writer but one read-only call of the real fv-serve, any edit or append from it, its writes outside `meetings/` and `decisions/`, and any write whose `meeting_id`, or the existing note's, is not the dispatched meeting's |
 | Credential guard | reading, linking or copying a credential folder, a `.env` file, a keychain folder or Claude's credential store |
 | Whole-disk search guard | a search that starts at the whole disk, a home folder, a Library folder or a system tree |
 
@@ -1373,6 +1412,7 @@ Runs on every `startup` warmup:
 | Checkpoint files | 7 days | Sessions don't resume after that. A `.deferred` file beside a checkpoint is pruned on the same schedule |
 | Legacy summary-writer logs | Immediate cleanup | No longer generated; remnants deleted on startup |
 | Summary `.summary.md` files | Forever | Searchable session history |
+| Meeting notes in `meetings/` | Forever | The record of each meeting. The transcript stays in FluidVoice |
 | Decisions, projects | Forever | Core operational memory |
 
 ## Skills
@@ -1439,7 +1479,10 @@ All config values can be overridden via environment variables for testing:
 | `WORKBENCH_RECONCILE_WINDOW_MIN` | How far back the reconciler looks, in minutes (default `4320`, 3 days; clamped to `8640`) |
 | `WORKBENCH_RECONCILE_QUIET_MIN` | Minutes a transcript must sit unwritten before the reconciler treats it as ended (default `30`) |
 | `WORKBENCH_SKIP_LOG` | Set to `1` to skip logging (used by summary-writer) |
-| `WORKBENCH_SKIP_WARMUP` | Set to `1` to skip warmup (used by summary-writer) |
+| `WORKBENCH_SKIP_WARMUP` | Set to `1` to skip warmup (used by summary-writer and meeting-writer). It also turns off the meeting watch and catch-up |
+| `WORKBENCH_MEETING_WRITER` | Set to `1` by `scripts/meeting-notes.sh` on the detached meeting-writer, and nowhere else: turns on the meeting-writer guard |
+| `WORKBENCH_MEETING_ID` | Set by `scripts/meeting-notes.sh` on the detached meeting-writer to the meeting it was dispatched for: every vault write must carry this `meeting_id` |
+| `WORKBENCH_FV_SERVE` | The fv-serve path `scripts/meeting-notes.sh` runs (default `/Applications/FluidVoice.app/Contents/Helpers/fv-serve`; used by tests for a stand-in) |
 | `WORKBENCH_MCP_SERVER_NAME` | `memory_mcp_server_name` |
 | `WORKBENCH_MEMORY_RECALL` | Set to `0` to disable vault recall, on prompts and on content searches both |
 | `WORKBENCH_MEMORY_RECALL_STATE` | Where prompt recall stamps `last-attempt` for the warmup's recall liveness check (default `~/.claude-workbench/memory-recall`) |

@@ -566,28 +566,36 @@ done < <(jq -r '(.allow // [])[] | .rule
   | ltrimstr("Bash(bash \"$HOME/.claude-workbench/bin/")
   | rtrimstr("\":*)")' "$SHIPPED_RAILS")
 
-# workbench-dev-team's setup installs its own ask rules for git commit and git
-# push, and its pipeline answers the prompts they raise through a
-# PermissionRequest hook, hooks/scripts/pipeline-scope.sh. That hook answers
-# only for git, rm, and rmdir. So the two halves of this check protect two
-# different things.
-#   - git commit and git push: dev-team owns these rules and their spelling. A
-#     copy here would duplicate them, and it would stay in settings.json after
-#     dev-team changes or removes its own.
-#   - gh pr create: nothing answers that prompt in `claude -p`, so an ask rule
-#     here would deny every pull request the pipeline opens.
-# The match is on the command prefix rather than one spelling, because dev-team
-# spells its rules `Bash(git push *)` and `Bash(git * push *)`, and a copy of
-# either form must fail here too.
-echo "ask list leaves commit and push to dev-team, and never blocks its pipeline:"
-for PREFIX in "Bash(git push" "Bash(git commit" "Bash(git * push" "Bash(git * commit" "Bash(gh pr create"; do
-  COUNT="$(jq -r --arg p "$PREFIX" '[.ask[] | select(.rule | startswith($p))] | length' "$SHIPPED_RAILS")"
-  if [ "$COUNT" = "0" ]; then
-    PASS=$((PASS + 1)); echo "  ✅ no ask rule starts with $PREFIX"
-  else
-    FAIL=$((FAIL + 1)); echo "  ❌ an ask rule starts with $PREFIX — it duplicates dev-team's rule or blocks its pipeline"
-  fi
+echo "ask list carries dev-team's ten commit, push and merge rules, spelled as its setup spelled them, and the branch merge rule:"
+for RULE in "Bash(git commit *)" "Bash(git push *)" "Bash(git * commit *)" "Bash(git * push *)" "Bash(git * commit)" \
+            "Bash(git * push)" "Bash(gh pr merge:*)" "Bash(gh * pr merge *)" "Bash(gh * pr merge)" "Bash(gh api *pulls/*/merge*)" "Bash(gh api *repos/*/merges*)"; do
+  assert_jq "$RULE asks" "$SHIPPED_RAILS" "[.ask[] | select(.rule == \"$RULE\")] | length" "1"
 done
+assert_jq "exactly eleven ask rules name a commit, a push or a merge" "$SHIPPED_RAILS" \
+  '[.ask[] | select(.rule | test("commit|push|pr merge|pulls/|/merges"))] | length' "11"
+
+echo "ask list carries the default-branch API write rules a prefix can match:"
+for RULE in "Bash(gh api -X PUT *contents/*)" "Bash(gh api --method PUT *contents/*)" "Bash(gh api -X DELETE *contents/*)" \
+            "Bash(gh api --method DELETE *contents/*)" "Bash(gh api -X PATCH *git/refs/*)" "Bash(gh api --method PATCH *git/refs/*)" \
+            "Bash(gh api -X DELETE *git/refs/*)" "Bash(gh api --method DELETE *git/refs/*)" "Bash(gh api -X POST *git/refs*)" \
+            "Bash(gh api --method POST *git/refs*)"; do
+  assert_jq "$RULE asks" "$SHIPPED_RAILS" "[.ask[] | select(.rule == \"$RULE\")] | length" "1"
+done
+
+echo "ask list never blocks the pipeline's pull requests:"
+COUNT="$(jq -r '[.ask[] | select(.rule | startswith("Bash(gh pr create"))] | length' "$SHIPPED_RAILS")"
+if [ "$COUNT" = "0" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ no ask rule starts with Bash(gh pr create"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ an ask rule starts with Bash(gh pr create — nothing answers that prompt in claude -p"
+fi
+
+echo "the installer merges the eleven rules into a settings file that has none:"
+COMMIT_SETTINGS="$SANDBOX/commit-rules.json"
+echo '{}' > "$COMMIT_SETTINGS"
+WORKBENCH_SETTINGS_FILE="$COMMIT_SETTINGS" WORKBENCH_RAILS_FILE="$SHIPPED_RAILS" bash "$SCRIPT" >/dev/null 2>&1
+assert_jq "every commit, push and merge rule lands in permissions.ask" "$COMMIT_SETTINGS" \
+  '[.permissions.ask[] | select(test("commit|push|pr merge|pulls/|/merges"))] | length' "11"
 
 # The database rails, carried over from the retired bash database guard's
 # suite. The hooks module is the enforcement, and a prefix rule cannot see

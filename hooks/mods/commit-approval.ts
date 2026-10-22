@@ -45,18 +45,10 @@
 //     when the directory before it is a symlink (dirOf)
 //   - an escaped command word
 //
-// WHAT IT CANNOT SEE, by design, because the line does not say:
-//   - an alias in a git config file (`git ci` with alias.ci = commit)
-//   - commands that make commits without the word: merge, revert,
-//     cherry-pick, am, rebase, pull, stash
-//   - text piped into a shell (`echo git push | sh`, `cat <<EOF | sh`)
-//   - a here-string's text (`sh <<< 'git push'`)
-//   - a script file, an interpreter (`python -c`), or a shell function
-// Those stay with the permission rules, dev-team's commit guard, and review.
-//
 // Pure functions only: the engine follows `$` into no imported function.
 
 import type { WorkbenchShellStatement as ShellStatement } from '../../types'
+import { MERGE_MUTATION, findOps } from './commit-guard'
 import { hiddenCommandRefusal, isPartlyRead } from './guards'
 import { ASSIGNMENT, GIT_VALUE_OPTIONS, KEYWORDS, SHELLS, WRAPPERS, commandsOf, decodedOf, expandingOf, isEscaped, isExpanded, nameOf, parseShell, shellScriptOf } from './shell'
 
@@ -68,36 +60,94 @@ export const COMMIT_REFUSAL =
   'opened. Ask first for work he did not ask to commit. Once he says his ' +
   'review is done, ask the commit question through AskUserQuestion, alone, ' +
   'with the branch and the proposed message, and run the commit again after ' +
-  'he picks "Commit it". One pick approves one commit and the push of that ' +
-  'commit. Any prompt ends a pick not yet used for its commit.'
+  'he picks "Commit it". One pick approves one commit on the branch HEAD held ' +
+  'when he picked, and no push and no merge. Only his own next prompt ends a ' +
+  'pick not yet used.'
 
 export const PUSH_REFUSAL =
   'This git push was refused: Mike has not approved it. A prompt of his own ' +
   'that asks for a push or a release approves the pushes of the turn it ' +
-  'opened. Ask first for any other push. A "Commit it" pick approves one ' +
-  'commit and the push of that commit, in that order. Mike\'s next prompt ends a push ' +
-  'left by an approved commit.'
+  'opened. A commit approval, typed or picked, approves no push. Once the ' +
+  'commit has landed, ask about the push in an AskUserQuestion call of its ' +
+  'own, with the branch, the remote and the commits it sends, and push after ' +
+  'he picks "Push". One pick approves one push of the branch HEAD held when ' +
+  'he picked.'
+
+export const MERGE_ASK_REFUSAL =
+  'This merge was refused: Mike has not approved a merge into the default ' +
+  'branch. How a branch lands, a pull request or a local merge, is his ' +
+  'choice. A commit or push approval approves no merge. Ask him in an ' +
+  'AskUserQuestion call of its own about the merge, once the commit and the ' +
+  'push have landed, and recommend a pull request. A prompt of his own that ' +
+  'asks for the merge approves it too, for the turn it opened.'
+
+export const MERGE_TARGET_REFUSAL =
+  'This merge was refused: it does not merge the pull request or branch Mike\'s ' +
+  'merge pick named. A merge pick approves only the pull request number or the ' +
+  'branch its question named, so write that number or branch on the line, such ' +
+  'as `gh pr merge 12` or `git merge fix/x`. To merge anything else, ask him again.'
+
+export const REWRITE_REFUSAL =
+  'This history rewrite was refused: git cherry-pick, revert, am, rebase, update-ref, ' +
+  'a reset that moves a branch, and a shell alias need Mike\'s approval in the ' +
+  'approval dialog, and nobody can answer one here. A sub-agent, a -p run and a turn ' +
+  'nobody attends never rewrite history. The pipeline rewrites only its own ' +
+  'feature branches, and never the default branch or a branch the gate cannot ' +
+  'read. Report that the change is ready, and leave it to Mike\'s session.'
+
+export const API_WRITE_REFUSAL =
+  'This GitHub API write was refused: a gh api write to repos/<owner>/<repo>/contents ' +
+  'or git/refs changes the default branch here, or a branch the gate cannot read, ' +
+  'and that needs Mike\'s approval in the approval dialog. Nobody can answer one ' +
+  'here. Name a feature branch in its branch= field or its refs/heads/ path, or ' +
+  'leave the change to Mike\'s session.'
+
+export const ALIAS_REFUSAL =
+  'This gh alias set was refused: a gh alias can run any command under a new ' +
+  'name, so setting one needs Mike\'s approval in the approval dialog, in every ' +
+  'lane, and nobody can answer one here. Run the gh command itself instead.'
+
+export const AGENT_MERGE_REFUSAL =
+  'This git merge or pull was refused: HEAD is on the default branch, or the ' +
+  'gate cannot tell which branch it is on, and a sub-agent, an --agent run or a ' +
+  'turn nobody attends does not merge into the default branch. How a branch ' +
+  'lands is Mike\'s choice. Report that the branch is ready, and leave the merge ' +
+  'to his session. Merging the default branch into a feature branch is not refused.'
 
 export const RELEASE_REFUSAL =
   'This release was refused: Mike has not asked for a release in this turn. ' +
   'Only a prompt of his own that asks for a release approves one, for the turn ' +
-  'it opened. A "Commit it" pick approves no release. Ask first.'
+  'it opened. A pick approves no release. Ask first.'
+
+export const MOVE_REFUSAL =
+  'This line was refused: it runs git checkout, switch, stash or reset while ' +
+  'Mike\'s commit or push pick is not yet used. The pick is tied to the branch ' +
+  'HEAD held when he picked, and to the tree he saw. Run the approved commit or ' +
+  'push first, on that branch. If the work needs another branch, tell Mike, and ' +
+  'ask the question again once he says how to go on.'
+
+export const branchRefusal = (seen: string, now: string): string =>
+  `This git commit or push was refused: Mike picked it while HEAD was on ${seen}, ` +
+  `and HEAD is now on ${now}. A pick approves only the branch HEAD held when he ` +
+  'picked, so this pick is used up. Ask the question again, and name the branch ' +
+  'HEAD is on now.'
 
 export const AGENT_RELEASE_REFUSAL =
-  'This release was refused: a sub-agent or a pipeline run does not publish a ' +
-  'release. Only a prompt Mike types in his own session approves one. So no ' +
-  'gh release command, releases endpoint or GraphQL Release mutation runs here. ' +
-  'A gh line whose command or subcommand is not written as plain text, and a ' +
-  'line the shell reader cannot read whole, are refused the same way, because ' +
-  'either may spell one. If the work needs a release, report that it is ready, ' +
-  'and leave it to the session that dispatched you. For any other gh command, ' +
-  'write gh and its subcommand as plain words.'
+  'This release was refused: no approval dialog can reach Mike from here, or the ' +
+  'line is spelled so a dialog could not show which release runs. A plain ' +
+  '`gh release create` from a sub-agent or a scheduled task of his interactive ' +
+  'session asks him in the approval dialog. A -p run, the pipeline and an --agent ' +
+  'run cannot reach him, and a gh release command, releases endpoint or GraphQL ' +
+  'Release mutation in any other spelling is refused, as is a gh line whose ' +
+  'command or subcommand is not written as plain text, and a line the shell ' +
+  'reader cannot read whole, because either may spell one. If the work needs a ' +
+  'release, report that it is ready, and leave it to the session that dispatched ' +
+  'you. For any other gh command, write gh and its subcommand as plain words.'
 
 export const ONE_REFUSAL =
-  'This line runs more than one git commit, more than one git push, or more ' +
-  'than one release. Run each as a line of its own. One "Commit it" pick ' +
-  'approves one commit and the push of that commit, so ask first for each ' +
-  'further commit that no request of Mike\'s covers.'
+  'This line runs more than one git commit, git push, merge or release. Run ' +
+  'each as a line of its own. One pick approves one commit, one push or one ' +
+  'merge, so ask first for each further one that no request of Mike\'s covers.'
 
 export const UNREAD_TREE_REFUSAL =
   'This git commit was refused: the gate cannot read which files it leaves ' +
@@ -126,14 +176,17 @@ export const leftOutRefusal =(paths: readonly string[]): string =>
   'run the commit again.'
 
 export const BUNDLE_REFUSAL =
-  'AskUserQuestion was refused: it offers a commit option beside another ' +
-  'question. Ask the commit question alone, in an AskUserQuestion call of its ' +
-  'own, and ask the other questions in a separate call.'
+  'AskUserQuestion was refused: it offers a commit, push or merge option ' +
+  'beside another question. Ask that question alone, in an AskUserQuestion ' +
+  'call of its own, and ask the other questions in a separate call.'
 
-// The label that approves, as the git-commit skill prescribes it.
-const APPROVAL = 'commit it'
+export const NAMED_BUNDLE_REFUSAL =
+  'AskUserQuestion was refused: its commit question also names a push, a merge ' +
+  'or a release, and one pick approves one commit and nothing more. Ask the ' +
+  'commit question alone, with words that name only the commit. Once the ' +
+  'commit has landed, ask about the push, and then about how the branch lands, ' +
+  'each in a question of its own. A release needs Mike\'s typed request.'
 
-// An option that offers a commit: its label leads with the word.
 const COMMIT_OPTION = /^\s*commit\b/i
 
 // Words that stand before the command they run: the shell reader's wrappers
@@ -371,29 +424,502 @@ export function dirOf(steps: readonly string[] | null | undefined, cwd: string, 
   return dir
 }
 
-// Where the approval stands: `none`, a pick not yet used (`commit`), or a
-// commit made under the pick, whose push is still allowed (`push`).
-export type Approval = 'none' | 'commit' | 'push'
+export type PickAction = 'commit' | 'push' | 'merge'
+export type Head = { top: string; ref: string }
+export type Pick = { action: PickAction; heads: readonly Head[]; names?: MergeNames }
+export type Approval = 'none' | Pick
 
-// Why a line that commits or pushes is refused at this approval, or undefined
-// when it may run.
-export function refusalOf(writes: Writes, releases: number, approval: Approval, request: readonly Action[]): string | undefined {
-  if (writes.commits > 1 || writes.pushes > 1 || releases > 1) return ONE_REFUSAL
-  if (releases === 1 && !request.includes('release')) return RELEASE_REFUSAL
-  if (writes.commits === 1 && approval !== 'commit' && !grants(request, 'commit')) return COMMIT_REFUSAL
-  const isPickPush = approval === 'push' || (approval === 'commit' && writes.commits === 1)
-  if (writes.pushes === 1 && !isPickPush && !grants(request, 'push')) return PUSH_REFUSAL
+export type Action = PickAction | 'release'
+
+export type Gated = 'commit' | 'push' | 'merge' | 'release' | 'rewrite' | 'alias' | 'api'
+export type Counts = { writes: Writes; releases: number; merges: number; rewrites: number; aliases: number; apiWrites: number }
+export type Gate = { isOne: boolean; missing: readonly Gated[] }
+
+export const GATED_REFUSALS: Readonly<Record<Gated, string>> = {
+  commit: COMMIT_REFUSAL,
+  push: PUSH_REFUSAL,
+  merge: MERGE_ASK_REFUSAL,
+  release: RELEASE_REFUSAL,
+  rewrite: REWRITE_REFUSAL,
+  alias: ALIAS_REFUSAL,
+  api: API_WRITE_REFUSAL,
+}
+
+const GATED_NAMES: Readonly<Record<Gated, string>> = {
+  commit: 'git commit',
+  push: 'git push',
+  merge: 'merge into the default branch',
+  release: 'release',
+  rewrite: 'history rewrite',
+  alias: 'gh alias set',
+  api: 'GitHub API write to the default branch',
+}
+
+export function gateOf(counts: Counts, approval: Approval, request: readonly Action[]): Gate {
+  const { writes, releases, merges, rewrites, aliases, apiWrites } = counts
+  const picked = approval === 'none' ? undefined : approval.action
+  const missing: Gated[] = []
+  if (releases === 1 && !request.includes('release')) missing.push('release')
+  if (writes.commits === 1 && picked !== 'commit' && !grants(request, 'commit')) missing.push('commit')
+  if (writes.pushes === 1 && picked !== 'push' && !grants(request, 'push')) missing.push('push')
+  if (merges === 1 && picked !== 'merge' && !request.includes('merge')) missing.push('merge')
+  if (rewrites > 0) missing.push('rewrite')
+  if (aliases > 0) missing.push('alias')
+  if (apiWrites > 0) missing.push('api')
+  return { isOne: writes.commits > 1 || writes.pushes > 1 || merges > 1 || releases > 1, missing }
+}
+
+export function refusalOf(counts: Counts, approval: Approval, request: readonly Action[]): string | undefined {
+  const gate = gateOf(counts, approval, request)
+  if (gate.isOne) return ONE_REFUSAL
+  const [first] = gate.missing
+  return first === undefined ? undefined : GATED_REFUSALS[first]
+}
+
+export const APPROVE_LABEL = 'Yes, run it'
+export const DECLINE_LABEL = 'No'
+
+const namesOfGated = (missing: readonly Gated[]): string => missing.map(gated => GATED_NAMES[gated]).join(' and ')
+
+const SHOWN_ESCAPES: Readonly<Record<string, string>> = { '\n': '\\n', '\r': '\\r', '\t': '\\t', '`': '\\`', '\\': '\\\\' }
+
+const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Zs}\u034f\u115f\u1160\u180b-\u180d\u180f\u2800\u3164\ufe00-\ufe0f\uffa0\u{e0100}-\u{e01ef}`\\]/gu
+
+const codeOf = (char: string): string => {
+  const point = char.codePointAt(0) ?? 0
+  return point > 0xffff ? `\\u{${point.toString(16)}}` : `\\u${point.toString(16).padStart(4, '0')}`
+}
+
+export const shownOf = (text: string): string => text.replace(HIDDEN, char => (char === ' ' ? char : (SHOWN_ESCAPES[char] ?? codeOf(char))))
+
+export type AskFacts = { command: string; asker?: string; repo?: string; branch?: string; message?: string; files?: readonly string[] }
+
+export function askTextOf(missing: readonly Gated[], facts: AskFacts): string {
+  const repo = facts.repo === undefined ? 'a repository the gate cannot read' : shownOf(facts.repo)
+  const branch = facts.branch === undefined ? 'a branch the gate cannot read' : shownOf(facts.branch.replace(/^refs\/heads\//, ''))
+  const parts = [`Asked by ${facts.asker ?? 'a lane the gate cannot name'}. Approve this ${namesOfGated(missing)} in ${repo}, on ${branch}: \`${shownOf(facts.command)}\`.`]
+  if (facts.message !== undefined) parts.push(`The message is ${shownOf(facts.message)}.`)
+  if (facts.files !== undefined) {
+    const files = facts.files.map(shownOf)
+    parts.push(files.length === 0 ? 'The tree holds no files to commit.' : `The tree holds ${files.length} file${files.length === 1 ? '' : 's'} to commit: ${files.join(', ')}.`)
+  }
+  parts.push('Run it?')
+  return parts.join(' ')
+}
+
+export const ASK_TIMEOUT_MS = 10 * 60 * 1000
+
+export const ASK_TIMEOUT_NOTICE = 'Commit gate: a dialog went unanswered for ten minutes, so it counted as no.'
+
+const ASKERS: Readonly<Record<string, string>> = {
+  composer: 'your own turn',
+  bridge: 'your own turn, through Remote Control',
+  'task-notification': 'a background task notice in your turn',
+  peer: 'a peer session',
+  'peer-send-message': 'a peer session',
+  channel: 'a channel',
+  plugin: 'a plugin',
+  sdk: 'the SDK',
+  'projects-relay': 'a projects relay',
+}
+
+export function askerOf(agentId: string | undefined, originKind: string | undefined, isScheduled: boolean): string {
+  if (agentId !== undefined) return 'a sub-agent'
+  if (isScheduled || originKind === 'scheduled-trigger') return 'a scheduled task'
+  return ASKERS[originKind ?? ''] ?? 'a turn the gate cannot name'
+}
+
+export const declinedRefusal = (missing: readonly Gated[]): string =>
+  `This ${namesOfGated(missing)} was refused: Mike answered no in the approval dialog, or closed it. ` +
+  'Do not run it again, and do not ask again, unless he brings it up.'
+
+export function messageOf(args: readonly string[] | null): string | undefined {
+  if (args === null) return undefined
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] ?? ''
+    if (arg === '-m' || arg === '--message') return JSON.stringify(args[i + 1] ?? '')
+    if (arg.startsWith('--message=')) return JSON.stringify(arg.slice('--message='.length))
+    if (/^-[a-z]*m./.test(arg) && !arg.startsWith('--')) return JSON.stringify(arg.slice(arg.indexOf('m') + 1))
+    if (arg === '-F' || arg === '--file') return `the text of ${args[i + 1] ?? 'a file'}`
+    if (arg.startsWith('--file=')) return `the text of ${arg.slice('--file='.length)}`
+  }
   return undefined
 }
 
-export type Action = 'commit' | 'push' | 'release'
+export function filesOf(status: string): string[] {
+  const fields = status.split('\0')
+  const paths: string[] = []
+  for (let i = 0; i < fields.length; i++) {
+    const entry = fields[i] as string
+    if (entry.length < 4) continue
+    if ('RC'.includes(entry[0] as string) || 'RC'.includes(entry[1] as string)) i++
+    paths.push(entry.slice(3))
+  }
+  return paths
+}
 
 const grants = (request: readonly Action[], action: 'commit' | 'push'): boolean => request.includes(action) || request.includes('release')
 
-export const pickWritesOf = (writes: Writes, request: readonly Action[]): Writes => ({
-  commits: grants(request, 'commit') ? 0 : writes.commits,
-  pushes: grants(request, 'push') ? 0 : writes.pushes,
-})
+export function isPaidByPick(writes: Writes, merges: number, approval: Approval, request: readonly Action[]): boolean {
+  if (approval === 'none') return false
+  if (approval.action === 'commit') return writes.commits === 1 && !grants(request, 'commit')
+  if (approval.action === 'push') return writes.pushes === 1 && !grants(request, 'push')
+  return merges === 1 && !request.includes('merge')
+}
+
+const DETACHED = 'detached at '
+
+export function headsOf(porcelain: string): Head[] {
+  return porcelain.split(/\n\n+/).flatMap(block => {
+    const lines = block.split('\n')
+    const field = (name: string) => lines.find(line => line.startsWith(`${name} `))?.slice(name.length + 1)
+    const top = field('worktree')
+    const ref = refOf(field('branch'), field('HEAD'))
+    return top === undefined || ref === undefined ? [] : [{ top, ref }]
+  })
+}
+
+export const refOf = (branch: string | undefined, sha: string | undefined): string | undefined =>
+  branch ?? (sha === undefined ? undefined : `${DETACHED}${sha}`)
+
+const shownRef = (ref: string | undefined, what: string): string => (ref === undefined ? what : ref.replace(/^refs\/heads\//, ''))
+
+export function bindingRefusalOf(pick: Pick, top: string | undefined, ref: string | undefined): string | undefined {
+  const seen = top === undefined ? undefined : pick.heads.find(head => head.top === top)
+  if (seen !== undefined && ref !== undefined && seen.ref === ref) return undefined
+  return branchRefusal(shownRef(seen?.ref, 'a branch the gate could not read'), shownRef(ref, 'a branch the gate cannot read'))
+}
+
+const SHELL_ALIAS = '!'
+const CONFIGURED = /(^|[^A-Za-z0-9_])GIT_CONFIG\w*=/
+
+export function gitSubOf(st: ShellStatement, line = ''): string | undefined {
+  if (st.name !== 'git' || st.subcommandAt < 0) return undefined
+  if (CONFIGURED.test(line) || st.assignments.some(assignment => /^GIT_CONFIG\w*=/.test(assignment))) return SHELL_ALIAS
+  const sub = (st.args[st.subcommandAt] ?? '').toLowerCase()
+  const globals = st.args.slice(0, st.subcommandAt)
+  for (let i = 0; i < globals.length; i++) {
+    const word = globals[i] ?? ''
+    const pair = word === '-c' ? globals[++i] : word.startsWith('-c') ? word.slice(2) : undefined
+    const alias = pair === undefined ? null : /^alias\.([^=]*)=(.*)$/is.exec(pair)
+    if (alias === null || (alias[1] ?? '').toLowerCase() !== sub) continue
+    const value = (alias[2] ?? '').trim()
+    return value.startsWith(SHELL_ALIAS) ? SHELL_ALIAS : (value.split(/\s+/)[0] ?? '').toLowerCase()
+  }
+  return sub
+}
+
+const restOf = (st: ShellStatement): readonly string[] => st.args.slice(st.subcommandAt + 1)
+
+const positionalsOf = (args: readonly string[], values: ReadonlySet<string>): string[] => {
+  const found: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] ?? ''
+    if (values.has(arg)) i++
+    else if (!arg.startsWith('-')) found.push(arg)
+  }
+  return found
+}
+
+const HEAD_WRITERS: ReadonlySet<string> = new Set(['checkout', 'switch', 'update-ref', 'filter-branch', 'replace', 'bisect', SHELL_ALIAS])
+const SYMREF_VALUES: ReadonlySet<string> = new Set(['-m'])
+const REBASE_VALUES: ReadonlySet<string> = new Set(['--onto', '-s', '--strategy', '-X', '--strategy-option', '-x', '--exec'])
+const UPDATE_REF_VALUES: ReadonlySet<string> = new Set(['-m'])
+const BRANCH_VALUES: ReadonlySet<string> = new Set(['-u', '--set-upstream-to', '-t', '--track'])
+const PUSH_VALUES: ReadonlySet<string> = new Set(['-o', '--push-option', '--repo', '--receive-pack', '--exec'])
+const REWRITE_STOPS: ReadonlySet<string> = new Set(['--abort', '--quit'])
+const BISECT_READS: ReadonlySet<string> = new Set(['log', 'visualize', 'view', 'help', 'terms'])
+
+const isLongFor = (arg: string, full: string): boolean => arg.length >= 3 && arg.startsWith('--') && !arg.includes('=') && full.startsWith(arg)
+const longValuesOf = (rest: readonly string[], values: ReadonlySet<string>): Set<string> => {
+  const longs = [...values].filter(value => value.startsWith('--'))
+  return new Set([...values, ...rest.filter(arg => longs.some(full => isLongFor(arg, full)))])
+}
+const isBranchWrite = (arg: string): boolean => /^-[A-Za-z]*[mMfcC][A-Za-z]*$/.test(arg) || ['--move', '--force', '--copy'].some(full => isLongFor(arg, full))
+
+const refspecsOf = (rest: readonly string[], values: ReadonlySet<string> = new Set()): string[] =>
+  positionalsOf(rest, longValuesOf(rest, values)).filter(arg => arg.includes(':'))
+const destinationOf = (refspec: string): string => refspec.slice(refspec.lastIndexOf(':') + 1).replace(/^\+/, '')
+const isLocalRemote = (remote: string | undefined): boolean => remote === undefined || remote === '.' || /^(?:\/|\.\.?\/|~|file:)/.test(remote)
+const pushRemoteOf = (rest: readonly string[]): string | undefined => {
+  const at = rest.findIndex(arg => arg === '--repo' || isLongFor(arg, '--repo'))
+  const attached = rest.map(arg => /^--rep?o?=(.*)$/.exec(arg)?.[1]).find(value => value !== undefined)
+  if (attached !== undefined) return attached
+  return at === -1 ? positionalsOf(rest, longValuesOf(rest, PUSH_VALUES))[0] : rest[at + 1]
+}
+
+const rebaseNamesBranch = (rest: readonly string[]): boolean => {
+  if (rest.some(arg => REWRITE_STOPS.has(arg))) return false
+  const count = positionalsOf(rest, longValuesOf(rest, REBASE_VALUES)).length
+  const isRoot = rest.some(arg => arg === '--root' || isLongFor(arg, '--root'))
+  return count >= 2 || (count >= 1 && isRoot) || rest.some(arg => isLongFor(arg, '--update-refs'))
+}
+
+function writesHead(st: ShellStatement, sub: string | undefined): boolean {
+  if (sub === undefined) return false
+  const rest = restOf(st)
+  if (sub === 'replace') return !rest.some(arg => arg === '-l' || isLongFor(arg, '--list'))
+  if (sub === 'bisect') return !BISECT_READS.has(rest[0] ?? '')
+  if (HEAD_WRITERS.has(sub)) return true
+  if (sub === 'symbolic-ref') return rest.some(arg => arg === '-d' || isLongFor(arg, '--delete')) || positionalsOf(rest, SYMREF_VALUES).length >= 2
+  if (sub === 'branch') return rest.some(isBranchWrite)
+  if (sub === 'rebase') return rebaseNamesBranch(rest)
+  if (sub === 'fetch' || sub === 'pull') return refspecsOf(rest).length > 0
+  if (sub === 'push') return refspecsOf(rest, PUSH_VALUES).length > 0 && isLocalRemote(pushRemoteOf(rest))
+  return false
+}
+
+const breaksPlace = (st: ShellStatement, sub: string | undefined): boolean => sub !== 'update-ref' && writesHead(st, sub)
+
+const MOVES: ReadonlySet<string> = new Set(['stash', 'reset'])
+
+export function movesHead(line: string): boolean {
+  return parseShell(line).statements.some(st => {
+    const sub = gitSubOf(st, line)
+    if (writesHead(st, sub)) return true
+    return sub !== undefined && MOVES.has(sub) && !(sub === 'stash' && ['list', 'show'].includes(restOf(st)[0] ?? ''))
+  })
+}
+
+const isPlacedLine = (line: string, statements: readonly ShellStatement[]): boolean =>
+  !/(^|[^A-Za-z0-9_])GIT_(DIR|WORK_TREE)=/.test(line) && !statements.some(st => PLACE_WORDS.has(st.name) || breaksPlace(st, gitSubOf(st, line)))
+
+const REWRITES: ReadonlySet<string> = new Set(['cherry-pick', 'revert', 'am', 'rebase', 'update-ref', 'filter-branch', SHELL_ALIAS])
+
+const movesBranch = (rest: readonly string[]): boolean => {
+  const cut = rest.indexOf('--')
+  const targets = (cut === -1 ? rest : rest.slice(0, cut)).filter(arg => !arg.startsWith('-'))
+  return targets.length > 0 && !(targets.length === 1 && targets[0] === 'HEAD')
+}
+
+const isRewrite = (st: ShellStatement, sub: string | undefined): boolean => {
+  if (sub === undefined) return false
+  const rest = restOf(st)
+  if (sub === 'reset') return movesBranch(rest)
+  if (sub === 'commit') return rest.some(arg => /^--am/.test(arg))
+  if (sub === 'replace' || sub === 'fetch' || sub === 'push') return writesHead(st, sub)
+  if (sub === 'branch') return rest.some(isBranchWrite)
+  return REWRITES.has(sub) && !rest.some(arg => REWRITE_STOPS.has(arg))
+}
+
+export type Rewrite = { dir: string | null; refs?: readonly string[] }
+
+const UNPLACED_REWRITES: ReadonlySet<string> = new Set([SHELL_ALIAS, 'filter-branch', 'replace'])
+
+export function rewritesAt(line: string): Rewrite[] {
+  const parse = parseShell(line)
+  const isPlaced = isPlacedLine(line, parse.statements)
+  return parse.statements
+    .filter(st => isRewrite(st, gitSubOf(st, line)))
+    .map(st => {
+      const sub = gitSubOf(st, line)
+      const rest = restOf(st)
+      const placed = sub === 'branch' || sub === 'fetch' || sub === 'push' ? isPlacedLine(line, parse.statements.filter(other => other !== st)) : isPlaced
+      const dir = UNPLACED_REWRITES.has(sub ?? '') || (sub === 'rebase' && rebaseNamesBranch(rest)) ? null : mergeDirOf(st, placed)
+      if (sub === 'update-ref') return { dir, refs: [rest.includes('--stdin') ? '' : (positionalsOf(rest, UPDATE_REF_VALUES)[0] ?? '')] }
+      if (sub === 'fetch') return { dir, refs: refspecsOf(rest).map(destinationOf) }
+      if (sub === 'push') return { dir, refs: refspecsOf(rest, PUSH_VALUES).map(destinationOf) }
+      if (sub === 'branch') {
+        const names = positionalsOf(rest, longValuesOf(rest, BRANCH_VALUES))
+        return { dir, refs: names.length === 0 ? [''] : names }
+      }
+      return { dir }
+    })
+}
+
+export const rewritesOf = (line: string): number => rewritesAt(line).length
+
+const defaultNameOf = (originHead: string): string => originHead.replace(/^refs\/remotes\/[^/]+\//, '').toLowerCase()
+
+export const isDefaultRef = (ref: string, originHead: string | undefined): boolean => {
+  if (originHead === undefined) return true
+  const name = defaultNameOf(originHead)
+  const plain = ref.toLowerCase()
+  return plain === '' || plain === 'head' || plain === name || plain === `refs/heads/${name}` || plain === `heads/${name}`
+}
+
+export function aliasSetsOf(line: string): number {
+  return parseShell(line).statements.filter(st => {
+    if (st.name !== 'gh' || st.subcommandAt < 0 || (st.args[st.subcommandAt] ?? '').toLowerCase() !== 'alias') return false
+    return ['set', 'import'].includes((st.args[st.subcommandAt + 1] ?? '').toLowerCase())
+  }).length
+}
+
+export type ApiWrite = { branch: string | null; repo?: string | null | undefined }
+
+const REPO = String.raw`(?:repos\/([^\s/]+\/[^\s/]+)|repositories\/[^\s/]+)`
+const CONTENTS = new RegExp(String.raw`(?:^|\/)${REPO}\/contents(?:[/?]|$)`, 'i')
+const GIT_REFS = new RegExp(String.raw`(?:^|\/)${REPO}\/git\/refs(?:\/([^\s?]*))?(?:\?|$)`, 'i')
+const MERGE_UPSTREAM = new RegExp(String.raw`(?:^|\/)${REPO}\/merge-upstream(?:\?|$)`, 'i')
+const BRANCH_RENAME = new RegExp(String.raw`(?:^|\/)${REPO}\/branches\/([^\s?]+)\/rename(?:\?|$)`, 'i')
+const ANY_REPO = new RegExp(String.raw`(?:^|\/)${REPO}(?:\/|$)`, 'i')
+const REF_MUTATION = /\b(?:createCommitOnBranch|updateRefs?|createRef|deleteRef|mergeBranch)\b/
+const UNREAD_VALUE = /^@|[$`{}%#]|\/$/
+const UNREAD_ENDPOINT = /[%#]|\/\/|(?:^|\/)\.\.?(?:\/|$)/
+const BUILT_BRANCH_ENDPOINT = /[$`].*(?:contents|git\/refs|merge-upstream|branches|merges)|(?:contents|git\/refs|merge-upstream|branches|merges).*[$`]/i
+
+const lastField = (fields: readonly string[], name: string): string | undefined =>
+  [...fields].reverse().map(value => new RegExp(`^${name}=(.*)$`, 's').exec(value)?.[1]).find(value => value !== undefined)
+const readBranch = (branch: string | undefined): string | null => (branch === undefined || branch === '' || UNREAD_VALUE.test(branch) ? null : branch)
+const repoOf = (endpoint: string): string | null | undefined => {
+  const match = ANY_REPO.exec(endpoint)
+  const repo = match?.[1]?.toLowerCase()
+  if (repo === '{owner}/{repo}') return undefined
+  return repo === undefined || /[$`{}%#]/.test(repo) ? null : repo
+}
+
+const expandsAt = (st: ShellStatement, at: number): boolean => {
+  const expanding = expandingOf(st)
+  return expanding === undefined ? /[$`]/.test(st.words[at] ?? '') : expanding.includes(at)
+}
+
+export const hasExpandedField = (st: ShellStatement): boolean => st.words.some((_, at) => at > st.nameAt && expandsAt(st, at))
+
+function apiWriteOf(st: ShellStatement): ApiWrite[] {
+  const api = apiOf(st)
+  const fields = api.fields.map(field => field.value ?? '')
+  const words = [...restOf(st), ...st.heredocs.map(heredoc => heredoc.body)]
+  if (/graphql/i.test(api.endpoint)) return words.some(word => REF_MUTATION.test(word)) || hasExpandedField(st) ? [{ branch: null }] : []
+  const isWriteImplied = fields.length > 0 || api.options.some(option => option.name === '--input')
+  const method = (api.methods.at(-1)?.value ?? (isWriteImplied ? 'POST' : 'GET')).toUpperCase()
+  if (method === 'GET' || method === 'HEAD') return []
+  const repo = repoOf(api.endpoint)
+  const endpoint = api.endpoint.replace(/\{owner\}|\{repo\}/g, 'x')
+  if (UNREAD_ENDPOINT.test(endpoint) || BUILT_BRANCH_ENDPOINT.test(endpoint)) return [{ branch: null, repo }]
+  if (CONTENTS.test(api.endpoint) || MERGE_UPSTREAM.test(api.endpoint)) return [{ branch: readBranch(lastField(fields, 'branch')), repo }]
+  const renamed = BRANCH_RENAME.exec(api.endpoint)
+  if (renamed !== null) return [{ branch: readBranch(renamed[2]), repo }, { branch: readBranch(lastField(fields, 'new_name')), repo }]
+  const refs = GIT_REFS.exec(api.endpoint)
+  if (refs === null) return []
+  const path = refs[2] !== undefined && refs[2] !== '' ? refs[2] : (lastField(fields, 'ref') ?? '').replace(/^refs\//, '')
+  if (/^tags\//i.test(path) && !UNREAD_VALUE.test(path)) return []
+  return [{ branch: readBranch(/^heads\/(.+)$/i.exec(path)?.[1]), repo }]
+}
+
+const SYNC_VALUES: ReadonlySet<string> = new Set(['-b', '--branch', '-s', '--source'])
+
+function repoSyncOf(st: ShellStatement): ApiWrite[] {
+  const rest = restOf(st)
+  if ((rest[0] ?? '').toLowerCase() !== 'sync') return []
+  const at = rest.findIndex(arg => arg === '-b' || arg === '--branch')
+  const attached = rest.map(arg => /^--branch=(.+)$/.exec(arg)?.[1]).find(value => value !== undefined)
+  const isElsewhere = rest.some(arg => /^(?:-R|--repo)/.test(arg)) || positionalsOf(rest.slice(1), SYNC_VALUES).length > 0
+  return [{ branch: readBranch(at === -1 ? attached : rest[at + 1]), repo: isElsewhere ? null : undefined }]
+}
+
+export function apiWritesOf(line: string): ApiWrite[] {
+  return parseShell(line).statements.flatMap(st => {
+    if (st.name !== 'gh' || st.subcommandAt < 0) return []
+    const group = (st.args[st.subcommandAt] ?? '').toLowerCase()
+    if (group === 'api') return apiWriteOf(st)
+    return group === 'repo' ? repoSyncOf(st) : []
+  })
+}
+
+export const originRepoOf = (url: string | undefined): string | undefined =>
+  url === undefined || !/github\.com[:/]/i.test(url) ? undefined : /[:/]([^/:\s]+\/[^/\s]+?)(?:\.git)?\/?$/.exec(url.trim())?.[1]?.toLowerCase()
+
+export const isOtherRepo = (repo: string | null | undefined, origin: string | undefined): boolean =>
+  repo !== undefined && (repo === null || origin === undefined || repo !== origin)
+
+export type MergeTarget = { pr?: string; refs: readonly string[]; bases?: readonly string[] }
+export type Merges = { local: readonly (string | null)[]; pr: number; targets: readonly MergeTarget[] }
+
+const MERGE_STOPS: ReadonlySet<string> = new Set(['--abort', '--quit'])
+const PULL_MERGE = /pulls\/([^\s/]+)\/merge(?![A-Za-z0-9_/-])/i
+const BRANCH_MERGE = /(?:^|\/)repos\/\S+\/merges(?:\?|$)/i
+const GH_MERGE_VALUES: ReadonlySet<string> = new Set(['-b', '--body', '-F', '--body-file', '-t', '--subject', '-A', '--author-email', '--match-head-commit', '-R', '--repo'])
+const GIT_MERGE_VALUES: ReadonlySet<string> = new Set(['-m', '-F', '--file', '-s', '--strategy', '-X', '--strategy-option', '--into-name', '--cleanup'])
+const REMOTE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+const REMOTE_CHANGES: ReadonlySet<string> = new Set(['set-url', 'add', 'rename'])
+
+const fieldOf = (words: readonly string[], name: string): string | undefined =>
+  [...words].reverse().map(word => new RegExp(`^(?:-[fF]|--(?:raw-)?field=)?${name}=(.+)$`).exec(word)?.[1]).find(value => value !== undefined)
+
+const prTargetOf = (st: ShellStatement): MergeTarget | undefined => {
+  if (st.name !== 'gh' || st.subcommandAt < 0) return undefined
+  const sub = (st.args[st.subcommandAt] ?? '').toLowerCase()
+  const rest = restOf(st)
+  if (sub === 'pr') {
+    const at = rest.findIndex(arg => arg.toLowerCase() === 'merge')
+    if (at === -1) return undefined
+    const [first] = positionalsOf(rest.slice(at + 1), GH_MERGE_VALUES)
+    const pr = first === undefined ? undefined : (/^#?(\d+)$/.exec(first) ?? /\/pull\/(\d+)/.exec(first))?.[1]
+    return pr !== undefined ? { pr, refs: [] } : { refs: first === undefined ? [] : [first] }
+  }
+  if (sub !== 'api') return undefined
+  const words = [...rest, ...st.heredocs.map(heredoc => heredoc.body)]
+  const pull = words.map(word => PULL_MERGE.exec(word)?.[1]).find(pr => pr !== undefined)
+  if (pull !== undefined) return { pr: pull, refs: [] }
+  if (rest.some(word => BRANCH_MERGE.test(word))) {
+    const head = fieldOf(rest, 'head')
+    const base = fieldOf(rest, 'base')
+    return { refs: head === undefined ? [] : [head], bases: base === undefined ? [] : [base] }
+  }
+  return words.some(word => MERGE_MUTATION.test(word)) ? { refs: [] } : undefined
+}
+
+const localTargetOf = (st: ShellStatement, sub: string | undefined, isRemoteChanged: boolean): MergeTarget => {
+  const found = positionalsOf(restOf(st), GIT_MERGE_VALUES)
+  if (sub !== 'pull') return { refs: sub === SHELL_ALIAS ? [] : found }
+  const [remote] = found
+  return { refs: isRemoteChanged || remote === undefined || !REMOTE_NAME.test(remote) ? [] : found.slice(1) }
+}
+
+const mergeDirOf = (st: ShellStatement, isPlaced: boolean): string | null => {
+  const globals = st.args.slice(0, st.subcommandAt)
+  if (!isPlaced || globals.some(word => GIT_PLACE_OPTION.test(word))) return null
+  const at = globals.lastIndexOf('-C')
+  if (at === -1) return ''
+  const dir = globals[at + 1] ?? ''
+  return dir.startsWith('/') && !/[$`]/.test(dir) && !hasDotStep(dir) ? dir : null
+}
+
+export function mergesOf(line: string): Merges {
+  const parse = parseShell(line)
+  const isPlaced = isPlacedLine(line, parse.statements)
+  const isRemoteChanged = parse.statements.some(st => gitSubOf(st, line) === 'remote' && REMOTE_CHANGES.has(restOf(st)[0] ?? ''))
+  const merging = parse.statements
+    .filter(st => ['merge', 'pull', SHELL_ALIAS].includes(gitSubOf(st, line) ?? ''))
+    .filter(st => !restOf(st).some(arg => MERGE_STOPS.has(arg)))
+  const prs = parse.statements.map(prTargetOf).filter((target): target is MergeTarget => target !== undefined)
+  const hidden = prs.length === 0 && findOps(parse, line).ops.has('merge') ? [{ refs: [] }] : []
+  return {
+    local: merging.map(st => mergeDirOf(st, isPlaced)),
+    pr: prs.length + hidden.length,
+    targets: [...merging.map(st => localTargetOf(st, gitSubOf(st, line), isRemoteChanged)), ...prs, ...hidden],
+  }
+}
+
+export const isDefaultBranch = (branch: string | undefined, originHead: string | undefined): boolean => {
+  if (branch === undefined || originHead === undefined) return true
+  return branch.replace(/^refs\/heads\//, '').toLowerCase() === defaultNameOf(originHead)
+}
+
+export type MergeNames = { prs: readonly string[]; words: readonly string[]; bases?: readonly string[] }
+
+const DESTINATION = /\b(?:into|onto|to|on|in)\s+[`"']?([A-Za-z0-9._/-]+)/gi
+
+export function mergeNamesOf(questions: unknown): MergeNames {
+  const text = Array.isArray(questions) ? (questions as Question[]).map(question => `${textOf(question?.question)} ${textOf(question?.header)}`).join(' ') : ''
+  const prs = [...text.matchAll(/(?:#|\b(?:pr|pull request|pull)\s*#?)(\d+)\b/gi)].map(match => match[1] as string)
+  const bases = [...text.matchAll(DESTINATION)].map(match => (match[1] as string).replace(/[.]+$/, '').toLowerCase())
+  const subject = text.replace(DESTINATION, ' ')
+  const words = (subject.match(/[A-Za-z0-9._/-]+/g) ?? []).map(word => word.replace(/[.]+$/, '').toLowerCase())
+  return { prs: [...new Set(prs)], words: [...new Set(words)], bases: [...new Set(bases)] }
+}
+
+const bare = (ref: string): string => ref.toLowerCase().replace(/^(?:origin|upstream)\//, '')
+
+const isNamed = (target: MergeTarget, names: MergeNames): boolean => {
+  if (target.pr !== undefined) return names.prs.includes(target.pr)
+  if (target.bases !== undefined && !(target.bases.length > 0 && target.bases.every(base => (names.bases ?? []).includes(bare(base))))) return false
+  return target.refs.length > 0 && target.refs.every(ref => names.words.includes(bare(ref)))
+}
+
+export function mergeTargetRefusalOf(names: MergeNames | undefined, targets: readonly MergeTarget[]): string | undefined {
+  return names !== undefined && targets.length > 0 && targets.every(target => isNamed(target, names)) ? undefined : MERGE_TARGET_REFUSAL
+}
 
 const RELEASE_API = /(^|\/)releases(\/|$|\?)/
 const API_WRITE = /^(-x|--method|-f|--field|--raw-field|--input)(=|$)|^-[xf]\S/
@@ -582,6 +1108,13 @@ export const UNREAD_LINE_REFUSAL =
   'does not decode, a substitution left open, or scripts nested too deep, so no guard can tell what it runs. ' +
   'Write the line out plainly, with every escape, quote and substitution closed, and run it again.'
 
+export function isAskableRelease(line: string): boolean {
+  const parse = parseShell(line)
+  if (parse.unknowns.length > 0 || isPartlyRead(parse)) return false
+  const risky = parse.statements.filter(st => isAgentRisk(st, line) || isPlainRelease(st, line))
+  return risky.length > 0 && risky.every(st => callOf(st)?.action === 'release')
+}
+
 export function agentReleaseRefusalOf(line: string): string | undefined {
   const parse = parseShell(line)
   if (releasesOf(line) > 0 || parse.statements.some(st => isAgentRisk(st, line))) return AGENT_RELEASE_REFUSAL
@@ -596,20 +1129,28 @@ export function agentUnreadRefusalOf(line: string): string | undefined {
 const LEAD_WORDS: ReadonlySet<string> = new Set([
   'please', 'pls', 'plz', 'ok', 'okay', 'yes', 'yep', 'yeah', 'sure', 'great', 'good', 'cool', 'nice', 'perfect',
   'awesome', 'excellent', 'thanks', 'thank', 'you', 'alright', 'all', 'right', 'now', 'so', 'and', 'then', 'also',
-  'just', 'go', 'ahead', 'lgtm', 'looks', 'fine', 'done', 'finally', 'next',
+  'just', 'go', 'ahead', 'lgtm', 'looks', 'fine', 'done', 'finally', 'next', "let's", 'lets', 'work', 'well',
 ])
 const OBJECT_STARTS: ReadonlySet<string> = new Set(['it', 'this', 'that', 'these', 'those', 'them', 'everything', 'all', 'origin', 'main', 'master', 'again'])
+const WORK_OBJECTS: ReadonlySet<string> = new Set([
+  'the', 'my', 'our', 'your', 'its', 'both', 'what', 'changes', 'change', 'work', 'fix', 'fixes', 'files', 'tree', 'diff', 'code', 'edits',
+  'branch', 'pr', 'up', 'locally', 'with', 'here', 'now', 'too', 'staged', 'current', 'latest', 'rest', 'please',
+])
+const VERB_OBJECTS: Readonly<Record<string, ReadonlySet<string>>> = { push: new Set(['to']), merge: new Set(['into', 'to']) }
+
+const isObject = (verb: Action, after: string): boolean =>
+  OBJECT_STARTS.has(after) || (verb !== 'release' && WORK_OBJECTS.has(after)) || (VERB_OBJECTS[verb]?.has(after) ?? false)
 const MAX_REQUEST_LINES = 5
 const MAX_REQUEST_WORDS = 80
 const CONNECTORS: ReadonlySet<string> = new Set(['and', 'then', '&', '+', 'also', 'finally', 'please', 'now'])
 const RELEASE_VERBS: ReadonlySet<string> = new Set(['cut', 'create', 'make', 'do', 'publish', 'ship', 'tag'])
-const ACTION_WORD = /\b(commit(s|ted|ting)?|push(es|ed|ing)?|releas(e|es|ed|ing))\b/i
+const ACTION_WORD = /\b(commit(s|ted|ting)?|push(es|ed|ing)?|merg(e|es|ed|ing)|releas(e|es|ed|ing))\b/i
 const VETO_WORD =
-  /\b(not|no|never|nothing|don't|dont|do not|doesn't|didn't|won't|wouldn't|shouldn't|can't|cannot|without|later|yet|after|afterwards|before|once|when|whenever|until|till|unless|if|whether|should|would|could|might|may|maybe|perhaps|wait|hold|tomorrow|soon|eventually|instead)\b/i
+  /\b(not|no|never|nothing|don't|dont|do not|doesn't|didn't|won't|wouldn't|shouldn't|can't|cannot|without|later|yet|after|afterwards|before|once|when|whenever|until|till|unless|if|whether|should|would|could|might|may|maybe|perhaps|wait|hold|tomorrow|soon|eventually|instead|as long as|so long as|assuming|assume|provided|providing|given|pending|in case|supposing|depending|barring|isn't|isnt|hasn't|hasnt|haven't|aren't|wasn't|weren't|needn't|mustn't|must not|need not|only)\b/i
 
 const verbAt = (words: readonly string[], i: number): [Action, number] | undefined => {
   const word = words[i]
-  if (word === 'commit' || word === 'push' || word === 'release') return [word, i + 1]
+  if (word === 'commit' || word === 'push' || word === 'merge' || word === 'release') return [word, i + 1]
   if (!RELEASE_VERBS.has(word ?? '')) return undefined
   let k = i + 1
   while (['a', 'the', 'new'].includes(words[k] ?? '')) k++
@@ -622,7 +1163,7 @@ const actionsOf = (words: readonly string[]): Action[] =>
     const before = words.slice(0, i)
     if (verb === undefined || !(before.every(lead => LEAD_WORDS.has(lead)) || CONNECTORS.has(words[i - 1] ?? ''))) return []
     const after = words[verb[1]]
-    return after === undefined || CONNECTORS.has(after) || OBJECT_STARTS.has(after) || /^v?\d/.test(after) ? [verb[0]] : []
+    return after === undefined || CONNECTORS.has(after) || isObject(verb[0], after) || /^v?\d/.test(after) ? [verb[0]] : []
   })
 
 export function requestedOf(prompt: string): Action[] {
@@ -645,7 +1186,7 @@ export function requestedOf(prompt: string): Action[] {
   return [...actions]
 }
 
-export type RequestedCall = { action: 'commit'; dir?: string } | { action: 'push'; dir?: string; remote?: string; ref?: string } | { action: 'release' }
+export type RequestedCall = { action: 'commit'; dir?: string } | { action: 'push'; dir?: string; remote?: string; ref?: string } | { action: 'release' } | { action: 'merge' }
 
 const PLAIN_COMMIT_VALUES: ReadonlySet<string> = new Set(['-m', '--message', '-F', '--file', '-am'])
 const PLAIN_COMMIT_FLAGS: ReadonlySet<string> = new Set(['-a', '--all', '-q', '--quiet'])
@@ -672,6 +1213,11 @@ const gitDirOf = (globals: readonly string[]): string | undefined | null => {
 
 const hasDotStep = (path: string): boolean => path.split('/').some(part => part === '.' || part === '..')
 
+const PR_MERGE_FLAGS = /^(--(merge|squash|rebase|delete-branch)|-[msrd])$/
+
+const isPlainPrMerge = (args: readonly string[]): boolean =>
+  args.filter(arg => /^\d+$/.test(arg)).length <= 1 && args.every(arg => /^\d+$/.test(arg) || PR_MERGE_FLAGS.test(arg))
+
 const callOf = (st: ShellStatement): RequestedCall | undefined => {
   const isPlain =
     st.depth === 0 && st.nameAt === 0 && st.isPlaced && st.escaped.length === 0 && st.redirects.length === 0 && st.heredocs.length === 0 && !st.words.some(isExpanded)
@@ -679,6 +1225,7 @@ const callOf = (st: ShellStatement): RequestedCall | undefined => {
   if (st.name === 'gh') {
     const [group, verb] = st.args
     const isOtherRepo = st.args.some(arg => /^(-R|--repo)/.test(arg))
+    if (st.subcommandAt === 0 && group === 'pr' && verb === 'merge') return !isOtherRepo && isPlainPrMerge(st.args.slice(2)) ? { action: 'merge' } : undefined
     return st.subcommandAt === 0 && group === 'release' && verb === 'create' && !isOtherRepo && isPlainReleaseCreate(st) ? { action: 'release' } : undefined
   }
   if (st.name !== 'git' || st.subcommandAt < 0) return undefined
@@ -699,7 +1246,7 @@ export function requestedCallsOf(line: string, request: readonly Action[]): Requ
   if (parse.unknowns.length > 0 || parse.statements.length === 0) return undefined
   const calls = parse.statements.map(callOf)
   const isNamed = (call: RequestedCall | undefined): call is RequestedCall =>
-    call !== undefined && (call.action === 'release' ? request.includes('release') : grants(request, call.action))
+    call !== undefined && (call.action === 'release' || call.action === 'merge' ? request.includes(call.action) : grants(request, call.action))
   return calls.every(isNamed) ? calls : undefined
 }
 
@@ -774,54 +1321,59 @@ export function unnamedOf(paths: readonly string[], shown: string): string[] {
 // target (@{push}) points at. A field is undefined when git could not say.
 export type Refs = { head?: string; pushed?: string }
 
-// Where the approval stands once an allowed line has run. Neither the exit
-// status (`| tail`, `; echo`, `|| true` and a background run hide it) nor the
-// refs (the commit may land in a repository the reader did not read) is
-// enough alone, so the pick is kept only when both say the commit failed: HEAD
-// did not move and the line reported an error. Otherwise the commit counts as
-// landed, and its push is left, or used up too when the push target now holds
-// HEAD. A push is done when the push target holds HEAD. What cannot be seen
-// (no refs, a background run, a directory the reader could not follow, no
-// push target) is taken as done, so a doubt uses the approval up and never
-// stretches it.
-export function approvalAfter(writes: Writes, before: Refs | undefined, after: Refs | undefined, isError: boolean): Approval {
+export function approvalAfter(pick: Pick, before: Refs | undefined, after: Refs | undefined, isError: boolean): Approval {
   const isSeen = before?.head !== undefined && after?.head !== undefined
-  if (writes.commits === 1 && isSeen && isError && after?.head === before?.head) return 'commit'
-  if (writes.pushes === 0) return 'push'
-  const isPushed = !isSeen || after?.pushed === undefined || after.pushed === after.head
-  return isPushed ? 'none' : 'push'
+  if (pick.action === 'commit') return isSeen && isError && after?.head === before?.head ? pick : 'none'
+  if (pick.action === 'push') return isSeen && after?.pushed !== undefined && after.pushed !== after.head ? pick : 'none'
+  return isError ? pick : 'none'
 }
 
-type Question = { question?: unknown; options?: readonly { label?: unknown }[] }
+type Question = { question?: unknown; header?: unknown; options?: readonly { label?: unknown }[] }
 
-// Whether one AskUserQuestion call offers a commit option beside another
-// question.
-export function bundlesCommit(questions: unknown): boolean {
-  if (!Array.isArray(questions) || questions.length < 2) return false
-  return (questions as Question[]).some(
-    question => Array.isArray(question?.options) && question.options.some(option => typeof option?.label === 'string' && COMMIT_OPTION.test(option.label)),
-  )
+const NAMED_ACTION = /^(push(es|ed|ing)?|merg(e|es|ed|ing)|releas(e|es|ed|ing))$/
+
+const textOf = (value: unknown): string => (typeof value === 'string' ? value : '')
+
+const labelsOf = (question: Question): string[] =>
+  Array.isArray(question?.options) ? question.options.map(option => option?.label).filter((label): label is string => typeof label === 'string') : []
+
+export function namedActionsOf(question: Question): Set<'push' | 'merge' | 'release'> {
+  const text = `${textOf(question?.question)} ${textOf(question?.header)}`
+    .replace(/```[\s\S]*?(```|$)/g, ' ')
+    .replace(/"[^"\n]*"|“[^”\n]*”|`[^`\n]*`/g, ' ')
+    .toLowerCase()
+  const words = (text.match(/[a-z0-9_./-]+/g) ?? []).map(word => word.replace(/\.+$/, '')).filter(word => NAMED_ACTION.test(word))
+  return new Set(words.map(word => (word.startsWith('push') ? 'push' : word.startsWith('merg') ? 'merge' : 'release')))
 }
 
-// Whether a resolved AskUserQuestion dialog carries Mike's "Commit it" pick.
-// `questions` is the call's own input. The answer must be, character for
-// character, the label of a "Commit it" option of the question it answers.
-// Text typed under Other comes back as the answer too, so this is how a pick
-// is told from typing: "commit it" typed in any other spelling is refused. Text
-// typed to match the label exactly cannot be told from a pick. A dialog that
-// resolved while Mike was away (afkTimeoutMs), and a reply typed instead of
-// choosing (response), carry no pick.
-export function isCommitPick(questions: unknown, result: unknown): boolean {
-  if (!Array.isArray(questions) || typeof result !== 'object' || result === null) return false
+const isCommitQuestion = (question: Question): boolean => labelsOf(question).some(label => COMMIT_OPTION.test(label) || requestedOf(label).includes('commit'))
+
+export function approvalOf(question: Question, label: string): PickAction | undefined {
+  const actions = requestedOf(label)
+  if (isCommitQuestion(question)) return actions.includes('commit') ? 'commit' : undefined
+  const named = namedActionsOf(question)
+  if (actions.includes('merge') && named.has('merge')) return 'merge'
+  return actions.includes('push') && named.has('push') ? 'push' : undefined
+}
+
+const offersApproval = (question: Question): boolean =>
+  isCommitQuestion(question) || labelsOf(question).some(label => approvalOf(question, label) !== undefined)
+
+export function bundleRefusalOf(questions: unknown): string | undefined {
+  if (!Array.isArray(questions)) return undefined
+  if (questions.length > 1 && (questions as Question[]).some(offersApproval)) return BUNDLE_REFUSAL
+  return (questions as Question[]).some(question => isCommitQuestion(question) && namedActionsOf(question).size > 0) ? NAMED_BUNDLE_REFUSAL : undefined
+}
+
+export function pickOf(questions: unknown, result: unknown): PickAction | undefined {
+  if (!Array.isArray(questions) || typeof result !== 'object' || result === null) return undefined
   const { answers, afkTimeoutMs, response } = result as { answers?: unknown; afkTimeoutMs?: unknown; response?: unknown }
-  if (afkTimeoutMs !== undefined || (typeof response === 'string' && response.trim() !== '')) return false
-  if (typeof answers !== 'object' || answers === null) return false
-  return (questions as Question[]).some(question => {
+  if (afkTimeoutMs !== undefined || (typeof response === 'string' && response.trim() !== '')) return undefined
+  if (typeof answers !== 'object' || answers === null) return undefined
+  for (const question of questions as Question[]) {
     const answer = typeof question?.question === 'string' ? (answers as Record<string, unknown>)[question.question] : undefined
-    return (
-      typeof answer === 'string' &&
-      Array.isArray(question.options) &&
-      question.options.some(option => option?.label === answer && answer.trim().toLowerCase() === APPROVAL)
-    )
-  })
+    const action = typeof answer === 'string' && labelsOf(question).includes(answer) ? approvalOf(question, answer) : undefined
+    if (action !== undefined) return action
+  }
+  return undefined
 }

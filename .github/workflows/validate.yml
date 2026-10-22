@@ -90,7 +90,15 @@ jobs:
             bash -n "$f"
           done
 
+      - name: Check out workbench-dev-team for its git-commit references
+        uses: actions/checkout@v6
+        with:
+          repository: mike-bronner/workbench-dev-team
+          path: .dev-team
+
       - name: hook test suite (offline; fake-server fixture, no real server)
+        env:
+          WORKBENCH_DEV_TEAM_DIR: ${{ github.workspace }}/.dev-team
         run: |
           set -euo pipefail
           fail=0

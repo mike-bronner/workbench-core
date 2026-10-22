@@ -14,8 +14,6 @@
 //                   rows, learnings due for compaction, warmup notices
 //   commands        /orchestrator, /memory-status, /notices and
 //                   /process-pending-summaries, answered here with no model turn
-//   commit approval in Mike's session, one "Commit it" pick in AskUserQuestion,
-//                   asked alone, allows one commit and the push of that commit
 //   vault writes    the memory MCP's write, edit and append get a vault-relative
 //                   path, valid frontmatter on a new note, and path links
 //   deferred start  the warmup's pending-summary drain and Chat-skill scan,
@@ -99,31 +97,65 @@ import {
   recordOf,
   withChurn,
 } from './mods/cache-meter'
-import type { Action, Commit, Refs, RequestedCall } from './mods/commit-approval'
+import type { Action, ApiWrite, AskFacts, Commit, Gated, Head, Pick, Refs, RequestedCall } from './mods/commit-approval'
 import {
-  BUNDLE_REFUSAL,
+  AGENT_MERGE_REFUSAL,
+  AGENT_RELEASE_REFUSAL,
+  ALIAS_REFUSAL,
+  API_WRITE_REFUSAL,
+  APPROVE_LABEL,
+  ASK_TIMEOUT_MS,
+  ASK_TIMEOUT_NOTICE,
+  DECLINE_LABEL,
+  GATED_REFUSALS,
+  MOVE_REFUSAL,
+  ONE_REFUSAL,
   PATHSPEC_REFUSAL,
   RELEASE_REFUSAL,
+  REWRITE_REFUSAL,
   SHARED_LINE_REFUSAL,
   UNREAD_TREE_REFUSAL,
   agentReleaseRefusalOf,
   agentUnreadRefusalOf,
+  aliasSetsOf,
+  askerOf,
+  apiWritesOf,
   approvalAfter,
-  bundlesCommit,
+  askTextOf,
+  bindingRefusalOf,
+  declinedRefusal,
+  filesOf,
+  gateOf,
+  messageOf,
+  isAskableRelease,
+  isOtherRepo,
+  originRepoOf,
+  isDefaultRef,
+  rewritesAt,
+  rewritesOf,
+  bundleRefusalOf,
   dirOf,
-  isCommitPick,
+  headsOf,
+  isDefaultBranch,
+  isPaidByPick,
+  mergeNamesOf,
+  mergeTargetRefusalOf,
+  mergesOf,
+  movesHead,
+  pickOf,
+  refOf,
   changesIndexBeside,
   requestedCallsOf,
   leftOutOf,
   leftOutRefusal,
-  pickWritesOf,
   readLine,
-  refusalOf,
   releaseCountOf,
   requestedOf,
   shapeOf,
   unnamedOf,
 } from './mods/commit-approval'
+import { FAILED_REFUSAL, commitVerdict } from './mods/commit-guard'
+import { subjectVerdict } from './mods/commit-subject'
 import { isAttendedPrompt, isAttendedSession, isScheduledFire, laneOf } from './mods/lane'
 import { bareSetRefusal, repairedNotice, runsGit } from './mods/false-bare'
 import { parseShell } from './mods/shell'
@@ -226,13 +258,13 @@ const turnAttended = atom({ plugin: 'workbench-core', key: 'turnAttended' } as c
 // Whether the question rule already re-prompted in the current turn.
 const reprompted = atom({ plugin: 'workbench-core', key: 'reprompted' } as const, false)
 const delegationReminded = atom({ plugin: 'workbench-core', key: 'delegationReminded' } as const, '')
-// Where Mike's last "Commit it" pick stands: unused, used by its commit with
-// the push left, or used up. Any prompt ends an unused pick, and Mike's own
-// prompt ends the push left too.
 const commitApproval = atom({ plugin: 'workbench-core', key: 'commitApproval' } as const, 'none')
 const turnRequest = atom({ plugin: 'workbench-core', key: 'turnRequest' } as const, [])
+const askedLines = atom({ plugin: 'workbench-core', key: 'askedLines' } as const, {})
+const withoutKey = (lines: Readonly<Record<string, string>>, key: string): Record<string, string> => Object.fromEntries(Object.entries(lines).filter(([id]) => id !== key))
 // Whether a schedule opened the current turn, so a commit in it is not gated.
 const turnScheduled = atom({ plugin: 'workbench-core', key: 'turnScheduled' } as const, false)
+const turnOrigin = atom({ plugin: 'workbench-core', key: 'turnOrigin' } as const, '')
 const turnForwards = atom({ plugin: 'workbench-core', key: 'turnForwards' } as const, false)
 const statusLine = atom({ plugin: 'workbench-core', key: 'statusLine' } as const, null)
 const learnings = atom({ plugin: 'workbench-core', key: 'learnings' } as const, {})
@@ -547,9 +579,31 @@ async function isAgentLane($: EngineInterface, agentId: string | undefined, sess
 
 async function releaseRefusalOf($: EngineInterface, line: string, agentId: string | undefined, sessionAttended: boolean | undefined): Promise<string | undefined> {
   const agentRelease = agentReleaseRefusalOf(line)
-  if (agentRelease !== undefined && (await isAgentLane($, agentId, sessionAttended))) return agentRelease
-  if (releaseCountOf(line) === 0 || !(await isCommitGated($, sessionAttended, agentId))) return undefined
-  return (await read($, turnRequest)).includes('release') ? undefined : RELEASE_REFUSAL
+  if (agentRelease === undefined || !(await isAgentLane($, agentId, sessionAttended))) return undefined
+  return sessionAttended === true && isAskableRelease(line) ? undefined : agentRelease
+}
+
+async function isApprovedInDialog($: EngineInterface, missing: readonly Gated[], command: string, dir: string, commit: Commit | undefined, agentId: string | undefined): Promise<boolean> {
+  const asker = askerOf(agentId, await read($, turnOrigin), false)
+  const facts = { ...(await askFactsOf($, command, dir, commit)), asker }
+  let timer: { cancel: () => void } | undefined
+  const timeout = new Promise<undefined>(resolve => {
+    timer = $.clock.after(ASK_TIMEOUT_MS, () => {
+      $.ui.toast(ASK_TIMEOUT_NOTICE)
+      resolve(undefined)
+    })
+  })
+  const asked = $.ui.ask(askTextOf(missing, facts), { options: [APPROVE_LABEL, DECLINE_LABEL], header: 'Approve' }).catch(() => undefined)
+  const answer = await Promise.race([asked, timeout])
+  timer?.cancel()
+  return answer === APPROVE_LABEL
+}
+
+async function commitGuardOf($: EngineInterface, command: unknown, agentId: string | undefined, sessionAttended: boolean | undefined): Promise<string | undefined> {
+  const line = typeof command === 'string' ? command : ''
+  const lane = await $.workbench.callerLane(agentId === undefined ? {} : { agentId }).catch(() => undefined)
+  const isUnattended = sessionAttended !== true || !(await read($, turnAttended))
+  return commitVerdict(parseShell(line), line, { lane, isUnattended })?.deny
 }
 
 async function unreadRefusalOf($: EngineInterface, line: string, agentId: string | undefined, sessionAttended: boolean | undefined): Promise<string | undefined> {
@@ -565,6 +619,63 @@ async function refsOf($: EngineInterface, dir: string): Promise<Refs> {
       .run(['git', '-C', dir, 'rev-parse', '--verify', '--quiet', name], { timeoutMs: 10_000 })
       .then(({ exitCode, stdout }) => (exitCode === 0 && stdout.trim() !== '' ? stdout.trim() : undefined), () => undefined)
   return { head: await ref('HEAD'), pushed: await ref('@{push}') }
+}
+
+const gitOut = ($: EngineInterface, dir: string, args: readonly string[]): Promise<string | undefined> =>
+  $.process
+    .run(['git', '-C', dir, ...args], { timeoutMs: 10_000 })
+    .then(({ exitCode, stdout }) => (exitCode === 0 && stdout.trim() !== '' ? stdout.trim() : undefined), () => undefined)
+
+async function headsAt($: EngineInterface): Promise<Head[]> {
+  return headsOf((await gitOut($, await $.session.cwd(), ['worktree', 'list', '--porcelain'])) ?? '')
+}
+
+async function bindingRefusal($: EngineInterface, pick: Pick, dir: string | undefined): Promise<string | undefined> {
+  if (dir === undefined) return bindingRefusalOf(pick, undefined, undefined)
+  const top = await gitOut($, dir, ['rev-parse', '--show-toplevel'])
+  const ref = refOf(await gitOut($, dir, ['symbolic-ref', '-q', 'HEAD']), await gitOut($, dir, ['rev-parse', '--verify', '--quiet', 'HEAD']))
+  return bindingRefusalOf(pick, top, ref)
+}
+
+async function askFactsOf($: EngineInterface, command: string, dir: string, commit: Commit | undefined): Promise<AskFacts> {
+  const repo = await gitOut($, dir, ['rev-parse', '--show-toplevel'])
+  const branch = await gitOut($, dir, ['symbolic-ref', '-q', 'HEAD'])
+  const facts: AskFacts = { command, ...(repo === undefined ? {} : { repo }), ...(branch === undefined ? {} : { branch }) }
+  if (commit === undefined) return facts
+  const status = await $.process
+    .run(['git', '-C', dir, 'status', '--porcelain=v1', '-z', '--untracked-files=all'], { timeoutMs: 10_000 })
+    .then(({ exitCode, stdout }) => (exitCode === 0 ? stdout : undefined), () => undefined)
+  const message = messageOf(commit.args)
+  return { ...facts, ...(message === undefined ? {} : { message }), ...(status === undefined ? {} : { files: filesOf(status) }) }
+}
+
+async function apiWritesIntoDefault($: EngineInterface, writes: readonly ApiWrite[]): Promise<number> {
+  const originHead = await gitOut($, await $.session.cwd(), ['symbolic-ref', '-q', 'refs/remotes/origin/HEAD'])
+  const origin = originRepoOf(await gitOut($, await $.session.cwd(), ['config', '--get', 'remote.origin.url']))
+  return writes.filter(write => write.branch === null || isDefaultRef(write.branch, originHead) || isOtherRepo(write.repo, origin)).length
+}
+
+async function isPipelineRewrite($: EngineInterface, line: string, agentId: string | undefined): Promise<boolean> {
+  if (agentId !== undefined || (await $.env.get('WORKBENCH_DEV_TEAM_PIPELINE')) !== '1') return false
+  for (const rewrite of rewritesAt(line)) {
+    const at = rewrite.dir === null ? undefined : rewrite.dir === '' ? await $.session.cwd() : rewrite.dir
+    if (at === undefined) return false
+    const originHead = await gitOut($, at, ['symbolic-ref', '-q', 'refs/remotes/origin/HEAD'])
+    if (isDefaultBranch(await gitOut($, at, ['symbolic-ref', '-q', 'HEAD']), originHead)) return false
+    if ((rewrite.refs ?? []).some(ref => isDefaultRef(ref, originHead))) return false
+  }
+  return true
+}
+
+async function mergesIntoDefault($: EngineInterface, dirs: readonly (string | null)[]): Promise<number> {
+  let count = 0
+  for (const dir of dirs) {
+    const at = dir === null ? undefined : dir === '' ? await $.session.cwd() : dir
+    const branch = at === undefined ? undefined : await gitOut($, at, ['symbolic-ref', '-q', 'HEAD'])
+    const originHead = at === undefined ? undefined : await gitOut($, at, ['symbolic-ref', '-q', 'refs/remotes/origin/HEAD'])
+    if (isDefaultBranch(branch, originHead)) count++
+  }
+  return count
 }
 
 const PLAN_FILE = 'A plan file in the login home\'s .claude/plans folder, written by the main session.'
@@ -587,7 +698,7 @@ async function isApprovedLine($: EngineInterface, line: string, request: readonl
 }
 
 async function isApprovedCall($: EngineInterface, call: RequestedCall, request: readonly Action[]): Promise<boolean> {
-  if (call.action === 'release') return (await $.env.get('GH_REPO')) === undefined
+  if (call.action === 'release' || call.action === 'merge') return (await $.env.get('GH_REPO')) === undefined
   const dir = call.dir === undefined ? await $.session.cwd() : await projectDirOf($, call.dir)
   if (dir === undefined) return false
   if (call.action === 'commit' || call.ref === undefined) return true
@@ -1478,20 +1589,15 @@ export const register: Register = on => {
     return result
   })
 
-  // A prompt folded into a running turn carries turnId and opens no turn. Any
-  // prompt, of any origin and folded or not, ends a "Commit it" pick not yet
-  // used for a commit: a peer, channel, plugin, SDK, schedule or task message
-  // carries outside text that must not use it. Only Mike's own prompt ends the
-  // push left by a commit he approved.
-  //
   // A prompt Mike sends starts a task, for the intake nudge. A new turn a
   // person opened gets recall's block beside the prompt, at the tail.
   on('prompt.submit', async ($, e, next) => {
-    await update($, commitApproval, approval => (isPersonOrigin(e.origin) || approval === 'commit' ? 'none' : approval))
     const isMike = isPersonOrigin(e.origin) && !isScheduledFire(e.text)
+    if (isMike) await update($, commitApproval, () => 'none' as const)
     await update($, turnRequest, request => (isMike ? requestedOf(e.text) : e.turnId === undefined ? [] : request))
     if (isMike) await update($, intake, state => ({ ...state, task: state.task + 1 }))
     const forwards = e.origin.kind === 'task-notification' && notificationForwards(e.text)
+    await update($, turnOrigin, () => (isScheduledFire(e.text) ? 'scheduled-trigger' : e.origin.kind))
     if (e.turnId !== undefined) {
       if (forwards) await update($, turnForwards, () => true)
       return next(e)
@@ -1541,6 +1647,8 @@ export const register: Register = on => {
     if (release !== undefined) return { deny: release }
     const unread = e.tool === 'Bash' ? await unreadRefusalOf($, e.command, e.agentId, sessionAttended).catch(() => GUARD_FAILED) : undefined
     if (unread !== undefined) return { deny: unread }
+    const guarded = e.tool === 'Bash' ? await commitGuardOf($, e.command, e.agentId, sessionAttended).catch(() => FAILED_REFUSAL.deny) : undefined
+    if (guarded !== undefined) return { deny: guarded }
     if (e.tool === 'Bash') await repairBeforeGit($, e.command, sessionAttended === true).catch(() => undefined)
     if (verdict !== undefined) {
       const result = await next(e)
@@ -1548,7 +1656,8 @@ export const register: Register = on => {
     }
     if (e.tool === 'AskUserQuestion') {
       const isGated = await isCommitGated($, sessionAttended, e.agentId)
-      if (isGated && bundlesCommit(e.questions)) return { deny: BUNDLE_REFUSAL }
+      const bundled = isGated ? bundleRefusalOf(e.questions) : undefined
+      if (bundled !== undefined) return { deny: bundled }
       // The question rule. A call no message holds (another plugin's
       // $.ui.ask) is let through: there is no message to read the context from.
       if (e.agentId === undefined && sessionAttended === true && (await read($, turnAttended))) {
@@ -1560,38 +1669,76 @@ export const register: Register = on => {
         if (refusal !== undefined) return { deny: refusal }
       }
       const result = await next(e)
-      if (isGated && result.deny === undefined && isCommitPick(e.questions, result.result)) await update($, commitApproval, () => 'commit')
+      const action = isGated && result.deny === undefined ? pickOf(e.questions, result.result) : undefined
+      if (action !== undefined) {
+        const heads = action === 'merge' ? [] : await headsAt($)
+        const names = action === 'merge' ? { names: mergeNamesOf(e.questions) } : {}
+        await update($, commitApproval, () => ({ action, heads, ...names }))
+      }
       return result
     }
-    // The commit approval rule: one "Commit it" pick allows one commit, then
-    // the push of that commit. A command that only mentions git, such as a grep
-    // for the word, is not one. Whether the commit and the push landed is read
-    // from the repository the line runs in, before and after it, and from its
-    // exit status: the pick is kept only when HEAD did not move and the line
-    // reported an error. A background run cannot be watched, so it is taken
-    // as landed.
     // A content search in the main loop gets recall's block beside its result.
     if (e.tool === 'Bash') {
-      const { writes, dir: steps, commit } = readLine(e.command)
-      const releases = releaseCountOf(e.command)
-      if (writes.commits + writes.pushes + releases === 0 || !(await isCommitGated($, sessionAttended, e.agentId))) {
+      const subject = subjectVerdict(parseShell(e.command))?.deny
+      const rewrites = rewritesOf(e.command)
+      const aliases = aliasSetsOf(e.command)
+      const apiWrites = apiWritesOf(e.command)
+      const apiIntoDefault = apiWrites.length === 0 ? 0 : await apiWritesIntoDefault($, apiWrites)
+      if (!(await isCommitGated($, sessionAttended, e.agentId))) {
+        if ((await mergesIntoDefault($, mergesOf(e.command).local)) > 0) return { deny: AGENT_MERGE_REFUSAL }
+        if (rewrites > 0 && !(await isPipelineRewrite($, e.command, e.agentId))) return { deny: REWRITE_REFUSAL }
+        if (aliases > 0) return { deny: ALIAS_REFUSAL }
+        if (apiIntoDefault > 0) return { deny: API_WRITE_REFUSAL }
+        if (subject !== undefined) return { deny: subject }
+        if (releaseCountOf(e.command) > 0) {
+          if (sessionAttended !== true) return { deny: e.agentId === undefined ? RELEASE_REFUSAL : AGENT_RELEASE_REFUSAL }
+          if (!(await isApprovedInDialog($, ['release'], e.command, await $.session.cwd(), undefined, e.agentId))) return { deny: declinedRefusal(['release']) }
+          await update($, askedLines, lines => ({ ...lines, [e.tool_use_id]: e.command }))
+          return next(e).finally(() => update($, askedLines, lines => withoutKey(lines, e.tool_use_id)))
+        }
         return withScanRecall($, 'Bash', e.command, e.agentId, await next(e))
       }
+      const { writes, dir: steps, commit } = readLine(e.command)
+      const releases = releaseCountOf(e.command)
+      const merges = mergesOf(e.command)
+      const approval = await read($, commitApproval)
+      if (approval !== 'none' && approval.action !== 'merge' && movesHead(e.command)) return { deny: MOVE_REFUSAL }
+      if (writes.commits + writes.pushes + releases + merges.local.length + merges.pr + rewrites + aliases + apiIntoDefault === 0) {
+        return subject !== undefined ? { deny: subject } : withScanRecall($, 'Bash', e.command, e.agentId, await next(e))
+      }
       const request = await read($, turnRequest)
-      const refusal = refusalOf(writes, releases, await read($, commitApproval), request)
-      if (refusal !== undefined) return { deny: refusal }
+      const intoDefault = merges.pr + (await mergesIntoDefault($, merges.local))
+      const gate = gateOf({ writes, releases, merges: intoDefault, rewrites, aliases, apiWrites: apiIntoDefault }, approval, request)
+      if (gate.isOne) return { deny: ONE_REFUSAL }
       const treeRefusal = writes.commits === 1 ? await treeRefusalOf($, e.command, commit, e.tool_use_id) : undefined
       if (treeRefusal !== undefined) return { deny: treeRefusal }
-      const pickWrites = pickWritesOf(writes, request)
-      if (pickWrites.commits + pickWrites.pushes === 0) return next(e)
+      if (subject !== undefined) return { deny: subject }
       const dir = dirOf(steps, await $.session.cwd(), await $.env.get('HOME'))
-      const before = dir === undefined ? undefined : await refsOf($, dir)
-      const result = await next(e)
-      if (result.deny !== undefined) return result
+      const isPaid = approval !== 'none' && isPaidByPick(writes, intoDefault, approval, request)
+      if (isPaid && approval.action === 'merge') {
+        const target = mergeTargetRefusalOf(approval.names, merges.targets)
+        if (target !== undefined) return { deny: target }
+      }
+      const binding = isPaid && approval.action !== 'merge' ? await bindingRefusal($, approval, dir) : undefined
+      if (binding !== undefined) {
+        await update($, commitApproval, () => 'none' as const)
+        return { deny: binding }
+      }
+      if (gate.missing.length > 0) {
+        const isReleaseOnly = gate.missing.every(gated => gated === 'release')
+        const canAsk = (await read($, turnAttended)) || (isReleaseOnly && sessionAttended === true)
+        if (!canAsk) return { deny: GATED_REFUSALS[gate.missing[0] as Gated] }
+        const cwd = dir ?? (await $.session.cwd())
+        if (!(await isApprovedInDialog($, gate.missing, e.command, cwd, writes.commits === 1 ? commit : undefined, e.agentId))) return { deny: declinedRefusal(gate.missing) }
+        await update($, askedLines, lines => ({ ...lines, [e.tool_use_id]: e.command }))
+      }
+      const before = isPaid && dir !== undefined ? await refsOf($, dir) : undefined
+      const result = await next(e).finally(() => update($, askedLines, lines => withoutKey(lines, e.tool_use_id)))
+      if (result.deny !== undefined || !isPaid) return result
       const output = result.result as { backgroundTaskId?: unknown } | undefined
       const isBackground = e.run_in_background === true || output?.backgroundTaskId !== undefined
       const after = dir === undefined || isBackground ? undefined : await refsOf($, dir)
-      await update($, commitApproval, () => approvalAfter(pickWrites, before, after, result.isError === true))
+      await update($, commitApproval, () => approvalAfter(approval, before, after, result.isError === true))
       return result
     }
     // The vault write checks, in every lane: a sub-agent or a summary-writer
@@ -1705,11 +1852,17 @@ export const register: Register = on => {
     }
     if (e.tool_name !== 'Bash') return result
     const command = (e.tool_input as { command?: unknown } | null | undefined)?.command
-    if (typeof command !== 'string' || !(await isCommitGated($, sessionAttended, undefined))) return result
+    if (typeof command !== 'string') return result
+    const askedId = Object.entries(await read($, askedLines)).find(([, line]) => line === command)?.[0]
+    if (askedId !== undefined) {
+      await update($, askedLines, lines => withoutKey(lines, askedId))
+      return { ...result, decision: { behavior: 'allow' } }
+    }
+    if (!(await isCommitGated($, sessionAttended, undefined))) return result
     const approval = await read($, commitApproval)
     const { writes } = readLine(command)
     const isOne = writes.commits <= 1 && writes.pushes <= 1
-    const picked: Action[] = !isOne ? [] : approval === 'commit' ? ['commit'] : approval === 'push' ? ['push'] : []
+    const picked: Action[] = !isOne || approval === 'none' ? [] : [approval.action]
     const approved = [...new Set([...(await read($, turnRequest)), ...picked])]
     return (await isApprovedLine($, command, approved)) ? { ...result, decision: { behavior: 'allow' } } : result
   })
@@ -1877,7 +2030,7 @@ export const register: Register = on => {
       await update($, meter, () => EMPTY)
       await update($, cache, () => EMPTY_CACHE)
       await update($, replyRows, () => null)
-      await update($, commitApproval, () => 'none')
+      await update($, commitApproval, () => 'none' as const)
       await update($, turnRequest, () => [])
       await update($, capture, () => ({ turns: 0, hasFired: false, written: [] }))
       await update($, recall, () => ({ seen: [], queries: [] }))

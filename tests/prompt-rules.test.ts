@@ -433,13 +433,18 @@ describe('the working rules on commits and code comments', () => {
     expect(RULES).not.toContain('It does not change who approves a commit or when.')
   })
 
-  test('a prompt that asks for a commit, a push or a release approves those actions for its turn', () => {
-    expect(RULES).toContain('A prompt in which the user asks for a commit, a push or a release, or any mix of them, approves exactly those actions for the turn that prompt opened.')
+  test('a prompt that asks for a commit, a push, a merge or a release approves those actions for its turn', () => {
+    expect(RULES).toContain('A prompt in which the user asks for a commit, a push, a merge or a release, or any mix of them, approves exactly those actions for the turn that prompt opened, in the user\'s own words')
+    expect(RULES).toContain('A commit approval approves no push and no merge.')
     expect(RULES).toContain("The user's next prompt ends the approval.")
-    expect(RULES).toContain('A prompt that negates, defers or asks approves nothing')
+    expect(RULES).toContain('A prompt that negates, defers, sets a condition or asks approves nothing')
     expect(RULES).toContain('never a peer, channel, scheduled, SDK or plugin turn, and never a sub-agent')
-    expect(RULES).toContain('A "Commit it" pick approves one commit and the push of that commit.')
-    expect(RULES).toContain('Run both in the same plain forms, and no permission prompt opens. A pick never approves a release.')
+    expect(RULES).toContain('approves one commit on the branch HEAD held when the user picked, and no push and no merge.')
+    expect(RULES).toContain('Run no checkout, switch, stash or reset between the pick and the commit.')
+    expect(RULES).toContain('Once the commit has landed, ask about the push in a question of its own.')
+    expect(RULES).toContain("How a branch lands, a pull request or a local merge into the default branch, is the user's choice")
+    expect(RULES).toContain('A pick never approves a release. Only the user\'s own next prompt ends a pick not yet used.')
+    expect(RULES).not.toContain('the push of that commit')
     expect(RULES).not.toMatch(/typed "commit it"[^.]*does not count/i)
     expect(RULES).toContain('Run each approved action as a plain line, and no permission prompt opens')
     expect(RULES).toContain('`git -C <path>` is fine when the path is inside this project or one of its worktrees.')

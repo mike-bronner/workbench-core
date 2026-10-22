@@ -45,8 +45,28 @@ Before a task that produces work, run the intake routine in
    such as "commit later" or "should I commit?", approves nothing. Work he
    did not ask to commit gets one approval question, not three options. Once
    Mike has reviewed the tree, ask it through `AskUserQuestion`, on its own.
-   His answer is the approval. Then run the commit and the push of that
-   commit yourself, each as a plain line, and no permission prompt opens. A
+   Its words name only the commit. His answer is the approval. It approves
+   one commit on the branch HEAD held when he picked, and no push and no
+   merge. Run that commit yourself as a plain line, and no permission prompt
+   opens. Run no checkout, switch, stash or reset before it. Once the commit
+   has landed, ask about the push in a question of its own. How the branch
+   lands, a pull request or a local merge, is his choice, so ask that in a
+   question of its own too. A merge pick approves only the pull request number
+   or the branch its question named. In his own turn, a commit, push, merge,
+   release, history rewrite, `gh alias set` or API write to the default
+   branch that nothing approved opens one approval dialog from the gate,
+   naming the exact line and its target, and runs on his yes. A write to
+   another repository counts as one to its default branch, but
+   `repos/{owner}/{repo}` and a `gh repo sync` that names no repository count
+   as this one, even under `GH_REPO`. A commit and
+   its push on one line share one dialog. In a turn another sender opened,
+   each but a release is refused. A release always asks where a dialog can
+   reach him, a scheduled tick included, and is refused only in a `-p` run,
+   the pipeline or an agent run. A sub-agent's release in any spelling other
+   than a plain `gh release create` is refused. A `-p` run, the pipeline and
+   a scheduled tick commit and push as before, and never merge into the
+   default branch, set a gh alias or write the default branch through the API. Only the
+   dev-team pipeline rewrites history, and only on its own feature branches. A
    permission prompt for any other form is never the approval, because a
    prompt that appears mid-flow gets answered without a review. A sub-agent
    never commits or pushes. It hands back the tree and a proposed message,

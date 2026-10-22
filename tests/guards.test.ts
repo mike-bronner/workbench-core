@@ -137,7 +137,7 @@ describe('the provisioning guard', () => {
     'docker compose up -d',
     'sqlite3 db.sqlite "CREATE TABLE t (a)"',
     'echo "CREATE DATABASE app"',
-    'git commit -m "create the worktree docs"',
+    'git commit -m "docs: 📝 Create the worktree docs."',
   ]
   for (const line of REFUSED) {
     test(`refuses ${JSON.stringify(line)}`, async ($, on) => {

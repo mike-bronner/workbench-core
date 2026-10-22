@@ -59,13 +59,16 @@ export type Bench = {
   // The repository `git -C <dir> rev-parse` reads, by directory: HEAD, and
   // what @{push} points at. A directory not here, or a field left out, makes
   // git fail, as outside a repository or with no push target.
-  repos: Record<string, { head?: string; pushed?: string }>
+  repos: Record<string, { head?: string; pushed?: string; branch?: string | null; originHead?: string; originUrl?: string }>
   trees: Record<string, string | null>
   shown?: string
   permissionBeneath: Record<string, unknown>
   // What each Bash call that reaches the engine does, such as moving a repo's
   // HEAD as a commit would, and whether it reports an error.
   onBash?: (command: string) => { isError?: boolean } | void
+  duringBash?: (command: string) => Promise<void>
+  hangDialog?: boolean
+  answerAfterMs?: number
   // A deny from beneath the module, as a settings rule or a person would give:
   // the reason for a call this refuses, else undefined.
   denyBeneath?: (tool: string) => string | undefined
@@ -199,6 +202,18 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     // With no modeled world, the destructive-scope guard's facts say that
     // nothing but the filesystem root exists, and git answers nothing.
     if ((e.argv[1] ?? '').endsWith('/scope-facts.sh')) return { value: ran(e.argv[2] === 'dir' && e.argv[3] === '/' ? '/\n' : e.argv[2] === 'entry' ? 'missing\n' : '') }
+    const gitAt = e.argv[0] === 'git' && e.argv[1] === '-C' ? b.repos[e.argv[2] ?? ''] : undefined
+    const branchRef = (repo: Bench['repos'][string]) => (repo.branch === null ? undefined : `refs/heads/${repo.branch ?? 'main'}`)
+    const verb = e.argv.slice(3).join(' ')
+    const answer = (out: string | undefined) => ({ value: out === undefined ? { ...ran(''), exitCode: 1 } : ran(`${out}\n`) })
+    if (gitAt !== undefined && verb === 'rev-parse --show-toplevel') return answer(e.argv[2])
+    if (gitAt !== undefined && verb === 'config --get remote.origin.url') return answer(gitAt.originUrl)
+    if (gitAt !== undefined && verb === 'symbolic-ref -q HEAD') return answer(branchRef(gitAt))
+    if (gitAt !== undefined && verb === 'symbolic-ref -q refs/remotes/origin/HEAD') return answer(gitAt.originHead === undefined ? undefined : `refs/remotes/origin/${gitAt.originHead}`)
+    if (gitAt !== undefined && verb === 'worktree list --porcelain') {
+      const blocks = Object.entries(b.repos).map(([dir, repo]) => [`worktree ${dir}`, `HEAD ${repo.head ?? '0'}`, branchRef(repo) === undefined ? 'detached' : `branch ${branchRef(repo)}`].join('\n'))
+      return answer(blocks.join('\n\n'))
+    }
     if (e.argv[0] === 'git' && !(e.argv[1] === '-C' && e.argv[3] === 'rev-parse' && ['HEAD', '@{push}'].includes(e.argv.at(-1) ?? ''))) return { value: { ...ran(''), exitCode: 128 } }
     if (e.argv[0] === 'rm') {
       b.files.delete(e.argv[e.argv.length - 1] ?? '')
@@ -229,12 +244,14 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     b.opened.push({ id: e.id, title: e.title })
     return { value: { isPlaced: true } }
   })
-  on('tool.call', ($, e) => {
+  on('tool.call', async ($, e) => {
     dialogs.delete(e.tool_use_id)
     // What the gates' `[ -f ] && [ ! -L ]` reads: a regular file, no link.
     b.calls.push({ tool: e.tool, legacyExists: b.files.has(LEGACY) && !b.links.has(LEGACY) })
     b.inputs.push({ ...e })
     if (e.tool === 'AskUserQuestion') {
+      if (b.hangDialog === true) return new Promise<never>(() => undefined)
+      if (b.answerAfterMs !== undefined) await b.clock.sleep(b.answerAfterMs)
       if (b.pick === undefined) throw new Error('dismissed')
       const pick = b.pick
       const answers = Object.fromEntries(e.questions.map(question => [question.question, pick]))
@@ -242,6 +259,7 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     }
     const denied = b.denyBeneath?.(e.tool)
     if (denied !== undefined) return { deny: denied }
+    if (e.tool === 'Bash') await b.duringBash?.(e.command)
     if (e.tool === 'Bash' && b.onBash?.(e.command)?.isError) return { isError: true, result: 'exit 1', text: 'exit 1' }
     return { result: {} as never }
   })

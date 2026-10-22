@@ -7,6 +7,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
+import { MERGE_REFUSAL } from '../hooks/mods/commit-guard'
 import { GUARDED } from '../hooks/mods/guards'
 import { EXPANDED_BODY, MOVED_BODY, UNREAD_BODY, bashBodies, isProseTool, proseFindings } from '../hooks/mods/outbound-prose'
 import { parseShell } from '../hooks/mods/shell'
@@ -113,7 +114,7 @@ describe('the outbound prose guard', () => {
     b.files.set('/repo/q.graphql', `query { viewer { login } } # ${SEMI}`)
     expect(await refusal($, b, bash('gh api graphql -F query=@m.graphql'))).toContain('Split it.')
     expect(await refusal($, b, bash(`gh api graphql -F query=@- <<'EOF'\n${mutation}\nEOF`))).toContain('Split it.')
-    expect(await refusal($, b, bash('gh api graphql -F query=@q.graphql'))).toBeUndefined()
+    expect(await refusal($, b, bash('gh api graphql -F query=@q.graphql'))).toBe(MERGE_REFUSAL.deny)
     expect(await refusal($, b, bash(`gh api graphql -F query=@- <<'EOF'\nquery { a } # ${SEMI}\nEOF`))).toBeUndefined()
   })
 
@@ -287,12 +288,11 @@ describe('the outbound prose guard', () => {
       const deny = await refusal($, b, bash(command))
       expect([command, deny?.includes(fix)]).toEqual([command, true])
     }
+    for (const command of ['gh pr merge 1 --squash --delete-branch', 'gh pr merge -m "$PR"', 'gh pr merge 1 -m --delete-branch']) {
+      expect([command, await refusal($, b, bash(command))]).toEqual([command, MERGE_REFUSAL.deny])
+    }
     for (const command of [
       `gh pr close 1 --comment '${CLEAN}'`,
-      'gh pr merge 1 --squash --delete-branch',
-      // On pr merge, -m is --merge and takes no value.
-      'gh pr merge -m "$PR"',
-      'gh pr merge 1 -m --delete-branch',
       `gh pr create --title 'Fix the loader' --body '${CLEAN}'`,
       // On pr review, -c is the comment review type and takes no value.
       `gh pr review 1 -c -b '${CLEAN}'`,
@@ -323,10 +323,11 @@ describe('the outbound prose guard', () => {
       const deny = await refusal($, b, bash(command))
       expect([command, deny?.includes(fix)]).toEqual([command, true])
     }
+    for (const command of [`gh api graphql -F query=@q.graphql -f text='${SEMI}'`, `gh api graphql -F query=@m.graphql -f subjectId=I_1 -f text='${CLEAN}'`]) {
+      expect([command, await refusal($, b, bash(command))]).toEqual([command, MERGE_REFUSAL.deny])
+    }
     for (const command of [
-      `gh api graphql -F query=@q.graphql -f text='${SEMI}'`,
       `gh api graphql -f query='query { viewer { login } }' -f text='${SEMI}'`,
-      `gh api graphql -F query=@m.graphql -f subjectId=I_1 -f text='${CLEAN}'`,
       // A REST call's other fields are not prose.
       `gh api repos/o/r/issues -f labels='${SEMI}'`,
     ]) {

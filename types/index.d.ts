@@ -322,15 +322,13 @@ declare module 'claude-code' {
       turnAttended: boolean
       // Whether the question rule already re-prompted in the current turn.
       reprompted: boolean
-      // Where Mike's last "Commit it" pick stands: `commit` while it is unused,
-      // `push` once its commit ran and the push of that commit is left, `none`
-      // once used up. Any prompt ends `commit`, and only Mike's own prompt
-      // ends `push` (hooks/mods/commit-approval.ts).
-      commitApproval: 'none' | 'commit' | 'push'
-      turnRequest: readonly ('commit' | 'push' | 'release')[]
+      commitApproval: 'none' | { action: 'commit' | 'push' | 'merge'; heads: readonly { top: string; ref: string }[]; names?: { prs: readonly string[]; words: readonly string[]; bases?: readonly string[] } }
+      turnRequest: readonly ('commit' | 'push' | 'merge' | 'release')[]
+      askedLines: Readonly<Record<string, string>>
       // Whether a schedule opened the current turn: the scheduled-trigger
       // origin, or the `<scheduled-task ` wrapper. The commit rule skips it.
       turnScheduled: boolean
+      turnOrigin: string
       turnForwards: boolean
       statusLine: string | null
       // When this session first started, in ms. A reload keeps it.

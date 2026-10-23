@@ -89,8 +89,8 @@ export const MERGE_TARGET_REFUSAL =
 
 export const REWRITE_REFUSAL =
   'This history rewrite was refused: git cherry-pick, revert, am, rebase, update-ref, ' +
-  'a reset that moves a branch, and a shell alias need Mike\'s approval in the ' +
-  'approval dialog, and nobody can answer one here. A sub-agent, a -p run and a turn ' +
+  'a reset that moves a branch, and a shell alias need Mike\'s pick in his own turn, ' +
+  'and nobody can give one here. A sub-agent, a -p run and a turn ' +
   'nobody attends never rewrite history. The pipeline rewrites only its own ' +
   'feature branches, and never the default branch or a branch the gate cannot ' +
   'read. Report that the change is ready, and leave it to Mike\'s session.'
@@ -98,14 +98,14 @@ export const REWRITE_REFUSAL =
 export const API_WRITE_REFUSAL =
   'This GitHub API write was refused: a gh api write to repos/<owner>/<repo>/contents ' +
   'or git/refs changes the default branch here, or a branch the gate cannot read, ' +
-  'and that needs Mike\'s approval in the approval dialog. Nobody can answer one ' +
+  'and that needs Mike\'s pick in his own turn. Nobody can give one ' +
   'here. Name a feature branch in its branch= field or its refs/heads/ path, or ' +
   'leave the change to Mike\'s session.'
 
 export const ALIAS_REFUSAL =
   'This gh alias set was refused: a gh alias can run any command under a new ' +
-  'name, so setting one needs Mike\'s approval in the approval dialog, in every ' +
-  'lane, and nobody can answer one here. Run the gh command itself instead.'
+  'name, so setting one needs Mike\'s pick in his own turn, and nobody can give ' +
+  'one here. Run the gh command itself instead.'
 
 export const AGENT_MERGE_REFUSAL =
   'This git merge or pull was refused: HEAD is on the default branch, or the ' +
@@ -115,9 +115,9 @@ export const AGENT_MERGE_REFUSAL =
   'to his session. Merging the default branch into a feature branch is not refused.'
 
 export const RELEASE_REFUSAL =
-  'This release was refused: Mike has not asked for a release in this turn. ' +
-  'Only a prompt of his own that asks for a release approves one, for the turn ' +
-  'it opened. A pick approves no release. Ask first.'
+  'This release was refused: nobody can approve it here. A prompt of Mike\'s own ' +
+  'that asks for a release approves one, for the turn it opened, and so does his ' +
+  'pick in his interactive session. Report that the release is ready.'
 
 export const MOVE_REFUSAL =
   'This line was refused: it runs git checkout, switch, stash or reset while ' +
@@ -133,16 +133,13 @@ export const branchRefusal = (seen: string, now: string): string =>
   'HEAD is on now.'
 
 export const AGENT_RELEASE_REFUSAL =
-  'This release was refused: no approval dialog can reach Mike from here, or the ' +
-  'line is spelled so a dialog could not show which release runs. A plain ' +
-  '`gh release create` from a sub-agent or a scheduled task of his interactive ' +
-  'session asks him in the approval dialog. A -p run, the pipeline and an --agent ' +
-  'run cannot reach him, and a gh release command, releases endpoint or GraphQL ' +
-  'Release mutation in any other spelling is refused, as is a gh line whose ' +
-  'command or subcommand is not written as plain text, and a line the shell ' +
-  'reader cannot read whole, because either may spell one. If the work needs a ' +
-  'release, report that it is ready, and leave it to the session that dispatched ' +
-  'you. For any other gh command, write gh and its subcommand as plain words.'
+  'This release was refused: a sub-agent, a -p run, the pipeline and an --agent ' +
+  'run cannot ask Mike, so none of them releases. A gh release command, releases ' +
+  'endpoint or GraphQL Release mutation is refused here in any spelling, as is a ' +
+  'gh line whose command or subcommand is not written as plain text, and a line ' +
+  'the shell reader cannot read whole, because either may spell one. If the work ' +
+  'needs a release, report that it is ready, and leave it to the session that ' +
+  'dispatched you. For any other gh command, write gh and its subcommand as plain words.'
 
 export const ONE_REFUSAL =
   'This line runs more than one git commit, git push, merge or release. Run ' +
@@ -176,7 +173,7 @@ export const leftOutRefusal =(paths: readonly string[]): string =>
   'run the commit again.'
 
 export const BUNDLE_REFUSAL =
-  'AskUserQuestion was refused: it offers a commit, push or merge option ' +
+  'AskUserQuestion was refused: it offers a commit, push, merge or gated-line option ' +
   'beside another question. Ask that question alone, in an AskUserQuestion ' +
   'call of its own, and ask the other questions in a separate call.'
 
@@ -185,7 +182,11 @@ export const NAMED_BUNDLE_REFUSAL =
   'or a release, and one pick approves one commit and nothing more. Ask the ' +
   'commit question alone, with words that name only the commit. Once the ' +
   'commit has landed, ask about the push, and then about how the branch lands, ' +
-  'each in a question of its own. A release needs Mike\'s typed request.'
+  'each in a question of its own.'
+
+export const LINES_BUNDLE_REFUSAL =
+  'AskUserQuestion was refused: its question names more than one gated line, and ' +
+  'one pick approves one line. Ask about each line in an AskUserQuestion call of its own.'
 
 const COMMIT_OPTION = /^\s*commit\b/i
 
@@ -425,9 +426,14 @@ export function dirOf(steps: readonly string[] | null | undefined, cwd: string, 
 }
 
 export type PickAction = 'commit' | 'push' | 'merge'
+export type LineKind = 'release' | 'rewrite' | 'alias' | 'api'
 export type Head = { top: string; ref: string }
-export type Pick = { action: PickAction; heads: readonly Head[]; names?: MergeNames }
+export type Pick = { action: PickAction | LineKind; heads: readonly Head[]; names?: MergeNames; line?: string }
 export type Approval = 'none' | Pick
+export type PendingLines = Readonly<Record<string, LineKind>>
+
+const LINE_KINDS: ReadonlySet<string> = new Set<LineKind>(['release', 'rewrite', 'alias', 'api'])
+const isLineKind = (kind: string): kind is LineKind => LINE_KINDS.has(kind)
 
 export type Action = PickAction | 'release'
 
@@ -455,9 +461,9 @@ const GATED_NAMES: Readonly<Record<Gated, string>> = {
   api: 'GitHub API write to the default branch',
 }
 
-export function gateOf(counts: Counts, approval: Approval, request: readonly Action[]): Gate {
+export function gateOf(counts: Counts, approval: Approval, request: readonly Action[], line = ''): Gate {
   const { writes, releases, merges, rewrites, aliases, apiWrites } = counts
-  const picked = approval === 'none' ? undefined : approval.action
+  const picked = approval === 'none' || approval.line !== undefined ? undefined : approval.action
   const missing: Gated[] = []
   if (releases === 1 && !request.includes('release')) missing.push('release')
   if (writes.commits === 1 && picked !== 'commit' && !grants(request, 'commit')) missing.push('commit')
@@ -466,7 +472,16 @@ export function gateOf(counts: Counts, approval: Approval, request: readonly Act
   if (rewrites > 0) missing.push('rewrite')
   if (aliases > 0) missing.push('alias')
   if (apiWrites > 0) missing.push('api')
-  return { isOne: writes.commits > 1 || writes.pushes > 1 || merges > 1 || releases > 1, missing }
+  const isOne = writes.commits > 1 || writes.pushes > 1 || merges > 1 || releases > 1
+  const many: Readonly<Record<Gated, boolean>> = { commit: false, push: false, merge: false, release: false, rewrite: rewrites > 1, alias: aliases > 1, api: apiWrites > 1 }
+  const isLined = approval !== 'none' && approval.line !== undefined && approval.line === line && missing.includes(approval.action)
+  return { isOne, missing: isLined ? missing.filter(kind => many[kind]) : missing }
+}
+
+export function lineKindOf(missing: readonly Gated[], command: string): LineKind | undefined {
+  const kinds = missing.filter(isLineKind)
+  if (missing.length === 1 || kinds.length === 0) return kinds[0]
+  return parseShell(command).statements.length === 1 ? (kinds.includes('rewrite') ? 'rewrite' : kinds[0]) : undefined
 }
 
 export function refusalOf(counts: Counts, approval: Approval, request: readonly Action[]): string | undefined {
@@ -475,9 +490,6 @@ export function refusalOf(counts: Counts, approval: Approval, request: readonly 
   const [first] = gate.missing
   return first === undefined ? undefined : GATED_REFUSALS[first]
 }
-
-export const APPROVE_LABEL = 'Yes, run it'
-export const DECLINE_LABEL = 'No'
 
 const namesOfGated = (missing: readonly Gated[]): string => missing.map(gated => GATED_NAMES[gated]).join(' and ')
 
@@ -492,46 +504,50 @@ const codeOf = (char: string): string => {
 
 export const shownOf = (text: string): string => text.replace(HIDDEN, char => (char === ' ' ? char : (SHOWN_ESCAPES[char] ?? codeOf(char))))
 
-export type AskFacts = { command: string; asker?: string; repo?: string; branch?: string; message?: string; files?: readonly string[] }
+export type AskFacts = { command: string; repo?: string; branch?: string; message?: string; files?: readonly string[] }
 
-export function askTextOf(missing: readonly Gated[], facts: AskFacts): string {
+const LINE_HOW =
+  'Write the line in the question in backticks, exactly as it stands here, and offer "Run it" and "Not now". ' +
+  'A "Run it" pick approves this one line, once.'
+
+const ASK_HOW: Readonly<Record<Gated, string>> = {
+  commit:
+    'Ask only once he says his review is done, and offer "Commit it" and "Not yet". ' +
+    'A "Commit it" pick approves one commit on the branch HEAD holds when he picks, and no push and no merge.',
+  push: 'Name the push in plain words, such as "Push main to origin?", and offer "Push" and "Not yet". A "Push" pick approves one push of the branch HEAD holds when he picks.',
+  merge:
+    'Name the pull request number or the branch it merges in plain words, such as "Merge PR 12 into main?", recommend a pull request, and offer "Merge it". ' +
+    'A merge pick approves one merge of what its question names.',
+  release: LINE_HOW,
+  rewrite: LINE_HOW,
+  alias: LINE_HOW,
+  api: LINE_HOW,
+}
+
+export function askRefusalOf(missing: readonly Gated[], facts: AskFacts): string {
+  const [kind] = missing
+  if (kind === undefined || (missing.length > 1 && lineKindOf(missing, facts.command) === undefined)) {
+    return (
+      `This line was refused: it runs a ${namesOfGated(missing)}, and Mike has approved none of them. ` +
+      'One pick approves one action, so run each as a line of its own, and ask him about each one through AskUserQuestion, alone.'
+    )
+  }
+  const names = namesOfGated(missing)
   const repo = facts.repo === undefined ? 'a repository the gate cannot read' : shownOf(facts.repo)
   const branch = facts.branch === undefined ? 'a branch the gate cannot read' : shownOf(facts.branch.replace(/^refs\/heads\//, ''))
-  const parts = [`Asked by ${facts.asker ?? 'a lane the gate cannot name'}. Approve this ${namesOfGated(missing)} in ${repo}, on ${branch}: \`${shownOf(facts.command)}\`.`]
-  if (facts.message !== undefined) parts.push(`The message is ${shownOf(facts.message)}.`)
-  if (facts.files !== undefined) {
-    const files = facts.files.map(shownOf)
-    parts.push(files.length === 0 ? 'The tree holds no files to commit.' : `The tree holds ${files.length} file${files.length === 1 ? '' : 's'} to commit: ${files.join(', ')}.`)
+  const parts = [
+    `This ${names} was refused: Mike has not approved it.`,
+    'Ask him through AskUserQuestion, with this question alone in its call.',
+    `In the question, name the exact line \`${shownOf(facts.command)}\`, the action (${names}), the repository ${repo}, and the branch ${branch}.`,
+  ]
+  if (missing.includes('commit')) {
+    const files = facts.files?.map(shownOf)
+    const listed = files === undefined ? 'every file git status lists' : files.length === 0 ? 'that git status lists no files' : `every file git status lists: ${files.join(', ')}`
+    parts.push(`Name the message, ${facts.message === undefined ? 'as the line gives it' : shownOf(facts.message)}, and ${listed}.`)
   }
-  parts.push('Run it?')
+  parts.push(missing.length === 1 ? ASK_HOW[kind] : LINE_HOW, 'After he picks, run the line again, unchanged.')
   return parts.join(' ')
 }
-
-export const ASK_TIMEOUT_MS = 10 * 60 * 1000
-
-export const ASK_TIMEOUT_NOTICE = 'Commit gate: a dialog went unanswered for ten minutes, so it counted as no.'
-
-const ASKERS: Readonly<Record<string, string>> = {
-  composer: 'your own turn',
-  bridge: 'your own turn, through Remote Control',
-  'task-notification': 'a background task notice in your turn',
-  peer: 'a peer session',
-  'peer-send-message': 'a peer session',
-  channel: 'a channel',
-  plugin: 'a plugin',
-  sdk: 'the SDK',
-  'projects-relay': 'a projects relay',
-}
-
-export function askerOf(agentId: string | undefined, originKind: string | undefined, isScheduled: boolean): string {
-  if (agentId !== undefined) return 'a sub-agent'
-  if (isScheduled || originKind === 'scheduled-trigger') return 'a scheduled task'
-  return ASKERS[originKind ?? ''] ?? 'a turn the gate cannot name'
-}
-
-export const declinedRefusal = (missing: readonly Gated[]): string =>
-  `This ${namesOfGated(missing)} was refused: Mike answered no in the approval dialog, or closed it. ` +
-  'Do not run it again, and do not ask again, unless he brings it up.'
 
 export function messageOf(args: readonly string[] | null): string | undefined {
   if (args === null) return undefined
@@ -561,7 +577,7 @@ export function filesOf(status: string): string[] {
 const grants = (request: readonly Action[], action: 'commit' | 'push'): boolean => request.includes(action) || request.includes('release')
 
 export function isPaidByPick(writes: Writes, merges: number, approval: Approval, request: readonly Action[]): boolean {
-  if (approval === 'none') return false
+  if (approval === 'none' || approval.line !== undefined) return false
   if (approval.action === 'commit') return writes.commits === 1 && !grants(request, 'commit')
   if (approval.action === 'push') return writes.pushes === 1 && !grants(request, 'push')
   return merges === 1 && !request.includes('merge')
@@ -822,7 +838,28 @@ export const originRepoOf = (url: string | undefined): string | undefined =>
 export const isOtherRepo = (repo: string | null | undefined, origin: string | undefined): boolean =>
   repo !== undefined && (repo === null || origin === undefined || repo !== origin)
 
-export type MergeTarget = { pr?: string; refs: readonly string[]; bases?: readonly string[] }
+export type RemoteTarget = { repo: string; branch?: string }
+
+const ghRepoOf = (st: ShellStatement): string | undefined => {
+  const assigned = st.assignments.map(word => /^GH_REPO=(.+)$/.exec(word)?.[1]).find(value => value !== undefined)
+  for (let i = 0; i < st.args.length; i++) {
+    const arg = st.args[i] as string
+    if (arg === '-R' || arg === '--repo') return st.args[i + 1]
+    const attached = /^(?:-R|--repo=)(.+)$/.exec(arg)?.[1]
+    if (attached !== undefined) return attached
+  }
+  return assigned
+}
+
+export function remoteTargetOf(line: string, origin: string | undefined): RemoteTarget | undefined {
+  const write = apiWritesOf(line).find(each => typeof each.repo === 'string' && isOtherRepo(each.repo, origin))
+  if (write !== undefined && typeof write.repo === 'string') return { repo: write.repo, ...(write.branch === null ? {} : { branch: write.branch }) }
+  const release = parseShell(line).statements.find(st => st.name === 'gh' && st.args.includes('release'))
+  const repo = release === undefined ? undefined : ghRepoOf(release)
+  return repo === undefined || !isOtherRepo(repo.toLowerCase(), origin) ? undefined : { repo, branch: `the default branch of ${repo}` }
+}
+
+export type MergeTarget ={ pr?: string; refs: readonly string[]; bases?: readonly string[] }
 export type Merges = { local: readonly (string | null)[]; pr: number; targets: readonly MergeTarget[] }
 
 const MERGE_STOPS: ReadonlySet<string> = new Set(['--abort', '--quit'])
@@ -1108,13 +1145,6 @@ export const UNREAD_LINE_REFUSAL =
   'does not decode, a substitution left open, or scripts nested too deep, so no guard can tell what it runs. ' +
   'Write the line out plainly, with every escape, quote and substitution closed, and run it again.'
 
-export function isAskableRelease(line: string): boolean {
-  const parse = parseShell(line)
-  if (parse.unknowns.length > 0 || isPartlyRead(parse)) return false
-  const risky = parse.statements.filter(st => isAgentRisk(st, line) || isPlainRelease(st, line))
-  return risky.length > 0 && risky.every(st => callOf(st)?.action === 'release')
-}
-
 export function agentReleaseRefusalOf(line: string): string | undefined {
   const parse = parseShell(line)
   if (releasesOf(line) > 0 || parse.statements.some(st => isAgentRisk(st, line))) return AGENT_RELEASE_REFUSAL
@@ -1359,21 +1389,54 @@ export function approvalOf(question: Question, label: string): PickAction | unde
 const offersApproval = (question: Question): boolean =>
   isCommitQuestion(question) || labelsOf(question).some(label => approvalOf(question, label) !== undefined)
 
-export function bundleRefusalOf(questions: unknown): string | undefined {
-  if (!Array.isArray(questions)) return undefined
-  if (questions.length > 1 && (questions as Question[]).some(offersApproval)) return BUNDLE_REFUSAL
-  return (questions as Question[]).some(question => isCommitQuestion(question) && namedActionsOf(question).size > 0) ? NAMED_BUNDLE_REFUSAL : undefined
+export function linesNamedOf(question: Question, pending: PendingLines): string[] {
+  const text = textOf(question?.question)
+  return Object.keys(pending).filter(line => text.includes(`\`${shownOf(line)}\``))
 }
 
-export function pickOf(questions: unknown, result: unknown): PickAction | undefined {
+export function bundleRefusalOf(questions: unknown, pending: PendingLines = {}): string | undefined {
+  if (!Array.isArray(questions)) return undefined
+  const asked = questions as Question[]
+  if (asked.some(question => linesNamedOf(question, pending).length > 1)) return LINES_BUNDLE_REFUSAL
+  if (asked.length > 1 && asked.some(question => offersApproval(question) || linesNamedOf(question, pending).length > 0)) return BUNDLE_REFUSAL
+  return asked.some(question => isCommitQuestion(question) && namedActionsOf(question).size > 0) ? NAMED_BUNDLE_REFUSAL : undefined
+}
+
+const answersOf = (questions: unknown, result: unknown): Record<string, unknown> | undefined => {
   if (!Array.isArray(questions) || typeof result !== 'object' || result === null) return undefined
   const { answers, afkTimeoutMs, response } = result as { answers?: unknown; afkTimeoutMs?: unknown; response?: unknown }
   if (afkTimeoutMs !== undefined || (typeof response === 'string' && response.trim() !== '')) return undefined
-  if (typeof answers !== 'object' || answers === null) return undefined
+  return typeof answers === 'object' && answers !== null ? (answers as Record<string, unknown>) : undefined
+}
+
+const pickedLabelOf = (question: Question, answers: Record<string, unknown>): string | undefined => {
+  const answer = typeof question?.question === 'string' ? answers[question.question] : undefined
+  return typeof answer === 'string' && labelsOf(question).includes(answer) ? answer : undefined
+}
+
+export function pickOf(questions: unknown, result: unknown): PickAction | undefined {
+  const answers = answersOf(questions, result)
+  if (answers === undefined) return undefined
   for (const question of questions as Question[]) {
-    const answer = typeof question?.question === 'string' ? (answers as Record<string, unknown>)[question.question] : undefined
-    const action = typeof answer === 'string' && labelsOf(question).includes(answer) ? approvalOf(question, answer) : undefined
+    const label = pickedLabelOf(question, answers)
+    const action = label === undefined ? undefined : approvalOf(question, label)
     if (action !== undefined) return action
+  }
+  return undefined
+}
+
+const RUN_LABEL = /^\s*(?:yes|run|approve|go ahead|release)\b/i
+
+export const isRunLabel = (label: string): boolean => RUN_LABEL.test(label) && !VETO_WORD.test(label)
+
+export function linePickOf(questions: unknown, result: unknown, pending: PendingLines): { line: string; kind: LineKind } | undefined {
+  const answers = answersOf(questions, result)
+  if (answers === undefined) return undefined
+  for (const question of questions as Question[]) {
+    const [line, ...others] = linesNamedOf(question, pending)
+    const label = pickedLabelOf(question, answers)
+    const kind = line === undefined ? undefined : pending[line]
+    if (line !== undefined && kind !== undefined && others.length === 0 && label !== undefined && isRunLabel(label)) return { line, kind }
   }
   return undefined
 }

@@ -1,5 +1,4 @@
-// The question rule: every question to Mike goes through AskUserQuestion, with
-// its context written in prose immediately above the call.
+// The question rule: every question to Mike goes through AskUserQuestion.
 //
 // Mike reads replies in an 80x50 terminal. A question left in prose scrolls
 // away, and a dialog with no context right above it cannot be answered without
@@ -13,14 +12,6 @@ export const REPROMPT_REASON =
   'above the call, in the same message, and do not repeat the rest of the ' +
   'reply. A question with no fixed choices still fits the tool, because the ' +
   'dialog always offers Other.'
-
-export const REFUSAL_REASON =
-  'AskUserQuestion was refused: this turn forwards a question a sub-agent ' +
-  'handed back, and no prose comes immediately before this call in the same ' +
-  'reply. Ask that sub-agent through SendMessage for the context Mike needs ' +
-  'to answer. Then write that context in prose directly above the call, and ' +
-  'call AskUserQuestion again. He reads in an 80x50 terminal, and a dialog ' +
-  'with no context right above it cannot be answered without scrolling back.'
 
 // The labels the classifier picks from. Each one names its meaning, because
 // the classifier reads the labels and the text, and nothing else.
@@ -59,7 +50,7 @@ export function endsOnQuestion(prose: string): boolean {
 type ApiBlock = { type: string; [field: string]: unknown }
 type ApiMessage = { role: string; content: readonly ApiBlock[] }
 
-export function hasContextBefore(messages: readonly ApiMessage[], id: string | undefined): boolean | undefined {
+export function aboveOf(messages: readonly ApiMessage[], id: string | undefined): string | undefined {
   if (id === undefined) return undefined
   const blocksOf = (message: ApiMessage | undefined) => (Array.isArray(message?.content) ? message.content : [])
   for (let m = messages.length - 1; m >= 0; m--) {
@@ -68,9 +59,14 @@ export function hasContextBefore(messages: readonly ApiMessage[], id: string | u
     if (at === -1) continue
     let before = content.slice(0, at)
     for (let k = m - 1; k >= 0 && messages[k]?.role === 'assistant'; k--) before = [...blocksOf(messages[k]), ...before]
-    const shown = before.filter(block => !/thinking$/.test(block.type))
-    const last = shown[shown.length - 1]
-    return last?.type === 'text' && String(last.text ?? '').trim() !== ''
+    const texts: string[] = []
+    for (let i = before.length - 1; i >= 0; i--) {
+      const block = before[i] as ApiBlock
+      if (/thinking$/.test(block.type)) continue
+      if (block.type !== 'text') break
+      texts.unshift(String(block.text ?? ''))
+    }
+    return texts.join('\n')
   }
   return undefined
 }
@@ -94,27 +90,25 @@ export function shownTextOf(messages: readonly ApiMessage[], id: string | undefi
   return undefined
 }
 
-export const LABEL_REFUSAL =
-  'AskUserQuestion was refused: an option label is only a letter, a number, or ' +
-  '"Option N". The dialog can cover the reply, so Mike reads each label on its ' +
-  'own. Name what each option does in plain words, such as "Keep the current ' +
-  'fan rule", and call AskUserQuestion again.'
+export const CONTEXT_ITEM = 'the context Mike needs to answer it'
+export const RECOMMENDATION_ITEM = 'one sentence that names the recommended option and its grade'
+export const POINTED_TABLE_ITEM = 'the table the question points at'
 
-export const FORWARD_REFUSAL =
-  'AskUserQuestion was refused: this turn forwards a decision a sub-agent ' +
-  'handed back, and this reply does not render its options. Mike cannot see ' +
-  'the hand-back. Render the options in prose above the call first: one table ' +
-  'with the columns Option, Pros, Cons, and Grade, with one row per option, ' +
-  'then the sentence that names the recommendation and its grade. Then call ' +
-  'AskUserQuestion again.'
+export const tableItem = (rows: number): string =>
+  `one options table with the columns Option, Pros, Cons and Grade, a separator row, and ${rows === 1 ? 'a row' : `a row for each of its ${rows} options`}`
 
-export const unshownReason = (refs: readonly string[]): string =>
-  `AskUserQuestion was refused: the question refers to ${refs.join(', ')}, which ` +
-  'the visible text of this reply does not show. Mike sees only that text, ' +
-  "never a sub-agent's hand-back. Render it in prose above the call first: the " +
-  'options table with the columns Option, Pros, Cons, and Grade, with one row ' +
-  'per option, then the sentence that names the recommendation. Then call ' +
-  'AskUserQuestion again, with labels that say what each option does.'
+export const idsItem = (ids: readonly string[]): string =>
+  `a line or table row that starts with each of ${ids.map(id => `option ${id}`).join(', ')}, such as "${ids[0] ?? 'A'}: <what it does>"`
+
+export const contextRefusalOf = (items: readonly string[], isForwarding: boolean): string =>
+  [
+    'AskUserQuestion was refused: the question leans on context it does not carry, and the prose directly above the call does not show that context.',
+    'Mike may read the dialog without the reply, so fix one of two things.',
+    'Either make the question carry it: give each option a label that says what it does, put its grade (such as "All met" or "AC2 partly met") and any warning in its description, and refer to no option, table or grade shown elsewhere.',
+    `Or write this in prose directly above the call, in the same message as the call, after this refusal: ${items.join('; ')}.`,
+    ...(isForwarding ? ["Mike never sees a sub-agent's hand-back. If you lack the context, ask that sub-agent through SendMessage first."] : []),
+    'Then call AskUserQuestion again.',
+  ].join(' ')
 
 type AskOption = { label?: unknown; description?: unknown }
 type AskQuestion = { question?: unknown; options?: unknown }
@@ -151,27 +145,46 @@ function tableRowsOf(shown: string, isGraded: boolean): number {
   return best
 }
 
-export function unshownOf(questions: unknown, shown: string, isForwarding: boolean): string | undefined {
-  if (!Array.isArray(questions)) return undefined
-  const asked = questions as AskQuestion[]
-  if (asked.some(question => optionsOf(question).some(option => typeof option?.label === 'string' && BARE_LABEL.test(option.label)))) return LABEL_REFUSAL
-  const text = asked.flatMap(textsOf).join('\n')
-  const ids = [...text.matchAll(OPTION_IDS)].flatMap(match => (match[1] ?? '').match(/[A-Z]|\d+/g) ?? [])
-  const letters = [...text.matchAll(LETTER_IDS)].flatMap(match => match[0].match(/[A-E]/g) ?? [])
-  const refs = [...new Set([...ids, ...letters])].filter(id => !isItemFor(shown, id)).map(id => `option ${id}`)
-  if (TABLE_REF.test(text) && tableRowsOf(shown, false) === 0) refs.push('a table')
-  if ((GRADE_REF.test(text) || AGENT_REF.test(text)) && tableRowsOf(shown, true) === 0) refs.push("a sub-agent's graded options")
-  if (refs.length > 0) return unshownReason(refs)
-  const isDecision = (question: AskQuestion) => {
-    const options = optionsOf(question)
-    return options.length >= 3 || options.some(option => typeof option?.description === 'string' && GRADE.test(option.description))
-  }
-  const decisions = asked.filter(isDecision)
-  if (!isForwarding || decisions.length === 0) return undefined
-  const isRendered = decisions.every(question => tableRowsOf(shown, true) >= optionsOf(question).length) && /\brecommend/i.test(shown)
-  return isRendered ? undefined : FORWARD_REFUSAL
+const bareIdOf = (label: unknown): string | undefined =>
+  typeof label === 'string' && BARE_LABEL.test(label) ? label.replace(/option|\(recommended\)/gi, '').match(/[a-z]|\d+/i)?.[0]?.toUpperCase() : undefined
+
+const isDecision = (question: AskQuestion): boolean => {
+  const options = optionsOf(question)
+  return options.length >= 3 || options.some(option => typeof option?.description === 'string' && GRADE.test(option.description))
 }
 
+const refsOf = (asked: readonly AskQuestion[]): { ids: string[]; isTable: boolean; isGraded: boolean } => {
+  const text = asked.flatMap(textsOf).join('\n')
+  const labels = asked.flatMap(question => optionsOf(question).map(option => bareIdOf(option?.label))).filter((id): id is string => id !== undefined)
+  const ids = [...text.matchAll(OPTION_IDS)].flatMap(match => (match[1] ?? '').match(/[A-Z]|\d+/g) ?? [])
+  const letters = [...text.matchAll(LETTER_IDS)].flatMap(match => match[0].match(/[A-E]/g) ?? [])
+  return { ids: [...new Set([...labels, ...ids, ...letters])], isTable: TABLE_REF.test(text), isGraded: GRADE_REF.test(text) || AGENT_REF.test(text) }
+}
+
+export function isSelfContained(questions: unknown): boolean {
+  if (!Array.isArray(questions) || questions.length === 0) return false
+  const asked = questions as AskQuestion[]
+  const isCarried = (option: AskOption) =>
+    typeof option?.label === 'string' && option.label.trim() !== '' && bareIdOf(option.label) === undefined && typeof option?.description === 'string' && GRADE.test(option.description)
+  const refs = refsOf(asked)
+  return asked.every(question => optionsOf(question).length > 0 && optionsOf(question).every(isCarried)) && refs.ids.length === 0 && !refs.isTable && !refs.isGraded
+}
+
+export function questionRefusalOf(questions: unknown, above: string, isForwarding: boolean): string | undefined {
+  if (!Array.isArray(questions) || isSelfContained(questions)) return undefined
+  const asked = questions as AskQuestion[]
+  const refs = refsOf(asked)
+  const items: string[] = []
+  const unshown = refs.ids.filter(id => !isItemFor(above, id))
+  if (unshown.length > 0) items.push(idsItem(unshown))
+  if (refs.isTable && tableRowsOf(above, false) === 0) items.push(POINTED_TABLE_ITEM)
+  const decisions = isForwarding ? asked.filter(isDecision) : []
+  const rows = Math.max(refs.isGraded ? 1 : 0, ...decisions.map(question => optionsOf(question).length))
+  if (rows > 0 && tableRowsOf(above, true) < rows) items.push(tableItem(rows))
+  if (decisions.length > 0 && !/\brecommend/i.test(above)) items.push(RECOMMENDATION_ITEM)
+  if (isForwarding && items.length === 0 && above.trim() === '') items.push(CONTEXT_ITEM)
+  return items.length === 0 ? undefined : contextRefusalOf(items, isForwarding)
+}
 const DECISION = /\b(decide|decision|decisions|choose|must pick|blocked on|needs? (your|mike's|his) (call|answer|input|pick))\b/i
 
 const asksMike = (handBack: string): boolean => {

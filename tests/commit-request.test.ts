@@ -13,7 +13,6 @@ import {
   UNREAD_TREE_REFUSAL,
   UNREAD_LINE_REFUSAL,
   agentReleaseRefusalOf,
-  isAskableRelease,
   changesIndexBeside,
   leftOutOf,
   leftOutRefusal,
@@ -23,18 +22,11 @@ import {
   shapeOf,
   unnamedOf,
   unreadReleasesOf,
-  declinedRefusal,
 } from '../hooks/mods/commit-approval'
 
-const DECLINED = {
-  commit: declinedRefusal(['commit']),
-  push: declinedRefusal(['push']),
-  merge: declinedRefusal(['merge']),
-  release: declinedRefusal(['release']),
-}
 import { PLAIN_REFUSAL, SUBAGENT_REFUSAL } from '../hooks/mods/commit-guard'
 import type { Bench } from './bench'
-import { HOME, PERSON, bench, start } from './bench'
+import { ASKS as DECLINED, HOME, PERSON, bench, exactly, start } from './bench'
 import { ID_RECORDER } from './harness'
 
 const DIRS: Record<string, string> = { '/': '/', '/repo': '/repo', '/repo/sub': '/repo/sub', '/repo/link': '/other', '/wt': '/wt', '/other': '/other', '/repo/.git': '/repo/.git', '/other/.git': '/other/.git' }
@@ -384,24 +376,24 @@ describe('AC4: an action the prompt did not name is still refused, and the appro
   test('"commit" approves no push and no release', async ($, on) => {
     const b = await typed($, on, 'commit it')
     expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
-    expect(await bash($, b, 'git push')).toBe(DECLINED.push)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 Y." && git push')).toBe(DECLINED.push)
-    expect(await bash($, b, 'gh release create 1.0.0')).toBe(DECLINED.release)
+    expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 Y." && git push')).toMatch(DECLINED.push)
+    expect(await bash($, b, 'gh release create 1.0.0')).toMatch(DECLINED.release)
     expect(await asked($, 'git push')).toBeUndefined()
     expect(await asked($, 'gh release create 1.0.0')).toBeUndefined()
   })
 
   test('"push" approves no commit', async ($, on) => {
     const b = await typed($, on, 'push')
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(DECLINED.commit)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
     expect(await asked($, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
   })
 
   test('a release needs a typed request: a pick does not approve one', async ($, on) => {
     const b = await typed($, on, 'my review is done')
     await pick($, b)
-    expect(await bash($, b, 'gh release create 1.0.0')).toBe(DECLINED.release)
-    expect(await bash($, b, 'gh api -X POST repos/o/r/releases -f tag_name=1.0.0')).toBe(DECLINED.release)
+    expect(await bash($, b, 'gh release create 1.0.0')).toMatch(DECLINED.release)
+    expect(await bash($, b, 'gh api -X POST repos/o/r/releases -f tag_name=1.0.0')).toMatch(DECLINED.release)
     expect(await bash($, b, 'gh release view 1.0.0')).toBeUndefined()
     expect(await bash($, b, 'gh api repos/o/r/releases/latest')).toBeUndefined()
   })
@@ -462,8 +454,8 @@ describe('AC4: an action the prompt did not name is still refused, and the appro
     test(`a negated, deferred or question-form prompt approves nothing: ${JSON.stringify(text)}`, async ($, on) => {
       expect(requestedOf(text)).toEqual([])
       const b = await typed($, on, text)
-      expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(DECLINED.commit)
-      expect(await bash($, b, 'git push')).toBe(DECLINED.push)
+      expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
+      expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
       expect(await asked($, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
     })
   }
@@ -496,11 +488,11 @@ describe('AC4: an action the prompt did not name is still refused, and the appro
   test("Mike's next prompt ends the approval, folded into the turn or not", async ($, on) => {
     const b = await typed($, on, 'commit and push')
     await $.prompt.submit(prompt('thanks'))
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(DECLINED.commit)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
     expect(await asked($, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
     await $.prompt.submit(prompt('commit and push'))
     await $.prompt.submit(prompt('one more thing', PERSON, 'running'))
-    expect(await bash($, b, 'git push')).toBe(DECLINED.push)
+    expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
   })
 
   test('a new turn of any other origin ends it, and one folded into the turn keeps it', async ($, on) => {
@@ -508,13 +500,13 @@ describe('AC4: an action the prompt did not name is still refused, and the appro
     await $.prompt.submit(prompt('agent finished', { kind: 'task-notification' }, 'running'))
     expect(await bash($, b, 'git push')).toBeUndefined()
     await $.prompt.submit(prompt('agent finished', { kind: 'task-notification' }))
-    expect(await bash($, b, 'git push')).toBe(DECLINED.push)
+    expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
   })
 
   test('/clear ends it', async ($, on) => {
     const b = await typed($, on, 'commit it')
     await $.session.end({ reason: 'clear', sessionId: 's' } as never)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(DECLINED.commit)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
   })
 
   for (const line of [
@@ -611,9 +603,9 @@ describe('AC5: no other turn and no sub-agent gains an approval', () => {
       const b = bench(on)
       await $.session.start(start())
       await $.prompt.submit(prompt('commit and push and release', origin))
-      expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(origin.kind === 'task-notification' ? DECLINED.commit : COMMIT_REFUSAL)
-      expect(await bash($, b, 'git push')).toBe(origin.kind === 'task-notification' ? DECLINED.push : PUSH_REFUSAL)
-      expect(await bash($, b, 'gh release create 1.0.0')).toBe(DECLINED.release)
+      expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(origin.kind === 'task-notification' ? DECLINED.commit : exactly(COMMIT_REFUSAL))
+      expect(await bash($, b, 'git push')).toMatch(origin.kind === 'task-notification' ? DECLINED.push : exactly(PUSH_REFUSAL))
+      expect(await bash($, b, 'gh release create 1.0.0')).toMatch(DECLINED.release)
       expect(await asked($, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
     })
   }
@@ -663,9 +655,10 @@ const RELEASE_SPELLINGS = [
 
 describe('AC5: a sub-agent or a pipeline run cannot publish a release', () => {
   for (const line of RELEASE_SPELLINGS) {
-    test(`a sub-agent's plain release asks Mike, and a hidden one is refused, inside Mike's release request: ${JSON.stringify(line)}`, async ($, on) => {
+    test(`a sub-agent's release is refused in every spelling, inside Mike's release request: ${JSON.stringify(line)}`, async ($, on) => {
       const b = project(await typed($, on, 'commit, push and release'))
-      expectDenied(line, await bash($, b, line, 'a1'), isAskableRelease(line) ? DECLINED.release : AGENT_RELEASE_REFUSAL)
+      expectDenied(line, await bash($, b, line, 'a1'), AGENT_RELEASE_REFUSAL)
+      expect(b.inputs.filter(input => input.tool === 'AskUserQuestion')).toEqual([])
     })
 
     test(`a pipeline run's release is refused: ${JSON.stringify(line)}`, async ($, on) => {
@@ -852,7 +845,7 @@ describe('AC29 to AC34: the agent guard defends against mistakes, in every unatt
   for (const [lane, env] of LANES) {
     test(`${lane}: releases, aliases, extensions and unread graphql are refused`, async ($, on) => {
       const run = await inLane($, on, env)
-      for (const line of AGENT_REFUSED) expectDenied(line, await run(line), env === undefined && isAskableRelease(line) ? DECLINED.release : AGENT_RELEASE_REFUSAL)
+      for (const line of AGENT_REFUSED) expectDenied(line, await run(line), AGENT_RELEASE_REFUSAL)
     })
 
     test(`${lane}: pipeline reads, an attached -R and a brace that is not a command run`, async ($, on) => {
@@ -869,7 +862,7 @@ describe('AC29 to AC34: the agent guard defends against mistakes, in every unatt
   test("AC36: Mike's main session runs a gh api write to an expanding endpoint with no release request, as at f94ba45", async ($, on) => {
     const b = project(await typed($, on, 'commit and push'))
     for (const line of MAIN_API_WRITES) expect([line, await bash($, b, line)]).toEqual([line, undefined])
-    for (const line of ['gh release create v1', ...SHAPED_RELEASES.slice(1), '{g,}h release create v1']) expect([line, await bash($, b, line)]).toEqual([line, DECLINED.release])
+    for (const line of ['gh release create v1', ...SHAPED_RELEASES.slice(1), '{g,}h release create v1']) expectDenied(line, await bash($, b, line), DECLINED.release)
   })
 
   test("Mike's main session runs the pipeline reads and an unread line with no request", async ($, on) => {
@@ -889,7 +882,7 @@ describe('AC35: the hidden spellings Holmes listed, at unit level and in the mai
   for (const line of SPELLED) {
     test(`T2: the main session refuses ${JSON.stringify(line)} with no request, and gives no allow under one`, async ($, on) => {
       const b = project(await typed($, on, 'commit and push'))
-      expect(await bash($, b, line)).toBe(DECLINED.release)
+      expect(await bash($, b, line)).toMatch(DECLINED.release)
       await $.prompt.submit(prompt('release it'))
       expect(await asked($, line)).toBeUndefined()
     })
@@ -928,9 +921,11 @@ const OTHER_GUARDS: ReadonlyMap<string, string> = new Map([
   ['gh api graphql -F query=@q.graphql', PROSE_GUARD],
 ])
 
-function expectDenied(line: string, deny: string | undefined, expected: string): void {
+function expectDenied(line: string, deny: string | undefined, expected: string | RegExp): void {
   const guard = OTHER_GUARDS.get(line)
-  expect([line, guard === undefined ? deny : deny?.startsWith(guard)]).toEqual([line, guard === undefined ? expected : true])
+  if (guard !== undefined) expect([line, deny?.startsWith(guard)]).toEqual([line, true])
+  else if (typeof expected === 'string') expect([line, deny]).toEqual([line, expected])
+  else expect([line, deny, expected.test(deny ?? '')]).toEqual([line, deny, true])
 }
 
 function expectRuns(line: string, deny: string | undefined): void {
@@ -1007,9 +1002,9 @@ describe("AC6: Mike's main session keeps the release rule", () => {
     const b = project(await typed($, on, 'release it'))
     expect(await bash($, b, 'gh release create 0.49.0 --notes x')).toBeUndefined()
     await $.prompt.submit(prompt('looks good'))
-    expect(await bash($, b, 'gh release create 0.49.0 --notes x')).toBe(DECLINED.release)
+    expect(await bash($, b, 'gh release create 0.49.0 --notes x')).toMatch(DECLINED.release)
     await pick($, b)
-    expect(await bash($, b, 'gh release create 0.49.0 --notes x')).toBe(DECLINED.release)
+    expect(await bash($, b, 'gh release create 0.49.0 --notes x')).toMatch(DECLINED.release)
   })
 
   test('a release line in the main session never gets the sub-agent refusal', async ($, on) => {
@@ -1027,7 +1022,7 @@ describe('AC8: a "Commit it" pick lets its commit run with no permission dialog,
     expect(await asked($, 'git push')).toBeUndefined()
     expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
     expect(await asked($, 'git push')).toBeUndefined()
-    expect(await bash($, b, 'git push')).toBe(DECLINED.push)
+    expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
     await pick($, b, PUSH_QUESTION, 'Push')
     expect(await asked($, 'git push')).toEqual(ALLOW)
     expect(await asked($, 'git push origin main')).toEqual(ALLOW)
@@ -1065,7 +1060,7 @@ describe('AC9: a pick approves one plain commit, and nothing more', () => {
     const b = project(await typed($, on, 'review done'))
     await pick($, b)
     expect(await asked($, 'git commit -m "fix: 🐛 X." && git push')).toBeUndefined()
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X." && git push')).toBe(DECLINED.push)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X." && git push')).toMatch(DECLINED.push)
     expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
     expect(await asked($, 'git commit -m "fix: 🐛 X." && git push')).toBeUndefined()
     expect(await asked($, 'git push')).toBeUndefined()

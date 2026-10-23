@@ -65,13 +65,11 @@ has "rule 3 defines a cost by the reader"           'worse off for'
 has "rule 3 keeps a fix out of the cost column"     'correctness fix is never filed as a cost'
 has "rule 4 routes every decision to the tool"     'each decision Mike must make, and each blocking question, to him through `AskUserQuestion`'
 has "rule 4 puts grade and warning in the option"   "option's description carries its grade and any warning"
-# Every question goes through the tool, with its context right above the call.
-# The prose fallback was retired on 2026-10-05, and hooks/register.ts enforces
-# the rule: a prose question gets one re-prompt, and a bare call is refused.
 has "rule 4 leaves no question in prose"            'never leave one in prose'
 has "rule 4 puts the context above the call"        'context the question needs in prose immediately above the call, in the same message'
+has "rule 4 lets a question that carries it all stand alone" 'A question that carries all of it needs no prose above it'
 has "rule 4 fits a question with no fixed choices"  'no fixed choices still fits the tool, because the dialog always offers Other'
-has "rule 4 renders every option before the ask"    'render in that reply every option the question names, with its grade and your recommendation'
+has "rule 4 renders every option it leans on"       'needs it in the prose right above the call: every option the question names, with its grade and your recommendation'
 has "rule 4 includes a sub-agent's options"         'options a sub-agent handed back, because Mike never sees the hand-back'
 has "rule 4 names options in plain words"           "label names what the option does in plain words, never only a letter or \"Option N\""
 has "rule 5 requires a verdict and a recommendation" 'verdict and a recommendation'

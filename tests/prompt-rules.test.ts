@@ -443,11 +443,21 @@ describe('the working rules on commits and code comments', () => {
     expect(RULES).toContain('Run no checkout, switch, stash or reset between the pick and the commit.')
     expect(RULES).toContain('Once the commit has landed, ask about the push in a question of its own.')
     expect(RULES).toContain("How a branch lands, a pull request or a local merge into the default branch, is the user's choice")
-    expect(RULES).toContain('A pick never approves a release. Only the user\'s own next prompt ends a pick not yet used.')
+    expect(RULES).toContain('its question named. Only the user\'s own next prompt ends a pick not yet used.')
+    expect(RULES).not.toContain('A pick never approves a release.')
     expect(RULES).not.toContain('the push of that commit')
     expect(RULES).not.toMatch(/typed "commit it"[^.]*does not count/i)
     expect(RULES).toContain('Run each approved action as a plain line, and no permission prompt opens')
     expect(RULES).toContain('`git -C <path>` is fine when the path is inside this project or one of its worktrees.')
+  })
+
+  test('an unapproved gated action is denied, and the deny sends the question through AskUserQuestion', () => {
+    expect(RULES).toContain('that no request or pick approved is denied. No hook dialog ever approves one.')
+    expect(RULES).toContain('Ask the user that question on its own, never beside another, and name each of them in it.')
+    expect(RULES).toContain('write the line in the question in backticks and offer "Run it": that pick approves that one line, once.')
+    expect(RULES).toContain('A sub-agent, a `-p` run, the pipeline and an agent run cannot ask, so each of them is refused a release in any spelling.')
+    expect(RULES).not.toContain('approval dialog')
+    expect(RULES).not.toContain('ten minutes')
   })
 
   test('a plan file is written with no question and no prompt', () => {

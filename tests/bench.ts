@@ -67,8 +67,6 @@ export type Bench = {
   // HEAD as a commit would, and whether it reports an error.
   onBash?: (command: string) => { isError?: boolean } | void
   duringBash?: (command: string) => Promise<void>
-  hangDialog?: boolean
-  answerAfterMs?: number
   // A deny from beneath the module, as a settings rule or a person would give:
   // the reason for a call this refuses, else undefined.
   denyBeneath?: (tool: string) => string | undefined
@@ -250,8 +248,6 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     b.calls.push({ tool: e.tool, legacyExists: b.files.has(LEGACY) && !b.links.has(LEGACY) })
     b.inputs.push({ ...e })
     if (e.tool === 'AskUserQuestion') {
-      if (b.hangDialog === true) return new Promise<never>(() => undefined)
-      if (b.answerAfterMs !== undefined) await b.clock.sleep(b.answerAfterMs)
       if (b.pick === undefined) throw new Error('dismissed')
       const pick = b.pick
       const answers = Object.fromEntries(e.questions.map(question => [question.question, pick]))
@@ -277,6 +273,22 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     return (isDialog && beneath.decision === undefined ? { ...beneath, decision: { behavior: 'allow' } } : beneath) as never
   })
   return b
+}
+
+const escaped = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+export const asks = (name: string): RegExp => new RegExp(`^This ${escaped(name)} was refused: Mike has not approved it\\. Ask him through AskUserQuestion, with this question alone in its call\\. `)
+
+export const exactly = (text: string): RegExp => new RegExp(`^${escaped(text)}$`)
+
+export const ASKS = {
+  commit: asks('git commit'),
+  push: asks('git push'),
+  merge: asks('merge into the default branch'),
+  release: asks('release'),
+  rewrite: asks('history rewrite'),
+  alias: asks('gh alias set'),
+  api: asks('GitHub API write to the default branch'),
 }
 
 // The last line drawn.

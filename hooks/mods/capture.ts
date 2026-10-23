@@ -121,11 +121,6 @@ const isLine = (value: unknown, max: number): value is string => isText(value, m
 export const isNotFound = (result: { isError: boolean; content: readonly { type: string; text?: string }[] }): boolean =>
   result.isError && result.content.some(block => typeof block.text === 'string' && /^Document not found:/.test(block.text.trimStart()))
 
-// What a `write` did, read from the `created` flag in its answer. The memory
-// MCP's write replaces any note at its path, so `created: false` means a note
-// was there after all: another session wrote it between the read and this
-// write, and this write replaced it. That is an error, never a save. An answer
-// with no readable flag is not taken as a save either.
 export type WriteOutcome = 'created' | 'replaced' | 'unconfirmed'
 export function writeOutcome(result: { isError: boolean; content: readonly { type: string; text?: string }[] }): WriteOutcome {
   if (result.isError) return 'unconfirmed'

@@ -4,37 +4,52 @@
 #
 # The memory MCP launcher (hooks/mcp-memory.sh) installs the server from a wheel
 # bundled under hooks/wheels/. That wheel travels with the plugin: shipping a
-# new wheel is what makes a plugin update auto-upgrade the server. This script
-# rebuilds that wheel from a local fork of markdown-vault-mcp and drops it into
-# hooks/wheels/, removing any older wheel so exactly one is bundled.
-#
-# Usage:
-#   scripts/build-memory-wheel.sh [FORK_PATH]
-#
-#   FORK_PATH  Path to the markdown-vault-mcp fork checkout to build from.
-#              Defaults to /Users/mike/Developer/forks/markdown-vault-mcp.
-#
-# Requires: uv (https://docs.astral.sh/uv/).
-#
-# Exit codes: 0 ok · 1 preflight failure (missing uv, bad fork path, no wheel).
+# new wheel is what makes a plugin update auto-upgrade the server.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 WHEELS_DIR="$REPO_ROOT/hooks/wheels"
+UPSTREAM_URL="https://github.com/pvliesdonk/markdown-vault-mcp.git"
+DEFAULT_TAG="v5.1.0"
 
-FORK_PATH="${1:-/Users/mike/Developer/forks/markdown-vault-mcp}"
+usage() {
+  echo "Usage: scripts/build-memory-wheel.sh [TAG]" 1>&2
+  echo "       scripts/build-memory-wheel.sh --from CHECKOUT_PATH" 1>&2
+  echo "Builds the bundled markdown-vault-mcp wheel from $UPSTREAM_URL at TAG (default $DEFAULT_TAG)," 1>&2
+  echo "or from a local checkout such as a fork. Needs uv, and git for a tag build." 1>&2
+}
+
+case "${1:-}" in -h|--help) usage; exit 0 ;; esac
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "ERROR: uv is not on PATH. Install it from https://docs.astral.sh/uv/." 1>&2
   exit 1
 fi
 
-if [ ! -f "$FORK_PATH/pyproject.toml" ]; then
-  echo "ERROR: no pyproject.toml under fork path '$FORK_PATH'." 1>&2
-  echo "Pass the markdown-vault-mcp fork checkout path as the first argument." 1>&2
-  exit 1
+if [ "${1:-}" = "--from" ]; then
+  SOURCE="${2:-}"
+  if [ ! -f "$SOURCE/pyproject.toml" ]; then
+    echo "ERROR: no pyproject.toml under checkout path '$SOURCE'." 1>&2
+    usage
+    exit 1
+  fi
+  LABEL="$SOURCE"
+else
+  TAG="${1:-$DEFAULT_TAG}"
+  if ! command -v git >/dev/null 2>&1; then
+    echo "ERROR: git is not on PATH." 1>&2
+    exit 1
+  fi
+  CLONE="$(mktemp -d)"
+  trap 'rm -rf "$CLONE"' EXIT
+  if ! git clone --quiet --depth 1 --branch "$TAG" "$UPSTREAM_URL" "$CLONE/src" 1>&2; then
+    echo "ERROR: could not clone tag '$TAG' from $UPSTREAM_URL." 1>&2
+    exit 1
+  fi
+  SOURCE="$CLONE/src"
+  LABEL="$UPSTREAM_URL at $TAG"
 fi
 
 mkdir -p "$WHEELS_DIR"
@@ -44,8 +59,8 @@ mkdir -p "$WHEELS_DIR"
 # confusion and keeps the binary footprint minimal.
 rm -f "$WHEELS_DIR"/markdown_vault_mcp-*.whl
 
-echo "Building markdown-vault-mcp wheel from $FORK_PATH into $WHEELS_DIR ..." 1>&2
-uv build --wheel --project "$FORK_PATH" -o "$WHEELS_DIR"
+echo "Building markdown-vault-mcp wheel from $LABEL into $WHEELS_DIR ..." 1>&2
+uv build --wheel --project "$SOURCE" -o "$WHEELS_DIR"
 
 # `uv build` drops a `.gitignore` containing `*` into its output dir. Left in
 # place that would gitignore the very wheel (and .gitkeep) we need to commit,

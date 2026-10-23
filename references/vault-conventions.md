@@ -92,8 +92,10 @@ These fields are indexed for search: `name`, `type`, `tags`, `summary`,
 ## Writing vs editing
 
 - **`write`** — creates a new file or overwrites completely. Use for new
-  documents. It replaces any note already at the path, with no warning, and
-  two writers often record the same finding at the same moment. So before
+  documents. It refuses to replace a note already at the path unless the
+  call passes the `etag` of a `read` of it as `if_match`. To replace a note on
+  purpose, `read` it just before the `write` and pass that `etag`. Two writers
+  often record the same finding at the same moment. So before
   writing a new path, `read` that exact path or `search` for the note's name.
   If a note is there, `edit` or `append` it instead, or pick another path.
   After the write, check `created` in its answer: `true` for a new file,

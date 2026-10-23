@@ -117,11 +117,6 @@ memory_load_env() {
   # was dead config (2026-07-08 audit) and left the provider pin to defaults.
   export MARKDOWN_VAULT_MCP_EMBEDDING_PROVIDER="fastembed"
 
-  # Curated-ranking options (fork feat/curated-ranking, bundled wheel ≥3.1.0):
-  # vault convention titles notes via `name:`; hand-written `summary:` text is
-  # searchable and boosted; the sessions/ corpus (majority of docs) is
-  # down-weighted so curated notes win decision-shaped queries. All five are
-  # no-ops on a server without the feature.
   export MARKDOWN_VAULT_MCP_TITLE_FIELD="name"
   export MARKDOWN_VAULT_MCP_SEARCHABLE_FIELDS="summary"
   export MARKDOWN_VAULT_MCP_EMBED_CONTEXT="true"

@@ -6,7 +6,7 @@
 # Memory capture is code, and tests/capture.test.ts covers it.
 # Run directly: ./test-vault-write-rule.sh
 #
-# The memory MCP's write replaces any note at its path. On 2026-10-09 core's
+# On 2026-10-09 core's
 # session replaced a note dev-team had written 20 seconds earlier, and the
 # write's created:false went unread. Each writer below must read or search a
 # new path before it writes, and treat an unintended created:false as an error.
@@ -38,6 +38,7 @@ echo "summary-writer, step 3 (the summary, and every other new note):"
 STEP3="$(section "$AGENT" '^### 3\.' '^### 4\.')"
 has "reads the summary path before it writes"        "$STEP3" 'Read the path before you write it.'
 has "replaces only this session's own summary"       "$STEP3" 'only when its frontmatter `session_id` is yours'
+has "replaces it with the read's etag"               "$STEP3" 'Pass that read'"'"'s `etag` to the `write` as `if_match`'
 has "a created:false after an empty read is an error" "$STEP3" 'summary-writer: error sid={sid} replaced={path}'
 has "every other new note is read or searched first" "$STEP3" '`read` the exact path, or `search` for the note'"'"'s name'
 has "a replaced decision, page or index is reported" "$STEP3" 'add `replaced={path}` to your step 7 line'
@@ -96,6 +97,7 @@ echo "memory-lint (a rescue, README.md, the audit report):"
 LINT="$ROOT/skills/memory-lint/SKILL.md"
 RESCUE="$(grep -F 'Write via the MCP `write` tool' "$LINT")"
 has "a rescue is an intended replace: created must be false" "$RESCUE" 'it must be `false`. `true` means the file was gone'
+has "a rescue passes the read's etag"                "$RESCUE" 'pass its `etag` as `if_match`'
 LREADME="$(grep -F 'If `README.md` doesn'"'"'t exist at all' "$LINT")"
 has "README.md is read just before it is created"    "$LREADME" 'by a `read` of `README.md` just before the `write`'
 has "README.md checks created"                       "$LREADME" "$CREATED_ERROR"
@@ -103,9 +105,17 @@ REPORT="$(grep -F 'Write the audit report via MCP `write`' "$LINT")"
 has "the audit report path is read first"            "$REPORT" '`read` that path first'
 has "the audit report checks created"                "$REPORT" "$CREATED_ERROR"
 
+echo "log-now, step 2 (the manual summary):"
+LOGNOW="$(section "$ROOT/skills/log-now/SKILL.md" '^## Step 2' '^## Step 3')"
+has "reads the summary path before it writes"        "$LOGNOW" '`read` the summary path first'
+has "replaces only this session's own summary"       "$LOGNOW" 'only when its frontmatter `session_id` is this session'"'"'s'
+has "replaces it with the read's etag"               "$LOGNOW" 'Pass that read'"'"'s `etag` to the `write` as `if_match`'
+has "any other note is a collision"                  "$LOGNOW" 'Any other note at that path is a collision'
+
 echo "the shared convention (vault-conventions):"
 CONV="$(section "$ROOT/references/vault-conventions.md" '^## Writing vs editing' '^## Vault structure')"
-has "write replaces any note at its path"            "$CONV" 'It replaces any note already at the path'
+has "write refuses a replace without an etag"        "$CONV" 'It refuses to replace a note already at the path unless the'
+has "an intended replace passes the read's etag"     "$CONV" 'pass that `etag`'
 has "read or search a new path first"                "$CONV" '`read` that exact path or `search`'
 has "created:false where you meant to create is an error" "$CONV" '`false` where you meant to create is an error'
 

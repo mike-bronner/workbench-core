@@ -24,18 +24,11 @@ import {
   pickOf,
   readLine,
   writesOf,
-  declinedRefusal,
 } from '../hooks/mods/commit-approval'
 
-const DECLINED = {
-  commit: declinedRefusal(['commit']),
-  push: declinedRefusal(['push']),
-  merge: declinedRefusal(['merge']),
-  release: declinedRefusal(['release']),
-}
 import { PLAIN_REFUSAL, SUBAGENT_REFUSAL } from '../hooks/mods/commit-guard'
 import type { Bench } from './bench'
-import { HOME, PERSON, bench, start } from './bench'
+import { ASKS as DECLINED, HOME, PERSON, bench, exactly, start } from './bench'
 import { hiddenCommandRefusal } from '../hooks/mods/guards'
 import { parseShell } from '../hooks/mods/shell'
 import { CAUGHT, LET_THROUGH } from './commit-corpus'
@@ -105,8 +98,8 @@ describe('AC1: one "Commit it" pick allows one commit, and no push', () => {
   test('with no pick, a commit and a push are refused, with a reason to ask first', async ($, on) => {
     const b = bench(on)
     await session($)
-    expect(await bash($, b, 'git commit -m "feat: ✨ Add the gate."')).toBe(DECLINED.commit)
-    expect(await bash($, b, 'git push origin main')).toBe(DECLINED.push)
+    expect(await bash($, b, 'git commit -m "feat: ✨ Add the gate."')).toMatch(DECLINED.commit)
+    expect(await bash($, b, 'git push origin main')).toMatch(DECLINED.push)
     expect(COMMIT_REFUSAL).toContain('Ask first')
     expect(COMMIT_REFUSAL).toContain('Commit it')
     expect(COMMIT_REFUSAL).toContain('AskUserQuestion')
@@ -121,8 +114,8 @@ describe('AC1: one "Commit it" pick allows one commit, and no push', () => {
     await session($)
     await pick($, b)
     expect(await bash($, b, 'git commit -m "feat: ✨ Add the gate."')).toBeUndefined()
-    expect(await bash($, b, 'git commit -m "fix: 🐛 One more."')).toBe(DECLINED.commit)
-    expect(await bash($, b, 'git push')).toBe(DECLINED.push)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 One more."')).toMatch(DECLINED.commit)
+    expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
   })
 
   test('a push pick allows one push, and no commit', async ($, on) => {
@@ -131,16 +124,16 @@ describe('AC1: one "Commit it" pick allows one commit, and no push', () => {
     await pick($, b)
     expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
     await pushPick($, b)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toBe(DECLINED.commit)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toMatch(DECLINED.commit)
     expect(await bash($, b, 'git push')).toBeUndefined()
-    expect(await bash($, b, 'git push')).toBe(DECLINED.push)
+    expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
   })
 
   test('a push before the approved commit is refused, and the pick still allows the commit', async ($, on) => {
     const b = bench(on)
     await session($)
     await pick($, b)
-    expect(await bash($, b, 'git push')).toBe(DECLINED.push)
+    expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
     expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
   })
 
@@ -148,7 +141,7 @@ describe('AC1: one "Commit it" pick allows one commit, and no push', () => {
     const b = bench(on)
     await session($)
     await pick($, b)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X." && git push')).toBe(DECLINED.push)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X." && git push')).toMatch(DECLINED.push)
     expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
   })
 
@@ -171,7 +164,7 @@ describe('AC1: one "Commit it" pick allows one commit, and no push', () => {
     expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
     r.commitFails = false
     expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
-    expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toBe(DECLINED.commit)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toMatch(DECLINED.commit)
   })
 
   for (const line of ['git commit -m "fix: 🐛 X." | tail -1', 'git commit -m "fix: 🐛 X."; echo done', 'git commit -m "fix: 🐛 X." || true']) {
@@ -183,7 +176,7 @@ describe('AC1: one "Commit it" pick allows one commit, and no push', () => {
       await session($)
       await pick($, b)
       expect(await bash($, b, line)).toBeUndefined()
-      expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toBe(DECLINED.commit)
+      expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toMatch(DECLINED.commit)
     })
   }
 
@@ -198,7 +191,7 @@ describe('AC1: one "Commit it" pick allows one commit, and no push', () => {
     await session($)
     await pick($, b)
     expect(await bash($, b, './scripts/release.sh && git commit -m "fix: 🐛 X."')).toBeUndefined()
-    expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toBe(DECLINED.commit)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toMatch(DECLINED.commit)
   })
 
   for (const line of [
@@ -404,7 +397,7 @@ describe('AC1: one "Commit it" pick allows one commit, and no push', () => {
     await session($)
     await pick($, b)
     expect(await bash($, b, 'git commit -m "fix: 🐛 X." && false')).toBeUndefined()
-    expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toBe(DECLINED.commit)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toMatch(DECLINED.commit)
   })
 
   test('a push that fails can be retried under its pick, and one that lands uses the pick up', async ($, on) => {
@@ -418,7 +411,7 @@ describe('AC1: one "Commit it" pick allows one commit, and no push', () => {
     expect(await bash($, b, 'git push 2>&1 | tail -3')).toBeUndefined()
     r.pushFails = false
     expect(await bash($, b, 'git push')).toBeUndefined()
-    expect(await bash($, b, 'git push')).toBe(DECLINED.push)
+    expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
   })
 
   test('a background commit cannot be watched, so it uses the pick', async ($, on) => {
@@ -428,7 +421,7 @@ describe('AC1: one "Commit it" pick allows one commit, and no push', () => {
     await pick($, b)
     const result = await $.tool.call({ tool: 'Bash', command: 'git commit -m "fix: 🐛 X."', run_in_background: true } as never)
     expect(result.deny).toBeUndefined()
-    expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toBe(DECLINED.commit)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toMatch(DECLINED.commit)
   })
 
   test('HEAD is read where the line commits: after its cd, and at its -C', async ($, on) => {
@@ -460,7 +453,7 @@ describe('AC1: one "Commit it" pick allows one commit, and no push', () => {
     await pushPick($, b)
     b.runs.length = 0
     expect(await bash($, b, 'git -C "$(git rev-parse --show-toplevel)" push')).toContain('a branch the gate cannot read')
-    expect(await bash($, b, 'git push')).toBe(DECLINED.push)
+    expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
   })
 
   test('a new pick approves the next commit', async ($, on) => {
@@ -477,7 +470,7 @@ describe('AC1: one "Commit it" pick allows one commit, and no push', () => {
     await session($)
     b.pick = undefined
     await $.tool.call(ask([COMMIT_QUESTION])).catch(() => undefined)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(DECLINED.commit)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
   })
 
   test('/clear ends the approval', async ($, on) => {
@@ -485,7 +478,7 @@ describe('AC1: one "Commit it" pick allows one commit, and no push', () => {
     await session($)
     await pick($, b)
     await $.session.end({ reason: 'clear', sessionId: 's' } as never)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(DECLINED.commit)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
   })
 
   test('every caught line of the corpus is refused with no pick, and every read is let through', async ($, on) => {
@@ -502,9 +495,9 @@ describe('AC2: a pick counts by intent, for exactly one commit', () => {
       const b = bench(on)
       await session($)
       await pick($, b, label, [question('Commit "feat: ✨ Add the gate." on main?', ['Not yet', label])])
-      expect(await bash($, b, 'git push')).toBe(DECLINED.push)
+      expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
       expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
-      expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toBe(DECLINED.commit)
+      expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toMatch(DECLINED.commit)
     })
   }
 
@@ -513,7 +506,7 @@ describe('AC2: a pick counts by intent, for exactly one commit', () => {
       const b = bench(on)
       await session($)
       await pick($, b, label, [question('Commit "feat: ✨ Add the gate." on main?', [label, 'Commit it'])])
-      expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(DECLINED.commit)
+      expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
     })
   }
 
@@ -521,13 +514,13 @@ describe('AC2: a pick counts by intent, for exactly one commit', () => {
     const b = bench(on)
     await session($)
     await pick($, b, 'Commit it', [question('Which approach?', ['Ship', 'Wait'])])
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(DECLINED.commit)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
     b.dialog = { response: 'Commit it' }
     await pick($, b)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(DECLINED.commit)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
     b.dialog = { afkTimeoutMs: 60_000 }
     await pick($, b)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(DECLINED.commit)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
   })
 
   test('pickOf reads the pick by the option it chose, and the question it answers', () => {
@@ -554,15 +547,15 @@ describe('AC3: a commit approval approves no push and no merge, and each gets it
     const b = bench(on)
     await session($)
     await pick($, b)
-    expect(await bash($, b, 'git merge fix/x')).toBe(DECLINED.merge)
-    expect(await bash($, b, 'gh pr merge 12 --squash')).toBe(DECLINED.merge)
+    expect(await bash($, b, 'git merge fix/x')).toMatch(DECLINED.merge)
+    expect(await bash($, b, 'gh pr merge 12 --squash')).toMatch(DECLINED.merge)
     await pushPick($, b)
-    expect(await bash($, b, 'git pull')).toBe(DECLINED.merge)
+    expect(await bash($, b, 'git pull')).toMatch(DECLINED.merge)
     await pick($, b, 'Merge locally', [MERGE_QUESTION])
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(DECLINED.commit)
-    expect(await bash($, b, 'git push')).toBe(DECLINED.push)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
+    expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
     expect(await bash($, b, 'git merge fix/x')).toBeUndefined()
-    expect(await bash($, b, 'git merge fix/y')).toBe(DECLINED.merge)
+    expect(await bash($, b, 'git merge fix/y')).toMatch(DECLINED.merge)
     expect(MERGE_ASK_REFUSAL).toContain('his choice')
   })
 
@@ -578,7 +571,7 @@ describe('AC3: a commit approval approves no push and no merge, and each gets it
       const b = bench(on)
       b.repos['/repo'] = { head: 'c1', pushed: 'c1' }
       await session($)
-      expect(await bash($, b, line)).toBe(DECLINED.merge)
+      expect(await bash($, b, line)).toMatch(DECLINED.merge)
     })
   }
 
@@ -599,8 +592,8 @@ describe('AC3: a commit approval approves no push and no merge, and each gets it
     await session($, 'go ahead and merge the PR')
     expect(await bash($, b, 'gh pr merge 12 --squash')).toBeUndefined()
     await $.prompt.submit(prompt('commit and push'))
-    expect(await bash($, b, 'gh pr merge 12 --squash')).toBe(DECLINED.merge)
-    expect(await bash($, b, 'git merge fix/x')).toBe(DECLINED.merge)
+    expect(await bash($, b, 'gh pr merge 12 --squash')).toMatch(DECLINED.merge)
+    expect(await bash($, b, 'git merge fix/x')).toMatch(DECLINED.merge)
   })
 
   test('a local merge or pull on a feature branch, and an aborted merge, need no merge approval', async ($, on) => {
@@ -611,17 +604,17 @@ describe('AC3: a commit approval approves no push and no merge, and each gets it
     expect(await bash($, b, 'git pull')).toBeUndefined()
     b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'main', originHead: 'main' }
     expect(await bash($, b, 'git merge --abort')).toBeUndefined()
-    expect(await bash($, b, 'git merge fix/x')).toBe(DECLINED.merge)
+    expect(await bash($, b, 'git merge fix/x')).toMatch(DECLINED.merge)
     b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'trunk', originHead: 'trunk' }
-    expect(await bash($, b, 'git merge fix/x')).toBe(DECLINED.merge)
+    expect(await bash($, b, 'git merge fix/x')).toMatch(DECLINED.merge)
   })
 
   test('with no origin/HEAD, the branch HEAD is on counts as the default, so a trunk merge asks', async ($, on) => {
     const b = bench(on)
     b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'trunk' }
     await session($)
-    expect(await bash($, b, 'git merge fix/x')).toBe(DECLINED.merge)
-    expect(await bash($, b, 'git pull')).toBe(DECLINED.merge)
+    expect(await bash($, b, 'git merge fix/x')).toMatch(DECLINED.merge)
+    expect(await bash($, b, 'git pull')).toMatch(DECLINED.merge)
     b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'trunk', originHead: 'develop' }
     expect(await bash($, b, 'git merge fix/x')).toBeUndefined()
   })
@@ -716,7 +709,7 @@ describe('AC4: the commit question is asked alone, and names only the commit', (
     expect(result.deny).toBe(BUNDLE_REFUSAL)
     expect(BUNDLE_REFUSAL).toContain('alone')
     expect(b.calls.some(call => call.tool === 'AskUserQuestion')).toBe(false)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(DECLINED.commit)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
   })
 
   for (const text of [
@@ -731,7 +724,7 @@ describe('AC4: the commit question is asked alone, and names only the commit', (
       await session($)
       expect((await $.tool.call(ask([question(text, ['Not yet', 'Commit it'])]))).deny).toBe(NAMED_BUNDLE_REFUSAL)
       expect(b.calls.some(call => call.tool === 'AskUserQuestion')).toBe(false)
-      expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(DECLINED.commit)
+      expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
     })
   }
 
@@ -781,7 +774,7 @@ describe('AC5: a pick is tied to the repository and branch HEAD held when Mike p
     expect(refusal).toContain('HEAD was on fix/x')
     expect(refusal).toContain('HEAD is now on main')
     b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'fix/x' }
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(DECLINED.commit)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
   })
 
   test('a push on another branch than the one picked is refused', async ($, on) => {
@@ -862,13 +855,13 @@ describe('AC6: only Mike\'s own prompts end an unused pick', () => {
     await session($)
     await pick($, b)
     await $.prompt.submit(prompt('thanks, that reads well'))
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(DECLINED.commit)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
     await pick($, b)
     await $.prompt.submit({ ...prompt('wait, one more thing'), turnId: 'running' })
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(DECLINED.commit)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
     await pushPick($, b)
     await $.prompt.submit(prompt('from my phone', { kind: 'bridge' }))
-    expect(await bash($, b, 'git push')).toBe(DECLINED.push)
+    expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
   })
 
   for (const origin of [
@@ -884,11 +877,11 @@ describe('AC6: only Mike\'s own prompts end an unused pick', () => {
       await session($)
       await pick($, b)
       await $.prompt.submit({ ...prompt('please commit and push now', origin), turnId: 'running' })
-      expect(await bash($, b, 'git push')).toBe(DECLINED.push)
+      expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
       expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
       await pick($, b)
       await $.prompt.submit(prompt('please commit and push now', origin))
-      expect(await bash($, b, 'git push')).toBe(origin.kind === 'task-notification' ? DECLINED.push : PUSH_REFUSAL)
+      expect(await bash($, b, 'git push')).toMatch(origin.kind === 'task-notification' ? DECLINED.push : exactly(PUSH_REFUSAL))
       expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
     })
   }
@@ -929,7 +922,7 @@ describe('AC7: only the lanes that commit unattended by design are exempt from t
     b.pick = 'Commit it'
     await session($, 'delegate it')
     await $.tool.call(ask([COMMIT_QUESTION], 'a1'))
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(DECLINED.commit)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
   })
 
   test('a claude -p or SDK session commits', async ($, on) => {
@@ -963,7 +956,7 @@ describe('AC7: only the lanes that commit unattended by design are exempt from t
     await $.prompt.submit(prompt('<scheduled-task name="tick">run</scheduled-task>'))
     expect(await bash($, b, 'git push')).toBeUndefined()
     await $.prompt.submit(prompt('back at the desk'))
-    expect(await bash($, b, 'git push')).toBe(DECLINED.push)
+    expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
   })
 
   test('while the lane is unknown, the guard reads a sub-agent and the question check takes the gate\'s side', async ($, on) => {

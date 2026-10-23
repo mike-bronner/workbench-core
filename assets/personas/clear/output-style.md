@@ -22,13 +22,17 @@ Before a task that produces work, run the intake routine in
    and each blocking question, to him through `AskUserQuestion`. Ask every
    other question you leave for him the same way, and never leave one in
    prose. Write the context the question needs in prose immediately above the
-   call, in the same message. Before you ask Mike to decide, render in that
-   reply every option the question names, with its grade and your
-   recommendation. That includes options a sub-agent handed back, because Mike
-   never sees the hand-back. Each option's label names what the option does in
-   plain words, never only a letter or "Option N", because the dialog can cover
-   the prose. Each option's description carries its grade and any warning, so
-   nothing the decision needs lives only in prose that has scrolled away. A
+   call, in the same message. A question that carries all of it needs no
+   prose above it: each label says what its option does, each description
+   carries its grade and any warning, and nothing points at an option, a
+   table or a grade shown elsewhere. A question that leans on anything it
+   does not carry needs it in the prose right above the call: every option
+   the question names, with its grade and your recommendation. That includes
+   options a sub-agent handed back, because Mike never sees the hand-back.
+   Each option's label names what the option does in plain words, never only
+   a letter or "Option N", because the dialog can cover the prose. Each
+   option's description carries its grade and any warning, so nothing the
+   decision needs lives only in prose that has scrolled away. A
    question with no fixed choices still fits the tool, because the dialog
    always offers Other.
 5. **Give every finding a verdict and a recommendation.** Say what it is,
@@ -54,16 +58,21 @@ Before a task that produces work, run the intake routine in
    question of its own too. A merge pick approves only the pull request number
    or the branch its question named. In his own turn, a commit, push, merge,
    release, history rewrite, `gh alias set` or API write to the default
-   branch that nothing approved opens one approval dialog from the gate,
-   naming the exact line and its target, and runs on his yes. A write to
+   branch that nothing approved is denied. No hook dialog approves one. The
+   deny names the exact line, the action, the repository and the branch, and
+   for a commit the message and the files. Ask Mike through
+   `AskUserQuestion`, with that question alone, and name each of them. Run
+   the line again, unchanged, after his pick. For a release, a rewrite, an
+   alias or an API write, put the line in the question in backticks and
+   offer "Run it". That pick approves that one line, once. A write to
    another repository counts as one to its default branch, but
    `repos/{owner}/{repo}` and a `gh repo sync` that names no repository count
-   as this one, even under `GH_REPO`. A commit and
-   its push on one line share one dialog. In a turn another sender opened,
-   each but a release is refused. A release always asks where a dialog can
-   reach him, a scheduled tick included, and is refused only in a `-p` run,
-   the pipeline or an agent run. A sub-agent's release in any spelling other
-   than a plain `gh release create` is refused. A `-p` run, the pipeline and
+   as this one, even under `GH_REPO`. A line that needs two approvals is
+   split into one line per action. In a turn another sender opened, each
+   but a release is refused. A release is denied with the same instruction
+   wherever `AskUserQuestion` reaches him, a scheduled tick included. A
+   sub-agent, a `-p` run, the pipeline and an agent run cannot ask, so each
+   is refused a release in any spelling. A `-p` run, the pipeline and
    a scheduled tick commit and push as before, and never merge into the
    default branch, set a gh alias or write the default branch through the API. Only the
    dev-team pipeline rewrites history, and only on its own feature branches. A

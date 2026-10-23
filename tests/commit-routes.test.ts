@@ -6,13 +6,10 @@ import {
   AGENT_MERGE_REFUSAL,
   AGENT_RELEASE_REFUSAL,
   API_WRITE_REFUSAL,
-  APPROVE_LABEL,
-  DECLINE_LABEL,
   RELEASE_REFUSAL,
   REWRITE_REFUSAL,
   apiWritesOf,
-  askTextOf,
-  declinedRefusal,
+  askRefusalOf,
   isDefaultBranch,
   isDefaultRef,
   mergesOf,
@@ -21,7 +18,7 @@ import {
 } from '../hooks/mods/commit-approval'
 import { SUBAGENT_REFUSAL } from '../hooks/mods/commit-guard'
 import type { Bench } from './bench'
-import { HOME, PERSON, bench, start } from './bench'
+import { ASKS, HOME, PERSON, bench, start } from './bench'
 
 const prompt = (text: string, origin: PromptOrigin = PERSON) => ({ text, wait: false, origin })
 
@@ -52,10 +49,11 @@ async function lane($: Engine, on: Parameters<typeof bench>[0], name: Lane): Pro
 
 const asksInMikesTurn = async ($: Engine, on: Parameters<typeof bench>[0], line: string, words: string) => {
   const b = await lane($, on, 'mike')
-  b.pick = DECLINE_LABEL
-  expect([line, await bash($, b, line)]).toEqual([line, expect.stringContaining('Mike answered no in the approval dialog')])
-  expect(dialogs(b).length).toBe(1)
-  expect(dialogs(b)[0]).toContain(words)
+  b.pick = 'Yes, run it'
+  const deny = await bash($, b, line)
+  expect([line, deny]).toEqual([line, expect.stringContaining('Ask him through AskUserQuestion, with this question alone in its call.')])
+  expect([line, /the action \(([^)]*)\)/.exec(deny ?? '')?.[1]?.includes(words)]).toEqual([line, true])
+  expect(dialogs(b)).toEqual([])
 }
 
 const API_FORMS = [
@@ -117,7 +115,7 @@ describe('findings 1 and 2, and the API follow-ups: every API route to the defau
   for (const name of ['-p', 'pipeline', 'scheduled', 'peer'] as const) {
     test(`refused, and no dialog opens, in ${name}`, async ($, on) => {
       const b = await lane($, on, name)
-      b.pick = APPROVE_LABEL
+      b.pick = 'Yes, run it'
       expect(await bash($, b, 'gh api -X PATCH repos/o/r/git/refs/heads/main -f sha=abc')).toBe(API_WRITE_REFUSAL)
       expect(await bash($, b, 'gh repo sync --branch main')).toBeDefined()
       expect(dialogs(b)).toEqual([])
@@ -127,8 +125,7 @@ describe('findings 1 and 2, and the API follow-ups: every API route to the defau
   test('with no origin/HEAD, a write that names a feature branch still asks, as the default cannot be read', async ($, on) => {
     const b = await lane($, on, 'mike')
     b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'feat' }
-    b.pick = DECLINE_LABEL
-    expect(await bash($, b, 'gh api -X PUT repos/o/r/contents/f -f branch=feat -f message=x')).toBe(declinedRefusal(['api']))
+    expect(await bash($, b, 'gh api -X PUT repos/o/r/contents/f -f branch=feat -f message=x')).toMatch(ASKS.api)
   })
 })
 
@@ -229,8 +226,8 @@ describe('finding 4: the dialog escapes every invisible character, by category',
     expect(shownOf('a\u{e0041}b')).toBe('a\\u{e0041}b')
   })
 
-  test('hostile repository, branch, message and file values reach the question escaped', () => {
-    const text = askTextOf(['commit'], {
+  test('hostile repository, branch, message and file values reach the deny escaped', () => {
+    const text = askRefusalOf(['commit'], {
       command: 'git commit -m x',
       repo: '/repo‮/x',
       branch: 'refs/heads/feat⁦\r',
@@ -243,23 +240,35 @@ describe('finding 4: the dialog escapes every invisible character, by category',
   })
 })
 
-describe('the release ruling: a release always asks where a dialog can reach Mike', () => {
-  for (const name of ['scheduled', 'peer', 'sub-agent'] as const) {
-    test(`${name}: a plain release opens the dialog, runs on a yes and is refused on a no`, async ($, on) => {
+describe('the release ruling: a release asks where AskUserQuestion can reach Mike', () => {
+  for (const name of ['scheduled', 'peer'] as const) {
+    test(`${name}: a plain release is denied with the instruction to ask, runs on a "Run it" pick, and a "Not now" pick runs nothing`, async ($, on) => {
       const b = await lane($, on, name)
-      const agentId = name === 'sub-agent' ? 'a1' : undefined
-      b.pick = APPROVE_LABEL
-      expect(await bash($, b, 'gh release create 1.0.0 --notes x', agentId)).toBeUndefined()
-      expect(dialogs(b)[0]).toContain('Approve this release')
-      b.pick = DECLINE_LABEL
-      expect(await bash($, b, 'gh release create 1.0.1 --notes x', agentId)).toBe(declinedRefusal(['release']))
+      const line = 'gh release create 1.0.0 --notes x'
+      const question = (label: string) => {
+        b.pick = label
+        return $.tool.call({ tool: 'AskUserQuestion', questions: [{ question: `Run \`${line}\`?`, header: 'Release', options: [{ label: 'Run it', description: 'Run it' }, { label: 'Not now', description: 'Not now' }], multiSelect: false }] } as never)
+      }
+      expect(await bash($, b, line)).toMatch(ASKS.release)
+      expect((await question('Not now')).deny).toBeUndefined()
+      expect(await bash($, b, line)).toMatch(ASKS.release)
+      expect((await question('Run it')).deny).toBeUndefined()
+      expect(await bash($, b, 'gh release create 1.0.1 --notes x')).toMatch(ASKS.release)
+      expect(await bash($, b, line)).toBeUndefined()
     })
   }
 
+  test('sub-agent: no question can reach Mike from it, so a release is refused', async ($, on) => {
+    const b = await lane($, on, 'sub-agent')
+    b.pick = 'Run it'
+    expect(await bash($, b, 'gh release create 1.0.0 --notes x', 'a1')).toBe(AGENT_RELEASE_REFUSAL)
+    expect(dialogs(b)).toEqual([])
+  })
+
   for (const name of ['-p', 'pipeline'] as const) {
-    test(`${name}: no dialog can open, so a release is refused`, async ($, on) => {
+    test(`${name}: nobody can be asked, so a release is refused`, async ($, on) => {
       const b = await lane($, on, name)
-      b.pick = APPROVE_LABEL
+      b.pick = 'Run it'
       expect(await bash($, b, 'gh release create 1.0.0 --notes x')).toBe(AGENT_RELEASE_REFUSAL)
       expect(dialogs(b)).toEqual([])
     })
@@ -282,7 +291,7 @@ describe('finding 5: GIT_CONFIG_* lines are refused outright in every lane, Mike
   for (const name of ['mike', 'sub-agent', 'pipeline'] as const) {
     test(`${name}: refused by the destructive-scope guard, and no dialog opens`, async ($, on) => {
       const b = await lane($, on, name)
-      b.pick = APPROVE_LABEL
+      b.pick = 'Yes, run it'
       const deny = await bash($, b, 'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.c GIT_CONFIG_VALUE_0=commit git c -m x', name === 'sub-agent' ? 'a1' : undefined)
       expect(deny).toContain('Destructive-scope guard (workbench-core)')
       expect(deny).toContain('GIT_')

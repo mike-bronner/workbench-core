@@ -125,8 +125,6 @@ describe('AC3: durable memory is captured with no visible turn and no prompt', (
     expect(w.toasts).toEqual([])
   })
 
-  // C3l: the write replaces any note at its path, so a note another session
-  // wrote after the read is lost to this write. created:false says so.
   test('a write that answers created:false replaced another session\'s note: an error toast, and no save', async ($, on) => {
     const w = memoryWorld(on)
     w.fork = answered(JSON.stringify([NOTE]))

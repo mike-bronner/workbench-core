@@ -5,21 +5,25 @@ import type { On } from 'claude-code'
 import {
   ASKS_NOTHING,
   ASKS_USER,
-  FORWARD_REFUSAL,
-  LABEL_REFUSAL,
-  REFUSAL_REASON,
+  CONTEXT_ITEM,
+  POINTED_TABLE_ITEM,
+  RECOMMENDATION_ITEM,
   REPROMPT_REASON,
+  aboveOf,
   agentResultForwards,
-  hasContextBefore,
+  contextRefusalOf,
+  idsItem,
+  isSelfContained,
   notificationForwards,
   proseOf,
+  questionRefusalOf,
   shownTextOf,
-  unshownOf,
-  unshownReason,
+  tableItem,
 } from '../hooks/mods/question-rule'
 import { ASK, COMPOSER, ID_RECORDER, prompt, start, stop, world } from './harness'
 
 const ATTENDED = {}
+const REFUSAL_REASON = contextRefusalOf([CONTEXT_ITEM], true)
 
 describe('AC1: a prose question gets one correction turn', () => {
   test('a reply that asks in prose is re-prompted toward AskUserQuestion', async ($, on) => {
@@ -193,8 +197,8 @@ describe('AC3: an AskUserQuestion that forwards a sub-agent question with no pro
     await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
     const result = await $.tool.call(ASK)
     expect(result.deny).toBe(REFUSAL_REASON)
-    expect(REFUSAL_REASON).toContain('Ask that sub-agent through SendMessage for the context Mike needs')
-    expect(REFUSAL_REASON).toContain('write that context in prose directly above the call, and call AskUserQuestion again')
+    expect(REFUSAL_REASON).toContain('ask that sub-agent through SendMessage first')
+    expect(REFUSAL_REASON).toContain('write this in prose directly above the call, in the same message as the call, after this refusal: the context Mike needs to answer it.')
     expect(w.asked).toBe(0)
   })
 
@@ -451,14 +455,15 @@ describe('AC4: the tru-data shape passes', () => {
 describe('AC3: prose right above the call counts, in the same message or an adjacent one of the same reply', () => {
   const call = { type: 'tool_use', id: 'q' }
   test('a text block in the assistant message right above the call counts', () => {
-    expect(hasContextBefore([{ role: 'user', content: [{ type: 'text', text: 'go' }] }, { role: 'assistant', content: [{ type: 'text', text: 'Context.' }] }, { role: 'assistant', content: [call] }], 'q')).toBe(true)
-    expect(hasContextBefore([{ role: 'assistant', content: [{ type: 'text', text: 'Context.' }] }, { role: 'assistant', content: [{ type: 'thinking' }] }, { role: 'assistant', content: [call] }], 'q')).toBe(true)
+    expect(aboveOf([{ role: 'user', content: [{ type: 'text', text: 'go' }] }, { role: 'assistant', content: [{ type: 'text', text: 'Context.' }] }, { role: 'assistant', content: [call] }], 'q')).toBe('Context.')
+    expect(aboveOf([{ role: 'assistant', content: [{ type: 'text', text: 'Context.' }] }, { role: 'assistant', content: [{ type: 'thinking' }] }, { role: 'assistant', content: [call] }], 'q')).toBe('Context.')
+    expect(aboveOf([{ role: 'assistant', content: [{ type: 'text', text: 'Table.' }, { type: 'text', text: 'Pick.' }, call] }], 'q')).toBe('Table.\nPick.')
   })
 
   test('an adjacent message that ends on a tool call, blank text or nothing does not count', () => {
-    expect(hasContextBefore([{ role: 'assistant', content: [{ type: 'text', text: 'Context.' }, { type: 'tool_use', id: 'r' }] }, { role: 'assistant', content: [call] }], 'q')).toBe(false)
-    expect(hasContextBefore([{ role: 'assistant', content: [{ type: 'text', text: ' ' }] }, { role: 'assistant', content: [call] }], 'q')).toBe(false)
-    expect(hasContextBefore([{ role: 'user', content: [{ type: 'text', text: 'Context?' }] }, { role: 'assistant', content: [call] }], 'q')).toBe(false)
+    expect(aboveOf([{ role: 'assistant', content: [{ type: 'text', text: 'Context.' }, { type: 'tool_use', id: 'r' }] }, { role: 'assistant', content: [call] }], 'q')).toBe('')
+    expect(aboveOf([{ role: 'assistant', content: [{ type: 'text', text: ' ' }] }, { role: 'assistant', content: [call] }], 'q')?.trim()).toBe('')
+    expect(aboveOf([{ role: 'user', content: [{ type: 'text', text: 'Context?' }] }, { role: 'assistant', content: [call] }], 'q')).toBe('')
   })
 })
 
@@ -488,13 +493,13 @@ describe('an AskUserQuestion the main session raises on its own is never refused
     expect((await $.tool.call(ASK)).deny).toBeUndefined()
   })
 
-  test('hasContextBefore reads the reply that holds the call, and no earlier step', () => {
+  test('aboveOf reads the reply that holds the call, and no earlier step', () => {
     const call = { type: 'tool_use', id: 'q' }
-    expect(hasContextBefore([{ role: 'assistant', content: [{ type: 'text', text: 'Context.' }, call] }], 'q')).toBe(true)
-    expect(hasContextBefore([{ role: 'assistant', content: [{ type: 'redacted_thinking' }, call] }], 'q')).toBe(false)
-    expect(hasContextBefore([{ role: 'assistant', content: [{ type: 'text', text: 'Earlier.' }, { type: 'tool_use', id: 'r' }] }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'r' }] }, { role: 'assistant', content: [call] }], 'q')).toBe(false)
-    expect(hasContextBefore([{ role: 'assistant', content: [call] }], 'other')).toBeUndefined()
-    expect(hasContextBefore([{ role: 'assistant', content: [call] }], undefined)).toBeUndefined()
+    expect(aboveOf([{ role: 'assistant', content: [{ type: 'text', text: 'Context.' }, call] }], 'q')).toBe('Context.')
+    expect(aboveOf([{ role: 'assistant', content: [{ type: 'redacted_thinking' }, call] }], 'q')).toBe('')
+    expect(aboveOf([{ role: 'assistant', content: [{ type: 'text', text: 'Earlier.' }, { type: 'tool_use', id: 'r' }] }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'r' }] }, { role: 'assistant', content: [call] }], 'q')).toBe('')
+    expect(aboveOf([{ role: 'assistant', content: [call] }], 'other')).toBeUndefined()
+    expect(aboveOf([{ role: 'assistant', content: [call] }], undefined)).toBeUndefined()
   })
 })
 
@@ -521,108 +526,94 @@ const PLAIN = decision([
   { label: 'Regex fallback', description: 'Fast, fragile. AC1 not met.' },
 ])
 
+const UNGRADED = decision([
+  { label: 'Patch the lexer', description: 'Small diff.' },
+  { label: 'New tokenizer', description: 'Clean, large diff.' },
+  { label: 'Regex fallback', description: 'Fast, fragile.' },
+])
+
+const refused = (items: string[], isForwarding = true) => contextRefusalOf(items, isForwarding)
+
 describe('AC2: a question that names options the reply does not show is refused', () => {
-  for (const [name, call] of [
-    ['a letter label', decision([{ label: 'B', description: 'the tokenizer' }, { label: 'Patch the lexer', description: 'small' }])],
-    ['an "Option 2" label', decision([{ label: 'Option 2', description: 'the tokenizer' }, { label: 'Patch the lexer', description: 'small' }])],
-    ['a letter label marked recommended', decision([{ label: 'A (Recommended)', description: 'all met' }, { label: 'Patch the lexer', description: 'small' }])],
+  for (const [name, call, id] of [
+    ['a letter label', decision([{ label: 'B', description: 'the tokenizer' }, { label: 'Patch the lexer', description: 'small' }]), 'B'],
+    ['an "Option 3" label', decision([{ label: 'Option 3', description: 'the tokenizer' }, { label: 'Patch the lexer', description: 'small' }]), '3'],
+    ['a letter label marked recommended', decision([{ label: 'A (Recommended)', description: 'all met' }, { label: 'Patch the lexer', description: 'small' }]), 'A'],
   ] as const) {
-    askTest(`${name} is refused even with the table shown, because the dialog can cover it`, async ($, on) => {
+    askTest(`${name} is refused when nothing right above the call defines it`, async ($, on) => {
       const w = world(on, ATTENDED)
-      w.blocksBefore = [{ type: 'text', text: TABLE }]
+      w.blocksBefore = [{ type: 'text', text: 'Watson finished. He found a parser fix.' }]
       await $.session.start(start(true))
       await $.prompt.submit(prompt('fix the parser'))
-      expect((await $.tool.call(call)).deny).toBe(LABEL_REFUSAL)
-      expect(LABEL_REFUSAL).toContain('Name what each option does in plain words')
+      expect((await $.tool.call(call)).deny).toBe(refused([idsItem([id])], false))
       expect(w.asked).toBe(0)
+    })
+
+    askTest(`${name} runs when the prose right above the call defines it`, async ($, on) => {
+      const w = world(on, ATTENDED)
+      w.blocksBefore = [{ type: 'text', text: `${TABLE}\n\n3: Leave the parser as it is.` }]
+      await $.session.start(start(true))
+      await $.prompt.submit(prompt('fix the parser'))
+      expect((await $.tool.call(call)).deny).toBeUndefined()
+      expect(w.asked).toBe(1)
     })
   }
 
-  for (const [name, call, ref] of [
-    ['a question that names an option', decision([{ label: 'Yes', description: 'go' }, { label: 'No', description: 'stop' }], "Go with Watson's option 2?"), "option 2, a sub-agent's graded options"],
-    ['a label that combines letters', decision([{ label: 'B + A stopgap', description: 'both' }, { label: 'Patch the lexer', description: 'small' }]), 'option B, option A'],
-    ['a description that names options', decision([{ label: 'Ship the fix', description: 'Same as options A and C' }, { label: 'Hold it', description: 'wait' }]), 'option A, option C'],
-    ['a pointer at a table', decision([{ label: 'Ship the fix', description: 'The first row of the table above' }, { label: 'Hold it', description: 'wait' }]), 'a table'],
-    ['a pointer at the grades', decision([{ label: 'Ship the fix', description: 'Best of the grades, as graded' }, { label: 'Hold it', description: 'wait' }]), "a sub-agent's graded options"],
-    ["a pointer at a sub-agent's proposal", decision([{ label: 'Ship the fix', description: "Watson's proposal" }, { label: 'Hold it', description: 'wait' }]), "a sub-agent's graded options"],
+  for (const [name, call, items] of [
+    ['a question that names an option', decision([{ label: 'Yes', description: 'go' }, { label: 'No', description: 'stop' }], "Go with Watson's option 2?"), [idsItem(['2']), tableItem(1)]],
+    ['a label that combines letters', decision([{ label: 'B + A stopgap', description: 'both' }, { label: 'Patch the lexer', description: 'small' }]), [idsItem(['B', 'A'])]],
+    ['a description that names options', decision([{ label: 'Ship the fix', description: 'Same as options A and C' }, { label: 'Hold it', description: 'wait' }]), [idsItem(['A', 'C'])]],
+    ['a pointer at a table', decision([{ label: 'Ship the fix', description: 'The first row of the table above' }, { label: 'Hold it', description: 'wait' }]), [POINTED_TABLE_ITEM]],
+    ['a pointer at the grades', decision([{ label: 'Ship the fix', description: 'Best of the grades, as graded' }, { label: 'Hold it', description: 'wait' }]), [tableItem(1)]],
+    ["a pointer at a sub-agent's proposal", decision([{ label: 'Ship the fix', description: "Watson's proposal" }, { label: 'Hold it', description: 'wait' }]), [tableItem(1)]],
   ] as const) {
-    askTest(`${name}, in a turn Mike opened, is refused when the reply shows only a summary`, async ($, on) => {
+    askTest(`${name}, in a turn Mike opened, is refused when the prose above shows only a summary`, async ($, on) => {
       const w = world(on, ATTENDED)
       w.blocksBefore = [{ type: 'text', text: 'Watson finished. He found a parser fix.' }]
       await $.session.start(start(true))
       await $.prompt.submit(prompt('fix the parser'))
       const result = await $.tool.call(call)
-      expect(result.deny).toBe(unshownReason([...ref.split(', ')]))
-      expect(result.deny).toContain('Render it in prose above the call first: the options table')
+      expect(result.deny).toBe(refused([...items], false))
       expect(w.asked).toBe(0)
     })
   }
 
-  askTest('a forwarded decision with only a one-line summary above it is refused', async ($, on) => {
+  askTest('a table shown before another tool call in the same reply does not count', async ($, on) => {
     const w = world(on, ATTENDED)
-    w.blocksBefore = [{ type: 'text', text: 'Watson has three options for the parser. I recommend the first.' }]
+    w.blocksBefore = [{ type: 'text', text: TABLE }, { type: 'tool_use', id: 'r', name: 'Read', input: {} }, { type: 'text', text: 'Pick one.' }]
     await $.session.start(start(true))
-    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
-    expect((await $.tool.call(PLAIN)).deny).toBe(FORWARD_REFUSAL)
-    expect(FORWARD_REFUSAL).toContain('one table with the columns Option, Pros, Cons, and Grade')
-    expect(w.asked).toBe(0)
+    await $.prompt.submit(prompt('fix the parser'))
+    expect((await $.tool.call(decision([{ label: 'B', description: 'the tokenizer' }, { label: 'Patch the lexer', description: 'small' }]))).deny).toBe(refused([idsItem(['B'])], false))
   })
 
-  askTest('a forwarded decision whose table has fewer rows than options is refused', async ($, on) => {
-    const w = world(on, ATTENDED)
-    w.blocksBefore = [{ type: 'text', text: TABLE.split('\n').filter(line => !line.startsWith('| C')).join('\n') }]
-    await $.session.start(start(true))
-    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
-    expect((await $.tool.call(PLAIN)).deny).toBe(FORWARD_REFUSAL)
-  })
+  for (const [name, text, items] of [
+    ['only a one-line summary', 'Watson has three options for the parser. I recommend the first.', [tableItem(3)]],
+    ['a table with fewer rows than options', TABLE.split('\n').filter(line => !line.startsWith('| C')).join('\n'), [tableItem(3)]],
+    ['its table but no recommendation', TABLE.split('\n').filter(line => !line.startsWith('I recommend')).join('\n'), [RECOMMENDATION_ITEM]],
+    ['a table with no Grade column', TABLE.replace('| Grade             |', '| Notes             |'), [tableItem(3)]],
+    ['only a line from an earlier step', 'Back to the parser.', [tableItem(3), RECOMMENDATION_ITEM]],
+    ['nothing at all', '', [tableItem(3), RECOMMENDATION_ITEM]],
+  ] as const) {
+    askTest(`a forwarded decision whose descriptions carry no grades, with ${name} above it, is refused`, async ($, on) => {
+      const w = world(on, ATTENDED)
+      w.blocksBefore = [{ type: 'text', text }]
+      await $.session.start(start(true))
+      await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
+      expect((await $.tool.call(UNGRADED)).deny).toBe(refused([...items]))
+      expect(w.asked).toBe(0)
+    })
+  }
 
-  askTest('a forwarded decision with its table but no recommendation is refused', async ($, on) => {
-    const w = world(on, ATTENDED)
-    w.blocksBefore = [{ type: 'text', text: TABLE.split('\n').filter(line => !line.startsWith('I recommend')).join('\n') }]
-    await $.session.start(start(true))
-    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
-    expect((await $.tool.call(PLAIN)).deny).toBe(FORWARD_REFUSAL)
-  })
-
-  askTest('a forwarded two-option decision whose descriptions carry grades needs its table too', async ($, on) => {
+  askTest('a forwarded decision with an ungraded option among graded ones still needs its table', async ($, on) => {
     const w = world(on, ATTENDED)
     w.blocksBefore = [{ type: 'text', text: 'Two ways. I recommend the first.' }]
     await $.session.start(start(true))
     await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
     const call = decision([
       { label: 'Patch the lexer', description: 'All met.' },
-      { label: 'New tokenizer', description: 'AC2 partly met.' },
+      { label: 'New tokenizer', description: 'Large diff.' },
     ])
-    expect((await $.tool.call(call)).deny).toBe(FORWARD_REFUSAL)
-  })
-
-  askTest('a forwarded decision whose table has no Grade column is refused', async ($, on) => {
-    const w = world(on, ATTENDED)
-    w.blocksBefore = [{ type: 'text', text: TABLE.replace('| Grade             |', '| Notes             |') }]
-    await $.session.start(start(true))
-    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
-    expect((await $.tool.call(PLAIN)).deny).toBe(FORWARD_REFUSAL)
-  })
-
-  askTest('a forwarded three-option decision with no grades in it still needs its table', async ($, on) => {
-    const w = world(on, ATTENDED)
-    w.blocksBefore = [{ type: 'text', text: 'Watson found three fixes. I recommend the lexer patch.' }]
-    await $.session.start(start(true))
-    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
-    const call = decision([
-      { label: 'Patch the lexer', description: 'Small diff' },
-      { label: 'New tokenizer', description: 'Large diff' },
-      { label: 'Regex fallback', description: 'Fragile' },
-    ])
-    expect((await $.tool.call(call)).deny).toBe(FORWARD_REFUSAL)
-  })
-
-  askTest('a table from an earlier reply does not count', async ($, on) => {
-    const w = world(on, ATTENDED)
-    w.blocksBefore = [{ type: 'text', text: 'Back to the parser.' }]
-    await $.session.start(start(true))
-    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
-    expect((await $.tool.call(PLAIN)).deny).toBe(FORWARD_REFUSAL)
+    expect((await $.tool.call(call)).deny).toBe(refused([tableItem(2)]))
   })
 })
 
@@ -632,7 +623,7 @@ describe('AC3: a question whose options are shown, or that names none, runs', ()
     w.blocksBefore = [{ type: 'text', text: TABLE }]
     await $.session.start(start(true))
     await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
-    expect((await $.tool.call(PLAIN)).deny).toBeUndefined()
+    expect((await $.tool.call(UNGRADED)).deny).toBeUndefined()
     expect(w.asked).toBe(1)
   })
 
@@ -695,9 +686,9 @@ describe('AC3: a question whose options are shown, or that names none, runs', ()
     expect(shownTextOf(messages, undefined)).toBeUndefined()
   })
 
-  test('unshownOf lets malformed input and article letters through', () => {
-    expect(unshownOf(undefined, '', true)).toBeUndefined()
-    expect(unshownOf([{ question: 'A good fix, or a fast one?', options: [{ label: 'A good fix', description: 'A slow, safe change' }] }], '', false)).toBeUndefined()
+  test('questionRefusalOf lets malformed input and article letters through', () => {
+    expect(questionRefusalOf(undefined, '', true)).toBeUndefined()
+    expect(questionRefusalOf([{ question: 'A good fix, or a fast one?', options: [{ label: 'A good fix', description: 'A slow, safe change' }] }], '', false)).toBeUndefined()
   })
 })
 
@@ -780,5 +771,168 @@ describe('AC4: only a turn a person can answer is re-prompted or refused', () =>
     w.label = ASKS_USER
     await $.prompt.submit(prompt('go'))
     expect((await $.classic.Stop(stop(ASKING))).block).toBeUndefined()
+  })
+})
+
+const SELF_CONTAINED = decision([
+  { label: 'Deny, then AskUserQuestion', description: 'All met. Removes ui.ask, and a pick approves one action.' },
+  { label: 'Hook permission ask', description: 'AC6 partly met: a plain permission prompt names no files.' },
+  { label: 'Report the bug and wait', description: 'AC5 not met: the gate stays open in auto mode until a fix ships.' },
+])
+
+const GUIDE = { status: 'completed', content: [{ type: 'text', text: 'The docs say no mode auto-approves AskUserQuestion. Does ui.ask count as one?' }] }
+
+describe('AC1: a question that carries what Mike needs runs with no prose above it, in a forwarding turn too', () => {
+  for (const [name, blocks] of [
+    ['nothing', []],
+    ['only thinking', [{ type: 'thinking', thinking: '' }, NARRATION]],
+  ] as const) {
+    askTest(`a notification turn with ${name} above a self-contained question runs it`, async ($, on) => {
+      const w = world(on, ATTENDED)
+      w.blocksBefore = [...blocks]
+      await $.session.start(start(true))
+      await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
+      expect((await $.tool.call(SELF_CONTAINED)).deny).toBeUndefined()
+      expect((await $.tool.call(PLAIN)).deny).toBeUndefined()
+      expect(w.asked).toBe(2)
+    })
+
+    askTest(`a turn that forwards a foreground sub-agent's result, with ${name} above a self-contained question, runs it`, async ($, on) => {
+      agentReturns(on, GUIDE)
+      const w = world(on, { WORKBENCH_ORCHESTRATOR: '0' })
+      w.blocksBefore = [...blocks]
+      await $.session.start(start(true))
+      await $.prompt.submit(prompt('ask the guide'))
+      expect((await $.tool.call(AGENT)).deny).toBeUndefined()
+      expect((await $.tool.call(SELF_CONTAINED)).deny).toBeUndefined()
+      expect(w.asked).toBe(1)
+    })
+  }
+
+  test('isSelfContained needs a plain label and a grade on every option, and no pointer elsewhere', () => {
+    const one = (label: string, description: unknown) => [{ question: 'How?', options: [{ label: 'Patch the lexer', description: 'All met.' }, { label, description }] }]
+    expect(isSelfContained(SELF_CONTAINED.questions)).toBe(true)
+    expect(isSelfContained(one('New tokenizer', 'AC2 partly met.'))).toBe(true)
+    for (const [why, questions] of [
+      ['a letter label', one('B', 'AC2 partly met.')],
+      ['an "Option 2" label', one('Option 2', 'AC2 partly met.')],
+      ['an empty label', one(' ', 'AC2 partly met.')],
+      ['no grade', one('New tokenizer', 'Large diff.')],
+      ['no description', one('New tokenizer', undefined)],
+      ['a pointer at an option', one('New tokenizer', 'Same as option B. AC2 partly met.')],
+      ['a pointer at a table', one('New tokenizer', 'Row two of the table above. AC2 partly met.')],
+      ['a pointer at the grades', one('New tokenizer', "Watson's proposal. AC2 partly met.")],
+      ['no options', [{ question: 'What name?', options: [] }]],
+      ['no questions', []],
+      ['malformed input', undefined],
+    ] as const) {
+      expect([why, isSelfContained(questions)]).toEqual([why, false])
+    }
+  })
+})
+
+const INCIDENT = decision(
+  [
+    { label: 'Deny, then AskUserQuestion', description: 'Best. Remove ui.ask from the gate. A deny tells me to ask you, and your pick approves one action.' },
+    { label: 'Same, plus question-rule bug', description: 'Best, wider. As above, and also fix the question rule.' },
+    { label: 'Hook permission ask', description: "Good. The gate returns the documented 'ask' decision." },
+  ],
+  "Which fix should Watson build for the commit gate's auto-mode fail-open?",
+)
+
+const INCIDENT_PROSE = [
+  "The claude-code-guide agent confirmed that no mode auto-approves AskUserQuestion, so the gate's ui.ask result looks like an engine bug.",
+  '',
+  '| Option                       | Pros              | Cons                | Grade              |',
+  '|------------------------------|-------------------|---------------------|--------------------|',
+  '| Deny, then AskUserQuestion   | Uses your dialog  | New pick kinds      | All met            |',
+  '| Same, plus question-rule bug | Fixes both        | Larger change       | All met            |',
+  '| Hook permission ask          | One step          | Plain prompt        | AC6 partly met     |',
+  '',
+  'I recommend "Deny, then AskUserQuestion" (all met), because it uses AskUserQuestion, which reached you in auto mode.',
+].join('\n')
+
+describe('AC3: the 2026-10-23 shape runs when its context, table and recommendation sit right above the call', () => {
+  askTest('a claude-code-guide result forwards, and the call with its prose above it runs', async ($, on) => {
+    agentReturns(on, GUIDE)
+    const w = world(on, { WORKBENCH_ORCHESTRATOR: '0' })
+    w.blocksBefore = [{ type: 'thinking', thinking: '' }, { type: 'text', text: INCIDENT_PROSE }, { type: 'thinking', thinking: '' }]
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('try now'))
+    expect((await $.tool.call(AGENT)).deny).toBeUndefined()
+    expect((await $.tool.call(INCIDENT)).deny).toBeUndefined()
+    expect(w.asked).toBe(1)
+  })
+
+  askTest('the same call with the prose only in thinking, as the transcript holds it, is refused, naming the table and the recommendation', async ($, on) => {
+    agentReturns(on, GUIDE)
+    const w = world(on, { WORKBENCH_ORCHESTRATOR: '0' })
+    w.blocksBefore = [{ type: 'thinking', thinking: "I've laid out the options table and recommend the first." }]
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('try now'))
+    expect((await $.tool.call(AGENT)).deny).toBeUndefined()
+    expect((await $.tool.call(INCIDENT)).deny).toBe(refused([tableItem(3), RECOMMENDATION_ITEM]))
+    w.blocksBefore = [{ type: 'text', text: INCIDENT_PROSE }]
+    expect((await $.tool.call(INCIDENT)).deny).toBeUndefined()
+  })
+})
+
+const PROVIDES: readonly [string, string][] = [
+  [CONTEXT_ITEM, 'Watson finished the parser work.'],
+  [RECOMMENDATION_ITEM, 'I recommend A (all met).'],
+  [POINTED_TABLE_ITEM, TABLE],
+  [tableItem(1), TABLE],
+  [tableItem(2), TABLE],
+  [tableItem(3), TABLE],
+  [idsItem(['B']), TABLE],
+  [idsItem(['B', 'A']), TABLE],
+]
+
+
+describe('AC4: one refusal per call names exactly what to add, and adding it is enough', () => {
+  const T3 = tableItem(3)
+  const REC = RECOMMENDATION_ITEM
+  const PARTIALS = ['', 'Some context.', TABLE.split('\n').slice(0, 3).join('\n'), 'I recommend the first.'] as const
+  type Items = readonly string[] | undefined
+  const CASES: readonly [string, { questions: unknown }, boolean, readonly [Items, Items, Items, Items]][] = [
+    ['an ungraded decision', UNGRADED, true, [[T3, REC], [T3, REC], [T3, REC], [T3]]],
+    ['a two-option question', ASK, true, [[CONTEXT_ITEM], undefined, undefined, undefined]],
+    ['a letter label', decision([{ label: 'B', description: 'the tokenizer' }, { label: 'Patch the lexer', description: 'small' }]), true, [[idsItem(['B'])], [idsItem(['B'])], [idsItem(['B'])], [idsItem(['B'])]]],
+    ['combined letters', decision([{ label: 'B + A stopgap', description: 'both' }, { label: 'Patch the lexer', description: 'small' }]), true, [[idsItem(['B', 'A'])], [idsItem(['B', 'A'])], [idsItem(['B', 'A'])], [idsItem(['B', 'A'])]]],
+    ['a pointer at a table', decision([{ label: 'Ship the fix', description: 'The first row of the table above' }, { label: 'Hold it', description: 'wait' }]), true, [[POINTED_TABLE_ITEM], [POINTED_TABLE_ITEM], [POINTED_TABLE_ITEM], [POINTED_TABLE_ITEM]]],
+    ['a pointer at the grades', decision([{ label: 'Ship the fix', description: "Watson's proposal" }, { label: 'Hold it', description: 'wait' }]), true, [[tableItem(1)], [tableItem(1)], [tableItem(1)], [tableItem(1)]]],
+    ['the incident call', INCIDENT, true, [[T3, REC], [T3, REC], [T3, REC], [T3]]],
+    ['an ungraded decision', UNGRADED, false, [undefined, undefined, undefined, undefined]],
+    ['a two-option question', ASK, false, [undefined, undefined, undefined, undefined]],
+    ['a letter label', decision([{ label: 'B', description: 'the tokenizer' }, { label: 'Patch the lexer', description: 'small' }]), false, [[idsItem(['B'])], [idsItem(['B'])], [idsItem(['B'])], [idsItem(['B'])]]],
+    ['combined letters', decision([{ label: 'B + A stopgap', description: 'both' }, { label: 'Patch the lexer', description: 'small' }]), false, [[idsItem(['B', 'A'])], [idsItem(['B', 'A'])], [idsItem(['B', 'A'])], [idsItem(['B', 'A'])]]],
+    ['a pointer at a table', decision([{ label: 'Ship the fix', description: 'The first row of the table above' }, { label: 'Hold it', description: 'wait' }]), false, [[POINTED_TABLE_ITEM], [POINTED_TABLE_ITEM], [POINTED_TABLE_ITEM], [POINTED_TABLE_ITEM]]],
+    ['a pointer at the grades', decision([{ label: 'Ship the fix', description: "Watson's proposal" }, { label: 'Hold it', description: 'wait' }]), false, [[tableItem(1)], [tableItem(1)], [tableItem(1)], [tableItem(1)]]],
+    ['the incident call', INCIDENT, false, [undefined, undefined, undefined, undefined]],
+  ]
+  for (const [name, call, isForwarding, expected] of CASES) {
+    test(`${name}, ${isForwarding ? 'in a forwarding turn' : 'in a turn Mike opened'}: each prose above gets the stated refusal, and the named prose clears it`, () => {
+      PARTIALS.forEach((above, at) => {
+        const items = expected[at]
+        expect([name, above, questionRefusalOf(call.questions, above, isForwarding)]).toEqual([name, above, items === undefined ? undefined : contextRefusalOf(items, isForwarding)])
+        if (at > 0 && items !== undefined) expect([name, above, items.every(item => expected[0]?.includes(item))]).toEqual([name, above, true])
+      })
+      const first = expected[0]
+      if (first !== undefined) {
+        const prose = [...new Set(first.map(item => PROVIDES.find(([named]) => named === item)?.[1]))]
+        expect([name, prose.includes(undefined)]).toEqual([name, false])
+        expect([name, questionRefusalOf(call.questions, prose.join('\n\n'), isForwarding)]).toEqual([name, undefined])
+      }
+    })
+  }
+
+  askTest('the same call in the same place gets the same refusal every time', async ($, on) => {
+    const w = world(on, ATTENDED)
+    w.blocksBefore = [{ type: 'thinking', thinking: '' }]
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt(HANDED_BACK, NOTIFICATION))
+    const denies = [await $.tool.call(UNGRADED), await $.tool.call(UNGRADED), await $.tool.call(UNGRADED)].map(result => result.deny)
+    expect(new Set(denies).size).toBe(1)
+    expect(denies[0]).toBe(refused([tableItem(3), RECOMMENDATION_ITEM]))
   })
 })

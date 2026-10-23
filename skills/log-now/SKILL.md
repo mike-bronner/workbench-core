@@ -39,6 +39,8 @@ Read the raw log. Based on the log contents AND your own lived memory of this se
 
 Read `${CLAUDE_PLUGIN_ROOT}/references/summary-format.md` for the required shape. Set `mode: manual`. Write via `mcp__plugin_workbench-core_memory__write`.
 
+**Read the summary path before you write it.** The memory `write` refuses to replace a note unless you pass the `etag` of your `read` as `if_match`. `read` the summary path first. If a note is there, replace it only when its frontmatter `session_id` is this session's: it is an earlier `/log-now` or the auto summary of this session, and this summary supersedes it. Pass that read's `etag` to the `write` as `if_match`. Any other note at that path is a collision: write nothing, and tell the user the path. If the write is refused because the note changed after your read, read it again and repeat this check once.
+
 Because you're in-session, your summary should be richer than what the auto summary-writer produces — you have context the raw JSONL doesn't capture.
 
 After drafting and before writing, read `${CLAUDE_PLUGIN_ROOT}/references/linking-synthesis.md` and apply Steps A–B: 2–3 targeted vault searches on the session's main themes, then a `## Related` section with root-absolute markdown links to the confident hits only. Your lived context makes you better at judging relatedness than the headless writer — but the conservative rule and link cap still bind. Omit the section if nothing clears the bar.

@@ -5,14 +5,11 @@ import type { PromptOrigin } from 'claude-code'
 import {
   AGENT_RELEASE_REFUSAL,
   API_WRITE_REFUSAL,
-  APPROVE_LABEL,
-  DECLINE_LABEL,
   MOVE_REFUSAL,
   ONE_REFUSAL,
   REWRITE_REFUSAL,
   apiWritesOf,
-  askTextOf,
-  declinedRefusal,
+  askRefusalOf,
   leftOutRefusal,
   mergesOf,
   movesHead,
@@ -22,7 +19,7 @@ import {
 } from '../hooks/mods/commit-approval'
 import { FORCE_REFUSAL } from '../hooks/mods/commit-guard'
 import type { Bench } from './bench'
-import { HOME, PERSON, bench, start } from './bench'
+import { ASKS, HOME, PERSON, bench, start } from './bench'
 
 const prompt = (text: string, origin: PromptOrigin = PERSON) => ({ text, wait: false, origin })
 
@@ -50,7 +47,7 @@ async function mike($: Engine, on: Parameters<typeof bench>[0], text = 'look thi
 async function subAgent($: Engine, on: Parameters<typeof bench>[0]): Promise<Bench> {
   const b = bench(on)
   b.repos['/repo'] = { ...FEATURE }
-  b.pick = APPROVE_LABEL
+  b.pick = 'Yes, run it'
   await $.session.start(start())
   await $.prompt.submit(prompt('delegate it'))
   return b
@@ -89,12 +86,12 @@ describe('finding 2: every verb that writes HEAD or a branch ref makes the branc
   })
 
   for (const verb of HEAD_WRITERS) {
-    test(`in Mike's turn, a merge after it asks: ${verb}`, async ($, on) => {
+    test(`in Mike's turn, a merge after it is denied with the instruction to ask: ${verb}`, async ($, on) => {
       const b = await mike($, on)
-      b.pick = DECLINE_LABEL
       const deny = await bash($, b, `${verb} && git merge x`)
-      expect(deny).toContain('Mike answered no in the approval dialog')
-      expect(dialogs(b)[0]).toContain('merge into the default branch')
+      expect(deny).toContain('merge into the default branch')
+      expect(deny).toContain('through AskUserQuestion')
+      expect(dialogs(b)).toEqual([])
     })
 
     test(`for a sub-agent, a merge after it is refused: ${verb}`, async ($, on) => {
@@ -141,10 +138,9 @@ describe('findings 1 and 3: update-ref, rebase with a branch, and a bare reset',
     }
   })
 
-  test('in Mike\'s turn, an amend asks as a rewrite even under his typed commit request', async ($, on) => {
+  test('in Mike\'s turn, an amend is denied as a rewrite even under his typed commit request', async ($, on) => {
     const b = await mike($, on, 'commit it')
-    b.pick = DECLINE_LABEL
-    expect(await bash($, b, 'git commit --amend -m "fix: 🐛 X."')).toBe(declinedRefusal(['rewrite']))
+    expect(await bash($, b, 'git commit --amend -m "fix: 🐛 X."')).toMatch(ASKS.rewrite)
   })
 })
 
@@ -166,7 +162,7 @@ describe('finding 4: an alias set through GIT_CONFIG_* is read as unknown', () =
   for (const line of CONFIGURED) {
     test(`it never runs, in Mike's turn, for a sub-agent or in the pipeline: ${JSON.stringify(line)}`, async ($, on) => {
       const b = await mike($, on)
-      b.pick = APPROVE_LABEL
+      b.pick = 'Yes, run it'
       expect(await bash($, b, line)).toBeDefined()
       expect(await bash($, b, line, 'a1')).toBeDefined()
     })
@@ -201,11 +197,14 @@ describe('ruling B: a gh api write to the default branch, or to a branch the gat
   })
 
   for (const line of DEFAULT_WRITES) {
-    test(`in Mike's turn it asks, and runs on a yes: ${JSON.stringify(line)}`, async ($, on) => {
+    test(`in Mike's turn it is denied with the instruction to ask, and runs on his pick: ${JSON.stringify(line)}`, async ($, on) => {
       const b = await mike($, on)
-      b.pick = APPROVE_LABEL
+      expect(await bash($, b, line)).toMatch(ASKS.api)
+      expect(dialogs(b)).toEqual([])
+      b.pick = 'Run it'
+      const question = { question: `Run \`${line}\` in /repo?`, header: 'API', options: [{ label: 'Run it', description: 'x' }, { label: 'Not now', description: 'y' }], multiSelect: false }
+      expect((await $.tool.call({ tool: 'AskUserQuestion', questions: [question] } as never)).deny).toBeUndefined()
       expect(await bash($, b, line)).toBeUndefined()
-      expect(dialogs(b)[0]).toContain('GitHub API write to the default branch')
     })
 
     test(`for a sub-agent and the pipeline it is refused: ${JSON.stringify(line)}`, async ($, on) => {
@@ -229,29 +228,29 @@ describe('ruling B: a gh api write to the default branch, or to a branch the gat
   })
 })
 
-describe('finding 7: the dialog shows the line that runs, with every hidden character escaped', () => {
+describe('finding 7: the deny shows the line that runs, with every hidden character escaped', () => {
   test('control characters, backticks and bidi marks', () => {
     expect(shownOf('a\nb')).toBe('a\\nb')
     expect(shownOf('a\rb')).toBe('a\\rb')
     expect(shownOf('a\u001bb')).toBe('a\\u001bb')
     expect(shownOf('a‮b')).toBe('a\\u202eb')
     expect(shownOf('a`b\\c')).toBe('a\\`b\\\\c')
-    const text = askTextOf(['commit'], { command: 'git commit -m "x‮"\rgit push', repo: '/repo', branch: 'refs/heads/main', message: '"x\u001b"', files: ['a\nb.ts'] })
+    const text = askRefusalOf(['commit'], { command: 'git commit -m "x‮"\rgit push', repo: '/repo', branch: 'refs/heads/main', message: '"x\u001b"', files: ['a\nb.ts'] })
     expect(text).toContain('`git commit -m "x\\u202e"\\rgit push`')
-    expect(text).toContain('The message is "x\\u001b"')
+    expect(text).toContain('Name the message, "x\\u001b",')
     expect(text).toContain('a\\nb.ts')
     expect(/[\r\n\u001b‮]/.test(text)).toBe(false)
   })
 })
 
-describe('the one dialog for a commit and its push', () => {
-  test('a commit and push line with no approval opens one dialog that names both, and one yes runs both', async ($, on) => {
+describe('a commit and its push on one line', () => {
+  test('with no approval the line is denied, naming both, with the instruction to run each on a line of its own', async ($, on) => {
     const b = await mike($, on)
-    b.pick = APPROVE_LABEL
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X." && git push')).toBeUndefined()
-    const asked = dialogs(b)
-    expect(asked.length).toBe(1)
-    expect(asked[0]).toContain('git commit and git push')
+    b.pick = 'Yes, run it'
+    const deny = await bash($, b, 'git commit -m "fix: 🐛 X." && git push')
+    expect(deny).toContain('it runs a git commit and git push, and Mike has approved none of them')
+    expect(deny).toContain('run each as a line of its own')
+    expect(dialogs(b)).toEqual([])
   })
 })
 
@@ -268,33 +267,41 @@ const permission = ($: Engine, command: string, agentId?: string) =>
     } as never)
     .then(result => (result as { decision?: unknown }).decision)
 
-describe('finding 6: the permission prompt is answered only for the line Mike approved, once, while it runs', () => {
-  test('the exact line is allowed once, and a different line, an agent\'s, a second ask and one after the call are not', async ($, on) => {
-    const b = await mike($, on)
-    const line = 'git rebase main'
-    const seen: unknown[] = []
-    b.duringBash = async command => {
-      if (command !== line) return
-      seen.push(await permission($, line, 'a1'))
-      seen.push(await permission($, 'git rebase other'))
-      seen.push(await permission($, line))
-      seen.push(await permission($, line))
-    }
-    b.pick = APPROVE_LABEL
-    expect(await bash($, b, line)).toBeUndefined()
-    expect(seen).toEqual([undefined, undefined, { behavior: 'allow' }, undefined])
-    expect(await permission($, line)).toBeUndefined()
-    b.duringBash = undefined
-    b.pick = DECLINE_LABEL
-    expect(await bash($, b, line)).toBe(declinedRefusal(['rewrite']))
-    expect(await permission($, line)).toBeUndefined()
-  })
+const runIt = ($: Engine, b: Bench, line: string) => {
+  b.pick = 'Run it'
+  const question = { question: `Run \`${line}\` in /repo, on feat?`, header: 'Approve', options: [{ label: 'Run it', description: 'x' }, { label: 'Not now', description: 'y' }], multiSelect: false }
+  return $.tool.call({ tool: 'AskUserQuestion', questions: [question] } as never)
+}
+
+describe('finding 6: the permission prompt is answered only for the line Mike picked, while it runs', () => {
+  for (const [kind, line, other] of [
+    ['release', 'gh release create 1.0.0 --notes x', 'gh release create 1.0.1 --notes x'],
+    ['rewrite', 'git rebase main', 'git rebase other'],
+  ] as const) {
+    test(`${kind}: the exact line is allowed while it runs, and a different line, an agent's and one after the call are not`, async ($, on) => {
+      const b = await mike($, on)
+      const seen: unknown[] = []
+      b.duringBash = async command => {
+        if (command !== line) return
+        seen.push(await permission($, line, 'a1'))
+        seen.push(await permission($, other))
+        seen.push(await permission($, line))
+      }
+      expect(await permission($, line)).toBeUndefined()
+      expect(await bash($, b, line)).toMatch(ASKS[kind])
+      expect(await permission($, line)).toBeUndefined()
+      expect((await runIt($, b, line)).deny).toBeUndefined()
+      expect(await bash($, b, line)).toBeUndefined()
+      expect(seen).toEqual([undefined, undefined, { behavior: 'allow' }])
+      expect(await permission($, line)).toBeUndefined()
+    })
+  }
 })
 
 describe('ruling D: the refusals no answer can fix open no dialog in Mike\'s turn', () => {
   test('a tree that leaves a file out, two commits on a line, a force push', async ($, on) => {
     const b = await mike($, on)
-    b.pick = APPROVE_LABEL
+    b.pick = 'Yes, run it'
     b.trees['/repo'] = '?? stray.txt\0'
     expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(leftOutRefusal(['stray.txt']))
     b.trees['/repo'] = ''

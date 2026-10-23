@@ -40,7 +40,7 @@ For each proposal capture: the exact target path, the precise proposed write/edi
 
 ## Step 3 — Write the proposal digest (the review queue)
 
-Write via MCP `write` to `proposals/YYYY-MM-DD.md`. The memory `write` replaces any note at its path, so `read` that exact path first. If a digest is already there (an earlier run today), `edit` it to add this run's items rather than replace it. After the write, check `created` in its answer. `false` means the write replaced a note another writer had just made: that is an error, so report the path and do not write over it again. The digest **is** the sign-off review queue — each item carries an explicit decision box and status, so the file is the durable record of what was proposed and what the user decided:
+Write via MCP `write` to `proposals/YYYY-MM-DD.md`. The memory `write` refuses to replace a note without the `etag` of a `read`, so `read` that exact path first. If a digest is already there (an earlier run today), `edit` it to add this run's items rather than replace it. After the write, check `created` in its answer. `false` means the write replaced a note another writer had just made: that is an error, so report the path and do not write over it again. The digest **is** the sign-off review queue — each item carries an explicit decision box and status, so the file is the durable record of what was proposed and what the user decided:
 
 ```markdown
 ---

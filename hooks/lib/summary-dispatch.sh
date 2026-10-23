@@ -100,7 +100,8 @@ Follow your agent definition. Write the summary via the memory MCP using a
 vault-relative path (starting with '"'"'sessions/'"'"'), promote any decisions, release
 the marker with release_helper, and exit. Never write summary files with Bash.
 
-The memory write replaces any note at its path. Read every path before you
+The memory write refuses to replace a note unless you pass the etag of your
+read as if_match. Read every path before you
 write it, and check `created` in each write'"'"'s answer: `false` where you meant
 to create a note means you replaced another writer'"'"'s note. That is an error,
 never a success (agent definition, step 3).

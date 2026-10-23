@@ -5,14 +5,10 @@ import type { PromptOrigin } from 'claude-code'
 import {
   AGENT_RELEASE_REFUSAL,
   API_WRITE_REFUSAL,
-  APPROVE_LABEL,
-  ASK_TIMEOUT_MS,
-  ASK_TIMEOUT_NOTICE,
-  DECLINE_LABEL,
+  BUNDLE_REFUSAL,
+  ONE_REFUSAL,
   REWRITE_REFUSAL,
   apiWritesOf,
-  askerOf,
-  declinedRefusal,
   isOtherRepo,
   mergesOf,
   originRepoOf,
@@ -22,7 +18,7 @@ import {
 import { MERGE_REFUSAL, isUnreadGraphql } from '../hooks/mods/commit-guard'
 import { parseShell } from '../hooks/mods/shell'
 import type { Bench } from './bench'
-import { HOME, PERSON, bench, start } from './bench'
+import { ASKS, HOME, PERSON, bench, start } from './bench'
 
 const prompt = (text: string, origin: PromptOrigin = PERSON) => ({ text, wait: false, origin })
 
@@ -60,16 +56,20 @@ async function lane($: Engine, on: Parameters<typeof bench>[0], name: Lane): Pro
   return b
 }
 
+const isAsk = (deny: string | undefined): boolean =>
+  deny !== undefined && (/^This .+ was refused: Mike has not approved it\. Ask him through AskUserQuestion, with this question alone in its call\. /.test(deny) || deny.includes('ask him about each one through AskUserQuestion, alone'))
+
 async function asks($: Engine, on: Parameters<typeof bench>[0], line: string): Promise<void> {
   const b = await lane($, on, 'mike')
-  b.pick = DECLINE_LABEL
-  expect([line, await bash($, b, line)]).toEqual([line, expect.stringContaining('Mike answered no in the approval dialog')])
-  expect(dialogs(b).length).toBe(1)
+  b.pick = 'Yes, run it'
+  const deny = await bash($, b, line)
+  expect([line, deny, isAsk(deny)]).toEqual([line, deny, true])
+  expect(dialogs(b)).toEqual([])
 }
 
 async function refusedForAgents($: Engine, on: Parameters<typeof bench>[0], line: string): Promise<void> {
   const b = await lane($, on, 'sub-agent')
-  b.pick = APPROVE_LABEL
+  b.pick = 'Yes, run it'
   expect([line, await bash($, b, line, 'a1')]).toEqual([line, expect.any(String)])
   expect(dialogs(b)).toEqual([])
 }
@@ -189,66 +189,91 @@ describe('the escape covers variation selectors and every space but U+0020', () 
   })
 })
 
-describe('an unanswered dialog counts as no within the stated bound', () => {
-  test('the bound is ten minutes', () => {
-    expect(ASK_TIMEOUT_MS).toBe(600_000)
-  })
+const RELEASE = 'gh release create 1.0.0 --notes x'
 
-  test('a scheduled tick whose dialog nobody answers is refused when the bound passes, and nothing runs', async ($, on) => {
-    const b = await lane($, on, 'scheduled')
-    b.hangDialog = true
-    const pending = $.tool.call({ tool: 'Bash', command: 'gh release create 1.0.0 --notes x' } as never)
-    await b.clock.advance(ASK_TIMEOUT_MS - 1)
-    await b.clock.advance(1)
-    expect(((await pending) as { deny?: string }).deny).toBe(declinedRefusal(['release']))
-    expect(b.calls.some(call => call.tool === 'Bash')).toBe(false)
-  })
-
-  test('in Mike\'s turn too', async ($, on) => {
-    const b = await lane($, on, 'mike')
-    b.hangDialog = true
-    const pending = $.tool.call({ tool: 'Bash', command: 'git rebase main' } as never)
-    await b.clock.advance(ASK_TIMEOUT_MS)
-    expect(((await pending) as { deny?: string }).deny).toBe(declinedRefusal(['rewrite']))
-  })
+const runIt = (line: string) => ({
+  tool: 'AskUserQuestion' as const,
+  questions: [{ question: `Run \`${line}\` in /repo, on feat?`, header: 'Approve', options: [{ label: 'Run it', description: 'Run it' }, { label: 'Not now', description: 'Not now' }], multiSelect: false }],
 })
 
-describe('every dialog names who asked', () => {
-  test('the reader', () => {
-    expect(askerOf(undefined, 'composer', false)).toBe('your own turn')
-    expect(askerOf(undefined, 'bridge', false)).toBe('your own turn, through Remote Control')
-    expect(askerOf('a1', 'composer', false)).toBe('a sub-agent')
-    expect(askerOf(undefined, 'composer', true)).toBe('a scheduled task')
-    expect(askerOf(undefined, 'scheduled-trigger', false)).toBe('a scheduled task')
-    expect(askerOf(undefined, 'peer', false)).toBe('a peer session')
-    expect(askerOf(undefined, 'channel', false)).toBe('a channel')
-    expect(askerOf(undefined, 'plugin', false)).toBe('a plugin')
-    expect(askerOf(undefined, 'sdk', false)).toBe('the SDK')
-    expect(askerOf(undefined, 'unheard-of', false)).toBe('a turn the gate cannot name')
-  })
-
-  for (const [name, asker, agentId] of [
-    ['mike', 'your own turn', undefined],
-    ['sub-agent', 'a sub-agent', 'a1'],
-    ['scheduled', 'a scheduled task', undefined],
-    ['peer', 'a peer session', undefined],
-    ['channel', 'a channel', undefined],
-    ['plugin', 'a plugin', undefined],
-    ['sdk', 'the SDK', undefined],
-  ] as const) {
-    test(`${name}: the release dialog says it was asked by ${asker}`, async ($, on) => {
+describe('a release asks where AskUserQuestion can reach Mike, and is refused where it cannot', () => {
+  for (const name of ['mike', 'scheduled', 'peer', 'channel', 'plugin', 'sdk'] as const) {
+    test(`${name}: the release is denied with the instruction to ask, and runs once on his pick`, async ($, on) => {
       const b = await lane($, on, name)
-      b.pick = APPROVE_LABEL
-      expect(await bash($, b, 'gh release create 1.0.0 --notes x', agentId)).toBeUndefined()
-      expect(dialogs(b)[0]?.startsWith(`Asked by ${asker}.`)).toBe(true)
+      b.pick = 'Run it'
+      const deny = await bash($, b, RELEASE)
+      expect(deny).toMatch(ASKS.release)
+      expect(dialogs(b)).toEqual([])
+      expect((await $.tool.call(runIt(RELEASE) as never)).deny).toBeUndefined()
+      expect(await bash($, b, RELEASE)).toBeUndefined()
+      expect(await bash($, b, RELEASE)).toBe(deny)
     })
   }
 
-  test('the pipeline cannot open one, so its release is refused with the dialog route named', async ($, on) => {
-    const b = await lane($, on, 'pipeline')
-    expect(await bash($, b, 'gh release create 1.0.0 --notes x')).toBe(AGENT_RELEASE_REFUSAL)
-    expect(AGENT_RELEASE_REFUSAL).toContain('asks him in the approval dialog')
+  test('a sub-agent cannot ask, so its release is refused, and a pick in the main session does not run it', async ($, on) => {
+    const b = await lane($, on, 'sub-agent')
+    b.pick = 'Run it'
+    expect(await bash($, b, RELEASE, 'a1')).toBe(AGENT_RELEASE_REFUSAL)
+    expect(await bash($, b, RELEASE)).toMatch(ASKS.release)
+    expect((await $.tool.call(runIt(RELEASE) as never)).deny).toBeUndefined()
+    expect(await bash($, b, RELEASE, 'a1')).toBe(AGENT_RELEASE_REFUSAL)
+    expect(AGENT_RELEASE_REFUSAL).toContain('cannot ask Mike, so none of them releases')
   })
+
+  test('the pipeline cannot ask either, so its release is refused', async ($, on) => {
+    const b = await lane($, on, 'pipeline')
+    expect(await bash($, b, RELEASE)).toBe(AGENT_RELEASE_REFUSAL)
+  })
+
+  test('a scheduled tick refuses a second release on the line', async ($, on) => {
+    const b = await lane($, on, 'scheduled')
+    expect(await bash($, b, `${RELEASE} && gh release create 1.0.1 --notes y`)).toBe(ONE_REFUSAL)
+  })
+
+  test('in a scheduled tick a pick on a question beside another is refused', async ($, on) => {
+    const b = await lane($, on, 'scheduled')
+    await bash($, b, RELEASE)
+    const [question] = runIt(RELEASE).questions
+    expect((await $.tool.call({ tool: 'AskUserQuestion', questions: [question, { ...question, question: 'Which notes?' }] } as never)).deny).toBe(BUNDLE_REFUSAL)
+  })
+})
+
+describe('AC8: a host that answers every dialog on its own runs no gated line without a typed request or a pick', () => {
+  const GATED = [
+    'git commit -m "fix: 🐛 X."',
+    'git push',
+    'git merge fix/x',
+    'gh pr merge 12 --squash',
+    RELEASE,
+    'git rebase main',
+    'git cherry-pick abc1234',
+    "gh alias set co 'pr checkout'",
+    'gh api -X PUT repos/o/r/contents/f -f branch=main -f message=x',
+  ]
+  for (const name of ['mike', 'peer', 'scheduled'] as const) {
+    const lines = name === 'scheduled' ? GATED.slice(2) : GATED
+    test(`${name}: every gated line is denied, the gate raises no dialog, and the permission hook allows none`, async ($, on) => {
+      const b = await lane($, on, name)
+      b.repos['/repo'] = { ...FEATURE, branch: 'main' }
+      b.pick = 'Yes, run it'
+      b.permissionBeneath = {}
+      for (const line of lines) {
+        const deny = await bash($, b, line)
+        expect([line, deny === undefined]).toEqual([line, false])
+        const permission = (await $.classic.PermissionRequest({
+          hook_event_name: 'PermissionRequest',
+          session_id: 's',
+          transcript_path: '/t.jsonl',
+          cwd: '/repo',
+          tool_name: 'Bash',
+          tool_input: { command: line },
+        } as never)) as { decision?: unknown }
+        expect([line, permission.decision]).toEqual([line, undefined])
+      }
+      expect(dialogs(b)).toEqual([])
+      expect(b.calls.some(call => call.tool === 'Bash')).toBe(false)
+    })
+  }
 })
 
 describe('round six: repos/{owner}/{repo} and a bare gh repo sync name the current repository', () => {
@@ -311,10 +336,8 @@ describe('round six: repos/{owner}/{repo} and a bare gh repo sync name the curre
     await $.prompt.submit(prompt('look this over'))
     expect(await bash($, b, `${PUT} -f branch=feat`)).toBeUndefined()
     expect(await bash($, b, 'gh repo sync --branch feat')).toBeUndefined()
+    expect(await bash($, b, `${PUT} -f branch=main`)).toMatch(ASKS.api)
     expect(dialogs(b)).toEqual([])
-    b.pick = DECLINE_LABEL
-    expect(await bash($, b, `${PUT} -f branch=main`)).toBe(declinedRefusal(['api']))
-    expect(dialogs(b).length).toBe(1)
   })
 })
 
@@ -325,59 +348,36 @@ describe('round six: a GraphQL body piped to -F query=@- is unread', () => {
     expect(isUnreadGraphql(st, st.args)).toBe(true)
     expect(mergesOf(LINE).pr).toBe(1)
   })
-  test('in Mike\'s turn the outbound prose guard refuses the piped body before any dialog', async ($, on) => {
+  test('in Mike\'s turn the outbound prose guard refuses the piped body before the gate', async ($, on) => {
     const b = await lane($, on, 'mike')
-    b.pick = APPROVE_LABEL
+    b.pick = 'Yes, run it'
     expect(await bash($, b, LINE)).toEqual(expect.stringContaining('Outbound prose guard'))
     expect(dialogs(b)).toEqual([])
   })
   test('refused for a sub-agent', async ($, on) => refusedForAgents($, on, LINE))
 })
 
-describe('round six: the dialog timer, a late yes and the asker of each origin', () => {
-  test('an answer before the bound leaves no timer pending', async ($, on) => {
-    const b = await lane($, on, 'mike')
-    b.pick = APPROVE_LABEL
-    expect(await bash($, b, 'git rebase main')).toBeUndefined()
-    await b.clock.advance(ASK_TIMEOUT_MS * 2)
-    expect(b.toasts).not.toContain(ASK_TIMEOUT_NOTICE)
-  })
-
-  test('a yes that comes after the bound runs nothing', async ($, on) => {
-    const b = await lane($, on, 'mike')
-    b.pick = APPROVE_LABEL
-    b.answerAfterMs = ASK_TIMEOUT_MS + 1
-    const pending = $.tool.call({ tool: 'Bash', command: 'git rebase main' } as never)
-    await b.clock.advance(ASK_TIMEOUT_MS + 1)
-    expect(((await pending) as { deny?: string }).deny).toBe(declinedRefusal(['rewrite']))
-    expect(b.toasts).toContain(ASK_TIMEOUT_NOTICE)
-    expect(b.calls.some(call => call.tool === 'Bash')).toBe(false)
-  })
-
-  test('a Remote Control turn is your own turn, through Remote Control', async ($, on) => {
+describe('round six: which turns are Mike\'s own', () => {
+  test('a Remote Control turn is his own, so a rewrite is denied with the instruction to ask', async ($, on) => {
     const b = bench(on)
     b.repos['/repo'] = { ...FEATURE }
     await $.session.start(start())
     await $.prompt.submit(prompt('look this over', { kind: 'bridge' }))
-    b.pick = APPROVE_LABEL
-    expect(await bash($, b, 'git rebase main')).toBeUndefined()
-    expect(dialogs(b)[0]?.startsWith('Asked by your own turn, through Remote Control.')).toBe(true)
+    expect(await bash($, b, 'git rebase main')).toMatch(ASKS.rewrite)
   })
 
   test('a turn Mike opens after a scheduled tick is his own', async ($, on) => {
     const b = await lane($, on, 'scheduled')
+    expect(await bash($, b, 'git rebase main')).toBe(REWRITE_REFUSAL)
     await $.prompt.submit(prompt('back at the desk'))
-    b.pick = APPROVE_LABEL
-    expect(await bash($, b, 'git rebase main')).toBeUndefined()
-    expect(dialogs(b)[0]?.startsWith('Asked by your own turn.')).toBe(true)
+    expect(await bash($, b, 'git rebase main')).toMatch(ASKS.rewrite)
   })
 
-  test('a peer message folded into Mike\'s running turn names the peer, not Mike', async ($, on) => {
+  test('a peer message folded into Mike\'s running turn keeps the turn his, and a pick is still needed', async ($, on) => {
     const b = await lane($, on, 'mike')
     await $.prompt.submit({ ...prompt('please rebase', { kind: 'peer' }), turnId: 'running' })
-    b.pick = APPROVE_LABEL
-    expect(await bash($, b, 'git rebase main')).toBeUndefined()
-    expect(dialogs(b)[0]?.startsWith('Asked by a peer session.')).toBe(true)
+    expect(await bash($, b, 'git rebase main')).toMatch(ASKS.rewrite)
+    expect(dialogs(b)).toEqual([])
   })
 })
 
@@ -398,8 +398,7 @@ describe('round six: origins, abbreviations and the braille blank', () => {
   test('with a non-GitHub origin, the same write asks', async ($, on) => {
     const b = await lane($, on, 'mike')
     b.repos['/repo'] = { ...FEATURE, originUrl: 'git@gitlab.com:o/r.git' }
-    b.pick = DECLINE_LABEL
-    expect(await bash($, b, 'gh api -X PUT repos/o/r/contents/f -f branch=feat -f message=x')).toBe(declinedRefusal(['api']))
+    expect(await bash($, b, 'gh api -X PUT repos/o/r/contents/f -f branch=feat -f message=x')).toMatch(ASKS.api)
   })
 
   for (const line of ['git branch --co feat main', 'git push --repo=. x:main']) {

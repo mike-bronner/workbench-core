@@ -90,15 +90,12 @@ jobs:
             bash -n "$f"
           done
 
-      - name: Check out workbench-dev-team for its git-commit references
-        uses: actions/checkout@v6
-        with:
-          repository: mike-bronner/workbench-dev-team
-          path: .dev-team
+      - name: Clone workbench-dev-team outside the workspace for its git-commit references
+        run: git clone --depth 1 --quiet https://github.com/mike-bronner/workbench-dev-team.git "$RUNNER_TEMP/workbench-dev-team"
 
       - name: hook test suite (offline; fake-server fixture, no real server)
         env:
-          WORKBENCH_DEV_TEAM_DIR: ${{ github.workspace }}/.dev-team
+          WORKBENCH_DEV_TEAM_DIR: ${{ runner.temp }}/workbench-dev-team
         run: |
           set -euo pipefail
           fail=0

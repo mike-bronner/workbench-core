@@ -122,6 +122,8 @@ memory_load_env() {
   export MARKDOWN_VAULT_MCP_EMBED_CONTEXT="true"
   export MARKDOWN_VAULT_MCP_FOLDER_WEIGHTS="sessions:0.5"
   export MARKDOWN_VAULT_MCP_FTS_WEIGHTS="title:3.0,summary:2.0"
+  export MARKDOWN_VAULT_MCP_OKF_MODE="on"
+  export MARKDOWN_VAULT_MCP_OKF_WRITE="false"
 
   # HTTP/SSE transport REQUIRES a writable KV store and event store; its default
   # file:///data/state is unwritable on macOS and crashes the server at boot.

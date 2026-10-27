@@ -53,7 +53,7 @@ run node "$FIND" bom.json
 expect "a JSON contract with a byte-order mark is read" 0 "- id  string  required"
 printf '<p>nothing here</p>\n' > "$WORK/empty.html"
 run node "$FIND" empty.html
-expect "a page that declares nothing exits 2 and says to ask" 2 "Ask Mike where the contract is"
+expect "a page that declares nothing exits 2 and says to ask" 2 "Ask the user where the contract is"
 run sh -c "printf '%s' '{\"tools\":[{\"name\":\"add\",\"inputSchema\":{\"type\":\"object\",\"required\":[\"n\"],\"properties\":{\"n\":{\"type\":\"integer\"}}}}]}' | node '$FIND' -"
 expect "an MCP tools/list on stdin lists the tool's fields" 0 "- n  integer  required"
 run sh -c "printf 'USAGE\n  tool run [flags]\n\nFLAGS\n  -v, --verbose   Talk more\n' | node '$FIND' - --cli"
@@ -186,14 +186,19 @@ for word in 'send a body' 'API' 'form' 'CLI' 'MCP tool' 'contract' 'shorten' 'su
 done
 for rule in '## 1\.' '## 2\.' '## 3\.'; do
   section="$(awk -v r="^$rule" '$0 ~ r {on=1; print; next} on && /^## / {exit} on' "$SKILL/SKILL.md")"
-  for part in '**When:**' '**Check:**' '**Done:**' '**Ask Mike**'; do
+  for part in '**When:**' '**Check:**' '**Done:**' '**Ask the user**'; do
     if printf '%s' "$section" | grep -qF -- "$part"; then ok "rule ${rule:3:1} states $part"; else no "rule ${rule:3:1} states $part" "missing"; fi
   done
 done
-if grep -qF "rook's \`read\` skill" "$SKILL/SKILL.md" && grep -qF "rook's \`read\` skill" "$ROOT/README.md"; then
-  ok "the skill and the README credit rook's read skill"
+if found="$(grep -rniE 'Mike|rook|MEGA\.dev' "$SKILL")"; then
+  no "the skill names no person and carries no credit" "$found"
 else
-  no "the skill and the README credit rook's read skill" "credit missing"
+  ok "the skill names no person and carries no credit"
+fi
+if found="$(grep -niE "rook|MEGA\.dev" "$ROOT/README.md")"; then
+  no "the README carries no read-first credit" "$found"
+else
+  ok "the README carries no read-first credit"
 fi
 
 echo

@@ -265,5 +265,21 @@ else
 fi
 
 echo
+echo "the memory routing makes the vault the hand-off store:"
+ROUTING="$(awk '/^export const MEMORY = `/ {on = 1} on {print} on && /`$/ && !/^export const MEMORY = `/ {exit}' "$PROMPT_RULES" | sed 's/\\`/`/g' | tr '\n' ' ')"
+routes() { # desc, fixed string
+  if printf '%s' "$ROUTING" | grep -qF -- "$2"; then ok "$1"; else no "$1" "the routing lacks: $2"; fi
+}
+routes "a resumable task gets a progress note right away" 'When a task may be resumed by another or a later session (multi-step work, a challenge, an investigation in progress, or facts derived from files, recordings or sessions), `write` one progress note right away'
+routes "the progress note is kept current"                'Keep it current as the task moves'
+routes "the progress note carries sources and tags"      'Give it `sources:` and `[^id]` footnotes per the sources rule below.'
+routes "every note carries labelled sources"              'every vault note carries a `sources:` list in its frontmatter whenever any source can be named'
+routes "each source is one entry"                         'Give one entry each in the OKF shape `{id, title, resource}`'
+routes "two or more sources tag every fact"               'With two or more sources, end each fact with the OKF footnote `[^id]` of its source'
+routes "a task with history is searched before re-deriving" 'Before you re-derive anything on a task that has history, `search` the vault for it'
+routes "a peer session is not a store"                    "A peer session's context is not a store"
+routes "a message coordinates and the vault stores"       'A message coordinates, and the vault stores.'
+
+echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

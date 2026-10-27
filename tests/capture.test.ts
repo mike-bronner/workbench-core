@@ -10,7 +10,7 @@ import type { Engine } from 'claude-code/testing'
 
 import { DUPLICATE_SCORE, MAX_NOTES, RRF_CEILING, capturePrompt, isCaptureDue, isNotFound, notesOf, replacedText, thresholdOf, writeOutcome } from '../hooks/mods/capture'
 import type { World } from './memory-world'
-import { SERVER, memoryWorld, prompt, start, turn } from './memory-world'
+import { SERVER, SID, memoryWorld, prompt, start, turn } from './memory-world'
 
 const NOTE = {
   type: 'decision',
@@ -47,7 +47,14 @@ describe('AC3: durable memory is captured with no visible turn and no prompt', (
         args: {
           path: 'decisions/2026-10-07-checkpoint-each-turn.md',
           content: NOTE.body,
-          frontmatter: { name: NOTE.name, type: 'decision', date: '2026-10-07', summary: NOTE.summary, tags: NOTE.tags },
+          frontmatter: {
+            name: NOTE.name,
+            type: 'decision',
+            date: '2026-10-07',
+            summary: NOTE.summary,
+            tags: NOTE.tags,
+            sources: [{ id: 'session', title: 'The session this note was captured from', resource: `session:${SID}` }],
+          },
         },
       },
     ])
@@ -332,6 +339,13 @@ describe('AC3: durable memory is captured with no visible turn and no prompt', (
     expect(notesOf(JSON.stringify(many), date)).toHaveLength(MAX_NOTES)
     for (const reply of ['NONE', '', 'not json [', '{"type":"decision"}']) expect(notesOf(reply, date)).toEqual([])
     expect(notesOf(JSON.stringify([{ ...NOTE, type: 'feedback' }]), date)[0]?.path).toBe('feedback/2026-10-07-checkpoint-each-turn.md')
+  })
+
+  test('a captured note names the session it came from as its source', () => {
+    const [sourced] = notesOf(JSON.stringify([NOTE]), '2026-10-07', 'sid-1')
+    expect(sourced?.frontmatter.sources).toEqual([{ id: 'session', title: 'The session this note was captured from', resource: 'session:sid-1' }])
+    expect(notesOf(JSON.stringify([NOTE]), '2026-10-07')[0]?.frontmatter).not.toHaveProperty('sources')
+    expect(notesOf(JSON.stringify([NOTE]), '2026-10-07', '')[0]?.frontmatter).not.toHaveProperty('sources')
   })
 
   test('the policy readers', () => {

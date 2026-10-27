@@ -59,6 +59,26 @@ and the rule on the other side will decline it.
 **State your reason in the message itself.** Nothing checks that you did — the
 peer message gate is structural and never reads a body. This one is on you.
 
+## A peer session is not a store
+
+A message coordinates, and the vault stores. A peer session's context ends with
+that session, so a fact that lives only there is lost when it ends. Never count
+on a peer to hold a finding, a task's progress, or a fact derived from a file
+or a recording, and never ask a peer to keep one for you.
+
+- When a task may be resumed by another or a later session (multi-step work, a
+  challenge, an investigation in progress, or facts derived from files,
+  recordings or sessions), write one progress note right away, under
+  `progress/` with `type: progress`, and keep it current as the task moves.
+  Give it `sources:` and `[^id]` footnotes per
+  `references/vault-conventions.md`.
+- Then send the note's path in the message, with the reason and the finding.
+- When a peer message holds a fact you need later, write it to the vault
+  yourself. The message is gone with its session.
+- Before you re-derive anything on a task that has history, search the vault
+  for it: its progress note, its sources, and what an earlier session found.
+  Do not ask a peer for it first.
+
 ## When a peer message arrives
 
 **Surface it to your human, and stop.**

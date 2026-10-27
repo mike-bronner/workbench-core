@@ -7,11 +7,8 @@ description: Use before you send a body or a call to an outside API, form, CLI o
 
 Three rules for moments when a quick answer looks right and is wrong. Each rule
 has a check that a script runs, not your judgement, and a clear "done". When
-the check cannot run, ask Mike. Do not guess. A sub-agent cannot ask, so it
+the check cannot run, ask the user. Do not guess. A sub-agent cannot ask, so it
 stops and puts the question in its report to the orchestrator.
-
-The idea and the first versions of both scripts come from rook's `read` skill,
-written for the MEGA.dev course.
 
 The scripts need Node.js 18 or newer and nothing else. Each command below
 names its script by its full path, so it runs as written in any Bash call.
@@ -47,7 +44,7 @@ format another tool reads, and an MCP tool call.
   node "${CLAUDE_PLUGIN_ROOT}/skills/read-first/scripts/find-contract.mjs" <url> --open
   ```
 
-- **A page behind a sign-in.** The script reports `sign-in:`. Ask Mike to save
+- **A page behind a sign-in.** The script reports `sign-in:`. Ask the user to save
   the signed-in page into the session scratchpad, then run:
 
   ```bash
@@ -82,7 +79,7 @@ usually holds.
 **Done:** your message quotes the contract with its source, and every field or
 flag you send appears in the quote.
 
-**Ask Mike** where the contract is when the script finds nothing declared, or
+**Ask the user** where the contract is when the script finds nothing declared, or
 when it cannot reach the page. Never send a guess to learn from the error.
 
 ## 2. Show every cut when you change a person's text
@@ -114,8 +111,8 @@ about to shorten, summarize or rewrite it.
 
 **Done:** the script prints `result: ok`, and the person has seen every cut.
 
-**Ask Mike** which passages must stay word for word when that is not clear,
-and which limit applies when he named none.
+**Ask the user** which passages must stay word for word when that is not clear,
+and which limit applies when the user named none.
 
 ## 3. Check a live source before you state a fact that goes stale
 
@@ -148,5 +145,5 @@ say. That includes writing one into code or a config.
 **Done:** the answer cites a source the script confirmed in this session, or
 says plainly that the fact is `unchecked`.
 
-**Ask Mike** for the source when you cannot open one. Until then, give the
+**Ask the user** for the source when you cannot open one. Until then, give the
 memory answer marked `unchecked`.

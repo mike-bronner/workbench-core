@@ -70,6 +70,7 @@ export type Bench = {
   // A deny from beneath the module, as a settings rule or a person would give:
   // the reason for a call this refuses, else undefined.
   denyBeneath?: (tool: string) => string | undefined
+  errorBeneath?: (tool: string) => boolean
   // What $.session.cwd and $.session.root answer (default /repo).
   cwd: string
   root: string
@@ -257,6 +258,7 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     if (denied !== undefined) return { deny: denied }
     if (e.tool === 'Bash') await b.duringBash?.(e.command)
     if (e.tool === 'Bash' && b.onBash?.(e.command)?.isError) return { isError: true, result: 'exit 1', text: 'exit 1' }
+    if (b.errorBeneath?.(e.tool)) return { isError: true, result: 'failed', text: 'failed' }
     return { result: {} as never }
   })
   // No message holds a call here, so the question rule lets every

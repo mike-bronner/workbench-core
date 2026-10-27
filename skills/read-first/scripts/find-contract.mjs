@@ -416,7 +416,7 @@ function signInLines(page, html) {
     (page.redirected && SIGN_IN_PATH.test(urlPart(page.where, 'pathname')));
   if (!signIn) return [];
   return [
-    'sign-in: this may be a sign-in page, not the page you meant. Ask Mike to save the signed-in page ' +
+    'sign-in: this may be a sign-in page, not the page you meant. Ask the user to save the signed-in page ' +
       'into the session scratchpad, then run: node find-contract.mjs <saved-file> --base <its URL>',
   ];
 }
@@ -463,7 +463,7 @@ function report(page) {
   } else if (found) {
     lines.push("next: quote the form's fields and limits, then build the body from them.");
   } else {
-    lines.push('next: nothing is declared here. Ask Mike where the contract is. Do not guess a shape, and do not send a guess to learn from the error.');
+    lines.push('next: nothing is declared here. Ask the user where the contract is. Do not guess a shape, and do not send a guess to learn from the error.');
   }
   return { lines, links, found };
 }
@@ -511,7 +511,7 @@ function cliReport(where, text) {
   lines.push(
     flags.length
       ? 'next: quote each flag you pass, with its argument, from the lines above. A flag that is not listed is not declared: do not pass it to see what happens.'
-      : 'next: this text declares no flags. Check that it is the help of the command you will run, or ask Mike where its options are documented.',
+      : 'next: this text declares no flags. Check that it is the help of the command you will run, or ask the user where its options are documented.',
   );
   return { lines, found: flags.length > 0 };
 }
@@ -569,7 +569,7 @@ async function get(start, { pageHost = urlPart(start, 'hostname'), fetchImpl = f
   for (let hop = 0; hop <= MAX_HOPS; hop += 1) {
     if (!/^https?:$/i.test(urlPart(url, 'protocol'))) throw new Error(`refused ${url}: only http and https are fetched`);
     if (urlPart(url, 'hostname') !== pageHost && (await isLocal(url, resolveHost))) {
-      throw new Error(`refused ${url}: a local or private address that is not the page's own host. Ask Mike before you open it`);
+      throw new Error(`refused ${url}: a local or private address that is not the page's own host. Ask the user before you open it`);
     }
     const res = await fetchImpl(url, {
       redirect: 'manual',
@@ -634,7 +634,7 @@ async function readInside(path) {
   const inCwd = !(rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel));
   if (!inCwd && !inScratchpad(real)) {
     throw new Error(
-      `${path} is outside the working folder (${cwd}) and the session scratchpad. Ask Mike before reading it. If he agrees, copy it into the session scratchpad and run this again.`,
+      `${path} is outside the working folder (${cwd}) and the session scratchpad. Ask the user before reading it. If the user agrees, copy it into the session scratchpad and run this again.`,
     );
   }
   return unBom(await readFile(real, 'utf8'));
@@ -721,7 +721,7 @@ async function selfTest() {
   assert.equal(selfContract('{"name":"x","items":[]}', 'application/json'), null);
   const page = (body, extra = {}) => ({ where: 'x', status: null, type: '', header: '', body, base: null, redirected: false, lastModified: '', ...extra });
   assert.equal(report(page('<p>hi</p>')).found, false);
-  assert.ok(report(page('<p>hi</p>')).lines.at(-1).includes('Ask Mike where the contract is'));
+  assert.ok(report(page('<p>hi</p>')).lines.at(-1).includes('Ask the user where the contract is'));
   assert.ok(report(page('<p>hi</p>', { status: 401 })).lines.some((l) => l.startsWith('sign-in:')));
   assert.ok(!report(page('<p>hi</p>', { status: 200 })).lines.some((l) => l.startsWith('sign-in:')));
   assert.ok(report(page('openapi: 3.0.0\n')).lines.some((l) => l.startsWith('fields: this script does not parse YAML')));

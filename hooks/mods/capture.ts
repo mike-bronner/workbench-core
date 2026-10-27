@@ -66,7 +66,7 @@ Otherwise answer with a JSON array and nothing else, at most ${MAX_NOTES} items,
 export type CaptureNote = {
   path: string
   content: string
-  frontmatter: { name: string; type: string; date: string; summary: string; tags: string[] }
+  frontmatter: { name: string; type: string; date: string; summary: string; tags: string[]; sources?: { id: string; title: string; resource: string }[] }
 }
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
@@ -76,7 +76,7 @@ const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 // so it never names a path, a folder or a frontmatter field of its own. An
 // item that fails any check is left out. NONE, an empty reply, and anything
 // that is not a JSON array give no notes.
-export function notesOf(reply: string, date: string): CaptureNote[] {
+export function notesOf(reply: string, date: string, sessionId?: string): CaptureNote[] {
   const text = reply.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
   if (!text.startsWith('[')) return []
   let items: unknown
@@ -102,7 +102,14 @@ export function notesOf(reply: string, date: string): CaptureNote[] {
     notes.push({
       path,
       content: (body as string).trim(),
-      frontmatter: { name: (name as string).trim(), type, date, summary: (summary as string).trim(), tags: tagList },
+      frontmatter: {
+        name: (name as string).trim(),
+        type,
+        date,
+        summary: (summary as string).trim(),
+        tags: tagList,
+        ...(sessionId ? { sources: [{ id: 'session', title: 'The session this note was captured from', resource: `session:${sessionId}` }] } : {}),
+      },
     })
   }
   return notes

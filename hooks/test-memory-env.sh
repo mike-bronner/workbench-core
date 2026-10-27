@@ -201,6 +201,23 @@ echo "an env-only repo url needs no config file at all:"
 OUT=$(gitenv "" WORKBENCH_MEMORY_GIT_REPO_URL=https://envonly.invalid/e.git)
 assert_line "repo url from env alone" "$OUT" "MARKDOWN_VAULT_MCP_GIT_REPO_URL=https://envonly.invalid/e.git"
 
+echo "OKF read semantics are on by setting, and the server writes no OKF stamp, index.md or log.md:"
+OUT=$(env -i HOME="$SANDBOX/home" PATH="$PATH" bash -c '. "'"$LIB"'"; memory_load_env; env | grep "^MARKDOWN_VAULT_MCP_OKF_"')
+assert_line "OKF_MODE is on" "$OUT" "MARKDOWN_VAULT_MCP_OKF_MODE=on"
+assert_line "OKF_WRITE is off" "$OUT" "MARKDOWN_VAULT_MCP_OKF_WRITE=false"
+
+echo "no launcher writes an index.md into the vault:"
+HOOKS="$(cd "$(dirname "$LIB")/.." && pwd)"
+for LAUNCHER in "$HOOKS/lib/memory-env.sh" "$HOOKS/mcp-memory.sh" "$HOOKS/memory-server-spawn.sh"; do
+  if [ ! -r "$LAUNCHER" ]; then
+    FAIL=$((FAIL + 1)); echo "  ❌ $(basename "$LAUNCHER") is readable"
+  elif grep -qE 'index\.md|ensure_okf_root' "$LAUNCHER"; then
+    FAIL=$((FAIL + 1)); echo "  ❌ $(basename "$LAUNCHER") names no vault index.md"
+  else
+    PASS=$((PASS + 1)); echo "  ✅ $(basename "$LAUNCHER") names no vault index.md"
+  fi
+done
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

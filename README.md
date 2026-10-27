@@ -1224,11 +1224,13 @@ A lane `$.workbench.callerLane` cannot give is read as a sub-agent, and a sessio
 
 ### Vault write checks
 
-Three vault rules were prose, and each broke often enough that `/workbench-core:memory-lint` carries a repair step for it. The [hooks module](#the-hooks-module) now checks them on the memory MCP's `write`, `edit` and `append`, in every lane, because a sub-agent or a summary-writer writes the same vault (`hooks/mods/vault-write.ts`):
+Three vault rules were prose, and each broke often enough that `/workbench-core:memory-lint` carries a repair step for it. The [hooks module](#the-hooks-module) now checks them, with two more, on the memory MCP's `write`, `edit` and `append`, in every lane, because a sub-agent or a summary-writer writes the same vault (`hooks/mods/vault-write.ts`):
 
 - **Frontmatter.** A `write` of a note, or an `append` that creates one, needs a non-empty `name` and a `type` from the vault's fixed list in [`references/vault-conventions.md`](references/vault-conventions.md). The fields come from the `frontmatter` argument, or a block at the start of the content, and the argument wins field by field. A refusal names each field that is wrong. An `edit` and an attachment carry no frontmatter to check.
 - **Links.** A `[[target]]` or `[[target|text]]` becomes `[text](/folder/target.md)` when the target is a vault path to a note, or a stem exactly one note carries. A target that does not resolve is left as written, with no refusal. So are links in code, embeds (`![[...]]`), heading links, and a path with a space or a bracket in it.
 - **Path.** A `memory/` prefix is dropped (`agents/summary-writer.md`). An absolute path inside the vault, or under `~`, is made relative. One outside the vault, or one that climbs out with `..`, is refused.
+- **Reserved OKF names.** A `write`, `edit`, `append`, `fetch`, `okf_verify` or `create_upload_link` to an `index.md` or `log.md` in any folder is refused, and so is a `rename` from or to one. `move_folder` and `okf_convert_links`, which move or rewrite every note under a folder, are refused outright, and so are `okf_generate_index` and `okf_seed_log`. `hooks/test-write-tool-list.sh` holds the guard's table to the bundled server's own list of write tools, so a write tool a new wheel adds turns CI red until the guard handles it. A `fetch` of a note also gets the frontmatter check and the sources advice. `hooks/lib/memory-env.sh` sets `MARKDOWN_VAULT_MCP_OKF_MODE=on`, so the server reads the vault as an OKF bundle with no `index.md` in it, and core writes none. The server then shows a note's `sources:` on `read` and a count on `search`. `MARKDOWN_VAULT_MCP_OKF_WRITE=false` keeps the server from stamping notes or keeping `index.md` and `log.md`, so the refusal holds even when the server's own instructions ask an agent to update them.
+- **Sources.** A `write` of a note, or an `append` that creates one, with no `sources:` list gets advice beside the result, never a refusal: every note names what its facts came from whenever it can, and some notes have no nameable source. The rule and the `[^id]` fact footnotes are in [`references/vault-conventions.md`](references/vault-conventions.md). Memory capture names the session it ran in.
 
 A fix goes through as a rewrite of the call, because a refusal costs a model turn. `scripts/vault-resolve.sh` reads the vault root from `hooks/lib/memory-env.sh` and resolves the link targets in one `find` under the root. It runs only for a call that needs it: an absolute path, an `append` that may create a note, or a `[[link]]`. When it cannot run, an absolute path is refused and every link is left as written. An `append` that may create a note it cannot see is taken as new, so the frontmatter check applies.
 
@@ -1324,6 +1326,7 @@ Vault structure:
 ├── skills/            — per-skill learnings files
 ├── infrastructure/    — systems and tools documentation
 ├── maintenance/       — memory-lint audit reports
+├── progress/          — one progress note per task that may be resumed: the hand-off store
 ├── README.md           — catalog of the curated layer (topics, decisions, reference)
 └── CLAUDE.md          — vault map (metadata only)
 ```
@@ -1446,7 +1449,7 @@ Session summaries are chronological sediment; left alone they accumulate as unli
 
 #### Lint ritual
 
-Vaults rot silently: files written without the required `name`/`type` frontmatter are skipped at index time (on disk but invisible to search), links break when targets move, orphans accumulate. `/workbench-core:memory-lint` is the periodic repair pass — it diffs the filesystem against the index to find skipped files and rescues their frontmatter, repairs or removes broken links, adds only high-confidence links (never mass-links orphans), repairs `README.md` drift in both directions (missing entries for `topics/` and `decisions/` documents, stale entries pointing at deleted ones), and flags duplicates/contradictions for the human instead of merging. Each run is capped at 50 file-fixes and writes an audit report to `maintenance/` with before/after stats. Intended cadence: monthly, deployed via the scheduled-tasks MCP. Raw `*.log.md` transcripts are never touched.
+Vaults rot silently: files written without the required `name`/`type` frontmatter are skipped at index time (on disk but invisible to search), links break when targets move, orphans accumulate. `/workbench-core:memory-lint` is the periodic repair pass — it diffs the filesystem against the index to find skipped files and rescues their frontmatter, repairs or removes broken links, adds only high-confidence links (never mass-links orphans), repairs `README.md` drift in both directions (missing entries for `topics/` and `decisions/` documents, stale entries pointing at deleted ones), and flags duplicates/contradictions for the human instead of merging. It also flags, for review only, notes with no `sources:` list, facts with no `[^id]` footnote in a note with two or more sources, progress notes that ended or went 14 days without an update, and a file with a reserved OKF name, the index or the log, in any folder and any letter case, which a `git_sync` pull can bring in from another machine (`skills/memory-lint/scripts/check-handoff-notes.py`). Each run is capped at 50 file-fixes and writes an audit report to `maintenance/` with before/after stats. Intended cadence: monthly, deployed via the scheduled-tasks MCP. Raw `*.log.md` transcripts are never touched.
 
 #### Decision-quality loop
 
@@ -1499,7 +1502,7 @@ Every skill is **execution-aware** without saying so: the hooks module merges it
 
 ### Read first
 
-**`/workbench-core:read-first` turns three habits into checks a script runs.** It generalizes rook's `read` skill, written for the first Challenge of the MEGA.dev course. Rook's skill covered three narrow moments: an API body, shortening a person's text, and naming the newest model. Its strength is the shape, which this skill keeps: each rule has a "When", a check that a script runs rather than judgement, a "Done", and a question for Mike in place of a guess. Mike chose a skill with scripts over always-loaded rules or enforcing hooks, because the scripts make the checks mechanical and a skill costs context only when its description matches the request.
+**`/workbench-core:read-first` turns three habits into checks a script runs.** Each rule has a "When", a check that a script runs rather than judgement, a "Done", and a question for the user in place of a guess. The user chose a skill with scripts over always-loaded rules or enforcing hooks, because the scripts make the checks mechanical and a skill costs context only when its description matches the request.
 
 | Rule | When | Check |
 |---|---|---|

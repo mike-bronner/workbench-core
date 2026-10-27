@@ -18,8 +18,7 @@
 //                left as written, and the write goes on.
 //
 // A fix goes through as a rewrite of the call, because a refusal costs a model
-// turn. Only what cannot be fixed safely is refused. The checks govern what a
-// vault note contains, never which tool writes it.
+// turn. Only what cannot be fixed safely is refused.
 //
 // Pure functions only: the engine follows `$` into no imported function.
 
@@ -27,16 +26,16 @@
 // server in the workbench-core plugin.
 export const VAULT_TOOL_PREFIX = 'mcp__plugin_workbench-core_memory__'
 
-export type VaultTool = 'write' | 'edit' | 'append'
+export type VaultTool = 'write' | 'edit' | 'append' | 'fetch'
 
 export function vaultToolOf(tool: string): VaultTool | undefined {
   if (!tool.startsWith(VAULT_TOOL_PREFIX)) return undefined
   const name = tool.slice(VAULT_TOOL_PREFIX.length)
-  return name === 'write' || name === 'edit' || name === 'append' ? name : undefined
+  return name === 'write' || name === 'edit' || name === 'append' || name === 'fetch' ? name : undefined
 }
 
 // The argument each tool carries its markdown in.
-export const TEXT_FIELD: Record<VaultTool, 'content' | 'new_text'> = { write: 'content', edit: 'new_text', append: 'content' }
+export const TEXT_FIELD: Record<VaultTool, 'content' | 'new_text'> = { write: 'content', edit: 'new_text', append: 'content', fetch: 'content' }
 
 // The vault's fixed list of note types (references/vault-conventions.md). It
 // holds every type a workbench skill or agent writes.
@@ -56,6 +55,7 @@ export const TYPES: readonly string[] = [
   'proposal',
   'learnings',
   'meeting',
+  'progress',
 ]
 
 export const PATH_REFUSAL =
@@ -164,6 +164,62 @@ export function rewriteLinks(text: string, paths: ReadonlyMap<string, string>): 
     return `[${(alias ?? target).trim()}](${path})`
   })
 }
+
+export const RESERVED_REFUSAL =
+  'This vault write was refused: `index.md` and `log.md` are reserved names in the memory vault. ' +
+  'Nothing keeps either file current, so leave both alone, ' +
+  "even when the memory server's instructions ask you to update them. Put what changed in the note itself."
+
+export const BULK_REFUSAL =
+  'This vault write was refused: `move_folder` and `okf_convert_links` move or rewrite every note under a folder, ' +
+  '`index.md` and `log.md` included, and those names are reserved in the memory vault. Move notes one at a time ' +
+  'with `rename`, and change a link with `edit`.'
+
+const RESERVED = /(^|\/)(index|log)\.md$/i
+
+export const WRITE_TOOLS: Readonly<Record<string, readonly string[] | 'refuse' | 'bulk' | 'pass'>> = {
+  write: ['path'],
+  edit: ['path'],
+  append: ['path'],
+  fetch: ['path'],
+  okf_verify: ['path'],
+  create_upload_link: ['ref'],
+  rename: ['old_path', 'new_path'],
+  move_folder: 'bulk',
+  okf_convert_links: 'bulk',
+  okf_generate_index: 'refuse',
+  okf_seed_log: 'refuse',
+  delete: 'pass',
+  git_sync: 'pass',
+}
+
+export function reservedRefusalOf(tool: string, args: Record<string, unknown>): string | undefined {
+  if (!tool.startsWith(VAULT_TOOL_PREFIX)) return undefined
+  const rule = WRITE_TOOLS[tool.slice(VAULT_TOOL_PREFIX.length)]
+  if (rule === 'refuse') return RESERVED_REFUSAL
+  if (rule === 'bulk') return BULK_REFUSAL
+  if (rule === undefined || rule === 'pass') return undefined
+  return rule.some(field => typeof args[field] === 'string' && RESERVED.test((args[field] as string).trim())) ? RESERVED_REFUSAL : undefined
+}
+
+export const SOURCE_ADVICE =
+  'This note has no `sources:` list in its frontmatter. Name what its facts came from wherever you can: the ' +
+  "session it came from, Mike's own words, the files, commits, pull requests and URLs it relies on, other vault " +
+  'notes, recordings and meetings. Give one `{id, title, resource}` entry for each, and with two or more sources ' +
+  'end each fact with the footnote `[^id]` of its source, defined at the end of the note ' +
+  '(references/vault-conventions.md). The write went through.'
+
+const FRONTMATTER = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---\s*(\r?\n|$)/
+
+function hasSources(frontmatter: unknown, content: unknown): boolean {
+  const given = typeof frontmatter === 'object' && frontmatter !== null ? (frontmatter as { sources?: unknown }) : {}
+  if ('sources' in given) return Array.isArray(given.sources) && given.sources.length > 0
+  const block = typeof content === 'string' ? (FRONTMATTER.exec(content)?.[1] ?? '') : ''
+  return /^sources:[ \t]*(\[[ \t]*[^\]\s]|(#[^\n]*)?(\r?\n[ \t]*(#[^\n]*)?)*\r?\n[ \t]*-([ \t]|$))/m.test(block)
+}
+
+export const sourceAdvice = (frontmatter: unknown, content: unknown): string | undefined =>
+  hasSources(frontmatter, content) ? undefined : SOURCE_ADVICE
 
 // What scripts/vault-resolve.sh printed: the vault root, and the path of each
 // target it resolved to one note.

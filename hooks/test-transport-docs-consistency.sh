@@ -223,9 +223,35 @@ else
      "$(echo "$BADWL" | head -2 | sed "s|$ROOT/||" | cut -c1-90)"
 fi
 
-# The vault's root catalog was renamed index.md -> README.md so GitHub renders
-# it. A doc still naming index.md sends an agent at a file that is not there.
-BADIDX=$(grep -rn 'index\.md' "$ROOT" --include='*.md' 2>/dev/null | grep -v '/\.git/' || true)
+stale_index_lines() {
+  local root="$1" conv="$1/references/vault-conventions.md" from=0 to=0
+  if [ -f "$conv" ]; then
+    from=$(awk '/^## Reserved OKF names/ {print NR; exit}' "$conv")
+    to=$(awk -v f="${from:-0}" 'NR > f && f > 0 && /^## / {print NR; exit}' "$conv")
+  fi
+  grep -rn 'index\.md' "$root" --include='*.md' 2>/dev/null | grep -v '/\.git/' \
+    | awk -F: -v conv="$conv" -v from="${from:-0}" -v to="${to:-0}" -v readme="$root/README.md" -v lint="$root/skills/memory-lint/SKILL.md" '
+        $1 == conv && from > 0 && $2 >= from && (to == 0 || $2 < to) { next }
+        $1 == readme && index($0, ":- **Reserved OKF names.**") { next }
+        $1 == lint && (index($0, ":- **Reserved files.**") || index($0, ":- `index.md` and `log.md` files in the vault (1g)")) { next }
+        { print }'
+}
+
+FIXTURE=$(mktemp -d)
+mkdir -p "$FIXTURE/references"
+printf '# Vault\n\n## Reserved OKF names: index.md and log.md\n\nCore writes no OKF `index.md`.\n\n## Other\n\nRead the OKF index.md catalog first.\n' > "$FIXTURE/references/vault-conventions.md"
+FIXED=$(stale_index_lines "$FIXTURE")
+case "$FIXED" in
+  *"catalog first"*) ok "a stale index.md line on an OKF line outside the reserved section still fails" ;;
+  *) no "a stale index.md line on an OKF line outside the reserved section still fails" "the check let it through" ;;
+esac
+case "$FIXED" in
+  *"Core writes no OKF"*) no "the reserved section itself may name index.md" "the check flagged it" ;;
+  *) ok "the reserved section itself may name index.md" ;;
+esac
+rm -rf "$FIXTURE"
+
+BADIDX=$(stale_index_lines "$ROOT")
 if [ -z "$BADIDX" ]; then
   ok "no plugin doc references the renamed vault index.md"
 else

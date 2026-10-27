@@ -32,6 +32,10 @@ session_id: <matches the log>
 mode: auto|manual
 log_files:
   - /absolute/path/to/session.log.md
+sources:
+  - id: session
+    title: The session this summary covers
+    resource: "session:<session_id>"
 summary: |
   One or two sentences answering "what happened in this segment"
   without opening the body. This is the vault search snippet.
@@ -40,6 +44,32 @@ summary: |
 
 - `name` and `type` are required by the vault config.
 - `mode: auto` for hook-dispatched summaries, `mode: manual` for `/log-now`.
+- `sources` lists what the summary's facts came from, in the OKF
+  `{id, title, resource}` shape of `vault-conventions.md` (Sources). Every summary carries it. The
+  session itself is always one entry, and Mike's own words are another when a
+  fact rests on what he said. Add an entry for each file, commit, pull request,
+  URL, vault note, recording or meeting that the transcript shows the session
+  read, when a fact in the summary came from that read: a `Read` of a file, a
+  fetch of a URL, a transcription of a recording. List nothing the session did
+  not read.
+
+## Source tags
+
+With two or more sources, end each fact in the body with the OKF footnote
+`[^id]` of its source, and define each footnote once at the end of the
+summary, as `vault-conventions.md` defines. Two recordings timed in different
+time zones are the case this rule exists for:
+
+```markdown
+- Batch start 03:50 (UTC+2)[^audio]; 01:50 UTC[^video]
+
+[^audio]: The audio recording
+[^video]: The screen recording
+```
+
+A fact the session worked out itself, with no file behind it, takes the
+`[^session]` footnote. A summary with only the session as a source needs no
+footnotes.
 
 ## Body structure
 

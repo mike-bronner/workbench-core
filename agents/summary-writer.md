@@ -67,6 +67,8 @@ Instead: release the marker the way step 6 does, print `summary-writer: skipped 
 
 Read `references/summary-format.md` in the plugin directory (`${CLAUDE_PLUGIN_ROOT}/references/summary-format.md`) for the required frontmatter, body structure, and JSONL parsing guidance. Follow it exactly.
 
+**Label the sources.** Every summary carries a `sources:` list. Build it from what the session actually read, as the transcript's tool calls show it: the session itself (`{id: session, title: <what the session did>, resource: "session:<session_id>"}`), Mike's own words when a fact rests on what he said (`resource: person:Mike`), and each file, commit, pull request, URL, vault note, recording or meeting the session read, when a fact in your summary came from that read. Each entry has the OKF shape `{id, title, resource}`, where `resource` is a URL, a path, a vault note path, or `session:<id>`, `commit:<owner/repo>@<sha>`, `pr:<owner/repo>#<number>`, `person:Mike` or `fluidvoice:<meeting id>`. With two or more sources, end each fact in the body with the OKF footnote `[^id]` of its source, such as `- Batch start 03:50 (UTC+2)[^audio]; 01:50 UTC[^video]`, and define each footnote once at the end of the summary as `[^id]: <title>`. Never merge facts from two sources into one untagged line: a later session reads your summary to resume the task, and an unlabelled fact is how it crosses two sources. The format is in `references/summary-format.md` (Source tags).
+
 **How you write it — non-negotiable:**
 
 - Write the summary **only** with `mcp__plugin_workbench-core_memory__write`, passing a **vault-relative** path that begins with `sessions/` (e.g. `sessions/2026-04-09/{session-id}.summary.md`).

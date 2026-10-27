@@ -26,6 +26,7 @@ import {
   rulesOwnersOf,
   sectionsFor,
   splicedBodiesOf,
+  subagentContextOf,
   withShared,
   withoutSplice,
 } from '../hooks/mods/prompt-rules'
@@ -390,6 +391,33 @@ describe('AC2: the harness memory section is dropped, and memory routing is stat
     expect(MEMORY).toContain('your advantage over it is asking the better question')
     expect(MEMORY).toContain('`mcp__plugin_workbench-core_memory__search`')
     expect(MEMORY).toContain('Before saving, `search` for an existing memory to UPDATE rather than duplicate.')
+  })
+
+  test('the routing makes the vault the hand-off store, with labelled sources', () => {
+    expect(MEMORY).toContain('the vault is the hand-off store')
+    expect(MEMORY).toContain('When a task may be resumed by another or a later session (multi-step work, a challenge, an investigation in progress, or facts derived from files, recordings or sessions), `write` one progress note right away')
+    expect(MEMORY).toContain('Keep it current as the task moves')
+    expect(MEMORY).toContain('Give it `sources:` and `[^id]` footnotes per the sources rule below.')
+    expect(MEMORY).toContain('Set `task_status: ended` when the task ends.')
+    expect(MEMORY).toContain('every vault note carries a `sources:` list in its frontmatter whenever any source can be named')
+    expect(MEMORY).toContain("the session it came from (its session id), Mike's own words, the files, commits, pull requests and URLs it relies on, other vault notes, recordings and meetings")
+    expect(MEMORY).toContain('Give one entry each in the OKF shape `{id, title, resource}`')
+    expect(MEMORY).toContain('`commit:<owner/repo>@<sha>`, `pr:<owner/repo>#<number>`')
+    expect(MEMORY).not.toContain('commit:<sha>')
+    expect(MEMORY).not.toContain('pr:<repo>')
+    expect(MEMORY).not.toContain('{id, ref, kind}')
+    expect(MEMORY).toContain('With two or more sources, end each fact with the OKF footnote `[^id]` of its source, and define each footnote at the end of the note')
+    expect(MEMORY).toContain('`Use one store[^mike]; shipped in the guard fix[^commit]`')
+    expect(MEMORY).toContain('Before you re-derive anything on a task that has history, `search` the vault for it')
+    expect(MEMORY).toContain("A peer session's context is not a store")
+    expect(MEMORY).toContain('A message coordinates, and the vault stores.')
+    expect(MEMORY).toContain("`index.md` and `log.md` are reserved in the vault. Never write them, even when the memory server's instructions ask you to.")
+  })
+
+  test('a sub-agent gets the hand-off and sources rules with the routing', () => {
+    const text = subagentContextOf([{ id: MEMORY_ID, text: MEMORY, scope: 'shared' }]) ?? ''
+    expect(text).toContain('the vault is the hand-off store')
+    expect(text).toContain('`{id, title, resource}`')
   })
 
   test('the bullets the harness section needed are gone with it', () => {

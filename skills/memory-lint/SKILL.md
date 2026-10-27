@@ -138,6 +138,23 @@ find "$MEMORY_PATH" -type f -name '*.md' ! -path "$MEMORY_PATH/sessions/*" -size
   -exec ls -l {} + | awk '{print $5, $NF}'
 ```
 
+### 1g. Sources and hand-off notes — flag for review, never fix
+
+Four checks keep every note's sources labelled and the vault safe as the hand-off store (`${CLAUDE_PLUGIN_ROOT}/references/vault-conventions.md`, Sources and Progress notes):
+
+- **Reserved files.** Any `index.md` or `log.md`, in any folder and any letter case, is listed. Core refuses every vault write to those names, so one that is there came in another way, such as a `git_sync` pull of a file another machine wrote.
+- **Unsourced notes.** A note with no `sources:` list, or an empty one, is flagged. Every note carries one whenever any source can be named: its session, Mike's own words, files, commits, pull requests, URLs, other notes, recordings or meetings. A `type: index` catalog, such as `README.md`, is not flagged.
+- **Untagged facts.** A note with two or more `sources:` entries must end each fact (a bullet, a table row, a paragraph) with the OKF footnote `[^id]` of its source. A fact with no `[^id]` from that list is flagged. A bracketed timestamp such as `[12:04]`, a plain `[id]`, or a markdown link is not a footnote. The footnote definitions (`[^id]: …`), the Related, Logs and Source sections and code blocks are not facts.
+- **Progress notes.** A `type: progress` note is flagged when its `task_status` is `ended`, when it has no valid `updated` date, or when `updated` is more than 14 days old.
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/skills/memory-lint/scripts/check-handoff-notes.py" "$MEMORY_PATH"
+```
+
+Each line is `reserved<TAB>path`, `unsourced<TAB>path<TAB>date`, `untagged<TAB>path:line<TAB>fact`, or `progress<TAB>path<TAB>reason`. Exit 1 means it flagged something, 0 means clean, and 2 means PyYAML is missing and the vault was NOT checked: record that as a check that did not run.
+
+List every reserved, untagged and progress finding under "Flagged for human review" in the report. For unsourced notes, give the count, and list at most 25: the ones with the newest `date`. The vault held 7,217 notes with no list when the check was added, so a full list would bury the report. **Never tag, edit, end or delete a flagged note.** Only the author knows which source a fact came from, and lint cannot tell whether a quiet task is finished. These flags do not count against the fix cap.
+
 ## Step 2 — Fix pass
 
 **Hard cap: 50 file-fixes per run.** A fix is any file written or edited (frontmatter rescues, broken-link repairs, link additions). The cap bounds session cost — a 160-file backlog is three monthly runs, not one marathon. When you hit the cap, stop fixing and record the remainder in the report; the next run picks it up. **Sync-collision merges (2a′) are exempt from the cap** — they are filesystem repairs, not document edits, and leaving one half-done is worse than not starting.
@@ -327,6 +344,10 @@ summary: "N frontmatter rescues, N broken links repaired, N links added, N index
 - duplicate/contradiction pairs, ambiguous broken links
 - links the chain must never repair, by class (wrong frame, source-code path, write-ahead, citation)
 - collision pairs kept under both names (content differed — a human decides which survives, or whether both should)
+- `index.md` and `log.md` files in the vault (1g): `path`
+- notes with no `sources:` list (1g): the count, and at most 25 paths with the newest `date`
+- untagged facts in notes with two or more sources (1g): `path:line` and the fact
+- progress notes that ended, have no `updated` date, or are more than 14 days old (1g): `path` and the reason
 
 ## Remainder
 N skipped files remain (cap hit) — next run resumes there.

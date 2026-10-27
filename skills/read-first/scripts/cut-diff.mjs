@@ -275,7 +275,7 @@ async function readInside(path) {
   const inCwd = !(rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel));
   if (!inCwd && !inScratchpad(real)) {
     throw new Error(
-      `${path} is outside the working folder (${cwd}) and the session scratchpad. Ask Mike before reading it. If he agrees, copy it into the session scratchpad and run this again.`,
+      `${path} is outside the working folder (${cwd}) and the session scratchpad. Ask the user before reading it. If the user agrees, copy it into the session scratchpad and run this again.`,
     );
   }
   return readFile(real, 'utf8');

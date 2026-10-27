@@ -240,8 +240,10 @@ import {
   frontmatterRefusal,
   isNote,
   needsRoot,
+  reservedRefusalOf,
   resolvedOf,
   rewriteLinks,
+  sourceAdvice,
   vaultToolOf,
   wikiTargets,
 } from './mods/vault-write'
@@ -731,13 +733,13 @@ type VaultCall = Record<string, unknown> & { path?: unknown }
 // where it needed fixing, or the refusal. scripts/vault-resolve.sh runs only
 // when the call needs the vault root or holds a [[link]]. When it cannot run,
 // an absolute path is refused and every link is left as written.
-async function checkVaultWrite($: EngineInterface, e: VaultCall, tool: VaultTool): Promise<{ deny: string } | { call: VaultCall }> {
+async function checkVaultWrite($: EngineInterface, e: VaultCall, tool: VaultTool): Promise<{ deny: string } | { call: VaultCall; advice?: string }> {
   const { path } = e
   if (typeof path !== 'string') return { call: e }
   const field = TEXT_FIELD[tool]
   const text = typeof e[field] === 'string' ? (e[field] as string) : undefined
   const targets = text !== undefined && isNote(path) ? wikiTargets(text) : []
-  const createsNote = isNote(path) && (tool === 'write' || (tool === 'append' && e.create_if_missing === true))
+  const createsNote = isNote(path) && (tool === 'write' || tool === 'fetch' || (tool === 'append' && e.create_if_missing === true))
   const facts =
     needsRoot(path) || targets.length > 0 || (tool === 'append' && createsNote)
       ? resolvedOf(
@@ -752,14 +754,16 @@ async function checkVaultWrite($: EngineInterface, e: VaultCall, tool: VaultTool
   // one only where none is, and a note it cannot see is taken as new.
   const isNew =
     tool === 'write' ||
+    tool === 'fetch' ||
     (createsNote && (facts.root === undefined || !(await $.fs.exists(`${facts.root}/${fixed.path}`).catch(() => false))))
   if (createsNote && isNew) {
-    const problems = frontmatterProblems(tool === 'write' ? e.frontmatter : undefined, text)
+    const problems = frontmatterProblems(tool === 'write' || tool === 'fetch' ? e.frontmatter : undefined, text)
     if (problems.length > 0) return { deny: frontmatterRefusal(problems) }
   }
+  const advice = createsNote && isNew ? sourceAdvice(tool === 'write' || tool === 'fetch' ? e.frontmatter : undefined, text) : undefined
   const linked = text !== undefined && facts.paths.size > 0 ? rewriteLinks(text, facts.paths) : text
-  if (fixed.path === path && linked === text) return { call: e }
-  return { call: { ...e, path: fixed.path, ...(linked !== text ? { [field]: linked } : {}) } }
+  const call = fixed.path === path && linked === text ? e : { ...e, path: fixed.path, ...(linked !== text ? { [field]: linked } : {}) }
+  return advice === undefined ? { call } : { call, advice }
 }
 
 // One main-loop request on the cache meter. The system prompt is read on the
@@ -936,7 +940,7 @@ async function captureMemory($: EngineInterface): Promise<void> {
   const reply = await $.model.fork({ prompt: capturePrompt((await read($, capture)).written) })
   if (!reply.isAnswered) return
   const date = new Date(await $.clock.now()).toISOString().slice(0, 10)
-  const notes = notesOf(reply.text, date).filter(note => frontmatterProblems(note.frontmatter, note.content).length === 0)
+  const notes = notesOf(reply.text, date, await $.session.id()).filter(note => frontmatterProblems(note.frontmatter, note.content).length === 0)
   if (notes.length === 0) return
   const server = await memoryServer($)
   const written: string[] = []
@@ -1735,12 +1739,17 @@ export const register: Register = on => {
     }
     // The vault write checks, in every lane: a sub-agent or a summary-writer
     // writes the same vault.
+    const reserved = reservedRefusalOf(e.tool, e as Record<string, unknown>)
+    if (reserved !== undefined) return { deny: reserved }
     const vaultTool = vaultToolOf(e.tool)
     if (vaultTool !== undefined) {
       const checked = await checkVaultWrite($, e as VaultCall, vaultTool)
       if ('deny' in checked) return checked
       const refusal = await meetingWriterVaultRefusal($, checked.call, vaultTool)
-      return refusal !== undefined ? { deny: refusal } : next(checked.call as typeof e)
+      if (refusal !== undefined) return { deny: refusal }
+      const result = await next(checked.call as typeof e)
+      if (checked.advice === undefined || result.deny !== undefined || result.isError === true) return result
+      return { ...result, context: [...(result.context ?? []), checked.advice] }
     }
     // A main-loop Agent call or whole-file write puts the legacy file back in
     // line with the mode Mike chose first, so a file the model wrote to stand

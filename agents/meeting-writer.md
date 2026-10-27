@@ -82,6 +82,10 @@ type: decision
 scope: topical
 date: YYYY-MM-DD
 meeting_id: "{meeting_id}"
+sources:
+  - id: meeting
+    title: "FluidVoice meeting {meeting_id}"
+    resource: "fluidvoice:{meeting_id}"
 tags: [decision, meeting]
 summary: >-
   One sentence.
@@ -121,6 +125,10 @@ started_at: "{start time as FluidVoice gives it}"
 speakers: ["{name}", "unidentified (Speaker 1)"]
 summary_source: fluidvoice | transcript
 recording: complete | partial
+sources:
+  - id: meeting
+    title: "FluidVoice meeting {meeting_id}"
+    resource: "fluidvoice:{meeting_id}"
 tags: [meeting]
 summary: >-
   One or two sentences.
@@ -150,6 +158,8 @@ FluidVoice meeting `{meeting_id}`. Read it with `meet show {meeting_id}`.
 ```
 
 Quote each frontmatter string that holds `#`, `:` or a quote mark. Leave out a section that has nothing in it, except Summary.
+
+**Sources.** Every note you write carries `sources:`: the meeting note and each promoted decision, with one entry per source you actually read, in the OKF shape `{id, title, resource}`. The meeting is the source: `{id: meeting, title: "FluidVoice meeting {meeting_id}", resource: "fluidvoice:{meeting_id}"}`. FluidVoice's saved summary comes from the same recording, so it is not a second source. With one source the body needs no footnotes. If you ever read a second source, such as another meeting, give it its own entry, end each fact in the body with the OKF footnote `[^id]` of its source, such as `- [12:04] Batch start 03:50 (UTC+2)[^meeting]; 01:50 UTC[^standup]`, and define each footnote once at the end of the note as `[^id]: <title>`. A timestamp in brackets is not a source footnote.
 
 **Never copy the transcript into the note.** Quote at most one short sentence where the exact words matter, with its timestamp. The meeting id is the link to the full record.
 

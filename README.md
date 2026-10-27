@@ -236,6 +236,8 @@ core/
 │   ├── propose-upgrades/       — learnings → reviewed proposals → apply on sign-off (REPS gears 3+4)
 │   ├── log-now/                — dump + narrate the current session inline
 │   ├── memory-lint/            — monthly vault health-and-repair pass
+│   ├── read-first/             — read the contract, show every cut, check a live source (scripts/:
+│   │                             find-contract.mjs and cut-diff.mjs)
 │   └── cross-session-messaging/ — the protocol for messaging another session, and for receiving one
 ├── tests/                      — the hooks module's `claude plugin test` suites, brief-cases.ts
 │                                 (a frozen record of the retired bash dispatch gate), and shell-cases.ts,
@@ -1094,7 +1096,7 @@ The [outbound prose guard](#outbound-prose-guard) runs in the same hook, on Bash
 
 ### Question delivery: the rule in the style, the enforcement in the mod
 
-The output style carries the rule. Every question to Mike goes through `AskUserQuestion`. A question that carries everything Mike needs to decide stands on its own: each option's label says what it does, each description carries its grade and any warning, and nothing points at options, tables or grades shown elsewhere. Any other question has its context written in prose immediately above the call, in the same message. A question with no fixed choices still fits the tool, because the dialog always offers Other. A reply fits about 40 rows at 80 columns. Each question is asked right after the context it depends on first appears, and is not held for the end of the reply with that context restated. A verdict with no question can still close a reply. `docs/rule-history.md` records why each of those rules was added.
+The output style carries the rule. Every question to Mike goes through `AskUserQuestion`. Before each call, the model verifies the facts in every option, and confirms that the prompt, the repo, the vault and the docs cannot answer the question. That check stays prose, because no hook can tell whether a question was answerable. A question that carries everything Mike needs to decide stands on its own: each option's label says what it does, each description carries its grade and any warning, and nothing points at options, tables or grades shown elsewhere. Any other question has its context written in prose immediately above the call, in the same message. A question with no fixed choices still fits the tool, because the dialog always offers Other. A reply fits about 40 rows at 80 columns. Each question is asked right after the context it depends on first appears, and is not held for the end of the reply with that context restated. A verdict with no question can still close a reply. `docs/rule-history.md` records why each of those rules was added.
 
 The [hooks module](#the-hooks-module) enforces it in two checks, in an attended main-session turn only:
 
@@ -1479,8 +1481,9 @@ Runs on every `startup` warmup:
 | `/workbench-core:install-chat-skills` | Discover skills in `@claude-workbench` plugins and install them into the Claude Mac app's Chat surface via `.skill` packaging |
 | `/workbench-core:intake` | The task-intake routine for an interactive session — goal, context, an interview limited to real gaps, acceptance criteria shown before work starts, and three options from different angles graded against every criterion. See [Task intake](#task-intake) |
 | `/workbench-core:cross-session-messaging` | The protocol for messaging another Claude Code session — when to reach out, what a message carries, the receive-side rule that keeps a human in the loop, and which sends a sub-agent may make. Paired with the [peer message gate](#peer-message-gate) |
+| `/workbench-core:read-first` | Three checks a script runs before a quick answer goes out wrong: read an outside system's contract before writing to it, show every cut when changing a person's text, and check a live source before stating a fact that goes stale. See [Read first](#read-first) |
 
-**Only the user starts most of them.** `setup`, `log-now`, `compact-learnings`, and `install-chat-skills` carry `disable-model-invocation: true`, which takes each one out of the skill listing the model reads in every session. They are interactive, so only a person starts them. A scheduled run cannot start a skill that carries the flag: the model calls it through the Skill tool, and the tool refuses it. So every skill a scheduled task runs stays in the listing. `memory-lint` stays in, because the monthly `/workbench-core:memory-lint` task invokes it. `evaluate-decisions` and `propose-upgrades` stay in, because the nightly decision-quality task asks the model to run them in prose. Every listed description is sent in every session, so each is kept short and still says when to use the skill: the five listed descriptions total 1,140 bytes. `hooks/test-skill-listing.sh` checks the flags and that total against the skill files.
+**Only the user starts most of them.** `setup`, `log-now`, `compact-learnings`, and `install-chat-skills` carry `disable-model-invocation: true`, which takes each one out of the skill listing the model reads in every session. They are interactive, so only a person starts them. A scheduled run cannot start a skill that carries the flag: the model calls it through the Skill tool, and the tool refuses it. So every skill a scheduled task runs stays in the listing. `memory-lint` stays in, because the monthly `/workbench-core:memory-lint` task invokes it. `evaluate-decisions` and `propose-upgrades` stay in, because the nightly decision-quality task asks the model to run them in prose. Every listed description is sent in every session, so each is kept short and still says when to use the skill: the six listed descriptions total 1,433 bytes. `hooks/test-skill-listing.sh` checks the flags and that total against the skill files.
 
 **The batch skills run in a forked context.** `memory-lint` and `evaluate-decisions` carry `context: fork`, so a run's tool calls and reads stay in a sub-agent, and only its report comes back to the session. `compact-learnings` does not fork, by Mike's decision, for the same reason as `propose-upgrades`: it asks about each entry through `AskUserQuestion` and hands integration to Dr. Watson, and a forked sub-agent can do neither. `propose-upgrades` does not fork, because it walks the user's sign-off.
 
@@ -1491,6 +1494,25 @@ Runs on every `startup` warmup:
 `/orchestrator`, `/memory-status`, `/notices`, and `/process-pending-summaries` are commands of the [hooks module](#the-hooks-module), not skills.
 
 Every skill is **execution-aware** without saying so: the hooks module merges its `skills/{name}.learnings.md` file from the vault into its text when it runs (see [Execution-aware skills](#execution-aware-skills)).
+
+### Read first
+
+**`/workbench-core:read-first` turns three habits into checks a script runs.** It generalizes rook's `read` skill, written for the first Challenge of the MEGA.dev course. Rook's skill covered three narrow moments: an API body, shortening a person's text, and naming the newest model. Its strength is the shape, which this skill keeps: each rule has a "When", a check that a script runs rather than judgement, a "Done", and a question for Mike in place of a guess. Mike chose a skill with scripts over always-loaded rules or enforcing hooks, because the scripts make the checks mechanical and a skill costs context only when its description matches the request.
+
+| Rule | When | Check |
+|---|---|---|
+| Read the contract first | Before a write to an outside system: an API body, a form, CLI flags, a config or schema file, an MCP tool call | `scripts/find-contract.mjs` lists what a page declares (`service-desc`, `describedby` and `service-doc` links, JSON or YAML alternates, forms with field limits), the fields of a JSON Schema, an MCP tool's input schema or a JSON OpenAPI document's request bodies, and the flags in a CLI's help text. A saved page stands in for one behind a sign-in |
+| Show every cut | Before shortening, summarizing or rewriting content a person gave | `scripts/cut-diff.mjs` counts characters and words against a limit, checks every keep passage character for character and names the first differing code point, and lists every dropped sentence |
+| Check a live source | Before naming or relying on a fact that goes stale: the newest model, a version, a price, current docs | A memory answer with a confidence level first. Then `find-contract.mjs --quote` confirms a sentence is on the primary source word for word and lists the page's dates, or the fact is marked unchecked |
+
+Both scripts need Node.js 18 or newer and nothing else. They write nothing.
+
+- **What they read.** Only the working folder and this session's scratchpad, which they find from `CLAUDE_CODE_SESSION_ID` and the user id. The skill saves its working files, such as the texts for the cut check and a saved page, in the scratchpad, because a commit takes every file in the tree.
+- **What they send.** `find-contract.mjs` sends GET requests only, with no body, no cookies and no keys. Each response is capped at 5 MB, and `--open` prints at most 200,000 characters of each contract.
+- **Where they go.** `find-contract.mjs` follows redirects itself and checks every hop before it sends the request. It refuses a loopback, private or link-local address, by its literal form or by what the name resolves to, unless the page given is on that host. The name is resolved again when the request goes out, so a name that changes its address between the two lookups is not caught.
+- **The network.** `cut-diff.mjs` uses no network.
+
+Each script has a `--self-test` that uses no network, and the redirect checks run against a fake fetch. `hooks/test-read-first.sh` runs both self-tests, every command the skill gives in a fresh shell, the command-line paths, the refusals, and the skill's description and rule shape.
 
 ### Cross-surface skill installation
 

@@ -21,20 +21,22 @@ Before a task that produces work, run the intake routine in
 4. **Put every decision where Mike sees it.** Put each decision Mike must make,
    and each blocking question, to him through `AskUserQuestion`. Ask every
    other question you leave for him the same way, and never leave one in
-   prose. Write the context the question needs in prose immediately above the
-   call, in the same message. A question that carries all of it needs no
-   prose above it: each label says what its option does, each description
-   carries its grade and any warning, and nothing points at an option, a
-   table or a grade shown elsewhere. A question that leans on anything it
-   does not carry needs it in the prose right above the call: every option
-   the question names, with its grade and your recommendation. That includes
-   options a sub-agent handed back, because Mike never sees the hand-back.
-   Each option's label names what the option does in plain words, never only
-   a letter or "Option N", because the dialog can cover the prose. Each
-   option's description carries its grade and any warning, so nothing the
-   decision needs lives only in prose that has scrolled away. A
-   question with no fixed choices still fits the tool, because the dialog
-   always offers Other.
+   prose. Before each `AskUserQuestion` call, verify the facts in every
+   option, and confirm that the prompt, the repo, the vault and the docs
+   cannot answer the question. Write the context the question needs in prose
+   immediately above the call, in the same message. A question that carries
+   all of it needs no prose above it: each label says what its option does,
+   each description carries its grade and any warning, and nothing points at
+   an option, a table or a grade shown elsewhere. A question that leans on
+   anything it does not carry needs it in the prose right above the call:
+   every option the question names, with its grade and your recommendation.
+   That includes options a sub-agent handed back, because Mike never sees the
+   hand-back. Each option's label names what the option does in plain words,
+   never only a letter or "Option N", because the dialog can cover the prose.
+   Each option's description carries its grade and any warning, so nothing
+   the decision needs lives only in prose that has scrolled away. A question
+   with no fixed choices still fits the tool, because the dialog always offers
+   Other.
 5. **Give every finding a verdict and a recommendation.** Say what it is,
    whether it is a problem, and what to do about it. "No action needed" is a
    valid verdict. State it rather than drop the finding.

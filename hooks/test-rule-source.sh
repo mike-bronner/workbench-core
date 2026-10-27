@@ -66,6 +66,7 @@ has "rule 3 keeps a fix out of the cost column"     'correctness fix is never fi
 has "rule 4 routes every decision to the tool"     'each decision Mike must make, and each blocking question, to him through `AskUserQuestion`'
 has "rule 4 puts grade and warning in the option"   "option's description carries its grade and any warning"
 has "rule 4 leaves no question in prose"            'never leave one in prose'
+has "rule 4 checks before it asks"                  'Before each `AskUserQuestion` call, verify the facts in every option, and confirm that the prompt, the repo, the vault and the docs cannot answer the question'
 has "rule 4 puts the context above the call"        'context the question needs in prose immediately above the call, in the same message'
 has "rule 4 lets a question that carries it all stand alone" 'A question that carries all of it needs no prose above it'
 has "rule 4 fits a question with no fixed choices"  'no fixed choices still fits the tool, because the dialog always offers Other'

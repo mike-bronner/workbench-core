@@ -15,6 +15,7 @@ import {
   GUARDED,
   PEER_ADVICE,
   PEER_REFUSAL,
+  READERS,
   SEARCH_UNREAD,
   credentialPathRefusal,
   credentialRefusal,
@@ -298,7 +299,7 @@ describe('AC4: the credential guard', () => {
     'cat .env.example',
     'cat .envrc',
     'cat ~/Developer/x/.ssh/notes',
-    'echo "a note about .env files" | cat',
+    'echo "a note about .env.example files" | cat',
     'ls ~/Library/Keychains',
     // A plain cat writing its body to a file reads nothing it names.
     'cat > notes.txt <<EOF\n.env\nEOF',
@@ -390,9 +391,148 @@ describe('AC4: the credential guard', () => {
 
   test('a credential path in a line the reader cannot read whole is refused', () => {
     expect(credentialRefusal('$R ~/.ssh/id_rsa', HOME)).toContain('could not read all')
-    expect(credentialRefusal(`echo ${'x'.repeat(200_001)}; cat "a note about the .env file"`, HOME)).toContain('longer than 200,000')
-    expect(credentialRefusal(`echo ${'x'.repeat(199_000)}; cat "a note about the .env file"`, HOME)).toBeUndefined()
+    expect(credentialRefusal(`echo ${'x'.repeat(200_001)}; cat "a note about the .env.example file"`, HOME)).toContain('longer than 200,000')
+    expect(credentialRefusal(`echo ${'x'.repeat(199_000)}; cat "a note about the .env.example file"`, HOME)).toBeUndefined()
     expect(credentialPathRefusal('/repo/src/main.ts', HOME)).toBeUndefined()
+  })
+
+  const TEMPLATES = ['.env.example', '.env.sample', '.env.template', '.env.dist', '.env.defaults']
+  const PROSE_MENTIONS = (name: string) => [`${name}.`, `${name},`, `${name}:`, `\`${name}\``, `\`${name}\`.`, `(${name}).`, `"${name}",`, `${name}!`, `(${name})`]
+  const SHELL_MENTIONS = (name: string) => [name, `${name}.`, `${name},`, `${name}!`, `"${name}"`, `'${name}';`, `config/${name}`]
+
+  test('the commit refused on 2026-10-27, whose message names .env.example before a full stop, runs', async ($, on) => {
+    const b = await session($, on)
+    const line = "git add -A\ngit commit -F - <<'EOF'\nrefactor: ♻️ Move the Epic FTP credentials into config.\n\nMoved the Epic FTP credentials out of the cron script into config/services.php and .env.example.\nEOF"
+    expect(await refusal($, b, bash(line))).toBeUndefined()
+  })
+
+  test('a commit message that names a template before punctuation or in backticks runs', () => {
+    for (const name of TEMPLATES) {
+      for (const mention of PROSE_MENTIONS(name)) {
+        expect(credentialRefusal(`git commit -F - <<'EOF'\nfix: x\n\nRead it with cat, then copy ${mention} by hand\nEOF`, HOME)).toBeUndefined()
+      }
+    }
+  })
+
+  test('every reader may read a template named with punctuation, and none may read a real .env file', () => {
+    for (const reader of READERS) {
+      for (const name of TEMPLATES) {
+        for (const mention of SHELL_MENTIONS(name)) expect(credentialRefusal(`${reader} ${mention}`, HOME)).toBeUndefined()
+        expect(credentialRefusal(`${reader} < ${name}`, HOME)).toBeUndefined()
+      }
+      for (const name of ['.env', '.env.local', '.env.production']) {
+        for (const mention of [name, `${name}.`, `${name},`, `"${name}"`, `./${name}`, `config/${name}`]) {
+          expect(credentialRefusal(`${reader} ${mention}`, HOME)).toContain('a .env file')
+        }
+        expect(credentialRefusal(`${reader} < ${name}`, HOME)).toContain('a .env file')
+        expect(credentialRefusal(`xargs ${reader} <<EOF\n${name}\nEOF`, HOME)).toContain('a .env file')
+      }
+    }
+  })
+
+  test('a word that joins a template to a real .env file, or names a path under a template, is refused', () => {
+    for (const word of [
+      '.env.example,.env.local',
+      '.env.local,.env.example',
+      '.env.example/secret',
+      '.env.local/.env.example',
+      '.env.example.local',
+      '.env.example.env',
+      '.env.example,secret',
+    ]) {
+      expect(credentialRefusal(`cat ${word}`, HOME)).toContain('a .env file')
+    }
+    expect(credentialRefusal("python3 - <<'PY'\nopen('.env.local');x='.env.example'\nPY", HOME)).toContain('a .env file')
+  })
+
+  test('an interpreter one-liner that names a real .env file is refused, and one that names a template runs', () => {
+    const scripts = (name: string) => [
+      `python3 -c "import os; print(open('${name}').read())"`,
+      `python -c "print(open('${name}', 'r').read())"`,
+      `node -e "console.log(require('fs').readFileSync('${name}', 'utf8'))"`,
+      `ruby -e 'puts File.read("${name}")'`,
+      `perl -e 'open(my $f, "<", "${name}"); print <$f>'`,
+      `php -r 'echo file_get_contents("${name}");'`,
+      `bun -e "console.log(await Bun.file('${name}').text())"`,
+      `deno eval "console.log(Deno.readTextFileSync('${name}'))"`,
+      `awk '{ print }' ${name}`,
+      `awk 'BEGIN { while ((getline l < "${name}") > 0) print l }'`,
+    ]
+    for (const name of ['.env', '.env.local', '.env.production']) {
+      for (const line of scripts(name)) expect(credentialRefusal(line, HOME)).toContain('a .env file')
+    }
+    for (const line of [
+      `python3 -c "import shutil; shutil.copy('.env.example', 'x')"`,
+      `node -e "console.log(require('fs').readFileSync('.env.example', 'utf8'))"`,
+      `ruby -e 'puts File.read(".env.sample")'`,
+      `perl -e 'open(my $f, "<", ".env.dist"); print <$f>'`,
+      `php -r 'echo file_get_contents(".env.template");'`,
+      `awk 'BEGIN { while ((getline l < ".env.defaults") > 0) print l }'`,
+    ]) {
+      expect(credentialRefusal(line, HOME)).toBeUndefined()
+    }
+  })
+
+  test('a quoted sentence that names a real .env file beside a reader is refused, as a heredoc body is', () => {
+    expect(credentialRefusal('cat "a note about the .env file"', HOME)).toContain('a .env file')
+    expect(credentialRefusal('echo "a note about .env files" | cat', HOME)).toContain('a .env file')
+    expect(credentialRefusal('echo "a note about .env files"', HOME)).toBeUndefined()
+  })
+
+  test('text after a quote that closes a template name may build a real .env name, and is refused', () => {
+    for (const line of [
+      `python3 -c "print(open('.env.example'[:4]+'.local').read())"`,
+      `python3 -c "print(open('.env.example'+'.local').read())"`,
+      `python3 -c "print(open('.env.example').read())"`,
+      "xargs cat <<EOF\n.env.example'.local'\nEOF",
+      "xargs cat <<EOF\n.env.example\"\".local\nEOF",
+    ]) {
+      expect(credentialRefusal(line, HOME)).toContain('a .env file')
+    }
+    for (const line of [
+      "xargs cat <<EOF\n'.env.example'\nEOF",
+      "xargs cat <<EOF\n\".env.example\",\nEOF",
+      "git commit -F - <<'EOF'\nfix: x\n\nSee (`.env.example`).\nEOF",
+      "git commit -F - <<'EOF'\nfix: x\n\nRead it with cat and ['.env.example'].\nEOF",
+    ]) {
+      expect(credentialRefusal(line, HOME)).toBeUndefined()
+    }
+  })
+
+  test('a brace, a glob or a zsh group after a template may reach a real .env file, and is refused', () => {
+    for (const line of [
+      'cat .env.example{,.local}',
+      'cat .env.example[.]local',
+      'cat .env.example.?????',
+      'cat .env.example?',
+      'cat .env.example*',
+      'cat .env.example(|.local)',
+      'cat (|.env.example).local',
+      'cat (.env.example|x).local',
+      "xargs cat <<EOF\n.env.example{,.local}\nEOF",
+    ]) {
+      expect(credentialRefusal(line, HOME)).toContain('a .env file')
+    }
+    for (const line of ['cat .env.example|head', 'echo "$(cat .env.example)"', 'cat .env.example!', 'cat (.env.example|.env.sample)']) {
+      expect(credentialRefusal(line, HOME)).toBeUndefined()
+    }
+  })
+
+  test('a reader name inside another word, such as services.php, makes no line a read', () => {
+    expect(credentialRefusal("git commit -F - <<'EOF'\nfix: x\n\nMoved it into config/services.php and .env\nEOF", HOME)).toBeUndefined()
+    for (const end of ['.', ',', ':', '!', '?', '`', '"']) {
+      expect(credentialRefusal(`git commit -F - <<'EOF'\nfix: x\n\nMoved it into \`config/services.php${end} Then .env\nEOF`, HOME)).toBeUndefined()
+    }
+    expect(credentialRefusal('echo config/services.php .env', HOME)).toBeUndefined()
+    expect(credentialRefusal('echo config/services.php; php artisan x .env', HOME)).toContain('a .env file')
+    expect(credentialRefusal('/usr/bin/cat .env', HOME)).toContain('a .env file')
+    expect(credentialRefusal("git commit -F - <<'EOF'\nfix: x\n\nRead it with cat and .env\nEOF", HOME)).toContain('a .env file')
+  })
+
+  test('a reader name after a dot that is called, as in .cp( or io.open(, counts as a reader', () => {
+    expect(credentialRefusal(`npx tsx -e "require('fs').cp('${HOME}/.ssh/id_rsa','/tmp/k',()=>{})"`, HOME)).toContain('a protected credential folder')
+    expect(credentialRefusal(`lua -e "print(io.open('.env'):read('a'))"`, HOME)).toContain('a .env file')
+    expect(credentialRefusal(`lua -e "f=io.open;print(f('.env'):read('a'))"`, HOME)).toContain('a .env file')
   })
 })
 

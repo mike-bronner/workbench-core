@@ -56,7 +56,6 @@ const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
     "\n;<<'EOF'\nconst h = await $.env.get('HOME')\nEOF\n cp",
     "# security env -i .envrc\n.env sudo ~/.ssh \n",
     ".envrcx/.ssh/id_rsa $.env.get;security }",
-    "<<'EOF'\nconst h = await $.env.get('HOME')\nEOF\n \"a note about .env files\" grep x\n-s 'Claude Code-credentials'# Developer/.aws~/.ssh)",
     "cat security<<'EOF'\nconst h = await $.env.get('HOME')\nEOF\n",
     "env -i;# ${HOME}/.gnupg/pubring.kbx\nhead -c 10 .envln -s\necho",
     "x/.ssh/id_rsa security .env.example\ncp $.env.getDeveloper/.aws|sudo\nprintf %s",

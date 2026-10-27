@@ -372,11 +372,13 @@ const CLAUDE_CREDENTIALS = /(^|[\s"'=:(/])\.credentials\.json($|[\s"';)])/i
 // `.env` and `.env.production`, never `.envrc`, in any case. In a Bash word,
 // `$.env` (the hooks module's own `$.env.get`) is code, not a file.
 const DOTENV = /\.env(?![A-Za-z0-9_-])/i
-const DOTENV_WORD = /(?<!\$)\.env(?![A-Za-z0-9_-])/i
+const DOTENV_NAMES = /(?<!\$)\.env(?![A-Za-z0-9_-])/gi
 const TEMPLATE = /\.env[^/]*\.(example|sample|template|dist|defaults?)$/i
+const TEMPLATE_REST = /^(\.[A-Za-z0-9_-]+)*\.(example|sample|template|dist|defaults?)\)?[.,:;!]*(['"`][.,:;!'"`)\]]*)?$/i
+const TEMPLATE_GROUP = /\.env(\.[A-Za-z0-9_-]+)*\.(example|sample|template|dist|defaults?)(\(|(\|[^\s;&<>()]*)?\)(?![.,:;!)]*(\s|$|['"`])))/i
 // Programs that read file contents, or link or copy a file. A protected path
 // alone does not refuse: `ls ~/.ssh` lists names and shows no secret.
-const READERS = [
+export const READERS = [
   'cat', 'head', 'tail', 'less', 'more', 'strings', 'xxd', 'hexdump', 'od', 'base64', 'nl', 'tac', 'rev',
   'grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'awk', 'gawk', 'sed', 'jq', 'yq', 'cut', 'paste', 'sort', 'uniq', 'diff',
   'cp', 'mv', 'scp', 'rsync', 'tar', 'zip', 'gzip', 'curl', 'wget', 'nc', 'ncat', 'openssl', 'gpg', 'dd', 'tee',
@@ -385,7 +387,8 @@ const READERS = [
   // Beyond the bash guard: what links or copies a folder.
   'ln', 'link', 'ditto', 'install', 'cpio',
 ]
-const READER = new RegExp(`(?<![A-Za-z0-9_])(${READERS.map(escapeRegExp).join('|')})(?![A-Za-z0-9_])`)
+const READER_NAMES = READERS.map(escapeRegExp).join('|')
+const READER = new RegExp(`(?<![A-Za-z0-9_.])(${READER_NAMES})(?![A-Za-z0-9_])|(?<=\\.)(${READER_NAMES})(?![A-Za-z0-9_])(?![.,:;!?'"\`]*(\\s|$))`)
 // The refusal for a path a file tool names, or undefined.
 export function credentialPathRefusal(raw: string, home: string | undefined): string | undefined {
   const path = collapsed(raw)
@@ -396,9 +399,8 @@ export function credentialPathRefusal(raw: string, home: string | undefined): st
   return undefined
 }
 
-// A Bash word that names a real dotenv file: no whitespace in it (a sentence
-// about one is a word full of spaces), not `$.env`, and no committed template.
-const readsDotenv = (word: string): boolean => DOTENV_WORD.test(word) && !/\s/.test(word) && !TEMPLATE.test(word)
+const readsDotenv = (word: string): boolean =>
+  piecesOf(word).some(piece => [...piece.matchAll(DOTENV_NAMES)].some(m => !TEMPLATE_REST.test(piece.slice(m.index + 4))))
 
 // The one heredoc shape a body is text in, an allowlist: a plain `cat`, with
 // no wrapper, in a line the reader read whole, whose standard output goes to
@@ -481,14 +483,12 @@ export function credentialRefusal(
     if (texts.some(text => dirs.test(text))) return credential('a protected credential folder (~/.ssh, ~/.aws, ~/.gnupg)', '')
     if (texts.some(text => KEYCHAINS.test(text))) return credential('a macOS keychain folder', '')
     if (texts.some(text => CLAUDE_CREDENTIALS.test(text))) return credential("Claude's credential store", '')
-    // A dotenv path in a word, a redirect target, or a heredoc body. Only a
-    // body a plain cat or tee writes to a file is text.
     const dotenvUnits = parse.statements.flatMap(s => [
       ...s.words,
       ...s.redirects.filter(r => r.isReal).map(r => r.target),
       ...(regularTargets.has(exemptTarget(s, parse) ?? '\u0000') ? [] : s.heredocs.flatMap(h => piecesOf(h.body))),
     ])
-    if (dotenvUnits.map(collapsed).some(readsDotenv)) return credential('a .env file', '')
+    if (dotenvUnits.map(collapsed).some(readsDotenv) || TEMPLATE_GROUP.test(collapsed(line))) return credential('a .env file', '')
   }
   const isSubject = texts.some(
     text =>

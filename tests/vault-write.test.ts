@@ -385,7 +385,7 @@ describe('AC4: a new note with no sources list gets advice, never a refusal', ()
     const b = bench(on)
     b.scripts['vault-resolve.sh'] = () => `root\t${VAULT}`
     await $.session.start(start())
-    const advised = (r: { context?: unknown[] }) => (r.context ?? []).some(text => String(text).includes('has no `sources:` list'))
+    const advised = (r: { context?: readonly unknown[] }) => (r.context ?? []).some(text => String(text).includes('has no `sources:` list'))
     const created = await $.tool.call({ tool: `${TOOL}append`, path: 'insights/new.md', create_if_missing: true, content: '---\nname: n\ntype: insight\n---\n\nMike said so.' } as never)
     expect(advised(created)).toBe(true)
     const edit = await $.tool.call({ tool: `${TOOL}edit`, path: 'insights/a.md', old_text: 'x', new_text: 'Mike said so.' } as never)

@@ -184,6 +184,28 @@ The `references/` directory contains single-source-of-truth documents shared acr
 
 References are loaded at execution time via `${CLAUDE_PLUGIN_ROOT}/references/`. The warmup reads none of them. No rule reference reaches a session: the behavioural rules load from the output style alone (see [Where the behavioural rules load](#where-the-behavioural-rules-load)).
 
+## Checks before a commit
+
+Run `scripts/check.sh` before every commit. It is the one list of checks, and CI's `validate` workflow runs the same script, so a local run and a CI run check the same things. It runs these checks in order, shows `PASS` or `FAIL` for each, and exits 1 when any check fails:
+
+- `plugin.json` is valid JSON with the required fields and a semver version.
+- Every `mcp__plugin_` tool reference matches the plugin and server names.
+- shellcheck (warnings and up) and `bash -n` on every tracked shell file.
+- Every `hooks/test-*.sh` suite.
+- Skills and agents carry frontmatter with a description.
+- Every `${CLAUDE_PLUGIN_ROOT}/` reference resolves.
+- `claude plugin validate .` and `claude plugin test .`.
+- `OMITS_CLAUDE_MD` matches the pinned CLI's agents (`scripts/omit-claude-md-check.py`).
+- The strict type-check: the pinned CLI lays the types fresh, then `tsc -p tsconfig.json` runs on the pinned TypeScript.
+
+The pins for shellcheck, TypeScript, Node and the Claude Code CLI sit at the top of the script. The workflow reads its shellcheck pin from there. The script runs the pinned CLI and the pinned TypeScript through `npx`, so the `claude` on your `PATH` is never used and can be any version. Before any check, the script looks for each tool and its version. When one is missing or at the wrong version, it names the tool, runs no check, and exits 2. It never skips a check. The shellcheck, `bash -n`, hook-suite and frontmatter checks fail when they find no files to read. `hooks/test-check-script.sh` pins the preflight, the tally, the empty-list rule and the removed variables.
+
+`WORKBENCH_CHECKS` runs only the checks it names, for a quick local loop. A run with it set never prints "All checks passed.": it ends with a `SUBSET PASSED` line that names the checks it ran. A blank list fails. CI never sets it.
+
+The CLI calls and the hook suites run with `HOME` set to a temporary folder, which the script deletes when it ends. The CLI calls also run with these variables removed from their environment: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_REFRESH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_FOUNDRY`, `CLAUDE_CODE_USE_ANTHROPIC_AWS`, `CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD`, `CLAUDE_CODE_USE_GATEWAY` and `CLAUDE_CODE_USE_MANTLE`. The type-check deletes `.claude-plugin/types/` and lays it again with the pinned CLI. The `hooks/test-commit-subject-lists.sh` suite needs a workbench-dev-team checkout: set `WORKBENCH_DEV_TEAM_DIR`, or keep the checkout beside this one.
+
+**A local run on macOS does not catch a Linux-only failure.** CI runs the script on Ubuntu, with GNU tools in place of the BSD ones. A suite that passes on a Mac can still fail there, as one did on 2026-10-22. Only CI catches that class of failure.
+
 ## Plugin layout
 
 ```
@@ -218,6 +240,7 @@ core/
 │   ├── memory-server-spawn.sh  — shared-HTTP detached supervisor (disabled; retained)
 │   ├── memory-server-down.sh   — shared-HTTP manual stop (disabled; retained)
 │   ├── test-scratch-roots.sh   — tests for lib/scratch-roots.sh, run as $.workbench.scratchRoots() runs it
+│   ├── test-check-script.sh    — tests for scripts/check.sh's preflight and tally, on stub tools
 │   ├── lib/scratch-roots.sh    — the scratch-root resolver (run by $.workbench.scratchRoots())
 │   ├── lib/                    — sourceable libs: memory-env / -probe / -vacuum / -install, summary-dispatch,
 │   │                             session-reconcile (start-up reconciler + dead-marker sweep), dir-lock
@@ -258,6 +281,7 @@ core/
 │   └── index.d.ts              — the hooks module's contract: the $.workbench noun and $.state
 ├── tsconfig.json               — extends the tsconfig the engine lays in .claude-plugin/types/
 ├── scripts/
+│   ├── check.sh                — every CI check, run locally before a commit and by validate.yml
 │   ├── install-chat-skills.sh  — package + install skills into Claude Chat
 │   ├── install.sh              — install the shipped output style
 │   ├── permissions.sh          — merge the shipped permission rails into settings.json
@@ -1057,7 +1081,7 @@ Each statement is one simple command, and carries:
 
 **It holds to `shell_parse.py` on the bash guards' corpus.** `hooks/test-shell-parity.sh` runs `hooks/test-parser-differential.sh` with a recorder on, reads every command through `shell_parse.py` as the guards do, and writes the readings into `tests/shell-cases.ts`. It fails while the committed fixture is stale, and when `jq` is missing, since it then cannot check the fixture. `tests/shell.test.ts` holds `parseShell` to every case. Two kinds of case differ, and the test names each one with its reason. An unterminated heredoc is read as bash reads it, as a body with the `heredoc` unknown set, so a fail-closed guard refuses the whole line. `shell_parse.py` reads those lines as commands. And `env -i` is read past its option, which closes `shell_parse.py`'s known `env -i` gap.
 
-**Testing it.** `claude plugin test <repo>` runs `tests/*.test.ts` against the engine's own test kit, and `claude plugin validate <repo>` checks the manifest and what the module hooks and calls. A shell alias that puts an option before `plugin` makes the CLI refuse both, so call the binary with `command claude`. The engine lays the API's type declarations into `.claude-plugin/types/` (ignored) when an interactive session loads this folder through `--plugin-dir`, and `tsconfig.json` extends the tsconfig it lays there. To type-check without a load, point a scratch tsconfig at the `types/claude-code.d.ts` that the `plugin-authoring` skill writes. CI's `plugin-tests` job runs both on a pinned CLI from npm. They need no account. The same job runs a strict `tsc -p tsconfig.json` on a pinned TypeScript. A headless `-p` session lays the types only with `CLAUDE_CODE_PLUGIN_DIR_WATCH=1` set. With it, a session with no account lays them before it stops at the login check, so the job starts one for that.
+**Testing it.** `claude plugin test <repo>` runs `tests/*.test.ts` against the engine's own test kit, and `claude plugin validate <repo>` checks the manifest and what the module hooks and calls. A shell alias that puts an option before `plugin` makes the CLI refuse both, so call the binary with `command claude`. The engine lays the API's type declarations into `.claude-plugin/types/` (ignored) when an interactive session loads this folder through `--plugin-dir`, and `tsconfig.json` extends the tsconfig it lays there. To type-check without a load, point a scratch tsconfig at the `types/claude-code.d.ts` that the `plugin-authoring` skill writes. `scripts/check.sh` runs both on the pinned CLI, with no account, and then a strict `tsc -p tsconfig.json` on a pinned TypeScript (see [Checks before a commit](#checks-before-a-commit)). A headless `-p` session lays the types only with `CLAUDE_CODE_PLUGIN_DIR_WATCH=1` set. With it, a session with no account lays them before it stops at the login check, so the script starts one for that.
 
 ### When the module's hooks are skipped
 

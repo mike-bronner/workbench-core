@@ -43,9 +43,9 @@ echo "a marker rewritten mid-run survives:"
 T="$SANDBOX/sid-live.jsonl"
 printf '{"type":"user","n":1}\n' > "$T"
 turn() {
-  jq -nc --arg t "$T" '{session_id:"sid-live", transcript_path:$t, hook_event_name:"TurnComplete"}' | \
+  (cd "$SANDBOX" && jq -nc --arg t "${T##*/}" '{session_id:"sid-live", transcript_path:$t, hook_event_name:"TurnComplete"}' | \
     env HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" WORKBENCH_MEMORY_CACHE="$CACHE" \
-      WORKBENCH_LOG_MODE=turn bash "$HOOKS_DIR/session-log.sh" 2>/dev/null
+      WORKBENCH_LOG_MODE=turn bash "$HOOKS_DIR/session-log.sh" 2>/dev/null)
 }
 turn
 READ_AT="$(jq -r '.marked_at' "$PENDING/sid-live.json")"

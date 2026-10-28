@@ -1,8 +1,7 @@
 #!/bin/bash
 # Tests for scripts/omit-claude-md-check.py, the CI check that OMITS_CLAUDE_MD
 # in hooks/mods/prompt-rules.ts names every agent defined with omitClaudeMd and
-# nothing else. CI runs the check against the pinned CLI binary (validate.yml,
-# plugin-tests). These cases run it against small fake binaries and a fake
+# nothing else. These cases run it against small fake binaries and a fake
 # plugin root, so each verdict is pinned without the CLI.
 # Run directly: ./test-omit-claude-md-check.sh
 

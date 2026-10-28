@@ -156,6 +156,7 @@ import { subjectVerdict } from './mods/commit-subject'
 import { isAttendedPrompt, isAttendedSession, isScheduledFire, laneOf } from './mods/lane'
 import { bareSetRefusal, repairedNotice, runsGit } from './mods/false-bare'
 import { parseShell } from './mods/shell'
+import { callerKeyOf, freshnessOf, isMcpTool, isOutwardTool, isRepeated, isSubmitLine, readSourceOf, readsAfter, refusalTextOf, refusalsAfter, repeatReminderOf, sourcesRefusalOf } from './mods/outward'
 import {
   AGENT_WORKTREE_REFUSAL,
   ENTER_WORKTREE_REFUSAL,
@@ -275,6 +276,9 @@ const pane = atom({ plugin: 'workbench-core', key: 'pane' } as const, { title: '
 const capture = atom({ plugin: 'workbench-core', key: 'capture' } as const, { turns: 0, hasFired: false, written: [] })
 const recall = atom({ plugin: 'workbench-core', key: 'recall' } as const, { seen: [], queries: [] })
 const intake = atom({ plugin: 'workbench-core', key: 'intake' } as const, { task: 0, checked: 0 })
+const outwardDenied = atom({ plugin: 'workbench-core', key: 'outwardDenied' } as const, [])
+const mcpRefusals = atom({ plugin: 'workbench-core', key: 'mcpRefusals' } as const, {})
+const sourceReads = atom({ plugin: 'workbench-core', key: 'sourceReads' } as const, {})
 const TRANSCRIPT = { plugin: 'workbench-core', key: 'transcriptPath' } as const
 // Unset until known: a status entry for a fact not known yet is left out.
 const ORCHESTRATOR_ON = { plugin: 'workbench-core', key: 'orchestratorOn' } as const
@@ -1741,6 +1745,26 @@ export const register: Register = on => {
   )
 
   on('tool.call', { tool: JUDGED_TOOL }, ($, e, next) => (judging.has(e.tool_use_id) ? next(e) : { deny: GUARD_FAILED }))
+
+  on('tool.call', { tool: /^(mcp__.+|Bash|Read|WebFetch)$/ }, async ($, e, next) => {
+    const key = callerKeyOf(e.agentId, e.tool)
+    const isOutward = isOutwardTool(e.tool)
+    if (isOutward && !(await isQuiet($)) && !(await read($, outwardDenied)).includes(key)) {
+      await update($, outwardDenied, denied => [...denied, key])
+      return { deny: sourcesRefusalOf(e.tool) }
+    }
+    const isSubmit = isOutward || (e.tool === 'Bash' && isSubmitLine(e.command))
+    const isRepeat = isMcpTool(e.tool) && isRepeated(await read($, mcpRefusals), key)
+    const result = await next(e)
+    if (result.deny !== undefined) return result
+    const now = await $.clock.now()
+    if (isMcpTool(e.tool)) await update($, mcpRefusals, refusals => refusalsAfter(refusals, key, refusalTextOf(result)))
+    const source = result.isError === true ? undefined : readSourceOf(e.tool, e as Record<string, unknown>)
+    const fresh = isSubmit ? freshnessOf(await read($, sourceReads), now) : undefined
+    if (source !== undefined) await update($, sourceReads, reads => readsAfter(reads, source, now))
+    const added = [...(isRepeat ? [repeatReminderOf(e.tool)] : []), ...(fresh === undefined ? [] : [fresh])]
+    return added.length === 0 ? result : { ...result, context: [...(result.context ?? []), ...added] }
+  }).catch(($, e, next) => next(e))
 
   // The destructive-scope guard's other two verdicts, given where the engine
   // decides whether a call may run (hooks/mods/destructive-scope.ts). A

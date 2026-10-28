@@ -363,6 +363,9 @@ declare module 'claude-code' {
       capture: CaptureState
       recall: RecallState
       intake: IntakeState
+      outwardDenied: readonly string[]
+      mcpRefusals: Readonly<Record<string, { text: string; count: number }>>
+      sourceReads: Readonly<Record<string, number>>
     }
   }
 }

@@ -71,6 +71,8 @@ export type Bench = {
   // the reason for a call this refuses, else undefined.
   denyBeneath?: (tool: string) => string | undefined
   errorBeneath?: (tool: string) => boolean
+  refusalBeneath?: (tool: string) => string | undefined
+  replyBeneath?: (tool: string) => string | undefined
   // What $.session.cwd and $.session.root answer (default /repo).
   cwd: string
   root: string
@@ -259,6 +261,10 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     if (e.tool === 'Bash') await b.duringBash?.(e.command)
     if (e.tool === 'Bash' && b.onBash?.(e.command)?.isError) return { isError: true, result: 'exit 1', text: 'exit 1' }
     if (b.errorBeneath?.(e.tool)) return { isError: true, result: 'failed', text: 'failed' }
+    const refused = b.refusalBeneath?.(e.tool)
+    if (refused !== undefined) return { isError: true, result: refused, text: refused }
+    const reply = b.replyBeneath?.(e.tool)
+    if (reply !== undefined) return { result: reply as never, text: reply }
     return { result: {} as never }
   })
   // No message holds a call here, so the question rule lets every

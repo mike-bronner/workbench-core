@@ -24,7 +24,7 @@ has "names the required resource"            "$SOURCES" '`resource`: where the s
 has "names the resource forms"               "$SOURCES" '`session:<session id>`, `commit:<owner/repo>@<sha>`, `pr:<owner/repo>#<number>`, `person:Mike`, `fluidvoice:<meeting id>`.'
 has "a commit names its repository"           "$SOURCES" 'A commit names its repository, because a short SHA can match in more than one'
 has "quotes a title with a hash"              "$SOURCES" 'Quote a `title` that holds a space, `#` and digits, such as `"PR #43"`.'
-has "the example quotes its PR title"         "$SOURCES" 'title: "PR #43, the read-first skill"'
+has "the example quotes its PR title"         "$SOURCES" 'title: "PR #43"'
 has "the example names a PR"                  "$SOURCES" 'resource: pr:mike-bronner/workbench-core#43'
 has "follows the OKF shape"                   "$SOURCES" 'The list follows the OKF v0.2 `sources` shape'
 has "every note carries sources"              "$SOURCES" 'Every vault note carries a `sources:` list in its frontmatter whenever any source can be named.'

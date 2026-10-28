@@ -49,6 +49,7 @@ describe('fix 1: an outward MCP tool is refused once, with the quote-your-source
     expect(first.deny).toBe(sourcesRefusalOf(CLAIM))
     expect(first.deny).toContain(CLAIM)
     expect(first.deny).toContain('Quote the description of each required field')
+    expect(first.deny).toContain('/workbench-core:read-the-contract')
     expect(b.inputs.length).toBe(0)
     expect((await call($, { tool: CLAIM, uuid: 'x' })).deny).toBeUndefined()
     expect((await call($, { tool: CLAIM, uuid: 'y' })).deny).toBeUndefined()
@@ -110,6 +111,7 @@ describe('fix 3: the same refusal twice brings the stop-and-read reminder', () =
     expect(await contextOf($, { tool: OPEN })).not.toContain(repeatReminderOf(OPEN))
     expect(await contextOf($, { tool: OPEN })).not.toContain(repeatReminderOf(OPEN))
     expect(await contextOf($, { tool: OPEN })).toContain(repeatReminderOf(OPEN))
+    expect(repeatReminderOf(OPEN)).toContain('/workbench-core:read-the-contract')
   })
 
   test('a refusal a plain result carries counts too', async ($, on) => {
@@ -203,6 +205,7 @@ describe('fix 7: an outward submit lists the sources read, with their age', () =
     const list = freshness(await contextOf($, { tool: CLAIM }))
     expect(list).toContain('- https://desk.example/page: read 30 minutes ago')
     expect(list).toContain('- /repo/notes.md: read 30 minutes ago')
+    expect(list).toContain('/workbench-core:recheck-before-done')
   })
 
   test('a gh submit line carries the list, and an MCP url read counts', async ($, on) => {

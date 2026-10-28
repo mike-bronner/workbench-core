@@ -76,6 +76,10 @@ Each question opens with the situation, says plainly whether anything is broken
 or whether it is only a choice, and carries options with your recommendation
 first. When no question passes the test, ask nothing and go on.
 
+Never offer the user a choice between guessed values for a field an outside
+system defines, such as an id, a signature or a status name. Find the source
+that defines the field, or ask where it is.
+
 ### 4. Acceptance criteria
 
 Derive them from the goal and the context. Number them `AC1`, `AC2`, and so on.

@@ -152,19 +152,19 @@ sources:
     title: The commit that bundled the wheel
     resource: commit:mike-bronner/workbench-core@7277f26
   - id: pr
-    title: "PR #43, the read-first skill"
+    title: "PR #43"
     resource: pr:mike-bronner/workbench-core#43
 ---
 
 - Core runs the upstream server, and the fork carries only no-op knobs[^mike]
 - The bundled wheel is markdown-vault-mcp 5.1.0[^commit]
 - The session read the wheel's OKF code before it relied on it[^session]
-- Reading a contract before relying on it is the read-first skill's rule[^pr]
+- Reading a contract before relying on it is a skill rule[^pr]
 
 [^mike]: Mike, in the session
 [^session]: The session that settled it
 [^commit]: The commit that bundled the wheel
-[^pr]: PR #43, the read-first skill
+[^pr]: PR #43
 ```
 
 The memory server shows the list: `read` returns it under `okf.sources`, and a

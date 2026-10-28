@@ -41,12 +41,13 @@ export const sourcesRefusalOf = (tool: string): string =>
   "1. Quote the description of each required field from the tool's schema.\n" +
   '2. For each field, say where its value came from: a tool reply, a file, a page or the user.\n' +
   '3. If a description names a tool as the source of a value, such as "the id X gave you" or "the receipts you were handed", call that tool first and take the value from its reply. Never send {}, a placeholder or a guess in its place.\n' +
-  '4. Call the tool again. The next call goes through.'
+  '4. Call the tool again. The next call goes through.\n' +
+  '/workbench-core:read-the-contract holds the full check.'
 
 export const repeatReminderOf = (tool: string): string =>
   `Workbench outward-call check (workbench-core): ${tool} returned the same refusal twice. Stop changing the inputs. ` +
   'Find the contract that defines what the tool accepts: its field descriptions, the server instructions, and the replies of the tools that hand out its values. ' +
-  'Quote it, then send the call it describes.'
+  'Quote it, then send the call it describes, as /workbench-core:read-the-contract says.'
 
 const textOf = (result: { text?: unknown; result?: unknown }): string =>
   typeof result.text === 'string' && result.text.trim() !== ''
@@ -105,6 +106,6 @@ export function freshnessOf(reads: Reads, now: number): string | undefined {
     'Workbench freshness check (workbench-core): this call sends work out. The session read these sources, newest first:',
     ...listed,
     ...more,
-    'A source may have changed since you read it. Re-fetch each one this work depends on before you rely on it.',
+    'A source may have changed since you read it. Re-fetch each one this work depends on before you rely on it, as /workbench-core:recheck-before-done says.',
   ].join('\n')
 }

@@ -3,16 +3,16 @@
 set -u
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HOOKS_DIR/.." && pwd)"
-SKILL="$ROOT/skills/read-first"
-FIND="$SKILL/scripts/find-contract.mjs"
-CUT="$SKILL/scripts/cut-diff.mjs"
+SKILLS="read-the-contract show-every-cut check-a-live-source use-the-owners-logic recheck-before-done"
+FIND="$ROOT/skills/read-the-contract/scripts/find-contract.mjs"
+CUT="$ROOT/skills/show-every-cut/scripts/cut-diff.mjs"
 PASS=0
 FAIL=0
 
 ok() { PASS=$((PASS + 1)); echo "  ✅ $1"; }
 no() { FAIL=$((FAIL + 1)); echo "  ❌ $1: $2"; }
 
-command -v node >/dev/null 2>&1 || { echo "FAIL: node is not on PATH, so the read-first scripts cannot be tested"; exit 1; }
+command -v node >/dev/null 2>&1 || { echo "FAIL: node is not on PATH, so the source-skill scripts cannot be tested"; exit 1; }
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -146,7 +146,7 @@ printf 'Keep me.\n' > "$SCR/cut/keep.txt"
 printf 'FLAGS\n  -d, --draft   Mark as a draft\n' > "$WORK/cli-help.txt"
 PLUGIN_ROOT_TOKEN='${CLAUDE_PLUGIN_ROOT}'
 GH_HELP='gh pr create --help'
-COMMANDS="$(awk '/^ *```bash$/ {on=1; next} /^ *```$/ {on=0} on {sub(/^ +/, ""); print}' "$SKILL/SKILL.md")"
+COMMANDS="$(for s in $SKILLS; do awk '/^ *```bash$/ {on=1; next} /^ *```$/ {on=0} on {sub(/^ +/, ""); print}' "$ROOT/skills/$s/SKILL.md"; done)"
 COUNT=0
 while IFS= read -r cmd; do
   [ -n "$cmd" ] || continue
@@ -166,39 +166,120 @@ while IFS= read -r cmd; do
   OUT=$(cd "$WORK" && env -u CLAUDE_CODE_SESSION_ID bash -c "$line" 2>&1); RC=$?
   expect "command $COUNT runs in a fresh shell" 0 ""
 done <<< "$COMMANDS"
-if [ "$COUNT" -eq 5 ]; then ok "the skill carries five commands"; else no "the skill carries five commands" "found $COUNT"; fi
-if grep -qE '^[[:space:]]*[A-Z_]+=' "$SKILL/SKILL.md"; then
-  no "the skill sets no shell variable for a later call" "$(grep -m1 -E '^[[:space:]]*[A-Z_]+=' "$SKILL/SKILL.md")"
+if [ "$COUNT" -eq 5 ]; then ok "the skills carry five commands"; else no "the skills carry five commands" "found $COUNT"; fi
+for s in $SKILLS; do
+  if grep -qE '^[[:space:]]*[A-Z_]+=' "$ROOT/skills/$s/SKILL.md"; then
+    no "$s sets no shell variable for a later call" "$(grep -m1 -E '^[[:space:]]*[A-Z_]+=' "$ROOT/skills/$s/SKILL.md")"
+  else
+    ok "$s sets no shell variable for a later call"
+  fi
+done
+if grep -qF 'session scratchpad' "$ROOT/skills/show-every-cut/SKILL.md" && grep -qF '<scratchpad>/cut/' "$ROOT/skills/show-every-cut/SKILL.md"; then
+  ok "show-every-cut saves its working files in the session scratchpad"
 else
-  ok "the skill sets no shell variable for a later call"
-fi
-if grep -qF 'session scratchpad' "$SKILL/SKILL.md" && grep -qF '<scratchpad>/cut/' "$SKILL/SKILL.md"; then
-  ok "the skill saves its working files in the session scratchpad"
-else
-  no "the skill saves its working files in the session scratchpad" "missing"
+  no "show-every-cut saves its working files in the session scratchpad" "missing"
 fi
 
 echo
-echo "the skill fires on the moments it covers:"
-DESC="$(awk '/^---$/{c++; next} c==1' "$SKILL/SKILL.md" | sed -n 's/^description: //p')"
-for word in 'send a body' 'API' 'form' 'CLI' 'MCP tool' 'contract' 'shorten' 'summarize' 'rewrite' 'text a person gave' 'goes stale' 'newest model' 'version' 'price' 'current docs'; do
-  if printf '%s' "$DESC" | grep -qF -- "$word"; then ok "the description names '$word'"; else no "the description names '$word'" "$DESC"; fi
-done
-for rule in '## 1\.' '## 2\.' '## 3\.'; do
-  section="$(awk -v r="^$rule" '$0 ~ r {on=1; print; next} on && /^## / {exit} on' "$SKILL/SKILL.md")"
+echo "each skill fires on its own moments, and no other description claims them:"
+description() { awk '/^---$/{c++; next} c==1' "$ROOT/skills/$1/SKILL.md" | sed -n 's/^description: //p'; }
+moments() {
+  case "$1" in
+    read-the-contract) printf '%s\n' 'HTTP POST' 'PUT' 'PATCH' 'DELETE' 'webhook' 'form submit' "CLI's flags" 'config or schema file' 'MCP tool call' 'system you do not own' 'accepted shape' 'no sourced value' 'another tool hands' '{}' 'placeholder' 'a guess' 'offer the user a choice' 'refusal gives no reason' 'same refusal' ;;
+    show-every-cut) printf '%s\n' 'shorten' 'summarize' 'condense' 'trim' 'paraphrase' 'rewrite' 'text a person gave' 'notes, a document, a post, a quote' 'character or word limit' 'word for word' ;;
+    check-a-live-source) printf '%s\n' 'name or rely on' 'into code, a config, a commit or a reply' 'goes stale' 'from training' 'newest or latest model' 'model ID' 'library or tool version' 'price' 'limit or quota' 'release date' "product's current docs" ;;
+    use-the-owners-logic) printf '%s\n' 'compute' 'count' 'classify' 'add a file' "someone else's project" 'export or artifact' 'dependencies alone' 'ships its own logic, views or build' 'a script, a component, a query, a report generator, a test suite' 'already computes' "owner's table, page or report" ;;
+    recheck-before-done) printf '%s\n' 'a claim' 'a submit' 'a publish' 'a release' 'pull request marked ready' 'ticket closed' 'report work as done' 'send it out' 'read earlier in the session' 'keeps changing' 'is live' 'gets updated' ;;
+  esac
+}
+for s in $SKILLS; do
+  own="$(description "$s")"
+  while IFS= read -r word; do
+    if printf '%s' "$own" | grep -qF -- "$word"; then ok "$s names '$word'"; else no "$s names '$word'" "$own"; fi
+    for other in $SKILLS; do
+      [ "$other" = "$s" ] && continue
+      if description "$other" | grep -qF -- "$word"; then no "only $s claims '$word'" "$other names it too"; fi
+    done
+  done <<< "$(moments "$s")"
+  bytes="$(printf '%s' "$own" | wc -c | tr -d ' ')"
+  if [ "$bytes" -le 1536 ]; then ok "$s fits the listing's per-skill cap ($bytes bytes)"; else no "$s fits the listing's per-skill cap" "$bytes bytes"; fi
+  section="$(awk '/^## 1\./ {on=1; print; next} on && /^## / {exit} on' "$ROOT/skills/$s/SKILL.md")"
   for part in '**When:**' '**Check:**' '**Done:**' '**Ask the user**'; do
-    if printf '%s' "$section" | grep -qF -- "$part"; then ok "rule ${rule:3:1} states $part"; else no "rule ${rule:3:1} states $part" "missing"; fi
+    if printf '%s' "$section" | grep -qF -- "$part"; then ok "$s states $part"; else no "$s states $part" "missing"; fi
   done
 done
-if found="$(grep -rniE 'Mike|rook|MEGA\.dev' "$SKILL")"; then
-  no "the skill names no person and carries no credit" "$found"
+
+echo
+echo "the skills carry the rules they own:"
+has() { if grep -qF -- "$3" "$ROOT/skills/$2/SKILL.md"; then ok "$1"; else no "$1" "no '$3' in $2"; fi; }
+has "read-the-contract covers a field another tool hands out" read-the-contract "field whose description says another tool hands it out, and that tool has not"
+has "read-the-contract stops on the same refusal twice" read-the-contract "The same refusal twice means the"
+has "use-the-owners-logic runs the owner's logic" use-the-owners-logic "when the input ships its own logic, views or build, run it and quote"
+has "use-the-owners-logic builds with the owner's code" use-the-owners-logic "build it with their code"
+RULE='Never offer the user a choice between guessed values for a field an outside'
+count="$(grep -rF -- "$RULE" "$ROOT/skills" | wc -l | tr -d ' ')"
+if [ "$count" -eq 1 ] && grep -qF -- "$RULE" "$ROOT/skills/intake/SKILL.md"; then
+  ok "the intake skill carries the guessed-choice rule, worded once"
 else
-  ok "the skill names no person and carries no credit"
+  no "the intake skill carries the guessed-choice rule, worded once" "found $count"
+fi
+
+echo
+echo "the trigger evals hold three positives and two negatives per skill:"
+for s in $SKILLS; do
+  fires="$(find "$ROOT/evals" -path "*/$s--fires--*/prompt.md" | wc -l | tr -d ' ')"
+  quiet="$(find "$ROOT/evals" -path "*/$s--quiet--*/prompt.md" | wc -l | tr -d ' ')"
+  if [ "$fires" -ge 3 ] && [ "$quiet" -ge 2 ]; then ok "$s has $fires positives and $quiet negatives"; else no "$s has three positives and two negatives" "found $fires and $quiet"; fi
+done
+both() {
+  local dir="$ROOT/evals/$1" s
+  for s in "$2" "$3"; do
+    if grep -lx "input_match: \"$s\"" "$dir"/graders/*.md 2>/dev/null | xargs grep -lx 'min: 1' > /dev/null 2>&1; then
+      ok "$1 asserts that $s fires"
+    else
+      no "$1 asserts that $s fires" "no min: 1 grader for $s"
+    fi
+  done
+}
+both both--fires--claim-after-earlier-reads read-the-contract recheck-before-done
+both both--fires--config-in-their-project read-the-contract use-the-owners-logic
+boundary() {
+  local dir="$ROOT/evals/$1"
+  if grep -lx "input_match: \"$2\"" "$dir"/graders/*.md 2>/dev/null | xargs grep -lx 'min: 1' > /dev/null 2>&1; then
+    ok "$1 asserts that $2 fires"
+  else
+    no "$1 asserts that $2 fires" "no min: 1 grader for $2"
+  fi
+  if grep -lx "input_match: \"$3\"" "$dir"/graders/*.md 2>/dev/null | xargs grep -lx 'max: 0' > /dev/null 2>&1; then
+    ok "$1 asserts that $3 stays quiet"
+  else
+    no "$1 asserts that $3 stays quiet" "no max: 0 grader for $3"
+  fi
+}
+boundary recheck-before-done--fires--submit-quoted-schema-after-earlier-reads recheck-before-done read-the-contract
+boundary recheck-before-done--quiet--first-post-unread-api read-the-contract recheck-before-done
+boundary check-a-live-source--fires--stale-fact-not-stale-read check-a-live-source recheck-before-done
+dupes="$(for f in "$ROOT"/evals/*/prompt.md; do awk '/^---$/ && c < 2 {c++; next} c >= 2' "$f" | shasum; done | sort | uniq -d)"
+if [ -z "$dupes" ]; then ok "no two eval prompts are the same"; else no "no two eval prompts are the same" "$dupes"; fi
+
+echo
+echo "the skills and evals stay generic:"
+for s in $SKILLS; do
+  if found="$(grep -rniE 'Mike|rook|MEGA|course' "$ROOT/skills/$s")"; then
+    no "$s names no person, course or credit" "$found"
+  else
+    ok "$s names no person, course or credit"
+  fi
+done
+if found="$(grep -rniE 'Mike|rook|MEGA|course|challenge' "$ROOT/evals")"; then
+  no "the evals name no person, course or credit" "$found"
+else
+  ok "the evals name no person, course or credit"
 fi
 if found="$(grep -niE "rook|MEGA\.dev" "$ROOT/README.md")"; then
-  no "the README carries no read-first credit" "$found"
+  no "the README carries no course credit" "$found"
 else
-  ok "the README carries no read-first credit"
+  ok "the README carries no course credit"
 fi
 
 echo

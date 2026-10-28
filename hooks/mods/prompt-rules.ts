@@ -296,3 +296,12 @@ export function withoutSplice(content: string, bodies: readonly string[]): strin
   }
   return text
 }
+
+export const installedPluginsPathOf = (home: string): string => `${home}/.claude/plugins/installed_plugins.json`
+
+export function rulesContextOf(env: Record<string, string | undefined>, read: (path: string) => string | undefined): string | undefined {
+  const lane = promptLaneOf(env.WORKBENCH_SKIP_WARMUP, env.CLAUDE_CODE_AGENT)
+  const installed = lane === 'none' || !env.HOME ? undefined : read(installedPluginsPathOf(env.HOME))
+  const sources = installed === undefined ? [] : contributionPathsOf(installed)
+  return subagentContextOf(sectionsFor(lane, contributionsOf(sources.map(({ path }) => read(path)))))
+}

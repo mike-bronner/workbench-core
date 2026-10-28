@@ -229,7 +229,7 @@ describe('AC5: the cache meter records each request, and a spike names the secti
     await request($, p, FIRST)
     p.sections[0] = { id: 'intro', text: 'changed', scope: 'shared' }
     await request($, p, SPIKE)
-    expect(p.files.size).toBe(0)
+    expect([...p.files.keys()]).toEqual([`${HOME}/.claude-workbench/mod-ran/${SID}/prompt-compose`])
     expect(p.toasts).toEqual([])
     expect(p.composed).toBe(2)
   })

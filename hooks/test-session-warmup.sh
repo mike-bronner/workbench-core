@@ -576,6 +576,37 @@ else
   FAIL=$((FAIL + 1)); echo "  ❌ markerless old log survived"
 fi
 
+echo "retention sweep — fallback markers, transcript records and reprompt records:"
+days_ago() { date -v-"$1"d +%Y%m%d%H%M 2>/dev/null || date -d "$1 days ago" +%Y%m%d%H%M; }
+MOD_RAN="$SANDBOX/home/.claude-workbench/mod-ran"
+RECORDS="$SANDBOX/home/.claude-workbench/fallback-transcripts"
+REPROMPTED="$SANDBOX/home/.claude-workbench/fallback-reprompted"
+mkdir -p "$MOD_RAN/old-sid" "$MOD_RAN/mixed-sid" "$MOD_RAN/new-sid" "$RECORDS" "$REPROMPTED"
+printf turn-old > "$REPROMPTED/old-sid"
+printf turn-new > "$REPROMPTED/new-sid"
+touch -t "$(days_ago 8)" "$REPROMPTED/old-sid"
+touch -t "$(days_ago 6)" "$REPROMPTED/new-sid"
+: > "$MOD_RAN/old-sid/session-start"
+: > "$MOD_RAN/mixed-sid/session-start"
+: > "$MOD_RAN/mixed-sid/prompt-compose"
+: > "$MOD_RAN/new-sid/session-start"
+printf '/x/old.jsonl' > "$RECORDS/old-sid"
+printf '/x/new.jsonl' > "$RECORDS/new-sid"
+touch -t "$(days_ago 8)" "$MOD_RAN/old-sid/session-start" "$MOD_RAN/mixed-sid/session-start"
+touch -t "$(days_ago 6)" "$MOD_RAN/mixed-sid/prompt-compose" "$MOD_RAN/new-sid/session-start"
+touch -t "$(days_ago 31)" "$RECORDS/old-sid"
+touch -t "$(days_ago 29)" "$RECORDS/new-sid"
+run_warmup startup >/dev/null
+check_sweep() { if [ "$2" -eq 0 ]; then PASS=$((PASS + 1)); echo "  ✅ $1"; else FAIL=$((FAIL + 1)); echo "  ❌ $1"; fi; }
+[ ! -e "$MOD_RAN/mixed-sid/session-start" ]; check_sweep "a marker older than 7 days is deleted" $?
+[ -e "$MOD_RAN/mixed-sid/prompt-compose" ] && [ -e "$MOD_RAN/new-sid/session-start" ]; check_sweep "a marker newer than 7 days stays" $?
+[ ! -e "$MOD_RAN/old-sid" ]; check_sweep "a session folder left empty is deleted" $?
+[ ! -e "$RECORDS/old-sid" ]; check_sweep "a transcript record older than 30 days is deleted" $?
+[ -e "$RECORDS/new-sid" ]; check_sweep "a transcript record newer than 30 days stays" $?
+[ ! -e "$REPROMPTED/old-sid" ]; check_sweep "a reprompt record older than 7 days is deleted" $?
+[ -e "$REPROMPTED/new-sid" ]; check_sweep "a reprompt record newer than 7 days stays" $?
+rm -rf "${MOD_RAN:?}" "${RECORDS:?}" "${REPROMPTED:?}"
+
 echo "pending-summary notice — names the command, not the retired skill:"
 assert_contains "drain command named"          "$(notices)" "\`/process-pending-summaries\`"
 assert_missing  "no retired skill name"        "$(notices)" "/workbench-core:process-pending-summaries"

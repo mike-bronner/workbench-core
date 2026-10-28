@@ -36,7 +36,7 @@
 // Pure functions only: the engine follows `$` into no imported function.
 
 import type { WorkbenchShellParse as ShellParse, WorkbenchShellStatement as Statement } from '../../types'
-import { SHELLS, nameOf, parseShell, shellScriptOf } from './shell'
+import { SHELLS, nameOf, parseShell, shellScriptOf } from './shell.ts'
 
 // The tools a guard judges. When the tool.call hook fails before it passes one
 // of them on, its .catch refuses the call: Agent and SendMessage too, so a
@@ -757,3 +757,5 @@ function patternStarts(pattern: string): (string | undefined)[] {
 }
 
 export const SEARCH_UNREAD = `Whole-disk search guard (workbench-core): ${unreadNote} Write the search out plainly, with its path in full. ${SEARCH_ADVICE}`
+
+export { GUARD_FAILED } from './guard-failed.ts'

@@ -523,6 +523,14 @@ if [ "$SOURCE" = "startup" ]; then
   # covers the before-and-after a change is measured on.
   CACHE_METER_DIR="$HOME/.claude-workbench/cache-meter"
   [ -d "$CACHE_METER_DIR" ] && find "$CACHE_METER_DIR" -name "*.json" -mtime +7 -delete 2>/dev/null
+
+  MOD_RAN_DIR="$HOME/.claude-workbench/mod-ran"
+  [ -d "$MOD_RAN_DIR" ] && find "$MOD_RAN_DIR" -mindepth 2 -type f -mtime +7 -delete 2>/dev/null
+  [ -d "$MOD_RAN_DIR" ] && find "$MOD_RAN_DIR" -mindepth 1 -type d -empty -delete 2>/dev/null
+  FALLBACK_TRANSCRIPTS_DIR="$HOME/.claude-workbench/fallback-transcripts"
+  [ -d "$FALLBACK_TRANSCRIPTS_DIR" ] && find "$FALLBACK_TRANSCRIPTS_DIR" -type f -mtime +30 -delete 2>/dev/null
+  FALLBACK_REPROMPTED_DIR="$HOME/.claude-workbench/fallback-reprompted"
+  [ -d "$FALLBACK_REPROMPTED_DIR" ] && find "$FALLBACK_REPROMPTED_DIR" -type f -mtime +7 -delete 2>/dev/null
 fi
 
 # ──────────── No rules block ────────────

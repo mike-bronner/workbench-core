@@ -56,6 +56,8 @@ export type World = {
   // when another session wrote the path between the read and the write, an
   // answer with no flag, or an error.
   writeAnswer?: 'replaced' | 'no-flag' | 'error'
+  beneath?: (event: string) => void
+  writeRejects?: (path: string) => boolean
   clock: MockClock
 }
 
@@ -94,7 +96,18 @@ export function memoryWorld(on: On, env: Record<string, string> = {}): World {
   on('turn.complete', ($, e) => ({ text: e.answer }))
   // Every tool call the module passes on runs, unless the test refuses it.
   on('tool.call', ($, e) => (w.refuse === e.tool ? { deny: 'refused beneath' } : { result: {} as never }))
-  on('classic.SessionStart', () => ({}))
+  on('classic.SessionStart', () => {
+    w.beneath?.('SessionStart')
+    return {}
+  })
+  on('classic.SubagentStart', () => {
+    w.beneath?.('SubagentStart')
+    return { additionalContext: ['BENEATH'] }
+  })
+  on('prompt.compose', () => {
+    w.beneath?.('compose')
+    return { sections: [{ id: 'intro', text: 'You are Claude Code.', scope: 'shared' as const }] }
+  })
   on('classic.Stop', () => ({}))
   on('skill.prompt', ($, e) => ({ text: e.text }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
@@ -108,6 +121,7 @@ export function memoryWorld(on: On, env: Record<string, string> = {}): World {
     return { value: text }
   })
   on('fs.write', ($, e) => {
+    if (w.writeRejects?.(e.path)) throw new Error(`EACCES: ${e.path}`)
     w.files.set(e.path, e.text)
     return { value: undefined }
   })

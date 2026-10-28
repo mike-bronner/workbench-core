@@ -93,6 +93,10 @@ jobs:
       - name: Clone workbench-dev-team outside the workspace for its git-commit references
         run: git clone --depth 1 --quiet https://github.com/mike-bronner/workbench-dev-team.git "$RUNNER_TEMP/workbench-dev-team"
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
       - name: hook test suite (offline; fake-server fixture, no real server)
         env:
           WORKBENCH_DEV_TEAM_DIR: ${{ runner.temp }}/workbench-dev-team

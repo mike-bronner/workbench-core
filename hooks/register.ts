@@ -57,6 +57,7 @@ import {
   OMITS_CLAUDE_MD,
   contributionPathsOf,
   contributionsOf,
+  installedPluginsPathOf,
   promptLaneOf,
   rulesOwnersOf,
   sectionsFor,
@@ -166,6 +167,7 @@ import {
   bodyTargets,
   credentialPathRefusal,
   credentialRefusal,
+  GUARD_FAILED,
   hiddenCommandRefusal,
   isPartlyRead,
   mentionsSearch,
@@ -178,9 +180,11 @@ import {
   toolSearchRoots,
 } from './mods/guards'
 import type { SearchRoot } from './mods/guards'
-import { SQL_FILE_CAP, databaseRefusal, fileKey } from './mods/destructive-database'
-import type { Fact, FactGetter, ScopeContext, ScopeVerdict } from './mods/destructive-scope'
-import { NO_ONE_TO_ASK, dirKey, getterOf, needsScope, scopeVerdict, stepOf } from './mods/destructive-scope'
+import { databaseRefusal, fileKey } from './mods/destructive-database'
+import type { Fact, FactGetter, ScopeVerdict } from './mods/destructive-scope'
+import { NO_ONE_TO_ASK, dirKey } from './mods/destructive-scope'
+import type { FactHost } from './mods/scope-facts'
+import { answerFact as answerFactOf, scopeOf as scopeOfHost, scopeRootsOf as scopeRootsOfHost, settled as settledOf } from './mods/scope-facts'
 import { needsVaultGit, vaultGitRefusal } from './mods/vault-git'
 import type { BodyPart } from './mods/outbound-prose'
 import { PROSE_TOOL_SUFFIXES, UNREAD_BODY, bashBodies, isProseTool, mcpBody, proseFindings, proseOfJson, proseRefusal } from './mods/outbound-prose'
@@ -229,6 +233,8 @@ import {
   meetingsDirOf,
   overwriteRefusal,
 } from './mods/meetings'
+import type { ModHook } from './mods/fallback'
+import { markerOf, transcriptFileOf } from './mods/fallback'
 import { NAME as PENDING, REFUSAL as PENDING_REFUSAL, USAGE as PENDING_USAGE, outcomeOf, reportOf as pendingReportOf, requestOf } from './mods/pending-summaries'
 import { EMPTY, countRequest, countTurn, statusOf } from './mods/request-meter'
 import { countOf, factsOf, healthOf, learningsAfter, lineOf, noticesOf, rowsOf, skillNameOf } from './mods/status-line'
@@ -895,10 +901,22 @@ async function memoryServer($: EngineInterface): Promise<string> {
 // A session whose transcript is unknown, or names another session, is left to
 // the settings hooks and the start-up reconciler.
 async function checkpointLog($: EngineInterface, sessionId: string, mode: CheckpointMode, reason: string | undefined, timeoutMs: number): Promise<void> {
-  const { value: transcript } = await $.state.get(TRANSCRIPT)
+  const { value: recorded } = await $.state.get(TRANSCRIPT)
+  const transcript = recorded ?? (await fallbackTranscript($, sessionId))
   const request = checkpointRequest(sessionId, transcript, mode, reason)
   if (request === undefined) return
   await $.process.run(['bash', `${$.plugin.root}/hooks/session-log.sh`], { ...request, timeoutMs })
+}
+
+async function fallbackTranscript($: EngineInterface, sessionId: string): Promise<string | undefined> {
+  const file = transcriptFileOf(await $.env.get('HOME'), sessionId)
+  const text = file === undefined ? undefined : await readIfAny($, file)
+  return text?.trim() || undefined
+}
+
+async function markModRan($: EngineInterface, sessionId: string, hook: ModHook): Promise<void> {
+  const file = markerOf(await $.env.get('HOME'), sessionId, hook)
+  if (file !== undefined) await $.fs.write(file, '')
 }
 
 // The memory capture checkpoint (hooks/mods/capture.ts): a fork of the session
@@ -1076,7 +1094,7 @@ async function readSections($: EngineInterface): Promise<SectionsReading> {
   const lane = promptLaneOf(await $.env.get('WORKBENCH_SKIP_WARMUP'), await $.env.get('CLAUDE_CODE_AGENT'))
   if (lane === 'none') return { lane, contributions: [] }
   const home = await $.env.get('HOME')
-  const installed = home ? await readIfAny($, `${home}/.claude/plugins/installed_plugins.json`) : undefined
+  const installed = home ? await readIfAny($, installedPluginsPathOf(home)) : undefined
   const sources = installed === undefined ? [] : contributionPathsOf(installed)
   const contributions: SectionsReading['contributions'] = []
   for (const { plugin, path } of sources) contributions.push({ plugin, text: await readIfAny($, path) })
@@ -1095,9 +1113,6 @@ async function unspliced($: EngineInterface, file: InstructionFile): Promise<Ins
   const content = raw === undefined ? file.content : withoutSplice(file.content, splicedBodiesOf(raw))
   return content === file.content ? undefined : { ...file, content }
 }
-
-const GUARD_FAILED =
-  'Workbench guards (workbench-core): the guards that judge this call could not finish, so the call is refused. Try the call again. If it is refused again, stop and tell Mike which call it was.'
 
 type Guarded = Record<string, unknown> & { tool: string; agentId?: string }
 
@@ -1146,113 +1161,21 @@ async function regularFiles($: EngineInterface, targets: readonly string[], home
 // closed way. A judge that asks too many questions throws, and the guards'
 // .catch refuses the call.
 
-const MAX_FACT_ROUNDS = 400
+const factHostOf = ($: EngineInterface): FactHost => ({
+  run: argv => $.process.run([...argv], { timeoutMs: 10_000 }),
+  isFile: async path => (await $.fs.stat(path).catch(() => undefined))?.kind === 'file',
+  root: $.plugin.root,
+})
 
-const factsScript = ($: EngineInterface): string => `${$.plugin.root}/hooks/lib/scope-facts.sh`
+const answerFact = ($: EngineInterface, key: string): Promise<Fact> => answerFactOf(factHostOf($), key)
 
-async function gitFact($: EngineInterface, question: string, dir: string, arg: string): Promise<Fact> {
-  const git = (argv: readonly string[]) => $.process.run(['git', ...argv], { timeoutMs: 10_000 })
-  switch (question) {
-    case 'builtins': {
-      const { exitCode, stdout } = await git(['--list-cmds=builtins'])
-      const names = stdout.split(/\s+/).filter(Boolean)
-      return exitCode === 0 && names.length > 0 ? names.join(' ') : null
-    }
-    case 'top': {
-      const { exitCode, stdout } = await git(['-C', dir, 'rev-parse', '--show-toplevel'])
-      return exitCode === 0 ? stdout.trim() : ''
-    }
-    case 'tracked': {
-      const { exitCode } = await git(['-C', dir, 'ls-files', '--error-unmatch', '--', arg])
-      return exitCode === 0 ? 'yes' : exitCode === 1 ? 'no' : null
-    }
-    case 'commit': {
-      const { exitCode } = await git(['-C', dir, 'rev-parse', '--verify', '--quiet', '--end-of-options', `${arg}^{commit}`])
-      return exitCode === 0 ? 'yes' : 'no'
-    }
-    case 'remotes': {
-      const { exitCode, stdout } = await git(['-C', dir, 'for-each-ref', '--format=%(refname)', `refs/remotes/*/${arg}`])
-      return exitCode === 0 ? String(stdout.split(/\s+/).filter(Boolean).length) : null
-    }
-    case 'alias': {
-      const { exitCode, stdout } = await git(['-C', dir, 'config', '--get', `alias.${arg}`])
-      return exitCode === 1 ? 'none' : exitCode === 0 ? `=${stdout.replace(/\n$/, '')}` : null
-    }
-    default:
-      return null
-  }
-}
+const settled = <T>($: EngineInterface, judge: (get: FactGetter) => T): Promise<T> => settledOf(factHostOf($), judge)
 
-async function answerFact($: EngineInterface, key: string): Promise<Fact> {
-  const [kind = '', a = '', b = '', c = ''] = key.split('\t')
-  switch (kind) {
-    case 'dir': {
-      const { stdout } = await $.process.run(['bash', factsScript($), 'dir', a], { timeoutMs: 10_000 })
-      const path = stdout.replace(/\n$/, '')
-      return path.startsWith('/') ? path : null
-    }
-    case 'entry': {
-      const { stdout } = await $.process.run(['bash', factsScript($), 'entry', a], { timeoutMs: 10_000 })
-      return stdout.trim() === '' ? null : stdout.trim()
-    }
-    case 'name': {
-      const { stdout } = await $.process.run(['bash', factsScript($), 'name', a, b], { timeoutMs: 10_000 })
-      const name = stdout.replace(/\n$/, '')
-      return name === '' || name.includes('\n') ? null : name
-    }
-    case 'file': {
-      // A regular file only: a FIFO would hold the read open.
-      const stat = await $.fs.stat(a).catch(() => undefined)
-      if (stat?.kind !== 'file') return null
-      const { exitCode, stdout } = await $.process.run(['head', '-c', String(SQL_FILE_CAP), '--', a], { timeoutMs: 10_000 })
-      return exitCode === 0 ? stdout : null
-    }
-    case 'git':
-      return gitFact($, a, b, c)
-    default:
-      return null
-  }
-}
+const scopeOf = async ($: EngineInterface, line: string, parse: WorkbenchShellParse, home: string | undefined): Promise<ScopeVerdict> =>
+  scopeOfHost(factHostOf($), line, parse, home, { cwd: () => $.session.cwd(), ids: async () => ({ sessionId: await $.session.id(), project: await $.session.root() }) })
 
-async function settled<T>($: EngineInterface, judge: (get: FactGetter) => T): Promise<T> {
-  const answers = new Map<string, Fact>()
-  for (let round = 0; round < MAX_FACT_ROUNDS; round++) {
-    const step = stepOf(() => judge(getterOf(answers)))
-    if ('value' in step) return step.value
-    answers.set(step.need, await answerFact($, step.need))
-  }
-  throw new Error('workbench guards: too many facts')
-}
-
-// The destructive-scope guard's verdict on a Bash line. The roots are read
-// only when the judge needs a fact: a line it settles without one (no
-// destructive command, or one whose target nobody can read) costs no process.
-async function scopeOf($: EngineInterface, line: string, parse: WorkbenchShellParse, home: string | undefined): Promise<ScopeVerdict> {
-  if (!needsScope(line, parse)) return { kind: 'none' }
-  const cwd = await $.session.cwd()
-  const bare: ScopeContext = { cwd, home, roots: [], tmp: undefined, markers: undefined }
-  const quick = stepOf(() => scopeVerdict(line, parse, bare, getterOf(new Map())))
-  if ('value' in quick) return quick.value
-  const { project, roots, fields } = await scopeRootsOf($)
-  const ctx: ScopeContext = {
-    cwd,
-    home,
-    roots: [...new Set([...(project !== null && project !== '/' ? [project] : []), ...roots])],
-    tmp: fields.find(([kind]) => kind === 'tmp')?.[1],
-    markers: fields.find(([kind]) => kind === 'markers')?.[1],
-  }
-  return settled($, get => scopeVerdict(line, parse, ctx, get))
-}
-
-async function scopeRootsOf($: EngineInterface): Promise<{ project: Fact; roots: string[]; fields: string[][] }> {
-  const { stdout } = await $.process.run(['bash', factsScript($), 'roots', await $.session.id()], { timeoutMs: 10_000 })
-  const fields = stdout
-    .split('\n')
-    .map(row => row.split('\t'))
-    .filter(([, path]) => path?.startsWith('/'))
-  const project = await answerFact($, dirKey(await $.session.root()))
-  return { project, roots: fields.filter(([kind]) => kind === 'root').map(([, path]) => path as string), fields }
-}
+const scopeRootsOf = async ($: EngineInterface): Promise<{ project: Fact; roots: string[]; fields: string[][] }> =>
+  scopeRootsOfHost(factHostOf($), await $.session.id(), await $.session.root())
 
 async function repoOf($: EngineInterface, dir: string): Promise<{ top: string; common: string } | undefined> {
   const { exitCode, stdout } = await $.process.run(['git', '-C', dir, 'rev-parse', '--path-format=absolute', '--show-toplevel', '--git-common-dir'], { timeoutMs: 10_000 })
@@ -1552,6 +1475,7 @@ export const register: Register = on => {
   // Then a person's session reads the notices again, so a Chat-skill notice
   // reaches the status line without waiting for the next probe.
   on('classic.SessionStart', async ($, e, next) => {
+    await markModRan($, e.session_id, 'session-start').catch(() => undefined)
     // The transcript the log checkpoint copies from. Every source sets it,
     // `clear` too, which starts a new transcript under a new session id.
     if (typeof e.transcript_path === 'string' && e.transcript_path !== '') await $.state.set(TRANSCRIPT, e.transcript_path)
@@ -1943,7 +1867,15 @@ export const register: Register = on => {
   // The workbench rules (hooks/mods/prompt-rules.ts): shared sections after the
   // engine's own shared ones, so every shared section stays ahead of every
   // session one. The answer is the same bytes on every render of the load.
+  let composeMarked: string | undefined
   on('prompt.compose', async ($, e, next) => {
+    const sessionId = await $.session.id().catch(() => undefined)
+    if (sessionId !== undefined && composeMarked !== sessionId) {
+      composeMarked = await markModRan($, sessionId, 'prompt-compose').then(
+        () => sessionId,
+        () => undefined,
+      )
+    }
     const result = await next(e)
     rulesOwners = rulesOwnersOf(result.sections)
     const ours = await workbenchSections($, rulesOwners)
@@ -1981,6 +1913,7 @@ export const register: Register = on => {
   // stub reached it before. An agent that leaves CLAUDE.md out gets none, and
   // so does a fork: it inherits its parent's system prompt, rules included.
   on('classic.SubagentStart', async ($, e, next) => {
+    await markModRan($, e.session_id, 'subagent-start').catch(() => undefined)
     const result = await next(e)
     if (OMITS_CLAUDE_MD.has(e.agent_type) || e.agent_type === 'fork') return result
     const text = subagentContextOf(await workbenchSections($))

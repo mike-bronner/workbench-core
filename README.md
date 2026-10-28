@@ -89,6 +89,14 @@ Verify:
 markdown-vault-mcp --version
 ```
 
+#### Optional: Node 24 — runs the fallback hooks
+
+The fallback hooks in `hooks/fallback/` run with Node 24, which strips TypeScript types on its own. They matter only when Claude Code skips the hooks module's hooks, as on a Team or Enterprise login (see [When the module's hooks are skipped](#when-the-modules-hooks-are-skipped)). Without Node, each fallback does nothing and never blocks a session.
+
+```bash
+brew install node
+```
+
 ### Install the plugin
 
 ```bash
@@ -273,6 +281,11 @@ These hooks fire across the session lifecycle and on each turn. The memory work 
 | Hook | Script | Purpose |
 |------|--------|---------|
 | `SessionStart` | `hooks/session-warmup.sh --defer` | Retired-file cleanup, retention cleanup, dead-marker sweep, session reconciler, housekeeping notices (written to a file, not injected). The pending-summary drain and the Chat-skill scan run after it, from the [hooks module](#the-hooks-module), so they no longer hold up the start |
+| `SessionStart` | `hooks/fallback/session-start.ts` (Node) | Only in a session the hooks module did not mark: the rules and memory routing as context, the transcript record for the log checkpoint, and the deferred warmup and meeting check. See [When the module's hooks are skipped](#when-the-modules-hooks-are-skipped) |
+| `SubagentStart` | `hooks/fallback/subagent-start.ts` (Node) | Only in a session the hooks module did not mark: the sub-agent rules, none for `OMITS_CLAUDE_MD` types or a fork |
+| `Stop` | `hooks/fallback/stop.ts` (Node) | Only in a session the hooks module did not mark: one re-prompt per turn when an attended main-session reply asks a question in prose |
+| `PreToolUse` (`Bash`) | `hooks/fallback/pre-tool-use.ts` (Node) | Only in a session the hooks module did not mark: `ask` for a destructive call outside the project and scratch roots, `deny` where the module denies. Never `allow` |
+| `FileChanged` | `hooks/fallback/file-changed.ts` (Node) | Only in a session the hooks module did not mark: a change inside the meetings folder rings the meetings doorbell |
 | `PreCompact` | `hooks/session-log.sh` | Dump raw log checkpoint, spawn summary-writer |
 | `PostCompact` | `hooks/session-warmup.sh` | Refresh the housekeeping notices after context compression. The rules are in the system prompt, which survives compaction |
 | `SessionEnd` | `hooks/session-log.sh` | Dump final log segment and write the pending-summary marker, with the SessionEnd `reason` — **no writer is spawned here** (see [Why SessionEnd does not spawn](#why-sessionend-does-not-spawn)) |
@@ -854,6 +867,7 @@ When FluidVoice finishes recording a meeting, a note for it lands in the vault's
 - Its `classic.SessionStart` hook returns the folder in `watchPaths`.
 - Its `classic.FileChanged` hook treats any add, change or unlink under the folder as a doorbell. It waits 10 seconds, so a burst of writes rings once, and then runs `scripts/meeting-notes.sh`.
 - At a `startup` or `resume`, the same script runs once as a catch-up, so a meeting recorded while no session was open lands at the next start.
+- Where the module's hooks are skipped, the SessionStart and FileChanged fallbacks in `hooks/fallback/` do the same three things ([When the module's hooks are skipped](#when-the-modules-hooks-are-skipped)).
 
 A change only rings the doorbell. The script never reads the folder, so its layout and its half-written files do not matter. It asks `fv-serve` which meetings are finished.
 
@@ -892,7 +906,7 @@ The warmup prints nothing for the model, on any source. The rules it used to pri
 | `clear` | After `/clear` | Notices refresh |
 | `compact` | After compression | Notices refresh (via PostCompact hook) |
 
-**Two parts, so the drain and the scan do not hold up the start.** The SessionStart hook runs `session-warmup.sh --defer`, which does everything above except the pending-summary drain and the Chat-skill scan. The [hooks module](#the-hooks-module) wraps the SessionStart hooks (`classic.SessionStart`). Once they are done, it runs `session-warmup.sh --deferred` in the background, with the source and session id on stdin. That run does only the drain and the scan, prints nothing the model reads, and adds the Chat-skill notice to the notices file the first part wrote. It runs in every lane the warmup drains in, unattended runs included, and keeps the warmup's skip guards. With no argument, or one it does not know, the script still does the whole warmup in one run.
+**Two parts, so the drain and the scan do not hold up the start.** The SessionStart hook runs `session-warmup.sh --defer`, which does everything above except the pending-summary drain and the Chat-skill scan. The [hooks module](#the-hooks-module) wraps the SessionStart hooks (`classic.SessionStart`), or, when the module's hooks are skipped, the SessionStart fallback starts the same run once `--defer` has written this start's stamp (see [When the module's hooks are skipped](#when-the-modules-hooks-are-skipped)). Once they are done, it runs `session-warmup.sh --deferred` in the background, with the source and session id on stdin. That run does only the drain and the scan, prints nothing the model reads, and adds the Chat-skill notice to the notices file the first part wrote. It runs in every lane the warmup drains in, unattended runs included, and keeps the warmup's skip guards. With no argument, or one it does not know, the script still does the whole warmup in one run.
 
 **When the deferred run does not happen.** The hooks module may not load (a load error, an older CLI, `allowManagedModsOnly`), and a short `claude -p` can exit and kill the deferred run partway. So each `--defer` run writes a `warmup-deferred.started` stamp in the memory cache as its last step. Each `--deferred` run adds its PID and start time to that stamp as its first step, and writes a matching `warmup-deferred.done` stamp as its last. A run still going looks like a killed one by the stamps alone, so a `--defer` run leaves the previous start's run alone while its PID is alive and it is under 120 s old, the time the hooks module gives it. A `--defer` run that finds the previous start's run unfinished and not running does the drain and the Chat-skill scan inline, as a whole run would, and a later deferred run does not add the Chat notice twice. The drain's cooldown stamp names the run and session that wrote it. When the unfinished deferred run wrote it, the inline drain ignores the cooldown. A stamp an inline drain wrote holds, so starts with no hooks module still keep the cooldown. A run killed inside the drain also leaves the drain's lock, so for that lock's minute a start drains nothing and the markers wait. Measured in a sandbox with six drainable markers and twelve new Chat skills, the blocking part went from about 390 to 450 ms to about 180 to 215 ms. The deferred part takes about 300 ms in the background. `hooks/test-session-warmup-deferred.sh` and `tests/deferred-start.test.ts` cover the split.
 
@@ -902,7 +916,7 @@ It injects no persona file and no behavioural rule. The persona is the output st
 
 ### The workbench rules in the system prompt
 
-The [hooks module](#the-hooks-module) puts the workbench rules into the system prompt as `shared` `prompt.compose` sections (`hooks/mods/prompt-rules.ts`), after the engine's own shared sections and before every session one:
+When the module's hooks are skipped, the SessionStart and SubagentStart fallbacks send the same sections as context instead (see [When the module's hooks are skipped](#when-the-modules-hooks-are-skipped)). Otherwise the [hooks module](#the-hooks-module) puts the workbench rules into the system prompt as `shared` `prompt.compose` sections (`hooks/mods/prompt-rules.ts`), after the engine's own shared sections and before every session one:
 
 | Section | Holds | Lanes |
 |---|---|---|
@@ -986,6 +1000,7 @@ The setting is a **backstop, not a substitute** for servers capping their own ou
 - **Memory capture with no turn.** A fork of the session lists its durable findings, and the module writes them to the vault. See [Pre-shed capture](#pre-shed-capture).
 - **Recall.** Filtered vault hits beside a prompt or a content search. See [Recall](#recall-filtered-at-the-tail-never-in-the-system-prompt).
 - **Skill learnings and the intake nudge.** See [Execution-aware skills](#execution-aware-skills) and [Task intake](#task-intake).
+- **The per-session markers.** Each covered hook marks the session before it calls the hooks beneath, so the [fallback hooks](#when-the-modules-hooks-are-skipped) stay off.
 - **The workbench rules in the system prompt.** Shared sections with the same bytes in every session, the harness's memory section dropped, and a sub-agent's copy at its start. See [The workbench rules in the system prompt](#the-workbench-rules-in-the-system-prompt).
 - **Commands that cost no model turn.** `/orchestrator [on|off|status]` (see [Delegation gate](#delegation-gate)), `/memory-status`, which runs `scripts/memory-status.sh` and shows its report in a pane, `/notices`, which shows the [warmup notices](#housekeeping-notices--for-mike-not-the-model) in the same pane, and `/process-pending-summaries [<session-id> [--overwrite]]` (see [Why SessionEnd does not spawn](#why-sessionend-does-not-spawn)). They replace the `orchestrator`, `memory-status` and `process-pending-summaries` skills. A command answers through a toast, the status line, or the pane, and returns no text, because a command's text is a transcript row the model reads.
 - **The status line.** After the request meter: the latest request's cache hit share (`cache 97%`) and, once a spike named a changed section, the count of such spikes (`churn 1`), then the memory server's health from the identity-checked probe (`mem UP`, every minute), orchestrator mode (`orch on`), the rows the last reply takes at 80 columns against the output style's budget of about 40 (`rows 38/40`, a meter only: nothing re-prompts on it), each skill whose learnings file is past 30 entries, and the warmup notices outstanding. A fact not known yet is left out. For example: `T14 · $0.21/req · 3.4× first │ cache 97% · mem UP · orch on · rows 38/40`. The line is drawn in the band above the prompt, not through `$.ui.status`, because the engine puts the plugin's name in front of a status line, and `workbench-core:` read like a project name in every project. The band gives way while a survey holds it.
@@ -1043,6 +1058,23 @@ Each statement is one simple command, and carries:
 **It holds to `shell_parse.py` on the bash guards' corpus.** `hooks/test-shell-parity.sh` runs `hooks/test-parser-differential.sh` with a recorder on, reads every command through `shell_parse.py` as the guards do, and writes the readings into `tests/shell-cases.ts`. It fails while the committed fixture is stale, and when `jq` is missing, since it then cannot check the fixture. `tests/shell.test.ts` holds `parseShell` to every case. Two kinds of case differ, and the test names each one with its reason. An unterminated heredoc is read as bash reads it, as a body with the `heredoc` unknown set, so a fail-closed guard refuses the whole line. `shell_parse.py` reads those lines as commands. And `env -i` is read past its option, which closes `shell_parse.py`'s known `env -i` gap.
 
 **Testing it.** `claude plugin test <repo>` runs `tests/*.test.ts` against the engine's own test kit, and `claude plugin validate <repo>` checks the manifest and what the module hooks and calls. A shell alias that puts an option before `plugin` makes the CLI refuse both, so call the binary with `command claude`. The engine lays the API's type declarations into `.claude-plugin/types/` (ignored) when an interactive session loads this folder through `--plugin-dir`, and `tsconfig.json` extends the tsconfig it lays there. To type-check without a load, point a scratch tsconfig at the `types/claude-code.d.ts` that the `plugin-authoring` skill writes. CI's `plugin-tests` job runs both on a pinned CLI from npm. They need no account. The same job runs a strict `tsc -p tsconfig.json` on a pinned TypeScript. A headless `-p` session lays the types only with `CLAUDE_CODE_PLUGIN_DIR_WATCH=1` set. With it, a session with no account lays them before it stops at the login check, so the job starts one for that.
+
+### When the module's hooks are skipped
+
+Since Claude Code 2.1.304, a Team or Enterprise login, or a machine with managed settings, seats the built-in guard `cc-plugin-sec-default`. It never runs a user-tier mod's hooks on `classic.*`, `prompt.compose`, `prompt.section`, `prompt.context`, `skill.prompt` and `tool.check`. Command hooks in `hooks/hooks.json` still run. So two command hooks run TypeScript entries with Node, and each entry imports the module's own text and logic:
+
+- `hooks/fallback/session-start.ts` sends the rules and memory routing as SessionStart context, with the line that the vault overrides the harness's memory section. It records the transcript path in `~/.claude-workbench/fallback-transcripts/<session-id>`, where the log checkpoint reads it when the module has none. On startup and resume it starts the meeting check, and the deferred warmup once `--defer` has rewritten the `warmup-deferred.started` stamp for this session, no more than 5 s before the fallback began or after it. A stamp older than that is a previous start's.
+- `hooks/fallback/subagent-start.ts` sends a sub-agent the same rules, and none for an `OMITS_CLAUDE_MD` type or a fork.
+
+**The marker gate.** `classic.SessionStart`, `classic.SubagentStart` and `prompt.compose` each write `~/.claude-workbench/mod-ran/<session-id>/<hook>` before they call the hooks beneath. A fallback exits with no output and no side effect when this session's folder exists, so a session where the module ran gets nothing twice. A failed marker write never blocks the hook, and `prompt.compose` tries it again on its next render. If a write fails, the worst case is the rules shown twice. The startup warmup deletes markers older than 7 days, then empty session folders, transcript records older than 30 days, and Stop reprompt records older than 7 days. `hooks/test-fallback.sh` and `tests/fallback-markers.test.ts` cover the fallbacks and the markers.
+
+Three more command hooks cover the rest:
+
+- `hooks/fallback/stop.ts` blocks a Stop once per turn with the module's `REPROMPT_REASON` when the reply asks a question in prose. It uses the deterministic reading (`proseOf`, `hasCandidate`, `endsOnQuestion`), because the classifier exists only inside the engine. It acts only in an attended main session: an interactive entrypoint in `CLAUDE_CODE_ENTRYPOINT` (not `sdk-*`, not `claude-code-github-action`, not unset), no `CLAUDE_CODE_AGENT`, and no pipeline flag. It skips a sub-agent's Stop, a Stop with `stop_hook_active`, and a turn whose prompt is a scheduled fire. The turn is the last typed prompt in the transcript, and `~/.claude-workbench/fallback-reprompted/<session-id>` records the turn it blocked, so it blocks once per turn. With no readable transcript it blocks nothing.
+- `hooks/fallback/pre-tool-use.ts` runs only for `Bash`, the one tool the destructive-scope check reads. It runs the module's own check from `hooks/mods/scope-facts.ts`, with the same `scope-facts.sh` reader that `register.ts` uses. It answers `ask` where the module's `tool.check` asks, `deny` where it denies or where nobody can answer the prompt, and nothing for any other call. It never answers `allow`. If the check fails, or runs past its 20-second deadline, it denies with the guards' failure text. The hook's timeout in `hooks.json` is 30 seconds, so a slow check is denied, never let through by a timeout.
+- `hooks/fallback/file-changed.ts` rings the meetings doorbell for a change inside the meetings folder: after 10 seconds it runs `scripts/meeting-notes.sh` once, however many changes came in that time. A file outside the folder does nothing. The SessionStart fallback returns the folder in `watchPaths`, as the module's `classic.SessionStart` does, when `fv-serve` and the folder are there.
+
+The PreToolUse and Stop fallbacks check the marker in `hooks/fallback/gate.ts` before they load the guard or question modules. A session where the module ran therefore pays one Node start per Bash call and per Stop, about 70 ms each, and nothing more.
 
 ### Guards in the hooks module
 

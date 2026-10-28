@@ -32,9 +32,9 @@
 // Pure functions only: the engine follows `$` into no imported function.
 
 import type { WorkbenchShellHeredoc as ShellHeredoc, WorkbenchShellParse as ShellParse, WorkbenchShellStatement as Statement } from '../../types'
-import type { FactGetter } from './destructive-scope'
-import { cwdsAfter, isLinearLine } from './destructive-scope'
-import { SHELLS, nameOf, parseShell } from './shell'
+import type { FactGetter } from './destructive-scope.ts'
+import { cwdsAfter, isLinearLine } from './destructive-scope.ts'
+import { SHELLS, nameOf, parseShell } from './shell.ts'
 
 export const MAX_INPUT = 200_000
 const MAX_DEPTH = 4

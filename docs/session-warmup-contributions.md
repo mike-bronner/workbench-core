@@ -9,8 +9,10 @@ ship a `session-warmup.md` at your plugin root. Do **not** register your own
 The aggregation mechanism already exists: workbench-core's hooks module
 (`hooks/register.ts`, `hooks/mods/prompt-rules.ts`) concatenates a
 `session-warmup.md` from every installed `workbench-*` plugin automatically, and
-sends it as a system-prompt section. This document makes it the sanctioned
-convention.
+sends it as a system-prompt section. When Claude Code skips the module's hooks,
+as on a Team or Enterprise login, the SessionStart and SubagentStart fallbacks in
+`hooks/fallback/` send the same text as context instead. This document makes it
+the sanctioned convention.
 
 ---
 

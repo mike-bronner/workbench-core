@@ -53,7 +53,7 @@
 // Pure functions only: the engine follows `$` into no imported function.
 
 import type { WorkbenchShellParse as ShellParse, WorkbenchShellStatement as Statement } from '../../types'
-import { KEYWORDS, SHELLS, nameOf, parseShell } from './shell'
+import { KEYWORDS, SHELLS, nameOf, parseShell } from './shell.ts'
 
 // ─── facts ───────────────────────────────────────────────────────────────────
 

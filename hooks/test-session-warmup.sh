@@ -597,14 +597,14 @@ touch -t "$(days_ago 6)" "$MOD_RAN/mixed-sid/prompt-compose" "$MOD_RAN/new-sid/s
 touch -t "$(days_ago 31)" "$RECORDS/old-sid"
 touch -t "$(days_ago 29)" "$RECORDS/new-sid"
 run_warmup startup >/dev/null
-check_sweep() { if [ "$2" -eq 0 ]; then PASS=$((PASS + 1)); echo "  ✅ $1"; else FAIL=$((FAIL + 1)); echo "  ❌ $1"; fi; }
-[ ! -e "$MOD_RAN/mixed-sid/session-start" ]; check_sweep "a marker older than 7 days is deleted" $?
-[ -e "$MOD_RAN/mixed-sid/prompt-compose" ] && [ -e "$MOD_RAN/new-sid/session-start" ]; check_sweep "a marker newer than 7 days stays" $?
-[ ! -e "$MOD_RAN/old-sid" ]; check_sweep "a session folder left empty is deleted" $?
-[ ! -e "$RECORDS/old-sid" ]; check_sweep "a transcript record older than 30 days is deleted" $?
-[ -e "$RECORDS/new-sid" ]; check_sweep "a transcript record newer than 30 days stays" $?
-[ ! -e "$REPROMPTED/old-sid" ]; check_sweep "a reprompt record older than 7 days is deleted" $?
-[ -e "$REPROMPTED/new-sid" ]; check_sweep "a reprompt record newer than 7 days stays" $?
+check_sweep() { if "${@:2}"; then PASS=$((PASS + 1)); echo "  ✅ $1"; else FAIL=$((FAIL + 1)); echo "  ❌ $1"; fi; }
+check_sweep "a marker older than 7 days is deleted" [ ! -e "$MOD_RAN/mixed-sid/session-start" ]
+check_sweep "a marker newer than 7 days stays" eval '[ -e "$MOD_RAN/mixed-sid/prompt-compose" ] && [ -e "$MOD_RAN/new-sid/session-start" ]'
+check_sweep "a session folder left empty is deleted" [ ! -e "$MOD_RAN/old-sid" ]
+check_sweep "a transcript record older than 30 days is deleted" [ ! -e "$RECORDS/old-sid" ]
+check_sweep "a transcript record newer than 30 days stays" [ -e "$RECORDS/new-sid" ]
+check_sweep "a reprompt record older than 7 days is deleted" [ ! -e "$REPROMPTED/old-sid" ]
+check_sweep "a reprompt record newer than 7 days stays" [ -e "$REPROMPTED/new-sid" ]
 rm -rf "${MOD_RAN:?}" "${RECORDS:?}" "${REPROMPTED:?}"
 
 echo "pending-summary notice — names the command, not the retired skill:"

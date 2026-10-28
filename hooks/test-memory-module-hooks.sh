@@ -24,7 +24,7 @@ echo "the hooks module is loaded:"
 eq "hooks.json names register.ts" "$(jq -r '.modules | join(",")' "$HOOKS_JSON")" "./register.ts"
 
 echo "no command hook shows a turn or injects what the module injects:"
-eq "no Stop hook (the capture checkpoint's visible wake)" "$(jq -r '.hooks.Stop // [] | length' "$HOOKS_JSON")" 0
+eq "no Stop hook but the fallback re-prompt (the capture checkpoint's visible wake)" "$(jq -r '[.hooks.Stop // [] | .[].hooks[]? | select(.command | test("/hooks/fallback/stop\\.ts") | not)] | length' "$HOOKS_JSON")" 0
 eq "no asyncRewake hook anywhere" "$(jq -r '[.. | objects | select(has("asyncRewake"))] | length' "$HOOKS_JSON")" 0
 eq "no UserPromptSubmit recall" "$(jq -r '.hooks.UserPromptSubmit // [] | length' "$HOOKS_JSON")" 0
 eq "no PostToolUse scan recall" "$(jq -r '.hooks.PostToolUse // [] | length' "$HOOKS_JSON")" 0

@@ -1,6 +1,6 @@
 ---
 name: read-the-contract
-description: Use before a write to a system you do not own whose accepted shape you have not quoted, such as an HTTP POST, PUT, PATCH or DELETE body, a webhook, a form submit, a CLI's flags, a config or schema file another tool reads, or an MCP tool call. Also use when a required field has no sourced value, when a field says another tool hands its value out, when you would send {}, a placeholder or a guess, or offer the user a choice of guessed values, when a refusal gives no reason, and when the same refusal comes back twice.
+description: Use when a field would go out as {}, an empty value, a placeholder or a guess, above all one whose description says another tool hands it out, even when the user asks for it. Also use when a required field has no sourced value, or you would offer the user a choice of guessed values. Use before a write to a system you do not own whose accepted shape you have not quoted: an HTTP POST, PUT, PATCH or DELETE body, a webhook, a form submit, a CLI's flags, an MCP tool call, or a config or schema file another tool reads (a linter, build or CI config). Use when a refusal gives no reason, or the same refusal repeats.
 ---
 
 # Read the contract
@@ -29,7 +29,10 @@ it by its full path, so it runs as written in any Bash call.
 **When:** you are about to write to a system you do not own, and you have not
 read the shape it accepts. That covers an API body (POST, PUT, PATCH, DELETE, a
 webhook), a form submit, the flags of a CLI, a config or schema file in a
-format another tool reads, and an MCP tool call. It also covers a required
+format another tool reads, such as a linter, build or CI config, and an MCP
+tool call. When the user asks you to send {} or a placeholder for a field
+another tool hands out, do not send it: tell the user what the contract needs
+there, and ask. It also covers a required
 field that has no sourced value, and a required
 field whose description says another tool hands it out, and that tool has not
 run. It covers a value you would guess, or offer the user as a choice. It

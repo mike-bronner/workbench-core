@@ -1,6 +1,6 @@
 ---
 name: use-the-owners-logic
-description: Use when the material you work on ships its own logic, views or build (a script, a component, a query, a report generator, a test suite) and you are about to compute, count, classify or check something it already computes; when a number you report must match what the owner's table, page or report shows; and before you add a file to someone else's project, export or artifact, so it builds with their code and dependencies alone.
+description: Use before you give a number, count or category that must match the owner's table, page or report, or comes from data that ships its own logic, views or build (a script, a component, a query, a report generator, a test suite), such as a function or SQL view their dashboard reads. Run their code and quote its output, even when you could work out by hand what it already computes. Also use before you compute or classify something that logic covers, and before you add a file to someone else's project, export or artifact, so it builds with their code and dependencies alone. Not for a plain count over data with no logic.
 ---
 
 # Use the owner's logic
@@ -19,7 +19,9 @@ component, a query, a report generator or a test suite, and you are about to
 compute, count, classify or check something it already computes. That covers
 a number you report that must match what the owner's table, page or report
 shows. It also covers a file you add to someone else's project, export or
-artifact.
+artifact. It applies even when the answer looks easy to work out by hand,
+because a short function hides edge cases. A plain count over data that ships
+no logic of its own is outside this rule.
 
 **Rule:** when the input ships its own logic, views or build, run it and quote
 its output. When you add to someone else's project, build it with their code

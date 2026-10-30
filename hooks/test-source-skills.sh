@@ -185,11 +185,11 @@ echo "each skill fires on its own moments, and no other description claims them:
 description() { awk '/^---$/{c++; next} c==1' "$ROOT/skills/$1/SKILL.md" | sed -n 's/^description: //p'; }
 moments() {
   case "$1" in
-    read-the-contract) printf '%s\n' 'HTTP POST' 'PUT' 'PATCH' 'DELETE' 'webhook' 'form submit' "CLI's flags" 'config or schema file' 'MCP tool call' 'system you do not own' 'accepted shape' 'no sourced value' 'another tool hands' '{}' 'placeholder' 'a guess' 'offer the user a choice' 'refusal gives no reason' 'same refusal' ;;
+    read-the-contract) printf '%s\n' 'HTTP POST' 'PUT' 'PATCH' 'DELETE' 'webhook' 'form submit' "CLI's flags" 'config or schema file' 'MCP tool call' 'system you do not own' 'accepted shape' 'no sourced value' 'another tool hands' '{}' 'placeholder' 'a guess' 'offer the user a choice' 'refusal gives no reason' 'same refusal' 'empty value' 'even when the user asks for it' 'linter, build or CI config' ;;
     show-every-cut) printf '%s\n' 'shorten' 'summarize' 'condense' 'trim' 'paraphrase' 'rewrite' 'text a person gave' 'notes, a document, a post, a quote' 'character or word limit' 'word for word' ;;
     check-a-live-source) printf '%s\n' 'name or rely on' 'into code, a config, a commit or a reply' 'goes stale' 'from training' 'newest or latest model' 'model ID' 'library or tool version' 'price' 'limit or quota' 'release date' "product's current docs" ;;
-    use-the-owners-logic) printf '%s\n' 'compute' 'count' 'classify' 'add a file' "someone else's project" 'export or artifact' 'dependencies alone' 'ships its own logic, views or build' 'a script, a component, a query, a report generator, a test suite' 'already computes' "owner's table, page or report" ;;
-    recheck-before-done) printf '%s\n' 'a claim' 'a submit' 'a publish' 'a release' 'pull request marked ready' 'ticket closed' 'report work as done' 'send it out' 'read earlier in the session' 'keeps changing' 'is live' 'gets updated' ;;
+    use-the-owners-logic) printf '%s\n' 'compute' 'count' 'classify' 'add a file' "someone else's project" 'export or artifact' 'dependencies alone' 'ships its own logic, views or build' 'a script, a component, a query, a report generator, a test suite' 'already computes' "owner's table, page or report" 'SQL view' 'dashboard' 'work out by hand' ;;
+    recheck-before-done) printf '%s\n' 'submit, claim, publish, release or close' 'mark a pull request ready' 'report work as done' 'send it out' 'read earlier in the session' 'keeps changing' 'is live' 'gets updated' 'minutes or hours ago' 'its owner updates' 'Reread that source' ;;
   esac
 }
 for s in $SKILLS; do
@@ -271,7 +271,7 @@ for s in $SKILLS; do
     ok "$s names no person, course or credit"
   fi
 done
-if found="$(grep -rniE 'Mike|rook|MEGA|course|challenge' "$ROOT/evals")"; then
+if found="$(grep -rniE --exclude-dir=results 'Mike|rook|MEGA|course|challenge' "$ROOT/evals")"; then
   no "the evals name no person, course or credit" "$found"
 else
   ok "the evals name no person, course or credit"

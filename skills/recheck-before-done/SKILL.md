@@ -1,6 +1,6 @@
 ---
 name: recheck-before-done
-description: Use before you report work as done or send it out (a claim, a submit, a publish, a release, a pull request marked ready, a ticket closed), when that work rests on pages, files, downloads, tickets or messages read earlier in the session, or on a source the task says keeps changing, is live or gets updated.
+description: Use before you submit, claim, publish, release or close work, mark a pull request ready, or otherwise report work as done or send it out, when that work was built from a page, list, file, ticket or message read earlier in the session, minutes or hours ago. Above all, use it when its owner updates the source during the day, or the task says it keeps changing, is live or gets updated. Reread that source first, even when the schema is quoted and every value sourced.
 ---
 
 # Recheck before done
@@ -23,7 +23,8 @@ read. Use that list as the start of step 1.
 submit, a publish, a release, a pull request marked ready, or a ticket closed.
 The work rests on pages, files, downloads, tickets or messages you read
 earlier in the session, or on a source the task says keeps changing, is live,
-or gets updated.
+or gets updated. It applies even when the schema is quoted and every value has
+a source, because a correct call can still carry work that no longer matches.
 
 **Check:**
 

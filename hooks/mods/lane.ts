@@ -50,6 +50,16 @@ export const isAttendedPrompt = (origin: PromptOrigin, text: string): boolean =>
 export const isAttendedSession = (isInteractive: boolean, agent: string | undefined, pipeline: string | undefined): boolean =>
   isInteractive && !agent && pipeline !== '1'
 
+export type SessionHost = {
+  entrypoint: string | undefined
+  childSession: string | undefined
+  sessionKind: string | undefined
+  scheduledRun: string | undefined
+}
+
+export const isDesktopSession = (host: SessionHost): boolean =>
+  host.entrypoint === 'claude-desktop' && !host.childSession && !host.sessionKind && !host.scheduledRun
+
 // Who makes a call, from the agentId the call's event carries and the session's
 // CLAUDE_CODE_AGENT. A sub-agent's events carry agentId. A top-level
 // `claude -p --agent` run carries none, and is told apart by CLAUDE_CODE_AGENT.

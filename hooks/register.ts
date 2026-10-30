@@ -155,7 +155,7 @@ import {
 } from './mods/commit-approval'
 import { FAILED_REFUSAL, commitVerdict } from './mods/commit-guard'
 import { subjectVerdict } from './mods/commit-subject'
-import { isAttendedPrompt, isAttendedSession, isScheduledFire, laneOf } from './mods/lane'
+import { isAttendedPrompt, isAttendedSession, isDesktopSession, isScheduledFire, laneOf } from './mods/lane'
 import { bareSetRefusal, repairedNotice, runsGit } from './mods/false-bare'
 import { parseShell } from './mods/shell'
 import { callerKeyOf, freshnessOf, isMcpTool, isOutwardTool, isRepeated, isSubmitLine, readSourceOf, readsAfter, refusalTextOf, refusalsAfter, repeatReminderOf, sourcesRefusalOf } from './mods/outward'
@@ -559,19 +559,6 @@ async function showPane($: EngineInterface, content: PaneContent): Promise<void>
   await $.ui.open({ id: PANE, title: content.title })
 }
 
-// Whether the commit approval rule applies to a call: the main loop of an
-// interactive session, in any turn but a scheduled one. It reads the session
-// and the lane, never the question rule's turn reading: a peer, channel, SDK or
-// plugin turn in Mike's session is gated, because it carries outside text and
-// a deny, unlike a re-prompt, cannot loop. The exemptions are the lanes that
-// commit unattended by design:
-//   - a session nobody sits at (`claude -p`, the SDK, a top-level --agent run,
-//     WORKBENCH_DEV_TEAM_PIPELINE=1), from session.start; unknown before it,
-//     which is read as attended, the gate's side
-//   - the pipeline's flag, read here as well, so no lane answer can gate it
-//   - a sub-agent or top-level agent, from $.workbench.callerLane; a rejection
-//     is read as `main`, the gate's side
-//   - a turn a schedule opened (the origin, or the `<scheduled-task ` wrapper)
 async function isCommitGated($: EngineInterface, sessionAttended: boolean | undefined, agentId: string | undefined): Promise<boolean> {
   if (sessionAttended === false || (await $.env.get('WORKBENCH_DEV_TEAM_PIPELINE')) === '1') return false
   const lane = await $.workbench.callerLane(agentId === undefined ? {} : { agentId }).catch((): WorkbenchCallerLane => 'main')
@@ -1449,7 +1436,13 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     sectionsMemo = undefined
     agentName = await $.env.get('CLAUDE_CODE_AGENT')
-    sessionAttended = isAttendedSession(e.isInteractive, agentName, await $.env.get('WORKBENCH_DEV_TEAM_PIPELINE'))
+    const isDesktop = isDesktopSession({
+      entrypoint: await $.env.get('CLAUDE_CODE_ENTRYPOINT'),
+      childSession: await $.env.get('CLAUDE_CODE_CHILD_SESSION'),
+      sessionKind: await $.env.get('CLAUDE_CODE_SESSION_KIND'),
+      scheduledRun: await $.env.get('CLAUDE_CODE_HOST_SCHEDULED_RUN'),
+    })
+    sessionAttended = isAttendedSession(e.isInteractive || isDesktop, agentName, await $.env.get('WORKBENCH_DEV_TEAM_PIPELINE'))
     const { value: startedAt } = await $.state.get(STARTED_AT)
     if (startedAt === undefined) await $.state.set(STARTED_AT, await $.clock.now())
     for (const command of COMMANDS) await $.command.register(command)

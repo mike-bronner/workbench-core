@@ -90,7 +90,11 @@ const runsOrWrites = (s: Statement): boolean =>
   (s.name === 'sort' && !s.args.every(arg => SORT_ARG.test(arg))) ||
   (s.name === 'uniq' && s.args.filter(arg => !/^-./.test(arg)).length > 1)
 
-const isReader = (s: Statement): boolean => (READERS.has(s.name) && !runsOrWrites(s)) || isEditOnly(s)
+const isLoopHead = (s: Statement): boolean =>
+  s.name === 'for' && s.words[s.nameAt] === 'for' && s.assignments.length === 0 && s.wrappers.length === 0 &&
+  /^[A-Za-z_]\w*$/.test(s.args[0] ?? '') && (s.args.length === 1 || s.args[1] === 'in')
+
+const isReader = (s: Statement): boolean => (READERS.has(s.name) && !runsOrWrites(s)) || isEditOnly(s) || isLoopHead(s)
 
 const runsNothing = (s: Statement): boolean =>
   s.nameAt >= 0 &&

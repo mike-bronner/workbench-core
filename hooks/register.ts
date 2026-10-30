@@ -100,6 +100,7 @@ import {
 } from './mods/cache-meter'
 import type { Action, ApiWrite, AskFacts, Commit, Gated, Head, Pick, Refs, RequestedCall } from './mods/commit-approval'
 import {
+  AGENT_CONFIG_MERGE_REFUSAL,
   AGENT_MERGE_REFUSAL,
   AGENT_RELEASE_REFUSAL,
   ALIAS_REFUSAL,
@@ -131,6 +132,7 @@ import {
   rewritesAt,
   rewritesOf,
   bundleRefusalOf,
+  configuredMergesOf,
   dirOf,
   headsOf,
   isDefaultBranch,
@@ -1604,7 +1606,9 @@ export const register: Register = on => {
       const apiWrites = apiWritesOf(e.command)
       const apiIntoDefault = apiWrites.length === 0 ? 0 : await apiWritesIntoDefault($, apiWrites)
       if (!(await isCommitGated($, sessionAttended, e.agentId))) {
-        if ((await mergesIntoDefault($, mergesOf(e.command).local)) > 0) return { deny: AGENT_MERGE_REFUSAL }
+        if ((await mergesIntoDefault($, mergesOf(e.command).local)) > 0) {
+          return { deny: (await mergesIntoDefault($, configuredMergesOf(e.command))) > 0 ? AGENT_CONFIG_MERGE_REFUSAL : AGENT_MERGE_REFUSAL }
+        }
         if (rewrites > 0 && !(await isPipelineRewrite($, e.command, e.agentId))) return { deny: REWRITE_REFUSAL }
         if (aliases > 0) return { deny: ALIAS_REFUSAL }
         if (apiIntoDefault > 0) return { deny: API_WRITE_REFUSAL }

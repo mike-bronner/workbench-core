@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
+import { AGENT_MERGE_REFUSAL, mergesOf } from '../hooks/mods/commit-approval'
 import type { Caller } from '../hooks/mods/commit-guard'
 import { BUILT_REFUSAL, FAILED_REFUSAL, FORCE_REFUSAL, MERGE_REFUSAL, PLAIN_REFUSAL, SUBAGENT_REFUSAL, commitVerdict, isReadOnlyPipeline } from '../hooks/mods/commit-guard'
 import { subjectVerdict } from '../hooks/mods/commit-subject'
@@ -249,6 +250,76 @@ describe('the commit guard: a grep or rg host hides nothing that runs or writes'
     expect(verdictOf('gh api repos/o/r/pulls/5/commits', CALLERS['sub-agent'])).toBeUndefined()
     expect(verdictOf('gh api repos/o/r/merges-report', CALLERS['sub-agent'])).toBeUndefined()
   })
+})
+
+const LOOP_READ = "for s in /a/*/stream.jsonl; do jq -r '.x' $s | grep -cE '(curl|git push)( |$)'; done"
+
+describe('the commit guard: a for loop whose body only reads is judged as a read', () => {
+  for (const line of [
+    LOOP_READ,
+    "for s; do grep -n 'git commit' \"$s\"; done",
+    "for f in a.ts b.ts; do grep -c 'gh pr merge' \"$f\" | sort -rn; done",
+    "for s in /a/*/stream.jsonl; do cat \"$s\" | grep -c 'git push'; done",
+  ]) {
+    test(`every lane: ${JSON.stringify(line)}`, () => {
+      for (const lane of LANES) expect([lane, verdictOf(line, CALLERS[lane])]).toEqual([lane, undefined])
+    })
+  }
+
+  test('the refused line passes for a sub-agent in the hooks module', async ($, on) => {
+    const b = bench(on)
+    await $.session.start(start())
+    await $.prompt.submit({ text: 'delegate it', wait: false, origin: PERSON })
+    expect(await refusalOf($, b, LOOP_READ, 'a1')).toBeUndefined()
+  })
+
+  for (const [line, refusal] of [
+    ['for s in a b; do git commit -m "$s"; done', SUBAGENT_REFUSAL],
+    ['for s in a b; do git push origin "$s"; done', SUBAGENT_REFUSAL],
+    ['for p in 1 2; do gh pr merge "$p"; done', MERGE_REFUSAL],
+  ] as const) {
+    test(`a loop body that commits, pushes or merges stays refused for a sub-agent: ${JSON.stringify(line)}`, () => {
+      expect(verdictOf(line, CALLERS['sub-agent'])).toEqual(refusal)
+    })
+  }
+
+  for (const [line, refusal] of [
+    ["for s in a; do python3 -c 'print(\"git push\")'; done", SUBAGENT_REFUSAL],
+    ["for s in a; do node x.js | grep 'git push'; done", SUBAGENT_REFUSAL],
+    ["for s in a; do jq . \"$s\" | grep 'git push' | bash; done", SUBAGENT_REFUSAL],
+    ["for s in a; do jq -r .x \"$s\" | sh; done", BUILT_REFUSAL],
+    ['for s in a; do "$CMD" push; done', SUBAGENT_REFUSAL],
+    ['for s in a; do echo "$(git push)"; done', SUBAGENT_REFUSAL],
+    ['for s in $(git push); do echo "$s"; done', SUBAGENT_REFUSAL],
+    ["for ((i = 0; i < 1; i++)); do grep 'git push' f; done", SUBAGENT_REFUSAL],
+    ["for s in a; do grep 'git push' \"$s; done", SUBAGENT_REFUSAL],
+    ["for s bogus; do grep -n 'git push' f; done", SUBAGENT_REFUSAL],
+  ] as const) {
+    test(`a loop body that runs anything else, or that the guard cannot read, and a head that is not a plain for NAME in, stay refused for a sub-agent: ${JSON.stringify(line)}`, () => {
+      expect(verdictOf(line, CALLERS['sub-agent'])).toEqual(refusal)
+    })
+  }
+
+  for (const line of ['for ((i=0;i<1;i++)); do grep x f; done', 'for s bogus; do grep -n x f; done']) {
+    test(`a loop that names no commit, push or merge passes, whatever its head: ${JSON.stringify(line)}`, () => {
+      expect(verdictOf(line, CALLERS['sub-agent'])).toBeUndefined()
+    })
+  }
+
+  for (const line of ['for s in a b; do git pull; done', 'for s in a b; do git merge "$s"; done']) {
+    test(`the commit guard leaves a local pull or merge in a loop to the merge gate: ${JSON.stringify(line)}`, () => {
+      expect(verdictOf(line, CALLERS['sub-agent'])).toBeUndefined()
+      expect(mergesOf(line).local).toEqual([''])
+    })
+
+    test(`a loop body that pulls or merges on the default branch stays refused for a sub-agent: ${JSON.stringify(line)}`, async ($, on) => {
+      const b = bench(on)
+      b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'main', originHead: 'main' }
+      await $.session.start(start())
+      await $.prompt.submit({ text: 'delegate it', wait: false, origin: PERSON })
+      expect(await refusalOf($, b, line, 'a1')).toBe(AGENT_MERGE_REFUSAL)
+    })
+  }
 })
 
 describe('the commit guard in the hooks module: each lane reaches it', () => {

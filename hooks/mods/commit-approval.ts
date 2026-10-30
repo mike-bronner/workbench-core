@@ -114,6 +114,16 @@ export const AGENT_MERGE_REFUSAL =
   'lands is Mike\'s choice. Report that the branch is ready, and leave the merge ' +
   'to his session. Merging the default branch into a feature branch is not refused.'
 
+export const AGENT_CONFIG_MERGE_REFUSAL =
+  'This git command was refused: it runs under a GIT_CONFIG_* variable that can ' +
+  'add git configuration, such as GIT_CONFIG_GLOBAL or GIT_CONFIG_SYSTEM naming a ' +
+  'file, GIT_CONFIG_COUNT with GIT_CONFIG_KEY_n and GIT_CONFIG_VALUE_n, or ' +
+  'GIT_CONFIG_PARAMETERS. That configuration can define an alias that merges or ' +
+  'pulls, and the gate cannot read it. A sub-agent, an --agent run or a turn ' +
+  'nobody attends does not merge into the default branch. Run the git command ' +
+  'without that variable. GIT_CONFIG_NOSYSTEM, and GIT_CONFIG_GLOBAL or ' +
+  'GIT_CONFIG_SYSTEM set to /dev/null, only remove configuration and are not refused.'
+
 export const RELEASE_REFUSAL =
   'This release was refused: nobody can approve it here. A prompt of Mike\'s own ' +
   'that asks for a release approves one, for the turn it opened, and so does his ' +
@@ -607,11 +617,16 @@ export function bindingRefusalOf(pick: Pick, top: string | undefined, ref: strin
 }
 
 const SHELL_ALIAS = '!'
-const CONFIGURED = /(^|[^A-Za-z0-9_])GIT_CONFIG\w*=/
+const CONFIGURED = /(?<![A-Za-z0-9_])GIT_CONFIG\w*=/g
+const REMOVES_ONLY = /^(?:GIT_CONFIG_NOSYSTEM=\w*|GIT_CONFIG_(?:GLOBAL|SYSTEM)=\/dev\/null)(?=[\s;&|)]|$)/
+
+const isConfigured = (st: ShellStatement, line: string): boolean =>
+  [...line.matchAll(CONFIGURED)].some(match => !REMOVES_ONLY.test(line.slice(match.index))) ||
+  st.assignments.some(assignment => /^GIT_CONFIG\w*=/.test(assignment) && !REMOVES_ONLY.test(assignment))
 
 export function gitSubOf(st: ShellStatement, line = ''): string | undefined {
   if (st.name !== 'git' || st.subcommandAt < 0) return undefined
-  if (CONFIGURED.test(line) || st.assignments.some(assignment => /^GIT_CONFIG\w*=/.test(assignment))) return SHELL_ALIAS
+  if (isConfigured(st, line)) return SHELL_ALIAS
   const sub = (st.args[st.subcommandAt] ?? '').toLowerCase()
   const globals = st.args.slice(0, st.subcommandAt)
   for (let i = 0; i < globals.length; i++) {
@@ -912,13 +927,24 @@ const mergeDirOf = (st: ShellStatement, isPlaced: boolean): string | null => {
   return dir.startsWith('/') && !/[$`]/.test(dir) && !hasDotStep(dir) ? dir : null
 }
 
+const mergingOf = (statements: readonly ShellStatement[], line: string): ShellStatement[] =>
+  statements
+    .filter(st => ['merge', 'pull', SHELL_ALIAS].includes(gitSubOf(st, line) ?? ''))
+    .filter(st => !restOf(st).some(arg => MERGE_STOPS.has(arg)))
+
+export function configuredMergesOf(line: string): (string | null)[] {
+  const parse = parseShell(line)
+  const isPlaced = isPlacedLine(line, parse.statements)
+  return mergingOf(parse.statements, line)
+    .filter(st => isConfigured(st, line))
+    .map(st => mergeDirOf(st, isPlaced))
+}
+
 export function mergesOf(line: string): Merges {
   const parse = parseShell(line)
   const isPlaced = isPlacedLine(line, parse.statements)
   const isRemoteChanged = parse.statements.some(st => gitSubOf(st, line) === 'remote' && REMOTE_CHANGES.has(restOf(st)[0] ?? ''))
-  const merging = parse.statements
-    .filter(st => ['merge', 'pull', SHELL_ALIAS].includes(gitSubOf(st, line) ?? ''))
-    .filter(st => !restOf(st).some(arg => MERGE_STOPS.has(arg)))
+  const merging = mergingOf(parse.statements, line)
   const prs = parse.statements.map(prTargetOf).filter((target): target is MergeTarget => target !== undefined)
   const hidden = prs.length === 0 && findOps(parse, line).ops.has('merge') ? [{ refs: [] }] : []
   return {

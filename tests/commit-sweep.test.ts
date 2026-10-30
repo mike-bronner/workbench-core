@@ -3,6 +3,8 @@ import type { Engine } from 'claude-code/testing'
 import type { PromptOrigin } from 'claude-code'
 
 import {
+  AGENT_CONFIG_MERGE_REFUSAL,
+  AGENT_MERGE_REFUSAL,
   AGENT_RELEASE_REFUSAL,
   API_WRITE_REFUSAL,
   MOVE_REFUSAL,
@@ -10,6 +12,7 @@ import {
   REWRITE_REFUSAL,
   apiWritesOf,
   askRefusalOf,
+  configuredMergesOf,
   leftOutRefusal,
   mergesOf,
   movesHead,
@@ -172,6 +175,113 @@ describe('finding 4: an alias set through GIT_CONFIG_* is read as unknown', () =
       expect(await bash($, b, line)).toBeDefined()
     })
   }
+})
+
+const REMOVES_CONFIG = [
+  'env GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git config --show-origin --list',
+  'env GIT_CONFIG_SYSTEM=/dev/null git config --show-origin --list',
+  'env GIT_CONFIG_NOSYSTEM=1 git config --show-origin --list',
+  'GIT_CONFIG_GLOBAL=/dev/null git config --list',
+]
+
+const ADDS_CONFIG = [
+  'GIT_CONFIG_GLOBAL=/tmp/x.cfg git config --list',
+  'env GIT_CONFIG_SYSTEM=/etc/gitconfig git config --list',
+  'GIT_CONFIG_SYSTEM=/dev/nullx git config --list',
+  'GIT_CONFIG_GLOBAL="/dev/null" git config --list',
+  'GIT_CONFIG_NOSYSTEM=1;GIT_CONFIG_GLOBAL=/tmp/x.cfg git config --list',
+  'GIT_CONFIG_NOSYSTEM=$(cat f) git config --list',
+  'GIT_CONFIG_COUNT=1 git config --list',
+  'GIT_CONFIG_KEY_0=alias.m git config --list',
+  'GIT_CONFIG_VALUE_0=merge git config --list',
+  'GIT_CONFIG_PARAMETERS="\'alias.m=merge\'" git config --list',
+  'GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.m GIT_CONFIG_VALUE_0=merge git config --list',
+  'export GIT_CONFIG_GLOBAL=/tmp/x.cfg; git config --list',
+]
+
+const CONFIG_PULL = 'GIT_CONFIG_GLOBAL=/tmp/x.cfg git pull'
+const ALIAS_MERGE = 'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.m GIT_CONFIG_VALUE_0=merge git m feat'
+
+describe('a GIT_CONFIG_* variable that only removes configuration is not read as an alias', () => {
+  test('the reader: NOSYSTEM, and GLOBAL or SYSTEM set to /dev/null, leave the git statement as it is', () => {
+    for (const line of REMOVES_CONFIG) {
+      expect([line, mergesOf(line), configuredMergesOf(line), rewritesOf(line), movesHead(line)]).toEqual([line, { local: [], pr: 0, targets: [] }, [], 0, false])
+    }
+    expect(mergesOf('env GIT_CONFIG_GLOBAL=/dev/null git merge feat')).toEqual({ local: [''], pr: 0, targets: [{ refs: ['feat'] }] })
+  })
+
+  test('the reader: a variable that can add configuration is still read as an unknown alias', () => {
+    for (const line of ADDS_CONFIG) {
+      expect([line, mergesOf(line).local, configuredMergesOf(line), rewritesOf(line), movesHead(line)]).toEqual([line, [null], [null], 1, true])
+    }
+  })
+
+  for (const line of REMOVES_CONFIG) {
+    test(`a sub-agent runs it: ${JSON.stringify(line)}`, async ($, on) => {
+      const b = await subAgent($, on)
+      expect(await bash($, b, line, 'a1')).toBeUndefined()
+    })
+  }
+
+  for (const line of ADDS_CONFIG) {
+    test(`a sub-agent is refused it, and the refusal names the configuration: ${JSON.stringify(line)}`, async ($, on) => {
+      const b = await subAgent($, on)
+      expect(await bash($, b, line, 'a1')).toBe(AGENT_CONFIG_MERGE_REFUSAL)
+    })
+  }
+
+  test('a sub-agent\'s merge on the default branch keeps the default-branch refusal', async ($, on) => {
+    const b = await subAgent($, on)
+    b.repos['/repo'] = { ...FEATURE, branch: 'main' }
+    expect(await bash($, b, 'git merge fix/x', 'a1')).toBe(AGENT_MERGE_REFUSAL)
+    expect(await bash($, b, 'env GIT_CONFIG_GLOBAL=/dev/null git merge fix/x', 'a1')).toBe(AGENT_MERGE_REFUSAL)
+    expect(await bash($, b, 'GIT_CONFIG_GLOBAL=/tmp/x.cfg git config --list', 'a1')).toBe(AGENT_CONFIG_MERGE_REFUSAL)
+  })
+
+  test('the reader: a pull, an alias merge and an escaped variable name under added configuration are configured merges', () => {
+    for (const line of [CONFIG_PULL, ALIAS_MERGE, 'env GIT_CONFIG_\\COUNT=1 git m', 'env GIT_CONFIG_\\COUNT=1 git config --list']) {
+      expect([line, mergesOf(line).local, configuredMergesOf(line)]).toEqual([line, [null], [null]])
+    }
+  })
+
+  for (const branch of ['feat', 'main']) {
+    test(`on ${branch}, a sub-agent's pull under added configuration gets the configuration refusal`, async ($, on) => {
+      const b = await subAgent($, on)
+      b.repos['/repo'] = { ...FEATURE, branch }
+      expect(await bash($, b, CONFIG_PULL, 'a1')).toBe(AGENT_CONFIG_MERGE_REFUSAL)
+    })
+
+    test(`on ${branch}, a sub-agent's alias merge under GIT_CONFIG_COUNT is refused first by the destructive-scope guard`, async ($, on) => {
+      const b = await subAgent($, on)
+      b.repos['/repo'] = { ...FEATURE, branch }
+      expect(await bash($, b, ALIAS_MERGE, 'a1')).toContain('Destructive-scope guard (workbench-core)')
+    })
+  }
+
+  test('a line with added configuration beside a plain merge on main gets the configuration refusal', async ($, on) => {
+    const b = await subAgent($, on)
+    b.repos['/repo'] = { ...FEATURE, branch: 'main' }
+    expect(await bash($, b, 'GIT_CONFIG_GLOBAL=/tmp/x.cfg git config --list; git merge fix/x', 'a1')).toBe(AGENT_CONFIG_MERGE_REFUSAL)
+  })
+
+  test('an escaped GIT_CONFIG_* name is still read as added configuration', async ($, on) => {
+    const b = await subAgent($, on)
+    expect(await bash($, b, 'env GIT_CONFIG_\\COUNT=1 git config --list', 'a1')).toBe(AGENT_CONFIG_MERGE_REFUSAL)
+    expect(await bash($, b, 'env GIT_CONFIG_\\COUNT=1 git m', 'a1')).toBeDefined()
+  })
+
+  test('the pipeline gets the configuration refusal', async ($, on) => {
+    const b = await pipeline($, on)
+    expect(await bash($, b, CONFIG_PULL)).toBe(AGENT_CONFIG_MERGE_REFUSAL)
+  })
+
+  test('a scheduled turn gets the configuration refusal', async ($, on) => {
+    const b = bench(on)
+    b.repos['/repo'] = { ...FEATURE }
+    await $.session.start(start())
+    await $.prompt.submit(prompt('run the tick', { kind: 'scheduled-trigger' }))
+    expect(await bash($, b, 'GIT_CONFIG_COUNT=1 git config --list')).toBe(AGENT_CONFIG_MERGE_REFUSAL)
+  })
 })
 
 const DEFAULT_WRITES = [

@@ -46,7 +46,7 @@ const GIT: Record<string, string> = {
   'worktree list --porcelain': 'worktree /repo\nHEAD c9\nbranch refs/heads/main',
 }
 
-function project(b: Bench): Bench {
+function project(b: Bench, git: Record<string, string> = GIT): Bench {
   b.run = argv => {
     const [program = '', a = '', c = '', d = ''] = argv
     if (program === 'bash' && a.endsWith('/scope-facts.sh')) {
@@ -59,7 +59,7 @@ function project(b: Bench): Bench {
       const repo = REPOS[c]
       return repo === undefined ? { exitCode: 128, stdout: '' } : { exitCode: 0, stdout: `${repo.top}\n${repo.common}\n` }
     }
-    const answer = GIT[argv.slice(3).join(' ')]
+    const answer = git[argv.slice(3).join(' ')]
     return answer === undefined ? (argv[3] === 'status' ? undefined : { exitCode: 1, stdout: '' }) : { exitCode: 0, stdout: `${answer}\n` }
   }
   return b
@@ -330,6 +330,50 @@ describe('AC3: a prompt Mike types approves the actions it names, for that turn'
     project(await typed($, on, 'commit and push'))
     expect(await asked($, 'git push origin main')).toEqual(ALLOW)
     expect(await asked($, 'git push origin 0.49.0')).toBeUndefined()
+  })
+
+  const NEW_BRANCH: Record<string, string> = {
+    'symbolic-ref --short -q HEAD': 'fix-oom',
+    'symbolic-ref -q HEAD': 'refs/heads/fix-oom',
+    'rev-parse --show-toplevel': '/repo',
+    'for-each-ref --format=%(refname) %(upstream:remotename) refs/heads': 'refs/heads/production origin\nrefs/heads/fix-oom \nrefs/heads/old origin',
+  }
+  const ORIGIN_HEAD = { 'symbolic-ref -q refs/remotes/origin/HEAD': 'refs/remotes/origin/production' }
+  const pushes = async ($: Engine) => ({ origin: await asked($, 'git push origin fix-oom'), GeneaLabs: await asked($, 'git push GeneaLabs fix-oom') })
+
+  test('a first push of a branch with no upstream is answered for the remote the default branch tracks, and no other', async ($, on) => {
+    project(await typed($, on, 'commit and push'), { ...NEW_BRANCH, ...ORIGIN_HEAD, 'for-each-ref --format=%(refname) %(upstream:remotename) refs/heads': 'refs/heads/production origin\nrefs/heads/fix-oom \nrefs/heads/old GeneaLabs' })
+    expect(await pushes($)).toEqual({ origin: ALLOW, GeneaLabs: undefined })
+  })
+
+  test('with no origin/HEAD, a first push is answered when every branch with an upstream tracks that one remote', async ($, on) => {
+    project(await typed($, on, 'commit and push'), NEW_BRANCH)
+    expect(await pushes($)).toEqual({ origin: ALLOW, GeneaLabs: undefined })
+  })
+
+  test('with no origin/HEAD and branches that track different remotes, a first push gets the dialog', async ($, on) => {
+    project(await typed($, on, 'commit and push'), { ...NEW_BRANCH, 'for-each-ref --format=%(refname) %(upstream:remotename) refs/heads': 'refs/heads/production origin\nrefs/heads/fix-oom \nrefs/heads/old GeneaLabs' })
+    expect(await pushes($)).toEqual({ origin: undefined, GeneaLabs: undefined })
+  })
+
+  test('a first push gets the dialog when the default branch has no upstream either', async ($, on) => {
+    project(await typed($, on, 'commit and push'), { ...NEW_BRANCH, ...ORIGIN_HEAD, 'for-each-ref --format=%(refname) %(upstream:remotename) refs/heads': 'refs/heads/production \nrefs/heads/fix-oom \nrefs/heads/old origin' })
+    expect(await pushes($)).toEqual({ origin: undefined, GeneaLabs: undefined })
+  })
+
+  test('a first push names the current branch only', async ($, on) => {
+    project(await typed($, on, 'commit and push'), { ...NEW_BRANCH, ...ORIGIN_HEAD })
+    expect(await asked($, 'git push origin production')).toBeUndefined()
+  })
+
+  test('a branch with an upstream is answered for its upstream remote only, not the remote the default branch tracks', async ($, on) => {
+    project(await typed($, on, 'commit and push'), { ...NEW_BRANCH, ...ORIGIN_HEAD, 'config --get branch.fix-oom.remote': 'GeneaLabs' })
+    expect(await pushes($)).toEqual({ origin: undefined, GeneaLabs: ALLOW })
+  })
+
+  test('a push the turn did not approve gets the dialog for a branch with no upstream', async ($, on) => {
+    project(await typed($, on, 'commit it'), { ...NEW_BRANCH, ...ORIGIN_HEAD })
+    expect(await pushes($)).toEqual({ origin: undefined, GeneaLabs: undefined })
   })
 
   test('a decision from a settings hook beneath stands', async ($, on) => {

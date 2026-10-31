@@ -691,11 +691,18 @@ async function isApprovedCall($: EngineInterface, call: RequestedCall, request: 
       .run(['git', '-C', dir, ...args], { timeoutMs: 10_000 })
       .then(({ exitCode, stdout }) => (exitCode === 0 && stdout.trim() !== '' ? stdout.trim() : undefined), () => undefined)
   const branch = await git(['symbolic-ref', '--short', '-q', 'HEAD'])
-  if (branch === undefined || call.remote !== (await git(['config', '--get', `branch.${branch}.remote`]))) return false
+  if (branch === undefined || call.remote !== ((await git(['config', '--get', `branch.${branch}.remote`])) ?? (await defaultRemoteOf(git)))) return false
   if (call.ref === branch || call.ref === `refs/heads/${branch}`) return true
   if (!request.includes('release')) return false
   const tagged = await git(['rev-parse', '--verify', '-q', `refs/tags/${call.ref.replace(/^refs\/tags\//, '')}^{commit}`])
   return tagged !== undefined && tagged === (await git(['rev-parse', '--verify', '-q', 'HEAD']))
+}
+
+async function defaultRemoteOf(git: (args: string[]) => Promise<string | undefined>): Promise<string | undefined> {
+  const originHead = await git(['symbolic-ref', '-q', 'refs/remotes/origin/HEAD'])
+  const rows = ((await git(['for-each-ref', '--format=%(refname) %(upstream:remotename)', 'refs/heads'])) ?? '').split('\n')
+  const remotes = new Set(rows.map(row => row.split(' ')).flatMap(([ref = '', remote = '']) => (remote !== '' && isDefaultBranch(ref, originHead) ? [remote] : [])))
+  return remotes.size === 1 ? [...remotes][0] : undefined
 }
 
 async function projectDirOf($: EngineInterface, path: string): Promise<string | undefined> {

@@ -16,7 +16,7 @@
 # assets/personas/clear/output-style.md and nowhere a session loads. Three
 # checks carry that:
 #
-#   1. The source holds the approved rule set: twelve numbered rules, three
+#   1. The source holds the approved rule set: the numbered rules, three
 #      habits of shape, and the verify line. Each keeps the anchor that makes it
 #      that rule.
 #   2. The source obeys its own register. A literal model imitates the text it
@@ -51,10 +51,10 @@ has() { # desc, extended-regex
 # ── 1. The approved rule set ─────────────────────────────────────────────────
 echo "the output style carries the approved rule set:"
 RULE_COUNT="$(printf '%s\n' "$BODY" | grep -cE '^[0-9]+\. \*\*')"
-if [ "$RULE_COUNT" -eq 12 ]; then
-  ok "exactly twelve numbered rules"
+if [ "$RULE_COUNT" -eq 13 ]; then
+  ok "exactly thirteen numbered rules"
 else
-  no "exactly twelve numbered rules" "found $RULE_COUNT"
+  no "exactly thirteen numbered rules" "found $RULE_COUNT"
 fi
 has "verify before asserting is stated"             'Verify before you assert'
 has "rule 1 leads with the answer"                  '1\. \*\*Lead with the answer'
@@ -141,6 +141,16 @@ has "rule 12 bans pointing at text not restated"    'Never refer to earlier text
 has "rule 12 bans pointing at an unseen file"       'Never point at a file for content the reply does not show'
 has "rule 12 shows a proposed commit message"       'Show a proposed commit message or body in the reply itself, not the name of the scratch file that holds it'
 has "rule 12 keeps a path Mike acts on"             'A path still fits as a location Mike acts on'
+has "rule 13 holds one point of view"                 '13\. \*\*Hold one point of view in a reply'
+has "rule 13 fixes I and you in a reply"              'In a terminal reply, "I" means you, the agent, and "you" means Mike'
+has "rule 13 bans Mike or he for the addressee"       'Never call him "Mike" or "he" while you address him'
+has "rule 13 bans you for the agent"                  'Never use "you" for yourself'
+has "rule 13 re-voices relayed text"                  'Hook text, skill text and sub-agent reports each speak from their own point of view. Re-voice each one before you pass it on'
+has "rule 13 credits another agent by name"           'Credit work another agent did to that agent by name'
+has "rule 13 bans we and names the actor"             'Do not use "we" in a reply, because it hides who acted. Name the actor instead'
+has "rule 13 keeps I out of outward prose"            'Outward prose, such as a pull request, an issue, a commit or a message, avoids "I". Use neutral phrasing there'
+has "rule 13 keeps rule 10"                           'That keeps rule 10'
+has "rule 13 anchors with a right and wrong pair"     'Wrong: "I fixed the gate, so Mike can merge\." Right: "Watson fixed the gate, so you can merge\."'
 has "the table habit is stated"                     'three or more comparable items in a table'
 has "the caveat habit is stated, and is not a hedge" 'honest caveat.{0,80}It is not a hedge'
 has "the synthesis habit is stated"                 'Synthesize sub-agent output'

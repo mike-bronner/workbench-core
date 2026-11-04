@@ -6,7 +6,6 @@ import {
   ASKS_NOTHING,
   ASKS_USER,
   CONTEXT_ITEM,
-  POINTED_TABLE_ITEM,
   RECOMMENDATION_ITEM,
   REPROMPT_REASON,
   aboveOf,
@@ -15,6 +14,7 @@ import {
   idsItem,
   isSelfContained,
   notificationForwards,
+  pointedTableItem,
   proseOf,
   questionRefusalOf,
   shownTextOf,
@@ -563,7 +563,7 @@ describe('AC2: a question that names options the reply does not show is refused'
     ['a question that names an option', decision([{ label: 'Yes', description: 'go' }, { label: 'No', description: 'stop' }], "Go with Watson's option 2?"), [idsItem(['2']), tableItem(1)]],
     ['a label that combines letters', decision([{ label: 'B + A stopgap', description: 'both' }, { label: 'Patch the lexer', description: 'small' }]), [idsItem(['B', 'A'])]],
     ['a description that names options', decision([{ label: 'Ship the fix', description: 'Same as options A and C' }, { label: 'Hold it', description: 'wait' }]), [idsItem(['A', 'C'])]],
-    ['a pointer at a table', decision([{ label: 'Ship the fix', description: 'The first row of the table above' }, { label: 'Hold it', description: 'wait' }]), [POINTED_TABLE_ITEM]],
+    ['a pointer at a table', decision([{ label: 'Ship the fix', description: 'The first row of the table above' }, { label: 'Hold it', description: 'wait' }]), [pointedTableItem('the table above')]],
     ['a pointer at the grades', decision([{ label: 'Ship the fix', description: 'Best of the grades, as graded' }, { label: 'Hold it', description: 'wait' }]), [tableItem(1)]],
     ["a pointer at a sub-agent's proposal", decision([{ label: 'Ship the fix', description: "Watson's proposal" }, { label: 'Hold it', description: 'wait' }]), [tableItem(1)]],
   ] as const) {
@@ -813,6 +813,7 @@ describe('AC1: a question that carries what Mike needs runs with no prose above 
     const one = (label: string, description: unknown) => [{ question: 'How?', options: [{ label: 'Patch the lexer', description: 'All met.' }, { label, description }] }]
     expect(isSelfContained(SELF_CONTAINED.questions)).toBe(true)
     expect(isSelfContained(one('New tokenizer', 'AC2 partly met.'))).toBe(true)
+    expect(isSelfContained(one('New tokenizer', 'Reads the users table. AC2 partly met.'))).toBe(true)
     for (const [why, questions] of [
       ['a letter label', one('B', 'AC2 partly met.')],
       ['an "Option 2" label', one('Option 2', 'AC2 partly met.')],
@@ -822,6 +823,7 @@ describe('AC1: a question that carries what Mike needs runs with no prose above 
       ['a pointer at an option', one('New tokenizer', 'Same as option B. AC2 partly met.')],
       ['a pointer at a table', one('New tokenizer', 'Row two of the table above. AC2 partly met.')],
       ['a pointer at the grades', one('New tokenizer', "Watson's proposal. AC2 partly met.")],
+      ['a pointer at the options table', one('New tokenizer', 'Second in the options table. AC2 partly met.')],
       ['no options', [{ question: 'What name?', options: [] }]],
       ['no questions', []],
       ['malformed input', undefined],
@@ -880,7 +882,7 @@ describe('AC3: the 2026-10-23 shape runs when its context, table and recommendat
 const PROVIDES: readonly [string, string][] = [
   [CONTEXT_ITEM, 'Watson finished the parser work.'],
   [RECOMMENDATION_ITEM, 'I recommend A (all met).'],
-  [POINTED_TABLE_ITEM, TABLE],
+  [pointedTableItem('the table above'), TABLE],
   [tableItem(1), TABLE],
   [tableItem(2), TABLE],
   [tableItem(3), TABLE],
@@ -891,6 +893,7 @@ const PROVIDES: readonly [string, string][] = [
 
 describe('AC4: one refusal per call names exactly what to add, and adding it is enough', () => {
   const T3 = tableItem(3)
+  const ABOVE = pointedTableItem('the table above')
   const REC = RECOMMENDATION_ITEM
   const PARTIALS = ['', 'Some context.', TABLE.split('\n').slice(0, 3).join('\n'), 'I recommend the first.'] as const
   type Items = readonly string[] | undefined
@@ -899,14 +902,14 @@ describe('AC4: one refusal per call names exactly what to add, and adding it is 
     ['a two-option question', ASK, true, [[CONTEXT_ITEM], undefined, undefined, undefined]],
     ['a letter label', decision([{ label: 'B', description: 'the tokenizer' }, { label: 'Patch the lexer', description: 'small' }]), true, [[idsItem(['B'])], [idsItem(['B'])], [idsItem(['B'])], [idsItem(['B'])]]],
     ['combined letters', decision([{ label: 'B + A stopgap', description: 'both' }, { label: 'Patch the lexer', description: 'small' }]), true, [[idsItem(['B', 'A'])], [idsItem(['B', 'A'])], [idsItem(['B', 'A'])], [idsItem(['B', 'A'])]]],
-    ['a pointer at a table', decision([{ label: 'Ship the fix', description: 'The first row of the table above' }, { label: 'Hold it', description: 'wait' }]), true, [[POINTED_TABLE_ITEM], [POINTED_TABLE_ITEM], [POINTED_TABLE_ITEM], [POINTED_TABLE_ITEM]]],
+    ['a pointer at a table', decision([{ label: 'Ship the fix', description: 'The first row of the table above' }, { label: 'Hold it', description: 'wait' }]), true, [[ABOVE], [ABOVE], [ABOVE], [ABOVE]]],
     ['a pointer at the grades', decision([{ label: 'Ship the fix', description: "Watson's proposal" }, { label: 'Hold it', description: 'wait' }]), true, [[tableItem(1)], [tableItem(1)], [tableItem(1)], [tableItem(1)]]],
     ['the incident call', INCIDENT, true, [[T3, REC], [T3, REC], [T3, REC], [T3]]],
     ['an ungraded decision', UNGRADED, false, [undefined, undefined, undefined, undefined]],
     ['a two-option question', ASK, false, [undefined, undefined, undefined, undefined]],
     ['a letter label', decision([{ label: 'B', description: 'the tokenizer' }, { label: 'Patch the lexer', description: 'small' }]), false, [[idsItem(['B'])], [idsItem(['B'])], [idsItem(['B'])], [idsItem(['B'])]]],
     ['combined letters', decision([{ label: 'B + A stopgap', description: 'both' }, { label: 'Patch the lexer', description: 'small' }]), false, [[idsItem(['B', 'A'])], [idsItem(['B', 'A'])], [idsItem(['B', 'A'])], [idsItem(['B', 'A'])]]],
-    ['a pointer at a table', decision([{ label: 'Ship the fix', description: 'The first row of the table above' }, { label: 'Hold it', description: 'wait' }]), false, [[POINTED_TABLE_ITEM], [POINTED_TABLE_ITEM], [POINTED_TABLE_ITEM], [POINTED_TABLE_ITEM]]],
+    ['a pointer at a table', decision([{ label: 'Ship the fix', description: 'The first row of the table above' }, { label: 'Hold it', description: 'wait' }]), false, [[ABOVE], [ABOVE], [ABOVE], [ABOVE]]],
     ['a pointer at the grades', decision([{ label: 'Ship the fix', description: "Watson's proposal" }, { label: 'Hold it', description: 'wait' }]), false, [[tableItem(1)], [tableItem(1)], [tableItem(1)], [tableItem(1)]]],
     ['the incident call', INCIDENT, false, [undefined, undefined, undefined, undefined]],
   ]
@@ -935,4 +938,61 @@ describe('AC4: one refusal per call names exactly what to add, and adding it is 
     expect(new Set(denies).size).toBe(1)
     expect(denies[0]).toBe(refused([tableItem(3), RECOMMENDATION_ITEM]))
   })
+})
+
+const SSO_COMMENT = decision(
+  [
+    { label: 'Trim the query', description: 'Stop loading the metadata XML and attribute JSON for the users table.' },
+    { label: 'Leave it', description: 'Keep the listing as it is.' },
+  ],
+  'The SSO connection listing loads metadata XML and attribute JSON that the table never shows. Should the query stop loading them?',
+)
+
+describe('domain wording about a table, an agent or grades is not a pointer at options shown elsewhere', () => {
+  for (const [name, isForwarding] of [
+    ['in a turn Mike opened', false],
+    ['in a forwarding turn', true],
+  ] as const) {
+    askTest(`the 2026-11-04 review-comment question, ${name}, runs with only its context above it`, async ($, on) => {
+      const w = world(on, ATTENDED)
+      w.blocksBefore = [{ type: 'text', text: 'Holmes left a comment on the SSO connection listing.' }]
+      await $.session.start(start(true))
+      await $.prompt.submit(isForwarding ? prompt(HANDED_BACK, NOTIFICATION) : prompt('address the review'))
+      expect((await $.tool.call(SSO_COMMENT)).deny).toBeUndefined()
+      expect(w.asked).toBe(1)
+    })
+  }
+
+  for (const text of [
+    'Hide the rows that the table never shows.',
+    'Add an index to the users table.',
+    'Move this table to the settings page.',
+    'Keep the SSH agent options as they are.',
+    'Let students see their grades.',
+  ]) {
+    test(`"${text}" asks for nothing`, () => {
+      const call = decision([{ label: 'Do it', description: text }, { label: 'Leave it', description: 'No change.' }], text)
+      for (const isForwarding of [false, true]) expect([isForwarding, questionRefusalOf(call.questions, 'A review comment asks for this.', isForwarding)]).toEqual([isForwarding, undefined])
+    })
+  }
+})
+
+describe('a pointer at an options table is refused, and the refusal quotes it', () => {
+  for (const [text, phrase] of [
+    ['Ship what the table above recommends.', 'the table above'],
+    ['Same as the options table.', 'the options table'],
+    ['The first row of the table below.', 'the table below'],
+    ['Row two of the table above.', 'the table above'],
+  ] as const) {
+    askTest(`"${text}" is refused for "${phrase}" when no table sits above the call`, async ($, on) => {
+      const w = world(on, ATTENDED)
+      w.blocksBefore = [{ type: 'text', text: 'Watson finished. He found a parser fix.' }]
+      await $.session.start(start(true))
+      await $.prompt.submit(prompt('fix the parser'))
+      const deny = (await $.tool.call(decision([{ label: 'Ship the fix', description: text }, { label: 'Hold it', description: 'wait' }]))).deny
+      expect(deny).toBe(refused([pointedTableItem(phrase)], false))
+      expect(deny).toContain(`"${phrase}"`)
+      expect(w.asked).toBe(0)
+    })
+  }
 })

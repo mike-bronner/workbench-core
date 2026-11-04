@@ -92,7 +92,7 @@ export function shownTextOf(messages: readonly ApiMessage[], id: string | undefi
 
 export const CONTEXT_ITEM = 'the context Mike needs to answer it'
 export const RECOMMENDATION_ITEM = 'one sentence that names the recommended option and its grade'
-export const POINTED_TABLE_ITEM = 'the table the question points at'
+export const pointedTableItem = (phrase: string): string => `the options table that "${phrase}" in the question points at`
 
 export const tableItem = (rows: number): string =>
   `one options table with the columns Option, Pros, Cons and Grade, a separator row, and ${rows === 1 ? 'a row' : `a row for each of its ${rows} options`}`
@@ -116,10 +116,10 @@ type AskQuestion = { question?: unknown; options?: unknown }
 const BARE_LABEL = /^\s*(?:option\s+)?(?:[a-z]|\d+)\s*[.):]?\s*(?:\(recommended\))?\s*$/i
 const OPTION_IDS = /\b[Oo]ptions?\s+((?:[A-Z]|\d+)(?:\s*(?:,|\/|\+|&|or|and)\s*(?:[A-Z]|\d+)\b)*)(?![\w'’])/g
 const LETTER_IDS = /(?<![\w'’])[A-E](?:\s*(?:\+|\/|&|,|or|and)\s*[A-E](?![\w'’]))+/g
-const TABLE_REF = /\b(?:the|that|this|its|his|their)\s+(?:options\s+)?table\b|\btable\s+(?:above|below)\b/i
-const GRADE_REF = /\b(?:the|those|its|his|their)\s+grades\b|\bas\s+graded\b/i
+const TABLE_REF = /\b(?:(?:the|that|this|its|their)\s+)?(?:(?:options?|graded)\s+table|tables?\s+(?:above|below))\b|\b(?:the\s+)?(?:above|earlier|previous)\s+table\b/i
+const GRADE_REF = /\b(?:those|its)\s+grades\b|\bgrades\s+(?:above|below)\b|\bas\s+graded\b/i
 const AGENT_REF =
-  /\b(?:Watson|Holmes|Lestrade|sub-?agent|agent|reviewer)(?:['’]s)?\s+(?:own\s+)?(?:options?|proposals?|alternatives|choices)\b|\boptions?\s+(?:that\s+)?(?:Watson|Holmes|Lestrade|the\s+sub-?agent|the\s+agent)\s+(?:proposed|gave|suggested|returned|handed\s+back|graded)\b/i
+  /\b(?:(?:Watson|Holmes|Lestrade|sub-?agent)(?:['’]s)?|(?:agent|reviewer)['’]s)\s+(?:own\s+)?(?:options?|proposals?|alternatives|choices)\b|\boptions?\s+(?:that\s+)?(?:Watson|Holmes|Lestrade|the\s+sub-?agent|the\s+agent)\s+(?:proposed|gave|suggested|returned|handed\s+back|graded)\b/i
 const GRADE = /\b(?:all|partly|not)\s+met\b/i
 
 const optionsOf = (question: AskQuestion): AskOption[] => (Array.isArray(question?.options) ? (question.options as AskOption[]) : [])
@@ -153,12 +153,12 @@ const isDecision = (question: AskQuestion): boolean => {
   return options.length >= 3 || options.some(option => typeof option?.description === 'string' && GRADE.test(option.description))
 }
 
-const refsOf = (asked: readonly AskQuestion[]): { ids: string[]; isTable: boolean; isGraded: boolean } => {
+const refsOf = (asked: readonly AskQuestion[]): { ids: string[]; table: string | undefined; isGraded: boolean } => {
   const text = asked.flatMap(textsOf).join('\n')
   const labels = asked.flatMap(question => optionsOf(question).map(option => bareIdOf(option?.label))).filter((id): id is string => id !== undefined)
   const ids = [...text.matchAll(OPTION_IDS)].flatMap(match => (match[1] ?? '').match(/[A-Z]|\d+/g) ?? [])
   const letters = [...text.matchAll(LETTER_IDS)].flatMap(match => match[0].match(/[A-E]/g) ?? [])
-  return { ids: [...new Set([...labels, ...ids, ...letters])], isTable: TABLE_REF.test(text), isGraded: GRADE_REF.test(text) || AGENT_REF.test(text) }
+  return { ids: [...new Set([...labels, ...ids, ...letters])], table: text.match(TABLE_REF)?.[0], isGraded: GRADE_REF.test(text) || AGENT_REF.test(text) }
 }
 
 export function isSelfContained(questions: unknown): boolean {
@@ -167,7 +167,7 @@ export function isSelfContained(questions: unknown): boolean {
   const isCarried = (option: AskOption) =>
     typeof option?.label === 'string' && option.label.trim() !== '' && bareIdOf(option.label) === undefined && typeof option?.description === 'string' && GRADE.test(option.description)
   const refs = refsOf(asked)
-  return asked.every(question => optionsOf(question).length > 0 && optionsOf(question).every(isCarried)) && refs.ids.length === 0 && !refs.isTable && !refs.isGraded
+  return asked.every(question => optionsOf(question).length > 0 && optionsOf(question).every(isCarried)) && refs.ids.length === 0 && refs.table === undefined && !refs.isGraded
 }
 
 export function questionRefusalOf(questions: unknown, above: string, isForwarding: boolean): string | undefined {
@@ -177,7 +177,7 @@ export function questionRefusalOf(questions: unknown, above: string, isForwardin
   const items: string[] = []
   const unshown = refs.ids.filter(id => !isItemFor(above, id))
   if (unshown.length > 0) items.push(idsItem(unshown))
-  if (refs.isTable && tableRowsOf(above, false) === 0) items.push(POINTED_TABLE_ITEM)
+  if (refs.table !== undefined && tableRowsOf(above, false) === 0) items.push(pointedTableItem(refs.table))
   const decisions = isForwarding ? asked.filter(isDecision) : []
   const rows = Math.max(refs.isGraded ? 1 : 0, ...decisions.map(question => optionsOf(question).length))
   if (rows > 0 && tableRowsOf(above, true) < rows) items.push(tableItem(rows))

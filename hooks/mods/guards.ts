@@ -673,11 +673,8 @@ function searchWords(statement: Statement): { words: string[]; base?: string; to
 const changesDirectory = (statement: Statement): boolean =>
   statement.wrappers.length > 0 && statement.words.slice(0, Math.max(statement.nameAt, 0)).some(word => /^(-[A-Za-z]*[CD]|--ch)/.test(word))
 
-// Every place the line's search commands search, with each `cd` before them
-// followed. A relative root after a `cd` the reader cannot follow is
-// unresolvable.
-export function searchRoots(parse: ShellParse, cwd: string, home: string | undefined): SearchRoot[] {
-  const roots: SearchRoot[] = []
+export function statementsAt(parse: ShellParse, cwd: string, home: string | undefined): { statement: Statement; dir: string | undefined }[] {
+  const placed: { statement: Statement; dir: string | undefined }[] = []
   let dir: string | undefined = cwd
   for (const statement of parse.statements) {
     if (statement.name === 'cd' || statement.name === 'pushd') {
@@ -689,10 +686,17 @@ export function searchRoots(parse: ShellParse, cwd: string, home: string | undef
       dir = undefined
       continue
     }
+    placed.push({ statement, dir: changesDirectory(statement) ? undefined : dir })
+  }
+  return placed
+}
+
+export function searchRoots(parse: ShellParse, cwd: string, home: string | undefined): SearchRoot[] {
+  const roots: SearchRoot[] = []
+  for (const { statement, dir } of statementsAt(parse, cwd, home)) {
     const search = searchWords(statement)
     if (search === undefined) continue
-    let at = changesDirectory(statement) ? undefined : dir
-    if (search.base !== undefined) at = resolvePath(search.base, at, home)
+    const at = search.base !== undefined ? resolvePath(search.base, dir, home) : dir
     for (const word of search.words) roots.push({ tool: search.tool, word, path: resolvePath(word, at, home) })
   }
   return roots

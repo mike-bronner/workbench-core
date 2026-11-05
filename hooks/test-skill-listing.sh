@@ -43,7 +43,7 @@ for f in "$SKILLS"/*/SKILL.md; do
   COUNT=$((COUNT + 1))
   BYTES=$((BYTES + $(description "$s" | tr -d '\n' | wc -c)))
 done
-WORDS=(zero one two three four five six seven eight nine ten)
+WORDS=(zero one two three four five six seven eight nine ten eleven twelve)
 CLAIM="the ${WORDS[$COUNT]} listed descriptions total $(thousands "$BYTES") bytes"
 if grep -qF -- "$CLAIM" "$README"; then ok "README states: $CLAIM"; else no "README states the listing total" "expected: $CLAIM"; fi
 if grep -qF 'still runs them, the monthly' "$README"; then

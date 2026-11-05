@@ -158,7 +158,9 @@ import { subjectVerdict } from './mods/commit-subject'
 import { isAttendedPrompt, isAttendedSession, isDesktopSession, isScheduledFire, laneOf } from './mods/lane'
 import { bareSetRefusal, repairedNotice, runsGit } from './mods/false-bare'
 import { parseShell } from './mods/shell'
-import { callerKeyOf, freshnessOf, isMcpTool, isOutwardTool, isRepeated, isSubmitLine, readSourceOf, readsAfter, refusalTextOf, refusalsAfter, repeatReminderOf, sourcesRefusalOf } from './mods/outward'
+import { callerKeyOf, freshnessOf, isFinalDescription, isMcpTool, isOutwardTool, isRepeated, isSubmitLine, readSourceOf, readsAfter, refusalTextOf, refusalsAfter, repeatReminderOf, sourcesRefusalOf } from './mods/outward'
+import type { FolderChange } from './mods/listings'
+import { changeOf, changeReportOf, globFoldersOf, listingWith, listingsAfter, lsFoldersOf, namesOf } from './mods/listings'
 import {
   AGENT_WORKTREE_REFUSAL,
   ENTER_WORKTREE_REFUSAL,
@@ -281,6 +283,7 @@ const intake = atom({ plugin: 'workbench-core', key: 'intake' } as const, { task
 const outwardDenied = atom({ plugin: 'workbench-core', key: 'outwardDenied' } as const, [])
 const mcpRefusals = atom({ plugin: 'workbench-core', key: 'mcpRefusals' } as const, {})
 const sourceReads = atom({ plugin: 'workbench-core', key: 'sourceReads' } as const, {})
+const folderListings = atom({ plugin: 'workbench-core', key: 'folderListings' } as const, {})
 const TRANSCRIPT = { plugin: 'workbench-core', key: 'transcriptPath' } as const
 // Unset until known: a status entry for a fact not known yet is left out.
 const ORCHESTRATOR_ON = { plugin: 'workbench-core', key: 'orchestratorOn' } as const
@@ -1016,6 +1019,60 @@ async function recallBlock($: EngineInterface, query: string, limit: number, min
 // $.workbench.isUnattended reads it, or a lane it cannot read.
 const isQuiet = ($: EngineInterface): Promise<boolean> => $.workbench.isUnattended().catch(() => true)
 
+let toolDescriptions: ReadonlyMap<string, string> | undefined
+
+async function toolDescriptionOf($: EngineInterface, tool: string): Promise<string> {
+  if (toolDescriptions?.has(tool) !== true) {
+    const listed = await $.tool.list().catch(() => undefined)
+    if (listed !== undefined) toolDescriptions = new Map(listed.map(info => [info.name, info.description]))
+  }
+  return toolDescriptions?.get(tool) ?? ''
+}
+
+const folderNamesOf = ($: EngineInterface, folder: string): Promise<string[] | undefined> => $.fs.list(folder).then(namesOf, () => undefined)
+
+async function folderChangesOf($: EngineInterface, caller: string): Promise<{ change: FolderChange; names: string[] }[]> {
+  const changes: { change: FolderChange; names: string[] }[] = []
+  for (const [folder, listing] of Object.entries((await read($, folderListings))[caller] ?? {})) {
+    const names = await folderNamesOf($, folder)
+    const change = names === undefined ? undefined : changeOf(folder, listing.names, names)
+    if (change !== undefined && names !== undefined) changes.push({ change, names })
+  }
+  return changes
+}
+
+async function markReported($: EngineInterface, caller: string, changes: readonly { change: FolderChange; names: string[] }[]): Promise<void> {
+  const now = await $.clock.now()
+  for (const { change, names } of changes) await update($, folderListings, listings => listingsAfter(listings, caller, change.folder, names, now))
+}
+
+async function recordListings($: EngineInterface, e: { tool: string; agentId?: string } & Record<string, unknown>): Promise<void> {
+  const caller = e.agentId ?? 'main'
+  const cwd = await $.session.cwd()
+  const home = await $.env.get('HOME')
+  if (e.tool === 'Write' || e.tool === 'NotebookEdit') {
+    const written = e.tool === 'Write' ? e.file_path : e.notebook_path
+    const path = typeof written === 'string' ? resolvePath(written, cwd, home) : undefined
+    if (path !== undefined) await update($, folderListings, listings => listingWith(listings, caller, path))
+    return
+  }
+  const folders =
+    e.tool === 'Glob' ? globFoldersOf({ path: e.path, pattern: e.pattern }, cwd, home) : e.tool === 'Bash' && typeof e.command === 'string' && /\bls\b/.test(e.command) ? lsFoldersOf(parseShell(e.command), cwd, home) : []
+  const now = await $.clock.now()
+  for (const folder of folders) {
+    const names = await folderNamesOf($, folder)
+    if (names !== undefined) await update($, folderListings, listings => listingsAfter(listings, caller, folder, names, now))
+  }
+}
+
+async function folderStopOf<R extends { block?: string }>($: EngineInterface, isContinued: boolean, result: R, caller: string): Promise<R> {
+  if (isContinued || result.block !== undefined || (await isQuiet($))) return result
+  const changes = await folderChangesOf($, caller)
+  if (changes.length === 0) return result
+  await markReported($, caller, changes)
+  return { ...result, block: changeReportOf(changes.map(({ change }) => change), 'stop') }
+}
+
 // Recall on a prompt: a new turn a person opened, with a query worth a search.
 // The search attempt is stamped where session-warmup.sh's recall liveness
 // check reads it, as hooks/memory-recall.sh did.
@@ -1442,6 +1499,7 @@ export const register: Register = on => {
 
   on('session.start', async ($, e, next) => {
     sectionsMemo = undefined
+    toolDescriptions = undefined
     agentName = await $.env.get('CLAUDE_CODE_AGENT')
     const isDesktop = isDesktopSession({
       entrypoint: await $.env.get('CLAUDE_CODE_ENTRYPOINT'),
@@ -1542,9 +1600,14 @@ export const register: Register = on => {
       result.block === undefined &&
       (await read($, turnAttended)) &&
       !(await read($, reprompted))
-    if (!isOurs || !(await asksInProse($, e.last_assistant_message ?? ''))) return result
+    if (!isOurs || !(await asksInProse($, e.last_assistant_message ?? ''))) return folderStopOf($, e.stop_hook_active === true, result, e.agent_id ?? 'main').catch(() => result)
     await update($, reprompted, () => true)
     return { ...result, block: REPROMPT_REASON }
+  })
+
+  on('classic.SubagentStop', async ($, e, next) => {
+    const result = await next(e)
+    return folderStopOf($, e.stop_hook_active === true, result, e.agent_id).catch(() => result)
   })
 
   const judging = new Set<string>()
@@ -1750,23 +1813,31 @@ export const register: Register = on => {
 
   on('tool.call', { tool: JUDGED_TOOL }, ($, e, next) => (judging.has(e.tool_use_id) ? next(e) : { deny: GUARD_FAILED }))
 
-  on('tool.call', { tool: /^(mcp__.+|Bash|Read|WebFetch)$/ }, async ($, e, next) => {
+  on('tool.call', { tool: /^(mcp__.+|Bash|Read|WebFetch|Glob|Write|NotebookEdit)$/ }, async ($, e, next) => {
     const key = callerKeyOf(e.agentId, e.tool)
-    const isOutward = isOutwardTool(e.tool)
-    if (isOutward && !(await isQuiet($)) && !(await read($, outwardDenied)).includes(key)) {
-      await update($, outwardDenied, denied => [...denied, key])
-      return { deny: sourcesRefusalOf(e.tool) }
-    }
+    const caller = e.agentId ?? 'main'
+    const isOutward = isOutwardTool(e.tool) || (isMcpTool(e.tool) && isFinalDescription(await toolDescriptionOf($, e.tool)))
     const isSubmit = isOutward || (e.tool === 'Bash' && isSubmitLine(e.command))
+    const isQuietLane = isSubmit && (await isQuiet($))
+    const folders = isSubmit ? await folderChangesOf($, caller) : []
+    const report = folders.length === 0 ? undefined : changeReportOf(folders.map(({ change }) => change), isQuietLane ? 'note' : 'call')
+    const isFirst = isOutward && !isQuietLane && !(await read($, outwardDenied)).includes(key)
+    if (isFirst || (report !== undefined && !isQuietLane)) {
+      if (isFirst) await update($, outwardDenied, denied => [...denied, key])
+      await markReported($, caller, folders)
+      return { deny: [...(isFirst ? [sourcesRefusalOf(e.tool)] : []), ...(report === undefined ? [] : [report])].join('\n\n') }
+    }
     const isRepeat = isMcpTool(e.tool) && isRepeated(await read($, mcpRefusals), key)
     const result = await next(e)
     if (result.deny !== undefined) return result
     const now = await $.clock.now()
     if (isMcpTool(e.tool)) await update($, mcpRefusals, refusals => refusalsAfter(refusals, key, refusalTextOf(result)))
-    const source = result.isError === true ? undefined : readSourceOf(e.tool, e as Record<string, unknown>)
+    const source = result.isError === true ? undefined : readSourceOf(e.tool, e as Record<string, unknown>, isOutward)
     const fresh = isSubmit ? freshnessOf(await read($, sourceReads), now) : undefined
     if (source !== undefined) await update($, sourceReads, reads => readsAfter(reads, source, now))
-    const added = [...(isRepeat ? [repeatReminderOf(e.tool)] : []), ...(fresh === undefined ? [] : [fresh])]
+    if (result.isError !== true) await recordListings($, e as { tool: string; agentId?: string } & Record<string, unknown>)
+    if (report !== undefined) await markReported($, caller, folders)
+    const added = [...(isRepeat ? [repeatReminderOf(e.tool)] : []), ...(fresh === undefined ? [] : [fresh]), ...(report === undefined ? [] : [report])]
     return added.length === 0 ? result : { ...result, context: [...(result.context ?? []), ...added] }
   }).catch(($, e, next) => next(e))
 

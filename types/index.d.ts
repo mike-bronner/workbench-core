@@ -366,6 +366,7 @@ declare module 'claude-code' {
       outwardDenied: readonly string[]
       mcpRefusals: Readonly<Record<string, { text: string; count: number }>>
       sourceReads: Readonly<Record<string, number>>
+      folderListings: Readonly<Record<string, Readonly<Record<string, { names: readonly string[]; at: number }>>>>
     }
   }
 }

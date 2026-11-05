@@ -189,7 +189,7 @@ moments() {
     show-every-cut) printf '%s\n' 'shorten' 'summarize' 'condense' 'trim' 'paraphrase' 'rewrite' 'text a person gave' 'notes, a document, a post, a quote' 'character or word limit' 'word for word' ;;
     check-a-live-source) printf '%s\n' 'name or rely on' 'into code, a config, a commit or a reply' 'goes stale' 'from training' 'newest or latest model' 'model ID' 'library or tool version' 'price' 'limit or quota' 'release date' "product's current docs" ;;
     use-the-owners-logic) printf '%s\n' 'compute' 'count' 'classify' 'add a file' "someone else's project" 'export or artifact' 'dependencies alone' 'ships its own logic, views or build' 'a script, a component, a query, a report generator, a test suite' 'already computes' "owner's table, page or report" 'SQL view' 'dashboard' 'work out by hand' ;;
-    recheck-before-done) printf '%s\n' 'submit, claim, publish, release or close' 'mark a pull request ready' 'report work as done' 'send it out' 'read earlier in the session' 'keeps changing' 'is live' 'gets updated' 'minutes or hours ago' 'its owner updates' 'Reread that source' ;;
+    recheck-before-done) printf '%s\n' 'submit, claim, publish, release or close' 'mark a pull request ready' 'report work as done' 'send it out' 'read earlier in the session' 'keeps changing' 'is live' 'gets updated' 'minutes or hours ago' 'its owner updates' 'Reread that source' 'runs, works or is deployed' ;;
   esac
 }
 for s in $SKILLS; do
@@ -216,6 +216,9 @@ has "read-the-contract covers a field another tool hands out" read-the-contract 
 has "read-the-contract stops on the same refusal twice" read-the-contract "The same refusal twice means the"
 has "use-the-owners-logic runs the owner's logic" use-the-owners-logic "when the input ships its own logic, views or build, run it and quote"
 has "use-the-owners-logic builds with the owner's code" use-the-owners-logic "build it with their code"
+has "recheck-before-done runs the check that connects before it claims a run" recheck-before-done "Run that check now, after the last change"
+has "recheck-before-done quotes what the check printed" recheck-before-done "Quote what the check printed"
+has "recheck-before-done says plainly when the check cannot run" recheck-before-done "Say plainly that it is not proven to run"
 RULE='Never offer the user a choice between guessed values for a field an outside'
 count="$(grep -rF -- "$RULE" "$ROOT/skills" | wc -l | tr -d ' ')"
 if [ "$count" -eq 1 ] && grep -qF -- "$RULE" "$ROOT/skills/intake/SKILL.md"; then

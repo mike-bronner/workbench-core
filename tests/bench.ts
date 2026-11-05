@@ -84,6 +84,8 @@ export type Bench = {
   // the module (default ask, as for a Bash call no rule allows).
   decision: 'allow' | 'ask' | 'deny'
   clock: MockClock
+  tools: { name: string; description: string; mcp: boolean }[] | null
+  unlistable: Set<string>
 }
 
 export type BenchOptions = {
@@ -128,7 +130,13 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     root: '/repo',
     decision: 'ask',
     clock: mock.clock(on, { now: START }),
+    tools: [],
+    unlistable: new Set(),
   }
+  on('tool.list', () => {
+    if (b.tools === null) throw new Error('no tool list')
+    return { value: b.tools }
+  })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.end', ($, e) => ({ sessionId: e.sessionId }))
   on('session.id', () => ({ value: sessionId }))
@@ -180,6 +188,7 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     return { value: { kind: 'file' as const, size: (b.files.get(e.path) ?? '').length, mtimeMs: b.mtimes.get(e.path) ?? 0, isLink: b.links.has(e.path) } }
   })
   on('fs.list', ($, e) => {
+    if (b.unlistable.has(e.path)) throw new Error(`EACCES: ${e.path}`)
     const dir = `${e.path.replace(/\/+$/, '')}/`
     const names = new Set([...b.files.keys(), ...b.links, ...b.dirs].filter(path => path.startsWith(dir) && !path.slice(dir.length).includes('/')))
     return {

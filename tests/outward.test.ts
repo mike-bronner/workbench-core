@@ -9,6 +9,7 @@ import {
   ageOf,
   cleanSourceOf,
   freshnessOf,
+  isFinalDescription,
   isOutwardTool,
   isSubmitLine,
   readSourceOf,
@@ -101,6 +102,144 @@ describe('fix 1: an outward MCP tool is refused once, with the quote-your-source
     for (const tool of [OPEN, 'Bash', 'claim', 'mcp__claim-server__open', 'mcp__acme__list', 'mcp__acme__disclaimer_x', 'mcp__acme__list_claims', 'mcp__acme__get_publish_status', 'mcp__acme__reclaim_x', 'mcp__acme__resubmit', 'mcp__acme__getPublishStatus', 'mcp__acme__listClaims']) {
       expect([tool, isOutwardTool(tool)]).toEqual([tool, false])
     }
+  })
+})
+
+describe('a one-shot verb or a final result marks an MCP tool as outward', () => {
+  const WRAP = 'mcp__acme-desk__wrap_up'
+  const FINAL = 'Sends the closing summary. The receiver keeps it once, and the result is final: it cannot be replaced.'
+
+  test('a name that starts on a one-shot verb is outward, and a read tool that ends on one is not', () => {
+    for (const tool of ['mcp__acme__send_message', 'mcp__acme__fileIssue', 'mcp__acme__report-result', 'mcp__acme__finalize_order', 'mcp__acme__finalise', 'mcp__acme__deliver.package']) {
+      expect([tool, isOutwardTool(tool)]).toEqual([tool, true])
+    }
+    for (const tool of ['mcp__acme__read_file', 'mcp__acme__get_report', 'mcp__acme__list_reports', 'mcp__acme__resend_code', 'mcp__acme__profile', 'mcp__send__open', 'send_message']) {
+      expect([tool, isOutwardTool(tool)]).toEqual([tool, false])
+    }
+  })
+
+  test('report and file count only before a filing noun', () => {
+    for (const tool of ['mcp__acme__file_issue', 'mcp__acme__fileBug', 'mcp__acme__file_tickets', 'mcp__acme__report_result', 'mcp__acme__report-incident']) expect([tool, isOutwardTool(tool)]).toEqual([tool, true])
+    for (const tool of [
+      'mcp__acme__file_read',
+      'mcp__acme__file_search',
+      'mcp__acme__file_list',
+      'mcp__acme__fileRead',
+      'mcp__acme__report_status',
+      'mcp__acme__report_list',
+      'mcp__acme__reportGet',
+      'mcp__acme__file',
+      'mcp__acme__report',
+      'mcp__acme__file_write',
+      'mcp__acme__file_edit',
+      'mcp__acme__file_delete',
+      'mcp__acme__fileMove',
+      'mcp__acme__file_copy',
+      'mcp__acme__file_create',
+      'mcp__acme__file_rename',
+      'mcp__acme__report_generate',
+    ]) {
+      expect([tool, isOutwardTool(tool)]).toEqual([tool, false])
+    }
+    expect(readSourceOf('mcp__acme__file_read', { url: 'https://x/a' })).toBe('https://x/a')
+    expect(readSourceOf('mcp__acme__report_status', { url: 'https://x/b' })).toBe('https://x/b')
+  })
+
+  test('a read tool named with report or file is not refused and its url is recorded', async ($, on) => {
+    await session($, on, false)
+    for (const tool of ['mcp__acme__file_read', 'mcp__acme__report_status']) expect((await call($, { tool, url: `https://desk.example/${tool}` })).deny).toBeUndefined()
+    const list = freshness(await contextOf($, { tool: 'Bash', command: 'gh pr ready 1' }))
+    expect(list).toContain('https://desk.example/mcp__acme__file_read')
+    expect(list).toContain('https://desk.example/mcp__acme__report_status')
+  })
+
+  test('a description that says the result is final, or cannot be replaced or undone, marks the tool', () => {
+    for (const text of [
+      FINAL,
+      'Hands in the answer. The answer cannot be undone.',
+      'Each order can only be submitted once.',
+      'The grader records it only once.',
+      'The submission is irreversible.',
+      'A one-shot upload.',
+      'The entry is never overwritten.',
+      'The results are permanent.',
+      "Your vote can't be changed.",
+      'Call it once, right after the reviewer accepts the work.',
+      'Call this only once per task.',
+      'Invoke the tool just once.',
+      'Call it once.',
+      'Submit it once',
+    ]) {
+      expect([text, isFinalDescription(text)]).toEqual([text, true])
+    }
+    for (const text of [
+      'Reads a page.',
+      'Returns the final score of a match.',
+      'Lists the files in a folder.',
+      'Replaces the draft with new text.',
+      'Updates a ticket. The id cannot be changed.',
+      'Deletes the item. This cannot be undone.',
+      'Uploads are permanent.',
+      'Moves the file. The move is irreversible.',
+      'Calls the hook once per change.',
+      'Use it once you have a token.',
+      'Run this once the build finishes.',
+      'Send it once the draft is ready.',
+      'Call once per page to fetch the next results.',
+      'The store records it once the upload completes.',
+      '',
+    ]) {
+      expect([text, isFinalDescription(text)]).toEqual([text, false])
+    }
+  })
+
+  test('a tool the description marks gets the first-call refusal and the freshness list', async ($, on) => {
+    const b = await session($, on)
+    b.tools = [
+      { name: WRAP, description: FINAL, mcp: true },
+      { name: OPEN, description: 'Opens a ticket to read it.', mcp: true },
+      { name: 'Bash', description: FINAL, mcp: false },
+    ]
+    expect((await call($, { tool: 'Bash', command: 'gh pr view 4' })).deny).toBeUndefined()
+    await call($, { tool: 'Read', file_path: '/repo/notes.md' })
+    await b.clock.advance(10 * MINUTE)
+    expect((await call($, { tool: WRAP, url: 'https://desk.example/summary' })).deny).toBe(sourcesRefusalOf(WRAP))
+    const second = await call($, { tool: WRAP, url: 'https://desk.example/summary' })
+    expect(second.deny).toBeUndefined()
+    expect(freshness(second.context ?? [])).toContain('- /repo/notes.md: read 10 minutes ago')
+    const third = freshness(await contextOf($, { tool: WRAP, url: 'https://desk.example/summary' }))
+    expect(third).toContain('- /repo/notes.md: read 10 minutes ago')
+    expect(third).not.toContain('desk.example/summary')
+    expect((await call($, { tool: OPEN })).deny).toBeUndefined()
+    expect(freshness(await contextOf($, { tool: OPEN }))).toBeUndefined()
+  })
+
+  test('a one-shot verb name gets the refusal with no description at all', async ($, on) => {
+    const b = await session($, on)
+    const tool = 'mcp__acme-desk__send_summary'
+    expect((await call($, { tool })).deny).toBe(sourcesRefusalOf(tool))
+    expect((await call($, { tool })).deny).toBeUndefined()
+    expect(b.inputs.length).toBe(1)
+  })
+
+  test('the tool list is read once per tool, and again for a tool it did not hold', async ($, on) => {
+    const b = await session($, on)
+    const LATER = 'mcp__acme-desk__close_out'
+    b.tools = [{ name: WRAP, description: FINAL, mcp: true }]
+    expect((await call($, { tool: WRAP })).deny).toBe(sourcesRefusalOf(WRAP))
+    b.tools = [{ name: LATER, description: 'Call it once, at the end.', mcp: true }]
+    expect((await call($, { tool: WRAP, agentId: 'a5a2f4470341f9233' })).deny).toBe(sourcesRefusalOf(WRAP))
+    expect((await call($, { tool: LATER })).deny).toBe(sourcesRefusalOf(LATER))
+    b.tools = null
+    expect((await call($, { tool: LATER, agentId: 'a5a2f4470341f9233' })).deny).toBe(sourcesRefusalOf(LATER))
+  })
+
+  test('a tool list that cannot be read leaves the name check alone', async ($, on) => {
+    const b = await session($, on)
+    b.tools = null
+    expect((await call($, { tool: 'mcp__acme-desk__wrap_up' })).deny).toBeUndefined()
+    expect((await call($, { tool: CLAIM })).deny).toBe(sourcesRefusalOf(CLAIM))
+    expect(b.inputs.length).toBe(1)
   })
 })
 

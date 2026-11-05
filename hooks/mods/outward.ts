@@ -4,6 +4,24 @@ export type Refusals = Readonly<Record<string, { text: string; count: number }>>
 export type Reads = Readonly<Record<string, number>>
 
 const OUTWARD_WORDS: ReadonlySet<string> = new Set(['claim', 'submit', 'publish'])
+const ONE_SHOT_VERBS: ReadonlySet<string> = new Set(['finalize', 'finalise', 'send', 'deliver'])
+const NOUN_VERBS: ReadonlySet<string> = new Set(['report', 'file'])
+const FILING_NOUNS: ReadonlySet<string> = new Set(['issue', 'bug', 'ticket', 'incident', 'result', 'claim', 'case', 'defect', 'finding', 'outcome', 'answer', 'complaint', 'appeal'])
+const ONCE = "(?:(?:only|just) once\\b|once(?=[.,;:!?)]|\\s*$))"
+const RESULT_NOUNS = '(?:the |its |this |your |each )(?:result|answer|submission|report|response|call|entry|outcome|verdict|vote|reply)s?'
+const FINAL_RESULT = new RegExp(
+  [
+    `\\b${RESULT_NOUNS} (?:is|are|becomes?) (?:final|permanent|irreversible)\\b`,
+    `\\b${RESULT_NOUNS} (?:cannot|can ?not|can't|may not|will not|won't) be (?:replaced|undone|changed|edited|amended|revised|overwritten|resubmitted|resent|withdrawn|retracted|reverted)\\b`,
+    `\\b${RESULT_NOUNS} (?:is |are )?never (?:replaced|overwritten)\\b`,
+    '\\b(?:can|may) only be (?:called|sent|submitted|made|used|filed) once\\b',
+    `\\b(?:call|invoke|use|run|send|submit) (?:it|this|this tool|the tool) ${ONCE}`,
+    `\\b(?:call|invoke) ${ONCE}`,
+    `\\b(?:kept|keeps|accepted|accepts|recorded|records|stored|stores) (?:it |them )?${ONCE}`,
+    '\\bone-?shot\\b',
+  ].join('|'),
+  'i',
+)
 const GH_SUBMITS: readonly (readonly [string, string])[] = [
   ['pr', 'ready'],
   ['release', 'create'],
@@ -21,8 +39,12 @@ export const isMcpTool = (tool: string): boolean => mcpNameOf(tool) !== undefine
 
 export function isOutwardTool(tool: string): boolean {
   const words = (mcpNameOf(tool) ?? '').replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().split(/[_.-]+/)
-  return OUTWARD_WORDS.has(words[0] ?? '') || OUTWARD_WORDS.has(words.at(-1) ?? '')
+  const [first = '', second] = words
+  const isNounVerb = NOUN_VERBS.has(first) && second !== undefined && FILING_NOUNS.has(second.replace(/s$/, ''))
+  return OUTWARD_WORDS.has(first) || OUTWARD_WORDS.has(words.at(-1) ?? '') || ONE_SHOT_VERBS.has(first) || isNounVerb
 }
+
+export const isFinalDescription = (description: string): boolean => FINAL_RESULT.test(description)
 
 export function isSubmitLine(line: string): boolean {
   return parseShell(line).statements.some(
@@ -75,8 +97,8 @@ export function cleanSourceOf(source: string): string {
   return bare.length > ENTRY_LIMIT ? `${bare.slice(0, ENTRY_LIMIT - 1)}…` : bare
 }
 
-export function readSourceOf(tool: string, input: Record<string, unknown>): string | undefined {
-  const source = tool === 'Read' ? input.file_path : tool === 'WebFetch' || (isMcpTool(tool) && !isOutwardTool(tool)) ? input.url : undefined
+export function readSourceOf(tool: string, input: Record<string, unknown>, isOutward = isOutwardTool(tool)): string | undefined {
+  const source = tool === 'Read' ? input.file_path : tool === 'WebFetch' || (isMcpTool(tool) && !isOutward) ? input.url : undefined
   const clean = typeof source === 'string' ? cleanSourceOf(source) : ''
   return clean === '' ? undefined : clean
 }

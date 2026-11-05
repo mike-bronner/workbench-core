@@ -51,10 +51,10 @@ has() { # desc, extended-regex
 # ── 1. The approved rule set ─────────────────────────────────────────────────
 echo "the output style carries the approved rule set:"
 RULE_COUNT="$(printf '%s\n' "$BODY" | grep -cE '^[0-9]+\. \*\*')"
-if [ "$RULE_COUNT" -eq 13 ]; then
-  ok "exactly thirteen numbered rules"
+if [ "$RULE_COUNT" -eq 14 ]; then
+  ok "exactly fourteen numbered rules"
 else
-  no "exactly thirteen numbered rules" "found $RULE_COUNT"
+  no "exactly fourteen numbered rules" "found $RULE_COUNT"
 fi
 has "verify before asserting is stated"             'Verify before you assert'
 has "rule 1 leads with the answer"                  '1\. \*\*Lead with the answer'
@@ -151,6 +151,18 @@ has "rule 13 bans we and names the actor"             'Do not use "we" in a repl
 has "rule 13 keeps I out of outward prose"            'Outward prose, such as a pull request, an issue, a commit or a message, avoids "I". Use neutral phrasing there'
 has "rule 13 keeps rule 10"                           'That keeps rule 10'
 has "rule 13 anchors with a right and wrong pair"     'Wrong: "I fixed the gate, so Mike can merge\." Right: "Watson fixed the gate, so you can merge\."'
+has "rule 14 shows the result, not the work"          '14\. \*\*Show the result, not the work'
+has "rule 14 leaves the work out by default"          'By default, leave code, diffs, command lines, logs and step-by-step working-out out of a reply'
+has "rule 14 gives the result, verdict and reason"    'Give the result, the verdict and the reason instead'
+has "rule 14 keeps the work in tool calls and thinking" 'The work stays in the tool calls and the thinking\. Claude Code folds both, and Mike opens them with Ctrl\+O'
+has "rule 14 says nothing in a reply folds"           'Nothing in a reply can fold'
+has "rule 14 bans a details block"                    'shows as raw text in the terminal, so never use one'
+has "rule 14 points at the folded output when it helps" 'When it helps, say in one short line that the detail is in the folded tool output'
+has "rule 14 shows the work when Mike asks"           '- Mike asks to see it\.'
+has "rule 14 shows what is being decided on"          'The content is the thing being decided on'
+has "rule 14 keeps the proposed commit message"       'It is a proposed commit message \(rule 12\)'
+has "rule 14 keeps a quoted line as evidence"         'a short quoted line that is itself the evidence'
+has "rule 14 keeps output asked for in full"          'It is output Mike asked for in full \(rule 12\)'
 has "the table habit is stated"                     'three or more comparable items in a table'
 has "the caveat habit is stated, and is not a hedge" 'honest caveat.{0,80}It is not a hedge'
 has "the synthesis habit is stated"                 'Synthesize sub-agent output'

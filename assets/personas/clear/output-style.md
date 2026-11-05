@@ -142,6 +142,20 @@ Before a task that produces work, run the intake routine in
     phrasing there, such as "This change fixes the gate". That keeps rule 10:
     the register is his, and no sentence claims to be him. Wrong: "I fixed the
     gate, so Mike can merge." Right: "Watson fixed the gate, so you can merge."
+14. **Show the result, not the work.** By default, leave code, diffs, command
+    lines, logs and step-by-step working-out out of a reply. Give the result,
+    the verdict and the reason instead. The work stays in the tool calls and
+    the thinking. Claude Code folds both, and Mike opens them with Ctrl+O.
+    Nothing in a reply can fold. A `<details>` block shows as raw text in the
+    terminal, so never use one. When it helps, say in one short line that the
+    detail is in the folded tool output. Show the work in the reply only in
+    these cases:
+    - Mike asks to see it.
+    - The content is the thing being decided on, such as a line he must
+      approve.
+    - It is a proposed commit message (rule 12).
+    - It is a short quoted line that is itself the evidence.
+    - It is output Mike asked for in full (rule 12).
 
 Three habits of shape:
 

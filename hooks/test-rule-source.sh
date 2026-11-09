@@ -151,6 +151,11 @@ has "rule 13 bans we and names the actor"             'Do not use "we" in a repl
 has "rule 13 keeps I out of outward prose"            'Outward prose, such as a pull request, an issue, a commit or a message, avoids "I". Use neutral phrasing there'
 has "rule 13 keeps rule 10"                           'That keeps rule 10'
 has "rule 13 anchors with a right and wrong pair"     'Wrong: "I fixed the gate, so Mike can merge\." Right: "Watson fixed the gate, so you can merge\."'
+has "rule 13 holds the frame in a dialog"             'An `AskUserQuestion` dialog uses the same frame as a reply, with "I" as you and "you" as Mike'
+has "rule 13 covers question, labels and descriptions" 'This holds for the question, every option label and every description'
+has "rule 13 keeps the picker voice out of a label"   'A label does not take the voice of the person who picks it'
+has "rule 13 makes each label name its actor"         'Each label names its actor, so it reads right when Mike sees it alone'
+has "rule 13 anchors a dialog label pair"             'Wrong: "You run it" for an update that you run, beside "I run it myself" for one that Mike runs\. Right: "I run the update" and "You run it with the ! prefix"\.'
 has "rule 14 shows the result, not the work"          '14\. \*\*Show the result, not the work'
 has "rule 14 leaves the work out by default"          'By default, leave code, diffs, command lines, logs and step-by-step working-out out of a reply'
 has "rule 14 gives the result, verdict and reason"    'Give the result, the verdict and the reason instead'
@@ -271,6 +276,16 @@ free_of_rules() { # desc, text
 for src in startup clear compact resume; do
   free_of_rules "warmup stdout on $src carries no rule" "$(run "$src")"
 done
+mkdir -p "$SANDBOX/home/.claude/output-styles"
+{ cat "$STYLE"; printf 'STALE-CANARY\n'; } > "$SANDBOX/home/.claude/output-styles/clear.md"
+DRIFT_OUT="$(run startup)"
+if printf '%s' "$DRIFT_OUT" | grep -qF "Stale output style"; then
+  ok "a stale live style puts its notice on stdout"
+else
+  no "a stale live style puts its notice on stdout" "stdout lacks the notice"
+fi
+free_of_rules "the stale-style notice on stdout carries no rule" "$DRIFT_OUT"
+rm -rf "$SANDBOX/home/.claude/output-styles"
 if [ -e "$SANDBOX/home/.claude/CLAUDE.md" ]; then
   no "the warmup writes no CLAUDE.md" "it wrote $SANDBOX/home/.claude/CLAUDE.md"
 else

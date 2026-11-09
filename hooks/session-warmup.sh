@@ -4,10 +4,7 @@
 # to a file for Mike.
 #
 # Invoked by the `core` plugin's SessionStart hook. Reads the hook payload from
-# stdin. It prints nothing for the model: the workbench rules reach it as
-# shared system-prompt sections from hooks/register.ts (hooks/mods/
-# prompt-rules.ts), the same bytes in every session, and every notice goes to
-# the notices file.
+# stdin.
 #
 # Branches on the payload's `source` field:
 #   startup → full warmup: cleanup + reconcile + drain + notices refresh
@@ -255,8 +252,7 @@ add_chat_skill_notice() {
 
 # ──────────── Pending-summary drain (function def) ────────────
 # THE DRAIN EMITS NOTHING in production. In a full run it goes before the
-# notices section on purpose: it is an action, not a report, and the warmup
-# prints nothing for the model. (Under WORKBENCH_DISPATCH_DRY_RUN the shared spawn helper prints
+# notices section on purpose: it is an action, not a report. (Under WORKBENCH_DISPATCH_DRY_RUN the shared spawn helper prints
 # its resolved invocation to stdout so tests can assert it — that variable is set
 # only by hooks/test-*.sh and never in production.)
 #
@@ -585,6 +581,25 @@ if [ "$WARMUP_PART" = "all" ] && { [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "r
   drain_pending_summaries
 fi
 
+# ──────────── Output-style drift check (every source) ────────────
+# The output style is written only by /workbench-core:setup, so after a plugin
+# update the live copy can lag the shipped one with nothing to say so. It once
+# ran 8 days stale and still told the model to run an options round before a
+# push, which the shipped style contradicts: a push gets one approval question
+# (rule 6), not three options. This compares the two and says so.
+# It never writes the style: setup does, where the human sees the diff first.
+# A live copy that is absent is not drift — the persona is opt-in.
+OUTPUT_STYLES_DIR="${WORKBENCH_OUTPUT_STYLES_DIR:-$HOME/.claude/output-styles}"
+STALE_STYLES=""
+for persona_dir in "$PLUGIN_ROOT"/assets/personas/*/; do
+  persona_dir="${persona_dir%/}"
+  shipped_style="$persona_dir/output-style.md"
+  live_style="$OUTPUT_STYLES_DIR/${persona_dir##*/}.md"
+  [ -f "$shipped_style" ] && [ -f "$live_style" ] || continue
+  cmp -s "$shipped_style" "$live_style" && continue
+  STALE_STYLES+="$live_style"$'\n'
+done
+
 # ──────────── VOLATILE NOTICES — written to a file, never injected ────────────
 # Every block below varies run to run: a live file count, a wall-clock flag, a
 # marker-directory listing, a plugin-version diff. Injecting any of them makes
@@ -595,9 +610,7 @@ fi
 # So they never reach the model: they are collected into $NOTICES_FILE, and
 # hooks/register.ts reads that file a few seconds after session start and shows
 # the notices to Mike, never to the model (README, "Housekeeping notices — for
-# Mike, not the model"). The warmup prints nothing at all, for every session
-# type — interactive, sub-agent, or scheduled — without the hook needing to
-# detect which kind of fire this is.
+# Mike, not the model").
 #
 # A pointer line used to tell the model to read the file at session start. That
 # cost a Read turn in every session, and a session that read the file acted on
@@ -753,25 +766,12 @@ if [ -f "$SYSTEM_OVERRIDES" ]; then
   printf '**Remove any such alias from your shell profile, open a new shell, then delete the file.** Deleting the file first stops `claude` from starting through the alias.\n\n'
 fi
 
-# ──────────── Output-style drift check (every source) ────────────
-# The output style is written only by /workbench-core:setup, so after a plugin
-# update the live copy can lag the shipped one with nothing to say so. It once
-# ran 8 days stale and still told the model to run an options round before a
-# push, which the shipped style contradicts: a push gets one approval question
-# (rule 6), not three options. This compares the two and says so.
-# It never writes the style: setup does, where the human sees the diff first.
-# A live copy that is absent is not drift — the persona is opt-in.
-OUTPUT_STYLES_DIR="${WORKBENCH_OUTPUT_STYLES_DIR:-$HOME/.claude/output-styles}"
-for persona_dir in "$PLUGIN_ROOT"/assets/personas/*/; do
-  persona_dir="${persona_dir%/}"
-  shipped_style="$persona_dir/output-style.md"
-  live_style="$OUTPUT_STYLES_DIR/${persona_dir##*/}.md"
-  [ -f "$shipped_style" ] && [ -f "$live_style" ] || continue
-  cmp -s "$shipped_style" "$live_style" && continue
+while IFS= read -r live_style; do
+  [ -n "$live_style" ] || continue
   printf '## ⚠ Output style out of date\n\n'
   printf 'The live output style `%s` differs from the copy this plugin version ships. The model is running on stale rules.\n\n' "$live_style"
   printf '**Run `/workbench-core:setup` to re-sync it.** Setup shows the diff before it writes. The new style takes effect on the next session.\n\n'
-done
+done <<< "$STALE_STYLES"
 
 # ──────────── Chat-installable skills check (startup only) ────────────
 # Detect new or updated skills in workbench-* plugins that haven't been
@@ -798,6 +798,15 @@ if mkdir -p "$(dirname "$NOTICES_FILE")" 2>/dev/null; then
       printf 'No outstanding notices.\n'
     fi
   } > "$NOTICES_FILE" 2>/dev/null
+fi
+
+if [ "$SOURCE" != "compact" ]; then
+  while IFS= read -r live_style; do
+    [ -n "$live_style" ] || continue
+    printf '## Stale output style\n\n'
+    printf 'The live output style `%s` differs from the copy this plugin version ships, so this session runs on old rules.\n\n' "$live_style"
+    printf 'Tell Mike in your first reply that this file is stale, and ask him to run `/workbench-core:setup`. Setup shows him the diff before it writes. Do not write or copy the output style yourself.\n\n'
+  done <<< "$STALE_STYLES"
 fi
 
 # The --defer run's last step: this start's "started" stamp (header). The

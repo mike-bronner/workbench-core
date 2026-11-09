@@ -130,7 +130,7 @@ assert_no_persona() {  # assert_no_persona <source-label> <output>
 }
 
 echo "startup — nothing for the model, and no persona file:"
-# The warmup prints nothing for the model. The memory routing and the destructive
+# The memory routing and the destructive
 # commands it printed, and the gates and scratch roots it spliced into
 # ~/.claude/CLAUDE.md, are stated once in hooks/mods/prompt-rules.ts and reach
 # the model as shared system-prompt sections. tests/prompt-rules.test.ts pins
@@ -487,7 +487,7 @@ assert_missing  "the file is not named in the payload"    "$OUT" "warmup-notices
 # but "byte-identical ENTIRE payload", regardless of how much notice state
 # churns underneath it.
 
-echo "cache stability — the warmup prints nothing for the model in any notice state:"
+echo "cache stability — the warmup prints nothing for the model in any housekeeping-notice state, with no stale style:"
 PREFIX_PROJ="$SANDBOX/prefix-proj"
 mkdir -p "$PREFIX_PROJ"
 # The probe reports UP, so state A below has no notice at all (a server that is
@@ -905,21 +905,45 @@ SHIPPED_DIRS=("$REPO_ROOT"/assets/personas/*/)
 SHIPPED_DIR="${SHIPPED_DIRS[0]%/}"
 LIVE_STYLE="$STYLES_DIR/${SHIPPED_DIR##*/}.md"
 rm -rf "$STYLES_DIR"
-run_warmup startup >/dev/null
+OUT_NONE=$(run_warmup startup)
 assert_missing "no live style: no notice (the persona is opt-in)" "$(notices)" "Output style out of date"
+assert_contains "no live style: nothing for the model" "[$OUT_NONE]" "[]"
 mkdir -p "$STYLES_DIR"
 cp "$SHIPPED_DIR/output-style.md" "$LIVE_STYLE"
-run_warmup startup >/dev/null
+OUT_CURRENT=$(run_warmup startup)
 assert_missing "a current live style: no notice" "$(notices)" "Output style out of date"
+assert_contains "a current live style: nothing for the model" "[$OUT_CURRENT]" "[]"
 printf 'Run an options round before every push.\n' >> "$LIVE_STYLE"
 STALE_BEFORE=$(cat "$LIVE_STYLE")
 OUT_STYLE=$(run_warmup startup)
 assert_contains "a stale live style: the notice appears" "$(notices)" "Output style out of date"
 assert_contains "the notice names the live file" "$(notices)" "$LIVE_STYLE"
 assert_contains "the notice points at setup" "$(notices)" "/workbench-core:setup"
-assert_missing "the notice stays out of the cached payload" "$OUT_STYLE" "Output style out of date"
-run_warmup resume >/dev/null
+assert_missing "the status-line notice stays out of the model context" "$OUT_STYLE" "Output style out of date"
+assert_contains "the model context reports the stale style" "$OUT_STYLE" "## Stale output style"
+assert_contains "the model context names the live file" "$OUT_STYLE" "\`$LIVE_STYLE\`"
+assert_contains "the model context has the agent ask Mike to run setup" "$OUT_STYLE" \
+  'ask him to run `/workbench-core:setup`'
+assert_contains "the model context keeps the agent from writing the style" "$OUT_STYLE" \
+  'Do not write or copy the output style yourself'
+if [ "$OUT_STYLE" = "$(run_warmup startup)" ]; then
+  PASS=$((PASS + 1)); echo "  ✅ the model context is byte-identical across identical runs"
+else
+  FAIL=$((FAIL + 1)); echo "  ❌ the model context drifted between two identical runs"
+fi
+OUT_COMPACT=$(run_warmup compact)
+assert_contains "a compact run reports it to Mike" "$(notices)" "Output style out of date"
+assert_contains "a compact run adds nothing for the model" "[$OUT_COMPACT]" "[]"
+OUT_RESUME=$(run_warmup resume)
 assert_contains "a resumed session reports it too" "$(notices)" "Output style out of date"
+assert_contains "a resumed session tells the model too" "$OUT_RESUME" "## Stale output style"
+OUT_DEFER=$(printf '{"source":"startup"}' | HOME="$SANDBOX/home" WORKBENCH_MEMORY_PATH="$SANDBOX/memory" \
+  WORKBENCH_MEMORY_CACHE="$SANDBOX/cache" WORKBENCH_MEMORY_PORT="$PROBE_PORT" \
+  CLAUDE_PLUGIN_ROOT="$REPO_ROOT" bash "$WARMUP" --defer 2>/dev/null)
+assert_contains "the SessionStart --defer run tells the model" "$OUT_DEFER" "## Stale output style"
+OUT_CLEAR=$(run_warmup clear)
+assert_contains "a cleared session tells the model" "$OUT_CLEAR" "## Stale output style"
+assert_contains "a cleared session names the live file" "$OUT_CLEAR" "\`$LIVE_STYLE\`"
 if [ "$(cat "$LIVE_STYLE")" = "$STALE_BEFORE" ]; then
   PASS=$((PASS + 1)); echo "  ✅ the warmup leaves the live style untouched"
 else

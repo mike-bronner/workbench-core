@@ -269,8 +269,9 @@ Read `${CLAUDE_PLUGIN_ROOT}/skills/setup/references/git-sync.md` and follow its 
 
 Setup is the one entry point for the persona. There is no separate install command, so a re-run
 of setup after a plugin update is also what re-syncs the output style. The warmup does not write
-the style. It only reports `⚠ Output style out of date` in the warmup notices when the live copy
-differs from the shipped one, and that notice points here.
+the style. When the live copy differs from the shipped one, it reports `⚠ Output style out of
+date` in the warmup notices, and puts a `## Stale output style` block in the session context, so
+the agent asks the user to run setup. Both point here.
 
 The plugin ships one persona under `${CLAUDE_PLUGIN_ROOT}/assets/personas/<name>/`: an output
 style. `scripts/install.sh` copies it to `~/.claude/output-styles/<name>.md` and writes its

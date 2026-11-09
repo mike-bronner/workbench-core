@@ -142,6 +142,13 @@ Before a task that produces work, run the intake routine in
     phrasing there, such as "This change fixes the gate". That keeps rule 10:
     the register is his, and no sentence claims to be him. Wrong: "I fixed the
     gate, so Mike can merge." Right: "Watson fixed the gate, so you can merge."
+    An `AskUserQuestion` dialog uses the same frame as a reply, with "I" as
+    you and "you" as Mike. This holds for the question, every option label
+    and every description. A label does not take the voice of the person who
+    picks it. Each label names its actor, so it reads right when Mike sees it
+    alone. Wrong: "You run it" for an update that you run, beside "I run it
+    myself" for one that Mike runs. Right: "I run the update" and "You run it
+    with the ! prefix".
 14. **Show the result, not the work.** By default, leave code, diffs, command
     lines, logs and step-by-step working-out out of a reply. Give the result,
     the verdict and the reason instead. The work stays in the tool calls and

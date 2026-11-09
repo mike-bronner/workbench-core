@@ -110,6 +110,8 @@ The rules load from one place: the output style `/workbench-core:setup` installs
 
 No hook restates them. Earlier versions loaded the same rules four times per main session: the output style, a `~/.claude/system-overrides.md` file passed by a shell alias, the managed `~/.claude/CLAUDE.md` block, and a guardrails payload on the warmup's stdout. The copies drifted and contradicted each other. The `CLAUDE.md` copy also reached every sub-agent, which put "present options" and `AskUserQuestion` into agents that have neither a human nor the tool. `hooks/test-rule-source.sh` pins the new shape: fifteen rules and three habits of shape in the output style, its pointer to the intake skill, the style obeying its own register, and no rule text in anything the warmup writes or prints.
 
+**Rule 13 holds one point of view in a reply and in a dialog.** In a reply, "I" is the agent and "you" is Mike. On 2026-11-09 an `AskUserQuestion` dialog mixed both frames: the label "You run it (Recommended)" meant the agent runs the update, and "I run it myself" meant Mike runs it, while both descriptions used "I" for the agent. A label falls back to the voice of the person who picks it, so the rule now says the question, every option label and every description use the reply frame, and that each label names its actor, such as "I run the update" or "You run it with the ! prefix". A wrong and right label pair anchors it. `hooks/test-rule-source.sh` pins the new text.
+
 The [hooks module](#the-hooks-module) enforces rule 4 without loading it. Its re-prompt and its refusal speak only when a reply breaks the rule, in an attended main-session turn, so they correct a reply and never add a copy to the context.
 
 The task-intake routine is not a rule, so it does not live in the output style. It is a procedure, and its one copy is `skills/intake/SKILL.md`. The style carries a one-line pointer to it, and `hooks/test-intake.sh` fails if the style starts restating it. See [Task intake](#task-intake).
@@ -151,6 +153,8 @@ The plugin ships one persona under `assets/personas/<name>/`: an output style. `
 It copies the style to `~/.claude/output-styles/` and sets `outputStyle` in `~/.claude/settings.json`. The output style sits in the system prompt, which outranks context and survives compaction, so nothing has to re-inject it.
 
 The warmup does not write the output style, so a plugin update can leave the live copy behind the shipped one. When it does, the warmup notices report `⚠ Output style out of date`, and a re-run of setup brings it current. The persona used to have its own `/workbench-core:install` command, and nothing prompted a re-run of it: the live style once ran 8 days stale.
+
+**The drift notice also reaches the model.** On 2026-11-09 the live `~/.claude/output-styles/clear.md` dated from 2026-10-31 and held only 12 rules, so rules 13 to 15 never loaded in any session. The notice sat on the status line, and nobody saw it. So the warmup now also prints a `## Stale output style` block on stdout, which becomes session context, for every source except `compact`. It names the stale file, and tells the agent to raise it in its first reply and ask Mike to run `/workbench-core:setup`. When the live copy matches, or no live copy exists, the warmup prints nothing. It still never writes the style, because setup shows the diff first. The block depends only on the two files, so identical sessions get identical bytes, and the prompt cache holds. `hooks/test-session-warmup.sh` covers the block, and `hooks/test-rule-source.sh` checks that it carries no rule text.
 
 The persona shipped today is `clear`. It defines a writing standard rather than a character. Soul and profile files, the `define-soul` and `define-profile` interviews, and their `guardrails.md` rubric were retired on 2026-09-27: the output style was the only persona in use, and a second copy of its rules kept drifting from it. `docs/setup-design-notes.md` records the retirement.
 
@@ -234,7 +238,7 @@ core/
 │   │                             project-scope, false-bare, meetings
 │   ├── session-log.sh          — raw log capture + summary-writer dispatch (not at SessionEnd or per turn)
 │   ├── session-warmup.sh       — retention cleanup + dead-marker sweep + session reconciler + notices;
-│   │                             summary drain + Chat-skill scan run deferred; prints nothing
+│   │                             summary drain + Chat-skill scan run deferred; prints only a stale-style notice
 │   ├── mcp-memory.sh           — stdio launcher, retained but unwired (see Memory server transport)
 │   ├── memory-server-up.sh     — shared-HTTP SessionStart kicker (disabled; retained for re-enable)
 │   ├── memory-server-spawn.sh  — shared-HTTP detached supervisor (disabled; retained)
@@ -927,7 +931,7 @@ The writer is spawned the way the [summary-writer](#logging-pipeline) is: `claud
 
 ### What the warmup does
 
-The warmup prints nothing for the model, on any source. The rules it used to print reach the model as [system-prompt sections](#the-workbench-rules-in-the-system-prompt), and every notice goes to the [notices file](#housekeeping-notices--for-mike-not-the-model).
+The warmup prints nothing for the model, on any source, except a [stale output style](#install-the-output-style) notice. The rules it used to print reach the model as [system-prompt sections](#the-workbench-rules-in-the-system-prompt), and every notice goes to the [notices file](#housekeeping-notices--for-mike-not-the-model).
 
 | Source | When | What happens |
 |--------|------|--------------|
@@ -976,7 +980,7 @@ that drifts between otherwise identical sessions invalidates the cache for the
 whole prompt downstream of it. An unattended scheduled task that fires every 20
 minutes pays that penalty on every tick.
 
-So the warmup prints nothing for the model at all. A malformed `config.json`,
+So the warmup prints nothing for the model, except the stale-style block, which depends only on two files and is the same bytes in every session until setup runs. A malformed `config.json`,
 a memory server that is not up, pending session summaries, misrouted project
 summaries, recall-hook liveness, new Chat-installable skills, a stale output
 style, and a retired `system-overrides.md` still on disk are all written to:

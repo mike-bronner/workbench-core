@@ -210,6 +210,7 @@ import { REMIND_STORE_KEY, hasDotPart, isInRoots, isWholeFileWrite, reminderOf, 
 import {
   ASKS_NOTHING,
   ASKS_USER,
+  HAND_BACK_REMINDER,
   LABELS,
   REPROMPT_REASON,
   aboveOf,
@@ -218,6 +219,7 @@ import {
   endsOnQuestion,
   hasCandidate,
   notificationForwards,
+  notificationHandsBack,
   proseOf,
   questionRefusalOf,
   shownTextOf,
@@ -1573,16 +1575,18 @@ export const register: Register = on => {
     await update($, turnRequest, request => (isMike ? requestedOf(e.text) : e.turnId === undefined ? [] : request))
     if (isMike) await update($, intake, state => ({ ...state, task: state.task + 1 }))
     const forwards = e.origin.kind === 'task-notification' && notificationForwards(e.text)
+    const isHandBack = sessionAttended === true && e.origin.kind === 'task-notification' && notificationHandsBack(e.text)
+    const reminded = isHandBack ? { ...e, context: [...(e.context ?? []), HAND_BACK_REMINDER] } : e
     if (e.turnId !== undefined) {
       if (forwards) await update($, turnForwards, () => true)
-      return next(e)
+      return next(reminded)
     }
     await update($, turnForwards, () => forwards)
     await update($, turnAttended, () => isAttendedPrompt(e.origin, e.text))
     await update($, turnScheduled, () => e.origin.kind === 'scheduled-trigger' || isScheduledFire(e.text))
     await update($, reprompted, () => false)
     const block = await promptRecall($, e.text).catch(() => undefined)
-    return next(block === undefined ? e : { ...e, context: [...(e.context ?? []), block] })
+    return next(block === undefined ? reminded : { ...reminded, context: [...(reminded.context ?? []), block] })
   })
 
   // One correction turn at most: the engine's stop_hook_active flag, and the
@@ -1766,9 +1770,12 @@ export const register: Register = on => {
         const outside = await projectScopeOf($, e as { prompt?: unknown; subagent_type?: unknown })
         if (outside !== undefined) return { deny: outside }
         const result = await next(e)
+        if (result.deny !== undefined) return result
         const output = result.result as { status?: unknown } | undefined
-        if (result.deny === undefined && output?.status === 'completed' && agentResultForwards(output)) await update($, turnForwards, () => true)
-        return result.deny !== undefined || hint === undefined ? result : { ...result, context: [...(result.context ?? []), hint] }
+        const isHandBack = output?.status === 'completed'
+        if (isHandBack && agentResultForwards(output)) await update($, turnForwards, () => true)
+        const added = [...(hint === undefined ? [] : [hint]), ...(isHandBack && sessionAttended === true ? [HAND_BACK_REMINDER] : [])]
+        return added.length === 0 ? result : { ...result, context: [...(result.context ?? []), ...added] }
       }
       // The delegation reminder is advice, never a guard: it gives no verdict,
       // and it fails open to silence, where every guard above fails closed. It

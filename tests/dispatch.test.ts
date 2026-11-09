@@ -13,6 +13,7 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { DEV_TEAM_LINE, HINT_LEAD, hintOf } from '../hooks/mods/dispatch'
+import { HAND_BACK_REMINDER } from '../hooks/mods/question-rule'
 import type { Bench, BenchOptions } from './bench'
 import { HOME, bench, run, start } from './bench'
 
@@ -163,6 +164,23 @@ describe('the dispatch hint', () => {
     const b = await session($, on)
     expect((await dispatch($, b, agent(BRIEF))).hints).toEqual([])
     expect((await dispatch($, b, agent(`${BRIEF}\n1. One.\n2. Two.`))).hints).toEqual([])
+  })
+
+  test("a completed foreground sub-agent's result carries both the hint and the hand-back reminder", async ($, on) => {
+    on('tool.call', { tool: 'Agent' }, () => ({ result: { status: 'completed', content: [{ type: 'text', text: 'The parser is fixed.' }] } as never }))
+    await session($, on)
+    const result = await $.tool.call(agent(STEPS) as never)
+    expect(result.deny).toBeUndefined()
+    expect((result.context ?? []).filter(text => text.startsWith(HINT_LEAD))).toHaveLength(1)
+    expect(result.context ?? []).toContain(HAND_BACK_REMINDER)
+  })
+
+  test('an Agent call denied beneath carries no hint and no reminder', async ($, on) => {
+    const b = await session($, on)
+    b.denyBeneath = tool => (tool === 'Agent' ? 'refused beneath' : undefined)
+    const result = await $.tool.call(agent(STEPS) as never)
+    expect(result.deny).toBe('refused beneath')
+    expect(result.context).toBeUndefined()
   })
 
   test("a sub-agent's method-heavy brief draws no hint", async ($, on) => {

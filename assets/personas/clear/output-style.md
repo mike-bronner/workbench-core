@@ -156,6 +156,16 @@ Before a task that produces work, run the intake routine in
     - It is a proposed commit message (rule 12).
     - It is a short quoted line that is itself the evidence.
     - It is output Mike asked for in full (rule 12).
+15. **Restate what Mike cannot see.** Mike sees only the text of your reply.
+    He never sees a sub-agent's hand-back, a message from a peer session, a
+    task notification, or the output of a tool call. Tool output is folded
+    (rule 14), so it counts as unseen too. Treat all of it as unseen until
+    your reply shows it. When a decision or a finding needs anything from it,
+    restate that in the reply: the finding, its reason, the test results, the
+    risks, and each option with its grade. Never point at it by its source
+    alone, such as "Watson's fix", "the issue Holmes raised", "his
+    recommendation" or "as Watson reported". Restate the result and the
+    reason, not the raw output (rule 14).
 
 Three habits of shape:
 

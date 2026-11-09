@@ -51,10 +51,10 @@ has() { # desc, extended-regex
 # ── 1. The approved rule set ─────────────────────────────────────────────────
 echo "the output style carries the approved rule set:"
 RULE_COUNT="$(printf '%s\n' "$BODY" | grep -cE '^[0-9]+\. \*\*')"
-if [ "$RULE_COUNT" -eq 14 ]; then
-  ok "exactly fourteen numbered rules"
+if [ "$RULE_COUNT" -eq 15 ]; then
+  ok "exactly fifteen numbered rules"
 else
-  no "exactly fourteen numbered rules" "found $RULE_COUNT"
+  no "exactly fifteen numbered rules" "found $RULE_COUNT"
 fi
 has "verify before asserting is stated"             'Verify before you assert'
 has "rule 1 leads with the answer"                  '1\. \*\*Lead with the answer'
@@ -163,6 +163,12 @@ has "rule 14 shows what is being decided on"          'The content is the thing 
 has "rule 14 keeps the proposed commit message"       'It is a proposed commit message \(rule 12\)'
 has "rule 14 keeps a quoted line as evidence"         'a short quoted line that is itself the evidence'
 has "rule 14 keeps output asked for in full"          'It is output Mike asked for in full \(rule 12\)'
+has "rule 15 restates what Mike cannot see"           '15\. \*\*Restate what Mike cannot see'
+has "rule 15 states that Mike sees only the reply"    'Mike sees only the text of your reply'
+has "rule 15 names every unseen source"               "He never sees a sub-agent's hand-back, a message from a peer session, a task notification, or the output of a tool call"
+has "rule 15 counts folded tool output as unseen"     'Tool output is folded \(rule 14\), so it counts as unseen too'
+has "rule 15 restates what a decision or finding needs" 'When a decision or a finding needs anything from it, restate that in the reply: the finding, its reason, the test results, the risks, and each option with its grade'
+has "rule 15 bans a pointer at the source alone"      'Never point at it by its source alone'
 has "the table habit is stated"                     'three or more comparable items in a table'
 has "the caveat habit is stated, and is not a hedge" 'honest caveat.{0,80}It is not a hedge'
 has "the synthesis habit is stated"                 'Synthesize sub-agent output'

@@ -93,6 +93,11 @@ export function shownTextOf(messages: readonly ApiMessage[], id: string | undefi
 export const CONTEXT_ITEM = 'the context Mike needs to answer it'
 export const RECOMMENDATION_ITEM = 'one sentence that names the recommended option and its grade'
 export const pointedTableItem = (phrase: string): string => `the options table that "${phrase}" in the question points at`
+export const handBackItem = (phrase: string, key: string): string =>
+  `what "${phrase}" in the question points at, restated in your own words with the word "${key}", because Mike never sees a sub-agent's hand-back`
+
+export const HAND_BACK_REMINDER =
+  "Mike has not seen this sub-agent hand-back. He sees only the text of your reply. Before you ask him anything that depends on it, or pass on a finding from it, restate in your reply what he needs from it: the finding, its reason, the test results, the risks, and each option with its grade."
 
 export const tableItem = (rows: number): string =>
   `one options table with the columns Option, Pros, Cons and Grade, a separator row, and ${rows === 1 ? 'a row' : `a row for each of its ${rows} options`}`
@@ -104,7 +109,7 @@ export const contextRefusalOf = (items: readonly string[], isForwarding: boolean
   [
     'AskUserQuestion was refused: the question leans on context it does not carry, and the prose directly above the call does not show that context.',
     'Mike may read the dialog without the reply, so fix one of two things.',
-    'Either make the question carry it: give each option a label that says what it does, put its grade (such as "All met" or "AC2 partly met") and any warning in its description, and refer to no option, table or grade shown elsewhere.',
+    'Either make the question carry it: give each option a label that says what it does, put its grade (such as "All met" or "AC2 partly met") and any warning in its description, and refer to no option, table, grade or sub-agent report shown elsewhere.',
     `Or write this in prose directly above the call, in the same message as the call, after this refusal: ${items.join('; ')}.`,
     ...(isForwarding ? ["Mike never sees a sub-agent's hand-back. If you lack the context, ask that sub-agent through SendMessage first."] : []),
     'Then call AskUserQuestion again.',
@@ -121,6 +126,23 @@ const GRADE_REF = /\b(?:those|its)\s+grades\b|\bgrades\s+(?:above|below)\b|\bas\
 const AGENT_REF =
   /\b(?:(?:Watson|Holmes|Lestrade|sub-?agent)(?:['’]s)?|(?:agent|reviewer)['’]s)\s+(?:own\s+)?(?:options?|proposals?|alternatives|choices)\b|\boptions?\s+(?:that\s+)?(?:Watson|Holmes|Lestrade|the\s+sub-?agent|the\s+agent)\s+(?:proposed|gave|suggested|returned|handed\s+back|graded)\b/i
 const GRADE = /\b(?:all|partly|not)\s+met\b/i
+const AGENT_NAME = String.raw`(?:Watson|Holmes|Lestrade|the\s+(?:sub-?agent|agent))`
+const AGENT_POSSESSIVE = String.raw`(?:Watson|Holmes|Lestrade|(?:the\s+)?sub-?agent|the\s+agent)['’]s?`
+const HAND_BACK_NOUN = String.raw`(fix(?:es)?|findings?|recommendations?|concerns?|issues?|reports?|verdicts?|suggestions?|results?)`
+const HAND_BACK_REFS = [
+  new RegExp(String.raw`\b${AGENT_POSSESSIVE}\s+(?:own\s+)?${HAND_BACK_NOUN}\b`, 'gi'),
+  new RegExp(String.raw`\b${HAND_BACK_NOUN}\s+(?:that\s+)?${AGENT_NAME}\s+(?:raised|reported|found|flagged|suggested|recommended|noted|returned|handed\s+back)\b`, 'gi'),
+  new RegExp(String.raw`\bas\s+${AGENT_NAME}\s+(reported|found|flagged|suggested|recommended|noted|said)\b`, 'gi'),
+]
+const HAND_BACK_STEMS = ['fix', 'find', 'found', 'recommend', 'concern', 'issue', 'report', 'verdict', 'suggest', 'result', 'flag', 'note', 'said']
+
+const handBacksOf = (text: string): { phrase: string; key: string }[] =>
+  HAND_BACK_REFS.flatMap(ref =>
+    [...text.matchAll(ref)].map(match => {
+      const word = (match[1] ?? '').toLowerCase()
+      return { phrase: match[0], key: HAND_BACK_STEMS.find(stem => word.startsWith(stem)) ?? word }
+    }),
+  )
 
 const optionsOf = (question: AskQuestion): AskOption[] => (Array.isArray(question?.options) ? (question.options as AskOption[]) : [])
 
@@ -153,12 +175,12 @@ const isDecision = (question: AskQuestion): boolean => {
   return options.length >= 3 || options.some(option => typeof option?.description === 'string' && GRADE.test(option.description))
 }
 
-const refsOf = (asked: readonly AskQuestion[]): { ids: string[]; table: string | undefined; isGraded: boolean } => {
+const refsOf = (asked: readonly AskQuestion[]): { ids: string[]; table: string | undefined; isGraded: boolean; handBacks: { phrase: string; key: string }[] } => {
   const text = asked.flatMap(textsOf).join('\n')
   const labels = asked.flatMap(question => optionsOf(question).map(option => bareIdOf(option?.label))).filter((id): id is string => id !== undefined)
   const ids = [...text.matchAll(OPTION_IDS)].flatMap(match => (match[1] ?? '').match(/[A-Z]|\d+/g) ?? [])
   const letters = [...text.matchAll(LETTER_IDS)].flatMap(match => match[0].match(/[A-E]/g) ?? [])
-  return { ids: [...new Set([...labels, ...ids, ...letters])], table: text.match(TABLE_REF)?.[0], isGraded: GRADE_REF.test(text) || AGENT_REF.test(text) }
+  return { ids: [...new Set([...labels, ...ids, ...letters])], table: text.match(TABLE_REF)?.[0], isGraded: GRADE_REF.test(text) || AGENT_REF.test(text), handBacks: handBacksOf(text) }
 }
 
 export function isSelfContained(questions: unknown): boolean {
@@ -167,7 +189,7 @@ export function isSelfContained(questions: unknown): boolean {
   const isCarried = (option: AskOption) =>
     typeof option?.label === 'string' && option.label.trim() !== '' && bareIdOf(option.label) === undefined && typeof option?.description === 'string' && GRADE.test(option.description)
   const refs = refsOf(asked)
-  return asked.every(question => optionsOf(question).length > 0 && optionsOf(question).every(isCarried)) && refs.ids.length === 0 && refs.table === undefined && !refs.isGraded
+  return asked.every(question => optionsOf(question).length > 0 && optionsOf(question).every(isCarried)) && refs.ids.length === 0 && refs.table === undefined && !refs.isGraded && refs.handBacks.length === 0
 }
 
 export function questionRefusalOf(questions: unknown, above: string, isForwarding: boolean): string | undefined {
@@ -178,6 +200,7 @@ export function questionRefusalOf(questions: unknown, above: string, isForwardin
   const unshown = refs.ids.filter(id => !isItemFor(above, id))
   if (unshown.length > 0) items.push(idsItem(unshown))
   if (refs.table !== undefined && tableRowsOf(above, false) === 0) items.push(pointedTableItem(refs.table))
+  for (const { phrase, key } of refs.handBacks) if (!new RegExp(String.raw`\b${key}`, 'i').test(above)) items.push(handBackItem(phrase, key))
   const decisions = isForwarding ? asked.filter(isDecision) : []
   const rows = Math.max(refs.isGraded ? 1 : 0, ...decisions.map(question => optionsOf(question).length))
   if (rows > 0 && tableRowsOf(above, true) < rows) items.push(tableItem(rows))
@@ -191,6 +214,8 @@ const asksMike = (handBack: string): boolean => {
   const text = handBack.replace(/(```|~~~)[\s\S]*?(\1|$)/g, '').replace(/`[^`\n]*`/g, '')
   return hasCandidate(text) || DECISION.test(text) || tableRowsOf(handBack, true) > 0
 }
+
+export const notificationHandsBack = (text: string): boolean => text.includes('<result>')
 
 export function notificationForwards(text: string): boolean {
   const start = text.indexOf('<result>')

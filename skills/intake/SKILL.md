@@ -87,6 +87,16 @@ Each criterion states one condition that someone other than you can check
 without asking you. Together they cover the goal and every hard limit. A
 criterion names a result, never a method.
 
+A criterion never demands a run of the full test suite, such as "the full suite
+passes" or "all tests are green". A brief copies the criteria, so such a
+criterion puts a slow full run into the developer's work. The full suite runs
+once, at the end, in one of two places. For local, uncommitted work, Holmes runs
+it as his last step, after every other review finding is fixed. For an
+Index-mode pull request, CI on the pull request is that one run, and Holmes
+adds no run of his own. A criterion about tests names the tests the change
+touches instead. For example, the change's own tests pass, or the existing tests
+that cover the changed files pass.
+
 ### 5. Show the intake block
 
 Show it before any work starts, every time, even when you asked nothing. It is

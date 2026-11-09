@@ -50,7 +50,7 @@ export function world(on: On, env: Record<string, string>): World {
   mock.clock(on)
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.end', ($, e) => ({ sessionId: e.sessionId }))
-  on('prompt.submit', ($, e) => ({ text: e.text }))
+  on('prompt.submit', ($, e) => ({ text: e.text, context: e.context }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
   // A response streams its text, then its stop, as the engine's does.
   on('turn.step', async function* ($, e) {

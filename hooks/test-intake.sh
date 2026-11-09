@@ -49,6 +49,17 @@ has "the interview goes through AskUserQuestion"     'Ask every question that pa
 has "no gap means no question"                       'When no question passes the test, ask nothing'
 has "step 4 derives acceptance criteria"             '### 4\. Acceptance criteria Derive them from the goal and the context'
 has "each criterion is observable"                   'check without asking you'
+has "no criterion demands a full-suite run"          'A criterion never demands a run of the full test suite'
+has "the full suite runs once, at the end"           'The full suite runs once, at the end, in one of two places'
+has "Holmes runs it last for local, uncommitted work" 'For local, uncommitted work, Holmes runs it as his last step'
+has "CI on an Index-mode pull request is that run"   'For an Index-mode pull request, CI on the pull request is that one run, and Holmes adds no run of his own'
+if printf '%s' "$FLAT" | grep -qF -- 'as the last step before a push, a commit, or a pull request marked ready'; then
+  no "no final run is given to Holmes before every push" "found the old sentence"
+else
+  ok "no final run is given to Holmes before every push"
+fi
+has "a criterion may name the change's own tests"    "the change.s own tests pass"
+has "a criterion may name the tests of changed files" 'the existing tests that cover the changed files pass'
 has "step 5 shows the block every time"              'Show it before any work starts, every time, even when you asked nothing'
 has "the block is capped at about 12 rows"          'Keep the block to about 12 rows at 80 columns'
 has "the block gives each criterion one line"        'Give each criterion one line'

@@ -6,11 +6,13 @@ import {
   ASKS_NOTHING,
   ASKS_USER,
   CONTEXT_ITEM,
+  HAND_BACK_REMINDER,
   RECOMMENDATION_ITEM,
   REPROMPT_REASON,
   aboveOf,
   agentResultForwards,
   contextRefusalOf,
+  handBackItem,
   idsItem,
   isSelfContained,
   notificationForwards,
@@ -995,4 +997,154 @@ describe('a pointer at an options table is refused, and the refusal quotes it', 
       expect(w.asked).toBe(0)
     })
   }
+})
+
+const askAbout = (question: string) => decision([{ label: 'Go ahead', description: 'Make the change.' }, { label: 'Hold it', description: 'Wait for now.' }], question)
+
+const HAND_BACK_POINTERS = [
+  ["Should I apply Watson's fix?", "Watson's fix", 'fix'],
+  ["Should I apply Watson's fixes?", "Watson's fixes", 'fix'],
+  ["Should I address Holmes's concern?", "Holmes's concern", 'concern'],
+  ["Should I address Holmes' concern?", "Holmes' concern", 'concern'],
+  ["Act on the sub-agent's findings?", "the sub-agent's findings", 'find'],
+  ["Go with the agent's recommendation?", "the agent's recommendation", 'recommend'],
+  ["Accept Watson's own verdict?", "Watson's own verdict", 'verdict'],
+  ["Accept Lestrade's verdicts?", "Lestrade's verdicts", 'verdict'],
+  ["Take Lestrade's suggestions?", "Lestrade's suggestions", 'suggest'],
+  ["Trust Holmes's results?", "Holmes's results", 'result'],
+  ["Read Watson's report again?", "Watson's report", 'report'],
+  ["Close Holmes's issue?", "Holmes's issue", 'issue'],
+  ['Should I fix the issue Holmes raised?', 'issue Holmes raised', 'issue'],
+  ['Act on the concern that Watson reported?', 'concern that Watson reported', 'concern'],
+  ['Fix the issue the agent found?', 'issue the agent found', 'issue'],
+  ['Fix the issue the sub-agent flagged?', 'issue the sub-agent flagged', 'issue'],
+  ['Apply the fix Watson suggested?', 'fix Watson suggested', 'fix'],
+  ['Apply the fix Holmes recommended?', 'fix Holmes recommended', 'fix'],
+  ['Act on the concern Lestrade noted?', 'concern Lestrade noted', 'concern'],
+  ['Use the results Watson returned?', 'results Watson returned', 'result'],
+  ['Use the findings Watson handed back?', 'findings Watson handed back', 'find'],
+  ['Ship it, as Watson reported?', 'as Watson reported', 'report'],
+  ['Ship it, as Holmes found?', 'as Holmes found', 'found'],
+  ['Hold it, as Holmes flagged?', 'as Holmes flagged', 'flag'],
+  ['Split it, as Watson suggested?', 'as Watson suggested', 'suggest'],
+  ['Split it, as the agent recommended?', 'as the agent recommended', 'recommend'],
+  ['Hold it, as Lestrade noted?', 'as Lestrade noted', 'note'],
+  ['Hold it, as Holmes said?', 'as Holmes said', 'said'],
+] as const
+
+describe('AC2: a question that points at sub-agent content the prose above does not show is refused', () => {
+  askTest('a call that points at a hand-back is refused when the prose above does not show it', async ($, on) => {
+    const w = world(on, ATTENDED)
+    w.blocksBefore = [{ type: 'text', text: 'Watson finished.' }]
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('fix the parser'))
+    expect((await $.tool.call(askAbout("Should I apply Watson's fix?"))).deny).toBe(refused([handBackItem("Watson's fix", 'fix')], false))
+    expect(w.asked).toBe(0)
+  })
+
+  askTest('the same call runs when the prose above shows it', async ($, on) => {
+    const w = world(on, ATTENDED)
+    w.blocksBefore = [{ type: 'text', text: "Watson's fix moves the check into the hook and adds two tests." }]
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('fix the parser'))
+    expect((await $.tool.call(askAbout("Should I apply Watson's fix?"))).deny).toBeUndefined()
+    expect(w.asked).toBe(1)
+  })
+
+  for (const [question, phrase, key] of HAND_BACK_POINTERS) {
+    test(`"${question}" is refused for "${phrase}" until the prose above uses "${key}"`, () => {
+      const refusal = questionRefusalOf(askAbout(question).questions, 'Watson finished.', false)
+      expect(refusal).toBe(refused([handBackItem(phrase, key)], false))
+      expect(refusal).toContain(`"${phrase}"`)
+      expect(questionRefusalOf(askAbout(question).questions, `In short (${key}): the guard misses a quoted path.`, false)).toBeUndefined()
+    })
+  }
+
+  test('one refusal names every pointer the prose above does not show', () => {
+    const call = askAbout("Apply Watson's fix and answer Holmes's concern?")
+    expect(questionRefusalOf(call.questions, 'Watson finished.', false)).toBe(refused([handBackItem("Watson's fix", 'fix'), handBackItem("Holmes's concern", 'concern')], false))
+    expect(questionRefusalOf(call.questions, 'Watson wrote a fix for the parser.', false)).toBe(refused([handBackItem("Holmes's concern", 'concern')], false))
+  })
+
+  test('a graded question that points at a hand-back is not self-contained', () => {
+    const graded = [{ question: 'Which way?', options: [{ label: 'Patch the lexer', description: 'All met.' }, { label: 'New tokenizer', description: "Watson's fix. AC2 partly met." }] }]
+    expect(isSelfContained(graded)).toBe(false)
+    expect(questionRefusalOf(graded, '', false)).toBe(refused([handBackItem("Watson's fix", 'fix')], false))
+  })
+
+  for (const question of [
+    'Should the page show the test results?',
+    'Close the GitHub issue as fixed?',
+    'Keep the SSH agent settings as they are?',
+    'Mark their issue resolved?',
+    'Which fix should Watson build first?',
+    'Forward his report to the client?',
+    'Should the page show her results?',
+    'Should I fix the issue the reviewer raised?',
+    "Should I address the reviewer's concern?",
+    'Reply to the comment, as the reviewer suggested?',
+  ]) {
+    test(`"${question}" points at no hand-back`, () => {
+      for (const isForwarding of [false, true]) expect([isForwarding, questionRefusalOf(askAbout(question).questions, 'A review comment asks for this.', isForwarding)]).toEqual([isForwarding, undefined])
+    })
+  }
+})
+
+describe('AC3: each sub-agent hand-back reaches the main session with a reminder that Mike has not seen it', () => {
+  test('the reminder says Mike has not seen it and asks for a restatement', () => {
+    expect(HAND_BACK_REMINDER).toContain('Mike has not seen this sub-agent hand-back')
+    expect(HAND_BACK_REMINDER).toContain('restate in your reply what he needs')
+  })
+
+  for (const [name, text, turnId, isReminded] of [
+    ['a hand-back that opens a turn', REPORTED, undefined, true],
+    ['a hand-back folded into a running turn', REPORTED, 't', true],
+    ['a hand-back that asks Mike something', HANDED_BACK, undefined, true],
+    ["a background command's notification", COMMAND_DONE, undefined, false],
+  ] as const) {
+    askTest(`${name} ${isReminded ? 'carries the reminder' : 'carries no reminder'}`, async ($, on) => {
+      world(on, ATTENDED)
+      await $.session.start(start(true))
+      const result = await $.prompt.submit({ ...prompt(text, NOTIFICATION), ...(turnId === undefined ? {} : { turnId }) })
+      expect((result.context ?? []).includes(HAND_BACK_REMINDER)).toBe(isReminded)
+    })
+  }
+
+  askTest('a prompt Mike types that quotes a result carries no reminder', async ($, on) => {
+    world(on, ATTENDED)
+    await $.session.start(start(true))
+    expect((await $.prompt.submit(prompt(REPORTED))).context ?? []).not.toContain(HAND_BACK_REMINDER)
+  })
+
+  askTest('a hand-back in a session nobody attends carries no reminder', async ($, on) => {
+    world(on, ATTENDED)
+    await $.session.start(start(false))
+    expect((await $.prompt.submit(prompt(REPORTED, NOTIFICATION))).context ?? []).not.toContain(HAND_BACK_REMINDER)
+  })
+
+  askTest("a foreground sub-agent's completed result carries the reminder", async ($, on) => {
+    agentReturns(on, { status: 'completed', content: [{ type: 'text', text: 'The parser is fixed.' }] })
+    world(on, { WORKBENCH_ORCHESTRATOR: '0' })
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('go'))
+    const result = await $.tool.call(AGENT)
+    expect(result.deny).toBeUndefined()
+    expect(result.context ?? []).toContain(HAND_BACK_REMINDER)
+  })
+
+  askTest('a background sub-agent launch carries no reminder, because nothing is handed back yet', async ($, on) => {
+    agentReturns(on, { status: 'async_launched', agentId: 'a1' })
+    world(on, { WORKBENCH_ORCHESTRATOR: '0' })
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('go'))
+    expect((await $.tool.call({ ...AGENT, run_in_background: true })).context ?? []).not.toContain(HAND_BACK_REMINDER)
+  })
+
+  askTest("a foreground sub-agent's result in a session nobody attends carries no reminder", async ($, on) => {
+    agentReturns(on, { status: 'completed', content: [{ type: 'text', text: 'The parser is fixed.' }] })
+    world(on, { WORKBENCH_ORCHESTRATOR: '0' })
+    await $.session.start(start(false))
+    await $.prompt.submit(prompt('go'))
+    expect((await $.tool.call(AGENT)).context ?? []).not.toContain(HAND_BACK_REMINDER)
+  })
 })

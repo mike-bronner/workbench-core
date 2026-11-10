@@ -316,6 +316,8 @@ routes() { # desc, fixed string
 routes "a resumable task gets a progress note right away" 'When a task may be resumed by another or a later session (multi-step work, a challenge, an investigation in progress, or facts derived from files, recordings or sessions), `write` one progress note right away'
 routes "the progress note is kept current"                'Keep it current as the task moves'
 routes "the progress note carries sources and tags"      'Give it `sources:` and `[^id]` footnotes per the sources rule below.'
+routes "a child note names its hub in parent:"           "give the child note \`parent:\` with the hub's vault path, such as \`parent: progress/<hub>.md\`."
+routes "an ended task updates its hub note"               'Set `task_status: ended` when the task ends, and in the same step update any parent or hub progress note the task belongs to'
 routes "every note carries labelled sources"              'every vault note carries a `sources:` list in its frontmatter whenever any source can be named'
 routes "each source is one entry"                         'Give one entry each in the OKF shape `{id, title, resource}`'
 routes "two or more sources tag every fact"               'With two or more sources, end each fact with the OKF footnote `[^id]` of its source'

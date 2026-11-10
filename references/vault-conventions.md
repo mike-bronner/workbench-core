@@ -87,7 +87,7 @@ left as written. An absolute path outside the vault is refused.
 ## Common indexed fields
 
 These fields are indexed for search: `name`, `type`, `tags`, `summary`,
-`date`, `scope`, `log_files`. On an OKF bundle the server adds `status` and
+`date`, `scope`, `log_files`, `task_status`. On an OKF bundle the server adds `status` and
 `stale_after`.
 
 ## Sources
@@ -187,10 +187,21 @@ rot, and the next session does not find them.
 - Frontmatter: `type: progress`, `task_status: open` or `ended`, and
   `updated: YYYY-MM-DD`, changed on every update. Add `sources:` per the
   section above.
+- A child task's note also carries `parent:`, the vault path of its hub note,
+  such as `parent: progress/<hub>.md`: relative to the vault root, with no
+  leading slash, and ending in `.md`. The first-prompt search shows that hub
+  whenever the child matches, even after the child has ended.
 - Body: what is done, what is next, and the facts found so far, each with its
   `[^id]` footnote when the note has two or more sources.
 - When the task ends, set `task_status: ended`. Memory-lint flags an ended note,
   and one not updated for 14 days, for review. It never deletes one.
+- When the task ends, also update any parent or hub progress note it belongs
+  to: what this task finished, what is next there, and its `updated:` date. A
+  hub note holds standing steps for a series of tasks, and it goes stale when
+  only the child notes move.
+- A session's first prompt gets the open progress notes that match it, and the
+  open hub of any matching child, by name, summary and `updated:` date. Read
+  each one that bears on the task before you start.
 
 Before you re-derive anything on a task that has history, `search` the vault
 for it: its progress note, its sources, and what an earlier session found.

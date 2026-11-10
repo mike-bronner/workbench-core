@@ -55,6 +55,13 @@ const SCAN_MIN_CHARS = 6
 const QUERY_MAX_CHARS = 500
 const SUMMARY_MAX_CHARS = 160
 export const TITLE_MAX_CHARS = 100
+export const PROGRESS_LIMIT = 3
+export const PROGRESS_FETCH = 12
+export const PROGRESS_TIMEOUT_MS = 1500
+export const PROGRESS_MIN_SCORE = 0.02
+export const PROGRESS_FILTERS = { type: 'progress' } as const
+export const PROGRESS_OPEN_FILTERS = { type: 'progress', task_status: 'open' } as const
+const PROGRESS_SUMMARY_MAX_CHARS = 300
 const PATH_MAX_CHARS = 200
 
 // One line of at most `max` characters: a note's title or summary is the
@@ -94,7 +101,7 @@ export function scanQuery(extracted: string): string | undefined {
 // when the vault has no embeddings and the search fell back to BM25, whose
 // score is in its own units; `semantic` or `hybrid` from a hybrid search, whose
 // score is a rank-fusion value. Absent when the server sent none.
-export type Hit = { path: string; title: string; type: string; summary: string; score: number; searchType?: string }
+export type Hit = { path: string; title: string; type: string; summary: string; score: number; searchType?: string; taskStatus?: string; updated?: string; parent?: string }
 
 // The hits in a memory MCP search result: the text block's JSON, either a list
 // or `{ result: [...] }`. Anything else is no hits.
@@ -109,25 +116,52 @@ export function hitsOf(content: readonly { type: string; text?: string }[]): Hit
   }
   const rows = Array.isArray(parsed) ? parsed : (parsed as { result?: unknown } | null)?.result
   if (!Array.isArray(rows)) return []
-  const hits: Hit[] = []
-  for (const row of rows) {
-    if (typeof row !== 'object' || row === null) continue
-    const { path, title, score, frontmatter, sections, search_type: searchType } = row as Record<string, unknown>
-    if (typeof path !== 'string' || path === '' || typeof score !== 'number') continue
-    const fm = (typeof frontmatter === 'object' && frontmatter !== null ? frontmatter : {}) as Record<string, unknown>
-    const first = Array.isArray(sections) ? (sections[0] as { content?: unknown } | undefined) : undefined
-    const summary = typeof fm.summary === 'string' ? fm.summary : typeof first?.content === 'string' ? first.content : ''
-    hits.push({
-      path,
-      title: lineOf(typeof title === 'string' && title.trim() !== '' ? title : typeof fm.name === 'string' ? fm.name : path, TITLE_MAX_CHARS),
-      type: typeof fm.type === 'string' ? fm.type : 'note',
-      summary: lineOf(summary, 400),
-      score,
-      ...(typeof searchType === 'string' ? { searchType } : {}),
-    })
-  }
-  return hits
+  return rows.map(hitOf).filter((hit): hit is Hit => hit !== undefined)
 }
+
+export const vaultPathOf = (value: unknown): string | undefined => {
+  if (typeof value !== 'string') return undefined
+  const path = value.trim().replace(/^\/+/, '')
+  return path.endsWith('.md') && !/\s/.test(path) && path.split('/').every(part => part !== '' && part !== '.' && part !== '..') ? path : undefined
+}
+
+function hitOf(row: unknown): Hit | undefined {
+  if (typeof row !== 'object' || row === null) return undefined
+  const { path, title, score, frontmatter, sections, search_type: searchType } = row as Record<string, unknown>
+  if (typeof path !== 'string' || path === '' || typeof score !== 'number') return undefined
+  const fm = (typeof frontmatter === 'object' && frontmatter !== null ? frontmatter : {}) as Record<string, unknown>
+  const first = Array.isArray(sections) ? (sections[0] as { content?: unknown } | undefined) : undefined
+  const summary = typeof fm.summary === 'string' ? fm.summary : typeof first?.content === 'string' ? first.content : ''
+  const parent = vaultPathOf(fm.parent)
+  return {
+    path,
+    title: lineOf(typeof title === 'string' && title.trim() !== '' ? title : typeof fm.name === 'string' ? fm.name : path, TITLE_MAX_CHARS),
+    type: typeof fm.type === 'string' ? fm.type : 'note',
+    summary: lineOf(summary, 400),
+    score,
+    ...(typeof searchType === 'string' ? { searchType } : {}),
+    ...(typeof fm.task_status === 'string' ? { taskStatus: fm.task_status } : {}),
+    ...(typeof fm.updated === 'string' ? { updated: fm.updated } : {}),
+    ...(parent !== undefined && parent !== path ? { parent } : {}),
+  }
+}
+
+export function noteOf(path: string, content: readonly { type: string; text?: string }[]): Hit | undefined {
+  const text = content.find(block => block.type === 'text' && typeof block.text === 'string')?.text
+  if (text === undefined) return undefined
+  try {
+    const note: unknown = JSON.parse(text)
+    if (typeof note !== 'object' || note === null) return undefined
+    const { content: body } = note as { content?: unknown }
+    return hitOf({ ...note, path, score: Number.POSITIVE_INFINITY, ...(typeof body === 'string' ? { sections: [{ content: body }] } : {}) })
+  } catch {
+    return undefined
+  }
+}
+
+export const parentsOf = (hits: readonly Hit[], minScore: number): string[] => [
+  ...new Set(hits.flatMap(hit => (hit.type === 'progress' && hit.score >= minScore && hit.parent !== undefined ? [hit.parent] : []))),
+]
 
 // Filters 1 to 3: the threshold, the types, and the notes this session has
 // seen, best first, at most `limit`.
@@ -137,6 +171,21 @@ export const candidatesOf = (hits: readonly Hit[], seen: readonly string[], limi
     .filter((hit, i, all) => all.findIndex(other => other.path === hit.path) === i)
     .slice(0, limit)
 
+export const openProgressOf = (hits: readonly Hit[], limit: number, minScore: number): Hit[] =>
+  hits
+    .filter(hit => hit.type === 'progress' && hit.taskStatus === 'open' && hit.score >= minScore)
+    .filter((hit, i, all) => all.findIndex(other => other.path === hit.path) === i)
+    .slice(0, limit)
+
+export function progressBlockOf(hits: readonly Hit[]): string {
+  const header =
+    '📌 Open progress notes that match this task, and the hub notes of matching tasks. They reflect what was true when written, so verify them before acting. Read each one that bears on the task before you start, and keep it and its hub note current:'
+  const bullets = hits.map(
+    hit => `• ${lineOf(hit.title, TITLE_MAX_CHARS)} - ${lineOf(hit.summary, PROGRESS_SUMMARY_MAX_CHARS)} (updated ${lineOf(hit.updated ?? 'unknown', 20)}) (${lineOf(hit.path, PATH_MAX_CHARS)})`,
+  )
+  return [header, ...bullets].join('\n')
+}
+
 // What the classifier reads for one hit: the task, then the note.
 export const relevanceText = (task: string, hit: Hit): string =>
   `Would this note from a memory vault help with the task? Answer ${RELEVANT} or ${UNRELATED}.\n\nTask: ${task}\n\nNote: ${hit.title} [${hit.type}] - ${hit.summary.slice(0, 400)}`
@@ -145,6 +194,8 @@ export const relevanceText = (task: string, hit: Hit): string =>
 // keeps its hit, as the fallback does: only a definite "unrelated" drops one.
 export const relevantOf = (hits: readonly Hit[], labels: readonly (string | undefined)[]): Hit[] =>
   hits.filter((_, i) => labels[i] !== UNRELATED)
+
+export const acceptedOf = (hits: readonly Hit[], labels: readonly (string | undefined)[] | undefined): Hit[] => (labels === undefined ? [] : hits.filter((_, i) => labels[i] === RELEVANT))
 
 // The one compact block the model reads beside the prompt or the tool result.
 export function blockOf(hits: readonly Hit[], scan?: string): string {

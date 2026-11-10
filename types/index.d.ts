@@ -362,6 +362,7 @@ declare module 'claude-code' {
       transcriptPath: string
       capture: CaptureState
       recall: RecallState
+      progressRecalled: boolean
       intake: IntakeState
       outwardDenied: readonly string[]
       mcpRefusals: Readonly<Record<string, { text: string; count: number }>>

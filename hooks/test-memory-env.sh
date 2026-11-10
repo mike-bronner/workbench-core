@@ -50,7 +50,8 @@ load() {
       printf "SEARCHABLE_FIELDS=%s\n" "$MARKDOWN_VAULT_MCP_SEARCHABLE_FIELDS"
       printf "EMBED_CONTEXT=%s\n" "$MARKDOWN_VAULT_MCP_EMBED_CONTEXT"
       printf "FOLDER_WEIGHTS=%s\n" "$MARKDOWN_VAULT_MCP_FOLDER_WEIGHTS"
-      printf "FTS_WEIGHTS=%s\n" "$MARKDOWN_VAULT_MCP_FTS_WEIGHTS"'
+      printf "FTS_WEIGHTS=%s\n" "$MARKDOWN_VAULT_MCP_FTS_WEIGHTS"
+      printf "INDEXED_FIELDS=%s\n" "$MARKDOWN_VAULT_MCP_INDEXED_FIELDS"'
 }
 
 assert_line() {
@@ -86,6 +87,7 @@ assert_line "summary is searchable"           "$OUT" "SEARCHABLE_FIELDS=summary"
 assert_line "embed context on"                "$OUT" "EMBED_CONTEXT=true"
 assert_line "sessions down-weighted"          "$OUT" "FOLDER_WEIGHTS=sessions:0.5"
 assert_line "title and summary boosted"       "$OUT" "FTS_WEIGHTS=title:3.0,summary:2.0"
+assert_line "task_status is indexed for filters" "$OUT" "INDEXED_FIELDS=name,type,tags,summary,date,scope,log_files,task_status"
 
 echo "override env wins over config.json:"
 OUT=$(load "$SANDBOX/cfgdir/config.json" \

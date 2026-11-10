@@ -33,6 +33,11 @@ export type World = {
   mcp: { tool: string; args: Record<string, unknown> }[]
   // The rows the next search answers with, or an error result.
   rows: Row[] | 'error'
+  searchFails?: (args: Record<string, unknown>) => boolean
+  ignoresFilters?: boolean
+  notes?: Record<string, { title?: string; frontmatter: Record<string, unknown>; content?: string }>
+  searchHangs?: (args: Record<string, unknown>) => boolean
+  searchDelayMs?: (args: Record<string, unknown>) => number
   // The vault paths a `read` finds.
   existing: Set<string>
   // Whether the server connects.
@@ -146,14 +151,23 @@ export function memoryWorld(on: On, env: Record<string, string> = {}): World {
   on('mcp.connect', () => ({
     value: w.connects ? { isConnected: true as const, server: SERVER } : { isConnected: false as const, reason: 'not-found' as never, message: 'no memory server' },
   }))
-  on('mcp.call', ($, e) => {
+  on('mcp.call', async ($, e) => {
     w.mcp.push({ tool: e.tool, args: e.args })
     const text = (value: unknown) => [{ type: 'text', text: JSON.stringify(value) }]
     if (e.tool === 'search') {
-      return { value: w.rows === 'error' ? { content: text('down'), isError: true } : { content: text({ result: w.rows }), isError: false } }
+      if (w.searchFails?.(e.args)) throw new Error('connection reset')
+      if (w.searchHangs?.(e.args)) await w.clock.sleep(60_000)
+      const delay = w.searchDelayMs?.(e.args) ?? 0
+      if (delay > 0) await w.clock.sleep(delay)
+      if (w.rows === 'error') return { value: { content: text('down'), isError: true } }
+      const filters = Object.entries((w.ignoresFilters ? undefined : e.args.filters) ?? {})
+      const rows = w.rows.filter(row => filters.every(([key, value]) => row.frontmatter?.[key] === value))
+      return { value: { content: text({ result: rows }), isError: false } }
     }
     if (e.tool === 'read') {
       const path = String(e.args.path)
+      const note = w.notes?.[path]
+      if (note !== undefined) return { value: { content: text({ path, ...note }), isError: false } }
       if (w.existing.has(path)) return { value: { content: text({ path }), isError: false } }
       if (w.readFails === 'reject') throw new Error('connection reset')
       if (w.readFails === 'error') return { value: { content: [{ type: 'text', text: 'Internal error: index locked' }], isError: true } }

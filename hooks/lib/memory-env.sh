@@ -106,7 +106,7 @@ memory_load_env() {
   export MARKDOWN_VAULT_MCP_STATE_PATH="$CACHE_PATH/state.json"
   export MARKDOWN_VAULT_MCP_READ_ONLY="false"
   export MARKDOWN_VAULT_MCP_REQUIRED_FIELDS="name,type"
-  export MARKDOWN_VAULT_MCP_INDEXED_FIELDS="name,type,tags,summary,date,scope,log_files"
+  export MARKDOWN_VAULT_MCP_INDEXED_FIELDS="name,type,tags,summary,date,scope,log_files,task_status"
   # Raw session transcripts are write-only archival: searchable memory lives in
   # the summaries/decisions layer (summaries keep log_files pointers, and the
   # server's read tool still reads excluded files by path). The server purges

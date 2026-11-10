@@ -71,14 +71,25 @@ import {
   CLASSIFY_TIMEOUT_MS,
   FETCH_FACTOR,
   LABELS as RELEVANCE_LABELS,
+  PROGRESS_FETCH,
+  PROGRESS_FILTERS,
+  PROGRESS_LIMIT,
+  PROGRESS_MIN_SCORE,
+  PROGRESS_OPEN_FILTERS,
+  PROGRESS_TIMEOUT_MS,
   PROMPT_LIMIT,
   PROMPT_MIN_SCORE,
   SCAN_LIMIT,
   SCAN_MIN_SCORE,
+  acceptedOf,
   blockOf,
   candidatesOf,
   hitsOf,
   mayScan,
+  noteOf,
+  openProgressOf,
+  parentsOf,
+  progressBlockOf,
   promptQuery,
   relevanceText,
   relevantOf,
@@ -283,6 +294,7 @@ const notices = atom({ plugin: 'workbench-core', key: 'notices' } as const, [])
 const pane = atom({ plugin: 'workbench-core', key: 'pane' } as const, { title: '', text: '' })
 const capture = atom({ plugin: 'workbench-core', key: 'capture' } as const, { turns: 0, hasFired: false, written: [] })
 const recall = atom({ plugin: 'workbench-core', key: 'recall' } as const, { seen: [], queries: [] })
+const progressRecalled = atom({ plugin: 'workbench-core', key: 'progressRecalled' } as const, false)
 const intake = atom({ plugin: 'workbench-core', key: 'intake' } as const, { task: 0, checked: 0 })
 const outwardDenied = atom({ plugin: 'workbench-core', key: 'outwardDenied' } as const, [])
 const mcpRefusals = atom({ plugin: 'workbench-core', key: 'mcpRefusals' } as const, {})
@@ -1039,6 +1051,45 @@ async function recallBlock($: EngineInterface, query: string, limit: number, min
   return block
 }
 
+async function progressHits($: EngineInterface, query: string): Promise<{ hubs: Hit[]; open: Hit[] } | undefined> {
+  const server = await memoryServer($)
+  const search = (filters: Readonly<Record<string, string>>) => $.mcp.call(server, 'search', { query, limit: PROGRESS_FETCH, filters })
+  const [openFound, anyFound] = await Promise.all([search(PROGRESS_OPEN_FILTERS), search(PROGRESS_FILTERS)])
+  if (openFound.isError || anyFound.isError) return undefined
+  const openHits = hitsOf(openFound.content)
+  const parents = parentsOf([...openHits, ...hitsOf(anyFound.content)], PROGRESS_MIN_SCORE)
+  const hubs = await Promise.all(parents.map(path => $.mcp.call(server, 'read', { path }).then(note => (note.isError ? undefined : noteOf(path, note.content)), () => undefined)))
+  const shown = openProgressOf(
+    hubs.filter((hub): hub is Hit => hub !== undefined),
+    PROGRESS_LIMIT,
+    PROGRESS_MIN_SCORE,
+  )
+  const open = openProgressOf(
+    openHits.filter(hit => !shown.some(hub => hub.path === hit.path)),
+    PROGRESS_FETCH,
+    PROGRESS_MIN_SCORE,
+  )
+  return { hubs: shown, open }
+}
+
+async function progressBlock($: EngineInterface, query: string): Promise<string | undefined> {
+  if (await read($, progressRecalled)) return undefined
+  const started = await $.clock.now()
+  const timeout = $.clock.sleep(PROGRESS_TIMEOUT_MS).then(
+    () => undefined,
+    () => undefined,
+  )
+  const found = await Promise.race([progressHits($, query), timeout])
+  if (found === undefined) return undefined
+  await update($, progressRecalled, () => true)
+  const labels = found.hubs.length >= PROGRESS_LIMIT || found.open.length === 0 ? [] : await Promise.race([labelsOf($, query, found.open), timeout])
+  const hits = [...found.hubs, ...acceptedOf(found.open, labels)].slice(0, PROGRESS_LIMIT)
+  if (hits.length === 0) return undefined
+  const block = progressBlockOf(hits)
+  $.ui.log(`workbench progress recall: ${hits.length} open notes, about ${tokensOf(block)} tokens, ${(await $.clock.now()) - started} ms`, { to: 'debug' })
+  return block
+}
+
 // Whether recall and the nudges stay out: a lane nobody answers in, as
 // $.workbench.isUnattended reads it, or a lane it cannot read.
 const isQuiet = ($: EngineInterface): Promise<boolean> => $.workbench.isUnattended().catch(() => true)
@@ -1100,15 +1151,16 @@ async function folderStopOf<R extends { block?: string }>($: EngineInterface, is
 // Recall on a prompt: a new turn a person opened, with a query worth a search.
 // The search attempt is stamped where session-warmup.sh's recall liveness
 // check reads it, as hooks/memory-recall.sh did.
-async function promptRecall($: EngineInterface, text: string): Promise<string | undefined> {
-  if ((await $.env.get('WORKBENCH_MEMORY_RECALL')) === '0' || (await isQuiet($))) return undefined
+async function promptRecall($: EngineInterface, text: string): Promise<string[]> {
+  if ((await $.env.get('WORKBENCH_MEMORY_RECALL')) === '0' || (await isQuiet($))) return []
   const query = promptQuery(text)
-  if (query === undefined) return undefined
+  if (query === undefined) return []
   const home = await $.env.get('HOME')
   const stateDir = (await $.env.get('WORKBENCH_MEMORY_RECALL_STATE')) || (home ? `${home}/.claude-workbench/memory-recall` : undefined)
   const now = Math.floor((await $.clock.now()) / 1000)
   if (stateDir !== undefined) await $.fs.write(`${stateDir}/last-attempt`, `${now}\n`).catch(() => undefined)
-  return recallBlock($, query, PROMPT_LIMIT, PROMPT_MIN_SCORE)
+  const blocks = await Promise.all([progressBlock($, query).catch(() => undefined), recallBlock($, query, PROMPT_LIMIT, PROMPT_MIN_SCORE).catch(() => undefined)])
+  return blocks.filter((block): block is string => block !== undefined)
 }
 
 // Recall on a content search in the main loop (grep, rg, ag, ack, git grep in
@@ -1607,8 +1659,8 @@ export const register: Register = on => {
     await update($, turnAttended, () => isAttendedPrompt(e.origin, e.text))
     await update($, turnScheduled, () => e.origin.kind === 'scheduled-trigger' || isScheduledFire(e.text))
     await update($, reprompted, () => false)
-    const block = await promptRecall($, e.text).catch(() => undefined)
-    return next(block === undefined ? reminded : { ...reminded, context: [...(reminded.context ?? []), block] })
+    const blocks = await promptRecall($, e.text).catch(() => [])
+    return next(blocks.length === 0 ? reminded : { ...reminded, context: [...(reminded.context ?? []), ...blocks] })
   })
 
   // One correction turn at most: the engine's stop_hook_active flag, and the
@@ -2094,6 +2146,7 @@ export const register: Register = on => {
       await update($, turnRequest, () => [])
       await update($, capture, () => ({ turns: 0, hasFired: false, written: [] }))
       await update($, recall, () => ({ seen: [], queries: [] }))
+      await update($, progressRecalled, () => false)
       await update($, intake, () => ({ task: 0, checked: 0 }))
       await drawStatus($)
     }

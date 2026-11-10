@@ -55,7 +55,7 @@ export const LEDGER_RULES =
   "`createdb <name>` or `psql -c 'CREATE DATABASE \"<name>\"'`, and `psql -c 'DROP DATABASE \"<name>\"'`. " +
   'A database line may also carry -h, -p, -U and -w, and psql -d. A drop must carry the same -h, -p and -U as the create. ' +
   'Create the worktree first: its unit database name is reserved with it. ' +
-  'Removal works only for what the provisioning ledger recorded. The main session deletes a branch with git branch -d or -D, and a sub-agent may not delete a unit branch. ' +
+  'A session creates a unit database, removes a unit worktree or drops a unit database only for a unit it recorded itself in the provisioning ledger. Mike cleans up the units of other sessions. The main session deletes a branch with git branch -d or -D, and a sub-agent may not delete a unit branch. ' +
   'A sub-agent provisions nothing: it reports the need to its orchestrator. ' +
   'For anything else, stop and ask Mike, who runs the command himself with the ! prefix. ' +
   'Read-only commands still run: git worktree list, psql -c "SELECT ...", mysqladmin status.'
@@ -270,6 +270,18 @@ export const isCleaned = (entry: LedgerEntry): boolean => entry.worktree === nul
 export const isUnitForm = (entry: LedgerEntry, home: string | undefined, project: string): boolean =>
   entry.project === project && entry.worktree !== null && unitOf(entry.worktree, home, project) === entry.unit
 
+const treeCleanupOf = (entry: LedgerEntry): string => `! git -C ${entry.project} worktree remove ${entry.worktree}`
+const branchCleanupOf = (entry: LedgerEntry): string => `! git -C ${entry.project} branch -d ${entry.branch}`
+const databaseCleanupOf = (entry: LedgerEntry): string => ['! psql', entry.connection, `-c 'DROP DATABASE "${entry.database}"'`].filter(Boolean).join(' ')
+
+const otherSessionRefusal = (what: string, entry: LedgerEntry, advice: string): { deny: string } =>
+  refusal(
+    `${what} belongs to a unit that session ${entry.session} recorded in the provisioning ledger, not this session, and a session creates and removes only for the units it recorded itself`,
+    advice,
+  )
+
+const cleanupAdviceOf = (cleanup: string): string => `Remove nothing. Report it to Mike, who cleans it up himself with the ! prefix: ${cleanup}`
+
 export function ledgerPlanOf(command: LedgerCommand, facts: LedgerFacts, read: LedgerRead, path: string): LedgerPlan {
   const isMain = facts.lane === 'main'
   if (command.kind === 'branch-delete') {
@@ -307,8 +319,14 @@ export function ledgerPlanOf(command: LedgerCommand, facts: LedgerFacts, read: L
   }
   if (command.kind === 'remove') {
     const worktree = normalPathOf(command.path)
-    const isOwned = (entry: LedgerEntry): boolean => worktree !== undefined && entry.worktree === worktree && isUnitForm(entry, facts.home, facts.project)
-    if (!entries.some(isOwned)) return refusal(`the provisioning ledger holds no unit worktree ${command.path} for this project, so it was not made through the ledger`, 'Leave it in place, and name the exact path the add used if it was.')
+    const isRecorded = (entry: LedgerEntry): boolean => worktree !== undefined && entry.worktree === worktree && isUnitForm(entry, facts.home, facts.project)
+    const isOwned = (entry: LedgerEntry): boolean => isRecorded(entry) && entry.session === facts.session
+    if (!entries.some(isOwned)) {
+      const foreign = entries.find(isRecorded)
+      return foreign === undefined
+        ? refusal(`the provisioning ledger holds no unit worktree ${command.path} for this project, so it was not made through the ledger`, 'Leave it in place, and name the exact path the add used if it was.')
+        : otherSessionRefusal(`the unit worktree ${worktree}`, foreign, cleanupAdviceOf(treeCleanupOf(foreign)))
+    }
     if (!facts.isRealTree) return refusal(`the real path of ${command.path} is no longer the unit folder under ${root}: a symbolic link stands in its place or above it`, 'Leave it in place, and report it to Mike.')
     return {
       after: current => changing(current, isOwned, { worktree: null }),
@@ -320,16 +338,28 @@ export function ledgerPlanOf(command: LedgerCommand, facts: LedgerFacts, read: L
   }
   const isNamed = (entry: LedgerEntry): boolean => isProject(entry) && entry.database === command.name && facts.names[entry.unit] === command.name
   if (command.kind === 'create') {
-    const isReserved = (entry: LedgerEntry): boolean => isNamed(entry) && isUnitForm(entry, facts.home, facts.project) && !entry.isDatabaseCreated
-    if (!entries.some(isReserved)) return refusal(`${command.name} is not a unit test database name the provisioning ledger reserved for a worktree of this project`, 'Create the worktree first, then create the name its add reported.')
+    const isOpen = (entry: LedgerEntry): boolean => isNamed(entry) && isUnitForm(entry, facts.home, facts.project) && !entry.isDatabaseCreated
+    const isReserved = (entry: LedgerEntry): boolean => isOpen(entry) && entry.session === facts.session
+    if (!entries.some(isReserved)) {
+      const foreign = entries.find(isOpen)
+      return foreign === undefined
+        ? refusal(`${command.name} is not a unit test database name the provisioning ledger reserved for a worktree of this project`, 'Create the worktree first, then create the name its add reported.')
+        : otherSessionRefusal(`the unit database name ${command.name}`, foreign, 'Create nothing. Report it to Mike, who decides what happens to that unit.')
+    }
     return {
       after: current => changing(current, isReserved, { isDatabaseCreated: true, connection: command.connection }),
       stale: `${command.name} was created, so the ledger cannot free its drop. Tell Mike, who drops it himself with the ! prefix`,
     }
   }
-  const isCreated = (entry: LedgerEntry): boolean => isNamed(entry) && entry.isDatabaseCreated
+  const isMade = (entry: LedgerEntry): boolean => isNamed(entry) && entry.isDatabaseCreated
+  const isCreated = (entry: LedgerEntry): boolean => isMade(entry) && entry.session === facts.session
   const created = entries.find(isCreated)
-  if (created === undefined) return refusal(`the provisioning ledger holds no database ${command.name} created for this project, so it was not made through the ledger`, 'Leave it in place.')
+  if (created === undefined) {
+    const foreign = entries.find(isMade)
+    return foreign === undefined
+      ? refusal(`the provisioning ledger holds no database ${command.name} created for this project, so it was not made through the ledger`, 'Leave it in place.')
+      : otherSessionRefusal(`the unit database ${command.name}`, foreign, cleanupAdviceOf(databaseCleanupOf(foreign)))
+  }
   if (created.connection !== command.connection) {
     return refusal(`this drop connects with "${command.connection || 'no -h, -p or -U'}", and the create used "${created.connection || 'no -h, -p or -U'}", so it may reach another server`, 'Drop it with the same -h, -p and -U the create used.')
   }
@@ -339,8 +369,8 @@ export function ledgerPlanOf(command: LedgerCommand, facts: LedgerFacts, read: L
   }
 }
 
-export const unitEntryOf = (entries: readonly LedgerEntry[], home: string | undefined, project: string, dir: string): LedgerEntry | undefined =>
-  entries.find(entry => entry.worktree === normalPathOf(dir) && isUnitForm(entry, home, project))
+export const unitEntryOf = (entries: readonly LedgerEntry[], home: string | undefined, project: string, session: string, dir: string): LedgerEntry | undefined =>
+  entries.find(entry => entry.worktree === normalPathOf(dir) && entry.session === session && isUnitForm(entry, home, project))
 
 export type Leftover = { entry: LedgerEntry; hasTree: boolean; hasBranch: boolean }
 
@@ -348,12 +378,16 @@ export function leftoverBlockOf(leftovers: readonly Leftover[]): string | undefi
   if (leftovers.length === 0) return undefined
   const lines = leftovers.map(({ entry, hasTree, hasBranch }) => {
     const parts = [hasTree ? `worktree ${entry.worktree}` : '', hasBranch ? `branch ${entry.branch}` : '', entry.isDatabaseCreated ? `database ${entry.database}` : ''].filter(Boolean)
-    return `- ${parts.join(', ')} (project ${entry.project}, recorded by session ${entry.session} at ${new Date(entry.createdAt).toISOString()})`
+    const cleanups = [hasTree ? treeCleanupOf(entry) : '', hasBranch ? branchCleanupOf(entry) : '', entry.isDatabaseCreated ? databaseCleanupOf(entry) : ''].filter(Boolean)
+    return [
+      `- ${parts.join(', ')} (project ${entry.project}, recorded by session ${entry.session} at ${new Date(entry.createdAt).toISOString()}). Mike runs:`,
+      ...cleanups.map(line => `  - \`${line}\``),
+    ].join('\n')
   })
   return [
     '# Provisioning ledger leftovers',
     '',
-    `An earlier session recorded these units, and their trees, branches or databases still exist. If that session no longer runs, remove each one from its project: git worktree remove <path>, git branch -d <branch>, and psql -c 'DROP DATABASE "<name>"' with the create's -h, -p and -U.`,
+    'Other sessions recorded these units, and their trees, branches or databases still exist. Each unit belongs to the session that recorded it, so remove nothing and run none of these commands. Report the list to Mike. He decides when a unit is no longer in use, and cleans it up himself with the ! prefix.',
     '',
     ...lines,
   ].join('\n')

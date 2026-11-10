@@ -320,6 +320,74 @@ describe('AC3: removal only for a ledger entry, from the main lane', () => {
   })
 })
 
+describe("a session removes only the units it recorded, and another session's units wait for Mike", () => {
+  function expectForeign(answer: Answer, cleanup: string): void {
+    expectRefused(answer)
+    expect(answer.deny).toContain('belongs to a unit that session old-session recorded in the provisioning ledger, not this session')
+    expect(answer.deny).toContain(`Remove nothing. Report it to Mike, who cleans it up himself with the ! prefix: ${cleanup}`)
+  }
+
+  test("a main-lane worktree remove of another session's unit is refused, names that session, and changes nothing", async ($, on) => {
+    const b = await attended($, on)
+    seed(b, [entry()])
+    expectForeign(await bash($, b, `git worktree remove ${TREE}`), `! git -C /repo worktree remove ${TREE}`)
+    expect(entries(b)).toEqual([entry()])
+  })
+
+  test('a main-lane worktree remove of a unit this session recorded runs, and the ledger notes it', async ($, on) => {
+    const b = await attended($, on)
+    seed(b, [entry({ session: SID })])
+    expect(await bash($, b, `git worktree remove ${TREE}`)).toEqual({ deny: undefined, reached: true, context: [] })
+    expect(entries(b)).toEqual([entry({ session: SID, worktree: null })])
+  })
+
+  test("a main-lane drop of another session's unit database is refused before the connection check, names that session, and changes nothing", async ($, on) => {
+    const b = await attended($, on)
+    const foreign = entry({ isDatabaseCreated: true, connection: '-h 127.0.0.1' })
+    seed(b, [foreign])
+    for (const line of [`psql -h 127.0.0.1 -c 'DROP DATABASE "${DB}"'`, DROP]) expectForeign(await bash($, b, line), `! psql -h 127.0.0.1 -c 'DROP DATABASE "${DB}"'`)
+    expect(entries(b)).toEqual([foreign])
+  })
+
+  test('a main-lane drop of a unit database this session recorded runs, and the ledger notes it', async ($, on) => {
+    const b = await attended($, on)
+    seed(b, [entry({ session: SID, isDatabaseCreated: true, connection: '-h 127.0.0.1' })])
+    expect((await bash($, b, `psql -h 127.0.0.1 -c 'DROP DATABASE "${DB}"'`)).reached).toBe(true)
+    expect(entries(b)).toEqual([entry({ session: SID, connection: '-h 127.0.0.1' })])
+  })
+
+  test('the drop cleanup Mike runs carries no connection options when the create used none', async ($, on) => {
+    const b = await attended($, on)
+    seed(b, [entry({ isDatabaseCreated: true })])
+    expectForeign(await bash($, b, DROP), `! psql -c 'DROP DATABASE "${DB}"'`)
+  })
+
+  test('the rules every provisioning refusal carries state the same-session rule', async ($, on) => {
+    const b = await attended($, on)
+    const answer = await bash($, b, `git worktree remove ${ROOT}/handmade`)
+    expect(answer.deny).toContain('A session creates a unit database, removes a unit worktree or drops a unit database only for a unit it recorded itself in the provisioning ledger. Mike cleans up the units of other sessions.')
+  })
+
+  for (const line of [`createdb ${DB}`, `psql -c 'CREATE DATABASE "${DB}"'`]) {
+    test(`a main-lane ${JSON.stringify(line)} of a name another session reserved is refused, names that session, and changes nothing`, async ($, on) => {
+      const b = await attended($, on)
+      seed(b, [entry()])
+      const answer = await bash($, b, line)
+      expectRefused(answer)
+      expect(answer.deny).toContain(`the unit database name ${DB} belongs to a unit that session old-session recorded in the provisioning ledger, not this session`)
+      expect(answer.deny).toContain('Create nothing. Report it to Mike, who decides what happens to that unit.')
+      expect(entries(b)).toEqual([entry()])
+    })
+  }
+
+  test('a main-lane create of a name this session reserved runs, and the ledger marks it created', async ($, on) => {
+    const b = await attended($, on)
+    seed(b, [entry({ session: SID })])
+    expect((await bash($, b, `createdb ${DB}`)).reached).toBe(true)
+    expect(entries(b)).toEqual([entry({ session: SID, isDatabaseCreated: true })])
+  })
+})
+
 describe('AC4: the commit gate lets a unit branch be made, deleted and merged into a feature branch', () => {
   for (const line of ['git branch unit/b', 'git branch -d unit/a', 'git branch -D unit/a', 'git branch -D other/b', 'git merge --no-ff unit/a', 'git -C /repo merge --no-ff -m "Merge unit/a" unit/a']) {
     test(`on a feature branch, with unit/a in the ledger, ${JSON.stringify(line)} runs with no question`, async ($, on) => {
@@ -357,11 +425,12 @@ describe('AC5: leftovers are reported at session start', () => {
     const mine = entry({ session: SID, worktree: `${ROOT}/mine`, unit: 'mine', branch: 'unit/mine', database: 'wt_repo_mine_testing', createdAt: 6 })
     const { b, context } = await started($, on, [gone, tree, branch, database, mine], ['unit/branch'], [`${ROOT}/tree`, `${ROOT}/mine`])
     expect(context).toContain('# Provisioning ledger leftovers')
-    expect(context).toContain(`psql -c 'DROP DATABASE "<name>"'`)
+    expect(context).toContain('Each unit belongs to the session that recorded it, so remove nothing and run none of these commands. Report the list to Mike.')
+    expect(context).toContain('cleans it up himself with the ! prefix.')
     expect(context).not.toContain('dropdb')
-    expect(context).toContain(`- worktree ${ROOT}/tree (project /repo, recorded by session old-session`)
-    expect(context).toContain('- branch unit/branch (project /repo')
-    expect(context).toContain('- database wt_repo_db_testing (project /repo')
+    expect(context).toContain(`- worktree ${ROOT}/tree (project /repo, recorded by session old-session at 1970-01-01T00:00:00.003Z). Mike runs:\n  - \`! git -C /repo worktree remove ${ROOT}/tree\`\n-`)
+    expect(context).toContain('- branch unit/branch (project /repo, recorded by session old-session at 1970-01-01T00:00:00.004Z). Mike runs:\n  - `! git -C /repo branch -d unit/branch`\n-')
+    expect(context).toContain(`- database wt_repo_db_testing (project /repo, recorded by session old-session at 1970-01-01T00:00:00.005Z). Mike runs:\n  - \`! psql -c 'DROP DATABASE "wt_repo_db_testing"'\``)
     expect(context).not.toContain('gone')
     expect(context).not.toContain('mine')
     expect(entries(b)).toEqual([tree, branch, database, mine])
@@ -492,6 +561,14 @@ describe('AC11: a plain commit in a ledger worktree on its unit branch runs with
     const answer = await bash($, b, line)
     expect([answer.reached, ASKS.commit.test(answer.deny ?? '')]).toEqual([false, true])
     expect(await permission($, line)).toBeUndefined()
+  })
+
+  test("the same commit in a unit tree another session recorded asks Mike, and the dialog gets no answer", async ($, on) => {
+    const b = await inUnit($, on)
+    seed(b, [entry()])
+    const answer = await bash($, b, UNIT_COMMIT)
+    expect([answer.reached, ASKS.commit.test(answer.deny ?? '')]).toEqual([false, true])
+    expect(await permission($, UNIT_COMMIT)).toBeUndefined()
   })
 
   for (const line of [`cd ${TREE} && git commit -m "fix: 🐛 X."`, `git -c core.hooksPath=/dev/null -C ${TREE} commit -m "fix: 🐛 X."`]) {

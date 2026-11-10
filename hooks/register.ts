@@ -1568,7 +1568,7 @@ async function isLedgerUnitTree($: EngineInterface, dir: string | undefined): Pr
   if (dir === undefined || !home) return false
   const project = await $.session.root()
   const read = await ledgerRead($, ledgerPathOf(home))
-  const entry = 'corrupt' in read ? undefined : unitEntryOf(read.entries, home, project, dir)
+  const entry = 'corrupt' in read ? undefined : unitEntryOf(read.entries, home, project, await $.session.id(), dir)
   if (entry === undefined || entry.worktree === null || (await rootProblemOf($, home, project)) !== undefined || !(await isRealUnit($, home, project, entry.unit, entry.worktree))) return false
   return (await gitOut($, entry.worktree, ['symbolic-ref', '-q', 'HEAD'])) === `refs/heads/${entry.branch}`
 }

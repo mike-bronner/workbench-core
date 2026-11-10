@@ -154,7 +154,7 @@ _summary_dispatch_drop_stale() {
   if [ -d "$claim" ] && _summary_dispatch_claim_stale "$marker" "$claim"; then
     rmdir "$claim" 2>/dev/null
     if [ -n "$retake" ]; then
-      mkdir "$claim" 2>/dev/null && won=0
+      dir_lock_mkdir "$claim" && won=0
     else
       won=0
     fi
@@ -165,16 +165,14 @@ _summary_dispatch_drop_stale() {
 
 # summary_dispatch_claim <marker_path>
 #
-# Claims a marker for one writer. mkdir is the atomic test-and-set, so of two
-# spawns on one marker, only one gets it, even from two sessions starting at
-# once. The writer never releases a claim: it deletes the marker, and the
+# Claims a marker for one writer. The writer never releases a claim: it deletes the marker, and the
 # claim then goes stale (_summary_dispatch_claim_stale). A stale claim is taken
 # over under its takeover lock. True when this caller holds the claim.
 summary_dispatch_claim() {
   local marker="$1" claim
   claim="$(summary_dispatch_claim_dir "$marker")"
   mkdir -p "$(dirname "$claim")" 2>/dev/null || return 1
-  mkdir "$claim" 2>/dev/null && return 0
+  dir_lock_mkdir "$claim" && return 0
   _summary_dispatch_drop_stale "$marker" "$claim" retake
 }
 

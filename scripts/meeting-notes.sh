@@ -70,11 +70,11 @@ claim_is_stale() { [ -n "$(find "$1" -maxdepth 0 -mmin +"$CLAIM_TTL_MIN" 2>/dev/
 
 claim() {
   local dir="$CLAIMS/$1" won=1
-  mkdir "$dir" 2>/dev/null && return 0
+  dir_lock_mkdir "$dir" && return 0
   claim_is_stale "$dir" || return 1
   dir_lock_take "$dir.takeover" || return 1
   if claim_is_stale "$dir"; then
-    rmdir "$dir" 2>/dev/null && mkdir "$dir" 2>/dev/null && won=0
+    rmdir "$dir" 2>/dev/null && dir_lock_mkdir "$dir" && won=0
   fi
   rmdir "$dir.takeover" 2>/dev/null
   return "$won"

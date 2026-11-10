@@ -2,13 +2,9 @@
 #
 # dir-lock: mkdir locks that a crashed holder cannot leave blocking for good.
 #
-# Sourced, never executed. Sourcing only DEFINES functions. Two users:
-#   - hooks/session-log.sh: the per-session log lock, held from the checkpoint
-#     read to the checkpoint write (dir_lock_acquire).
-#   - hooks/lib/summary-dispatch.sh: the takeover lock under which a stale
-#     marker claim is checked again and replaced (dir_lock_take).
+# Sourced, never executed. Sourcing only DEFINES functions.
 #
-# mkdir is the atomic test-and-set. A lock is held for well under a second, so
+# A lock is held for well under a second, so
 # one older than a minute is a crashed holder's. Breaking it is a check, a
 # remove and a re-create, three steps, so they run under a takeover lock,
 # `<dir>.takeover`, and the lock is checked again once that is held. Without
@@ -25,6 +21,14 @@
 
 DIR_LOCK_DEPTH=3
 
+dir_lock_mkdir() {
+  if command -v perl >/dev/null 2>&1; then
+    perl -e 'mkdir $ARGV[0] or exit 1' -- "$1" 2>/dev/null
+  else
+    mkdir -- "$1" 2>/dev/null
+  fi
+}
+
 # dir_lock_is_stale <dir>: true for a lock directory older than a minute.
 dir_lock_is_stale() {
   [ -d "$1" ] && [ -n "$(find "$1" -maxdepth 0 -mmin +1 2>/dev/null)" ]
@@ -33,7 +37,7 @@ dir_lock_is_stale() {
 # dir_lock_take <dir> [level]: takes the lock, or takes over a stale one.
 # False when another caller holds it, or holds its takeover.
 dir_lock_take() {
-  mkdir "$1" 2>/dev/null && return 0
+  dir_lock_mkdir "$1" && return 0
   dir_lock_is_stale "$1" || return 1
   dir_lock_take_stale "$1" "${2:-0}"
 }
@@ -46,7 +50,7 @@ dir_lock_take_stale() {
   [ "$level" -lt "$DIR_LOCK_DEPTH" ] || return 1
   dir_lock_take "$dir.takeover" "$((level + 1))" || return 1
   if dir_lock_is_stale "$dir"; then
-    rmdir "$dir" 2>/dev/null && mkdir "$dir" 2>/dev/null && won=0
+    rmdir "$dir" 2>/dev/null && dir_lock_mkdir "$dir" && won=0
   fi
   rmdir "$dir.takeover" 2>/dev/null
   return "$won"

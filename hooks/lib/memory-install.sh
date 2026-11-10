@@ -66,6 +66,9 @@
 #   WORKBENCH_MEMORY_VENV_GC_IDLE_DAYS     reclaim venvs unused this long
 #                                          (default 30; 0 disables the sweep)
 
+# shellcheck source=hooks/lib/dir-lock.sh
+. "$(dirname "${BASH_SOURCE[0]}")/dir-lock.sh"
+
 # _memory_wheel_path: newest bundled wheel, or empty when none ships. Echoes the
 # path; never fails (an absent wheels/ dir is a normal legacy-install case).
 _memory_wheel_path() {
@@ -117,7 +120,7 @@ _memory_install_lock() {
   local pid_file="$lock_dir/pid"
   local waited=0
 
-  while ! mkdir "$lock_dir" 2>/dev/null; do
+  while ! dir_lock_mkdir "$lock_dir"; do
     local holder=""
     [ -f "$pid_file" ] && holder="$(cat "$pid_file" 2>/dev/null)"
     if [ -z "$holder" ] || ! kill -0 "$holder" 2>/dev/null; then
@@ -126,7 +129,7 @@ _memory_install_lock() {
       # Retry at once rather than spending a second of budget: a 0s timeout must
       # still win against a dead holder. If this claim also fails, a concurrent
       # caller took it and we fall through to the wait/timeout below.
-      mkdir "$lock_dir" 2>/dev/null && break
+      dir_lock_mkdir "$lock_dir" && break
     fi
     if [ "$waited" -ge "$timeout" ]; then
       "$logger" "install: venv lock still held after ${timeout}s; not installing"

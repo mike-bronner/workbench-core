@@ -301,11 +301,7 @@ drain_pending_summaries() {
       rmdir "$DRAIN_LOCK" 2>/dev/null || true
     fi
 
-    # mkdir is the atomic test-and-set. It guards the stamp check below, so two
-    # sessions starting at the same instant cannot both read a stale stamp and
-    # both spawn a batch. Released as soon as the spawns are away — the writers
-    # are detached and outlive it.
-    if mkdir "$DRAIN_LOCK" 2>/dev/null; then
+    if dir_lock_mkdir "$DRAIN_LOCK"; then
       # Cooldown: rapid successive session starts (a crash loop, a burst of
       # scripted launches) must not multiply the batch size. A cooldown of 0
       # disables the window outright — checked explicitly rather than leaning on
@@ -567,7 +563,7 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
   if [ -d "$RECONCILE_LOCK" ] && [ -z "$(find "$RECONCILE_LOCK" -mmin -1 2>/dev/null)" ]; then
     rmdir "$RECONCILE_LOCK" 2>/dev/null || true
   fi
-  if mkdir "$RECONCILE_LOCK" 2>/dev/null; then
+  if dir_lock_mkdir "$RECONCILE_LOCK"; then
     session_reconcile "$CLAUDE_HOME/projects" "$CURRENT_SID" "$HOOKS_DIR/session-log.sh" \
       "$CHECKPOINTS_DIR" "$PENDING_SUMMARIES_DIR" "$CLAUDE_HOME/sessions"
     rmdir "$RECONCILE_LOCK" 2>/dev/null || true

@@ -124,7 +124,7 @@ fi
 # ──────────────────────────────────────────────────────────────────────────
 STUBS="$SANDBOX/stubs"
 mkdir -p "$STUBS/lib"
-cp "$HOOKS/lib/memory-refs.sh" "$STUBS/lib/"
+cp "$HOOKS/lib/memory-refs.sh" "$HOOKS/lib/dir-lock.sh" "$STUBS/lib/"
 cat > "$STUBS/lib/memory-env.sh" <<EOF
 memory_load_env() { CACHE_PATH="$CACHE_PATH"; export CACHE_PATH; }
 EOF
@@ -176,8 +176,9 @@ reap 1 1 & P1=$!
 reap 1 1 & P2=$!
 wait "$P1" "$P2" 2>/dev/null
 # Both racing reapers see an empty registry, but stop.lock admits exactly one.
-COUNT=$(grep -c stopped "$SANDBOX/down.calls" 2>/dev/null || echo 0)
-if [ "$COUNT" -le 1 ]; then
+COUNT=$(grep -c stopped "$SANDBOX/down.calls" 2>/dev/null)
+COUNT=${COUNT:-0}
+if [ "$COUNT" -eq 1 ]; then
   ok "stop lock serializes concurrent reapers (stops: $COUNT)"
 else
   bad "stop lock serializes concurrent reapers" "stopped $COUNT times"

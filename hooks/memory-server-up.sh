@@ -41,6 +41,8 @@ HOOKS_DIR="${HOOKS_DIR:-$SCRIPT_DIR}"
 . "$HOOKS_DIR/lib/memory-probe.sh"
 # shellcheck source=hooks/lib/memory-refs.sh
 . "$HOOKS_DIR/lib/memory-refs.sh"
+# shellcheck source=hooks/lib/dir-lock.sh
+. "$HOOKS_DIR/lib/dir-lock.sh"
 
 memory_load_env
 
@@ -142,12 +144,11 @@ wait_for_ready() {
   return 1
 }
 
-# ──────────── Win the spawn mutex (atomic mkdir) ────────────
-# mkdir is atomic: exactly one concurrent kicker creates LOCK_DIR and becomes
-# the winner. Staleness is PID-liveness, NEVER wall-clock: if the dir already
+# ──────────── Win the spawn mutex ────────────
+# Staleness is PID-liveness, NEVER wall-clock: if the dir already
 # exists, the claimer is either alive (someone is spawning — back off) or dead
 # (crashed mid-kick — steal the lock and retry once).
-try_claim() { mkdir "$LOCK_DIR" 2>/dev/null; }
+try_claim() { dir_lock_mkdir "$LOCK_DIR"; }
 
 if ! try_claim; then
   # Lock held by someone else. claimer.pid is the SUPERVISOR's OWN pid, which the

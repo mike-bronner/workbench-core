@@ -56,6 +56,8 @@ HOOKS_DIR="${HOOKS_DIR:-$SCRIPT_DIR}"
 . "$HOOKS_DIR/lib/memory-env.sh" 2>/dev/null || exit 0
 # shellcheck source=hooks/lib/memory-refs.sh
 . "$HOOKS_DIR/lib/memory-refs.sh" 2>/dev/null || exit 0
+# shellcheck source=hooks/lib/dir-lock.sh
+. "$HOOKS_DIR/lib/dir-lock.sh" 2>/dev/null || exit 0
 memory_load_env 2>/dev/null || exit 0
 
 GRACE="${WORKBENCH_MEMORY_IDLE_GRACE:-120}"
@@ -71,10 +73,6 @@ STOP_LOCK="$CACHE_PATH/stop.lock"
 sleep "$GRACE"
 
 # ──────────── Serialize reapers ────────────
-# Plain mkdir, no stale-stealing: a wedged stop.lock only means "no auto-stop
-# this round", which is the harmless direction to fail in. The next SessionEnd
-# schedules another reaper, and a leftover lock from a killed reaper is cleared
-# by the age check below rather than by a liveness protocol this does not need.
 if [ -d "$STOP_LOCK" ]; then
   # Clear a lock older than 10 minutes — far longer than any real reap takes.
   if find "$STOP_LOCK" -maxdepth 0 -mmin +10 2>/dev/null | grep -q .; then
@@ -82,7 +80,7 @@ if [ -d "$STOP_LOCK" ]; then
     rm -rf "$STOP_LOCK" 2>/dev/null || true
   fi
 fi
-mkdir "$STOP_LOCK" 2>/dev/null || { _log "another reaper holds the stop lock; done"; exit 0; }
+dir_lock_mkdir "$STOP_LOCK" || { _log "another reaper holds the stop lock; done"; exit 0; }
 trap 'rm -rf "$STOP_LOCK" 2>/dev/null || true' EXIT
 
 # ──────────── First check ────────────

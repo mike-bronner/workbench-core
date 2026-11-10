@@ -434,6 +434,28 @@ eq "a fresh lock held by another is not acquired" "$(took dir_lock_acquire "$L" 
 rmdir "$L"
 eq "a free lock is acquired" "$(took dir_lock_acquire "$L" 2)" took
 
+echo "a lock is one mkdir(2), even where mkdir checks before it creates:"
+M="$SANDBOX/locks/make.lock"
+eq "a free lock directory is made" "$(took dir_lock_mkdir "$M")" took
+eq "and one that exists is refused" "$(took dir_lock_mkdir "$M")" refused
+rmdir "$M"
+mkdir -p "$SANDBOX/racybin" "$SANDBOX/noperlbin"
+cat > "$SANDBOX/racybin/mkdir" <<RACY
+#!/bin/bash
+for d in "\$@"; do :; done
+[ -e "\$d" ] && exit 1
+sleep 0.3
+exec "$(command -v mkdir)" -p "\$d"
+RACY
+chmod +x "$SANDBOX/racybin/mkdir"
+WON=$( { PATH="$SANDBOX/racybin:$PATH" dir_lock_mkdir "$M" && echo won & PATH="$SANDBOX/racybin:$PATH" dir_lock_mkdir "$M" && echo won & wait; } | grep -c won)
+eq "two racing callers get one lock" "$WON" 1
+rmdir "$M"
+ln -s "$(command -v mkdir)" "$SANDBOX/noperlbin/mkdir"
+eq "with no perl, mkdir makes a free lock" "$(PATH="$SANDBOX/noperlbin" took dir_lock_mkdir "$M")" took
+eq "and refuses one that exists" "$(PATH="$SANDBOX/noperlbin" took dir_lock_mkdir "$M")" refused
+rmdir "$M"
+
 echo "a takeover lock its breaker left behind blocks nothing for good:"
 # A breaker killed in its few milliseconds leaves <lock>.takeover. One older
 # than a minute is broken the same way, under <lock>.takeover.takeover.

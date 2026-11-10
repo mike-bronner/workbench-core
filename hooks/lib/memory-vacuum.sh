@@ -126,8 +126,7 @@ memory_vacuum_locked() {
   local lock_dir="${index_path%/*}/vacuum.lock"
   local pid_file="$lock_dir/pid"
 
-  # Non-blocking claim: mkdir is atomic, so exactly one concurrent launcher wins.
-  if ! mkdir "$lock_dir" 2>/dev/null; then
+  if ! dir_lock_mkdir "$lock_dir"; then
     local holder=""
     [ -f "$pid_file" ] && holder="$(cat "$pid_file" 2>/dev/null)"
     if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
@@ -137,7 +136,7 @@ memory_vacuum_locked() {
     # Stale lock (holder dead or never stamped) — steal once and retry the claim.
     "$logger" "vacuum: stealing stale lock (holder '${holder:-none}' not alive)"
     rm -rf "$lock_dir" 2>/dev/null || true
-    if ! mkdir "$lock_dir" 2>/dev/null; then
+    if ! dir_lock_mkdir "$lock_dir"; then
       "$logger" "vacuum: lost re-claim race; another launcher owns the lock; skipping"
       return 0
     fi
@@ -150,3 +149,6 @@ memory_vacuum_locked() {
   rm -rf "$lock_dir" 2>/dev/null || true
   return 0
 }
+
+# shellcheck source=hooks/lib/dir-lock.sh
+. "$(dirname "${BASH_SOURCE[0]}")/dir-lock.sh"

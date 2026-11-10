@@ -149,8 +149,7 @@ fi
 # Every writer of this session's log holds it from the checkpoint read to the
 # checkpoint write. Without it, two writers read the same `next_line` and both
 # append the same lines: the module's turn checkpoint and SessionEnd can run at
-# once, and so can the settings SessionEnd and the module's session.end. mkdir
-# is the atomic test-and-set. A writer that cannot take it gives up silently:
+# once, and so can the settings SessionEnd and the module's session.end. A writer that cannot take it gives up silently:
 # the holder is copying the same lines, and any line past its snapshot is left
 # for the next writer or the start-up reconciler, never lost. mode=final waits
 # about 0.2 s, a small share of the 1.5 s exit budget, so the copy itself still

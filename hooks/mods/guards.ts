@@ -4,9 +4,6 @@
 //
 //   peer message      a sub-agent's SendMessage goes to "main" or to an agent
 //                     id, and nowhere else
-//   provisioning      no agent creates a git worktree or a database, or deletes
-//                     a worktree: Bash, Agent with isolation "worktree",
-//                     EnterWorktree, and ExitWorktree with action "remove"
 //   summary writer    the detached summary-writer (WORKBENCH_SUMMARY_WRITER=1)
 //                     writes no markdown file with Bash
 //   credential        no call reads, links or copies ~/.ssh, ~/.aws, ~/.gnupg,
@@ -36,6 +33,7 @@
 // Pure functions only: the engine follows `$` into no imported function.
 
 import type { WorkbenchShellParse as ShellParse, WorkbenchShellStatement as Statement } from '../../types'
+import { LEDGER_RULES, LEDGER_WRITE_REFUSAL } from './ledger.ts'
 import { SHELLS, nameOf, parseShell, shellScriptOf } from './shell.ts'
 
 // The tools a guard judges. When the tool.call hook fails before it passes one
@@ -125,24 +123,19 @@ export function peerVerdict(input: { to?: unknown; recipient?: unknown }): 'allo
 
 // ─── provisioning ────────────────────────────────────────────────────────────
 
-const PROVISIONING_TAIL =
-  'The worktrees and databases on this machine are made by hand, and they are where you are meant to work. ' +
-  'Work in the directory you were given. If a new worktree or database is really needed, stop and ask Mike, who runs the command himself with the ! prefix. ' +
-  'Read-only commands still run: git worktree list, psql -c "SELECT ...", mysqladmin status.'
-
-const provisioning = (action: string, advice: string): string => `Provisioning guard (workbench-core): ${action}. ${advice} ${PROVISIONING_TAIL}`
+const provisioning = (action: string, advice: string): string => `Provisioning guard (workbench-core): ${action}. ${advice} ${LEDGER_RULES}`
 
 export const ENTER_WORKTREE_REFUSAL = provisioning(
-  'EnterWorktree creates a git worktree or moves this session into one',
-  'Do not call EnterWorktree.',
+  'EnterWorktree creates a git worktree or moves this session into one, outside the provisioning ledger',
+  'Do not call EnterWorktree. Make the worktree with git worktree add as below.',
 )
 export const EXIT_WORKTREE_REFUSAL = provisioning(
-  'ExitWorktree with action "remove" deletes this session\'s worktree and its branch',
+  'ExitWorktree with action "remove" deletes this session\'s worktree and its branch, outside the provisioning ledger',
   'Exit with action "keep" instead: it leaves the worktree and the branch on disk.',
 )
 export const AGENT_WORKTREE_REFUSAL = provisioning(
-  'an Agent dispatch with isolation "worktree" makes the harness create a git worktree for the sub-agent',
-  'Dispatch without isolation, so the sub-agent works in the tree you are in, or pass cwd with a directory that already exists.',
+  'an Agent dispatch with isolation "worktree" makes the harness create a git worktree for the sub-agent, outside the provisioning ledger',
+  'Dispatch without isolation, with a Workdir in the tree you are in or in a worktree you made as below.',
 )
 
 const WORKTREE_VERBS: Readonly<Record<string, string>> = {
@@ -279,7 +272,7 @@ export function provisioningRefusal(line: string, parse: ShellParse = parseShell
     return provisioning('this command is longer than 200,000 characters and mentions a creation verb', 'Split it into smaller commands.')
   }
   const found = provisioningFinding(line, 0, parse)
-  if (found !== undefined) return provisioning(found, 'Do not create or delete it yourself.')
+  if (found !== undefined) return provisioning(found, 'Only the accepted lines below provision, each alone on its line, with no wrapper.')
   if (isSubject && isPartlyRead(parse)) return provisioning(unreadNote, 'Write the command out plainly, with no variable as a command name.')
   return undefined
 }
@@ -331,6 +324,87 @@ export function summaryWriterRefusal(parse: ShellParse): string | undefined {
   if (isPartlyRead(parse) && textsOf(parse).some(text => text.includes('.md'))) return `${SUMMARY_REFUSAL_HEAD}${unreadNote} ${SUMMARY_ADVICE}`
   return undefined
 }
+
+const WORKBENCH = /\.claude-workbench/i
+const PROTECTED = /provisioning/i
+const LEDGER_READERS: ReadonlySet<string> = new Set(['cat', 'head', 'tail', 'wc', 'grep', 'egrep', 'fgrep', 'jq', 'ls', 'stat', 'file', 'diff', 'cmp', 'shasum'])
+const LITERAL = /^[^*?[\]{}$`]*$/
+const expands = (word: string): boolean => /[*?[]/.test(word) || /\{[^}]*(,|\.\.)[^}]*\}/.test(word)
+
+export const workbenchDirOf = (home: string): string => `${home.replace(/\/+$/, '')}/.claude-workbench`
+export const ledgerDirOf = (home: string): string => `${workbenchDirOf(home)}/provisioning`
+
+export type CwdPlace = 'ledger' | 'workbench' | 'outside'
+
+const isAtOrAbove = (path: string, dir: string): boolean => {
+  const [p, d] = [path.toLowerCase(), dir.toLowerCase()]
+  return p === '/' || p === d || d.startsWith(`${p}/`) || p.startsWith(`${d}/`)
+}
+
+function linksToLedger(parse: ShellParse, cwd: string | undefined, home: string | undefined): boolean {
+  if (home === undefined) return false
+  return parse.statements.some(s => {
+    if (s.name !== 'ln') return false
+    const operands = s.args.filter(arg => !arg.startsWith('-'))
+    const targets = operands.length === 1 ? operands : operands.slice(0, -1)
+    return targets.some(target => {
+      const path = resolvePath(target, cwd, home)
+      return path !== undefined && isAtOrAbove(path, ledgerDirOf(home))
+    })
+  })
+}
+
+const FINDERS: ReadonlySet<string> = new Set(['find', 'gfind', 'bfs'])
+const FIND_RUNS: ReadonlySet<string> = new Set(['-exec', '-execdir', '-ok', '-okdir'])
+const RECURSIVE_CP = /^-[A-Za-z]*[Rra][A-Za-z]*$|^--(recursive|archive)$/
+const SUBSTITUTED = /\$_|\$\(|`/
+
+function bulkReachesLedger(parse: ShellParse, cwd: string | undefined, home: string | undefined): boolean {
+  if (home === undefined) return false
+  const reaches = (word: string | undefined): boolean => {
+    const path = word === undefined ? undefined : resolvePath(word, cwd, home)
+    return path !== undefined && isAtOrAbove(path, ledgerDirOf(home))
+  }
+  return parse.statements.some(s => {
+    const operands = s.args.filter(arg => !arg.startsWith('-'))
+    const last = operands.at(-1)
+    if (FINDERS.has(s.name) && s.args.some(arg => FIND_RUNS.has(arg))) {
+      const starts = s.args.slice(0, Math.max(0, s.args.findIndex(arg => arg.startsWith('-') || arg === '(' || arg === '!')))
+      return (starts.length === 0 ? ['.'] : starts).some(reaches)
+    }
+    if (s.name === 'cp' && s.args.some(arg => RECURSIVE_CP.test(arg))) return reaches(last)
+    if (s.name === 'rsync' || s.name === 'ditto') return reaches(last)
+    if (s.name === 'mv' || s.name === 'rename') return operands.some(reaches)
+    if (s.name === 'unzip') return reaches(s.args[s.args.indexOf('-d') + 1] ?? '.')
+    if (s.name === 'tar' || s.name === 'bsdtar' || s.name === 'gtar') {
+      const at = s.args.findIndex(arg => arg === '-C' || arg === '--directory')
+      const into = at === -1 ? s.args.find(arg => arg.startsWith('--directory='))?.slice('--directory='.length) : s.args[at + 1]
+      const isExtract = s.args.some((arg, i) => /^-[A-Za-z]*x[A-Za-z]*$/.test(arg) || (i === 0 && /^[A-Za-z]*x[A-Za-z]*$/.test(arg)) || arg === '--extract' || arg === '--get')
+      return isExtract && reaches(into ?? '.')
+    }
+    return false
+  })
+}
+
+export function ledgerWriteRefusal(parse: ShellParse, cwd: string | undefined, home: string | undefined, place: CwdPlace): string | undefined {
+  if (linksToLedger(parse, cwd, home) || bulkReachesLedger(parse, cwd, home)) return LEDGER_WRITE_REFUSAL.deny
+  const texts = textsOf(parse)
+  const isHidden = texts.some(text => WORKBENCH.test(text)) && parse.statements.some(s => (s.name === 'cd' || s.name === 'pushd') && s.args.some(arg => SUBSTITUTED.test(arg)))
+  const isEntered = place !== 'outside' || isHidden || parse.statements.some(s => (s.name === 'cd' || s.name === 'pushd') && s.args.some(arg => WORKBENCH.test(arg)))
+  if (!isEntered && !texts.some(text => WORKBENCH.test(text))) return undefined
+  const expanded = parse.statements.flatMap(s => [...s.words.filter(word => !s.assignments.includes(word)), ...s.redirects.map(r => r.target)])
+  const isRisky = expanded.some(word => (WORKBENCH.test(word) || (isEntered && !word.startsWith('/'))) && expands(word))
+  const isProtected = place === 'ledger' || isHidden || texts.some(text => PROTECTED.test(text))
+  if (!isRisky && !isProtected) return undefined
+  const isQuiet = (s: Statement): boolean => s.redirects.every(r => !r.isReal || !OUTPUT_OPS.has(r.op) || r.target === '/dev/null')
+  const isReader = (s: Statement): boolean => s.nameAt === 0 && LEDGER_READERS.has(s.name) && s.heredocs.length === 0 && isQuiet(s) && s.args.every(arg => LITERAL.test(arg))
+  return !isRisky && !isPartlyRead(parse) && parse.statements.every(isReader) ? undefined : LEDGER_WRITE_REFUSAL.deny
+}
+
+export const isInsideDir = (path: string, dir: string): boolean => path.toLowerCase() === dir.toLowerCase() || path.toLowerCase().startsWith(`${dir.toLowerCase()}/`)
+
+export const ledgerPathRefusal = (path: string, realPath: string | undefined, realDir: string | undefined): string | undefined =>
+  (WORKBENCH.test(path) && PROTECTED.test(path)) || (realPath !== undefined && realDir !== undefined && isInsideDir(realPath, realDir)) ? LEDGER_WRITE_REFUSAL.deny : undefined
 
 // ─── credential ──────────────────────────────────────────────────────────────
 

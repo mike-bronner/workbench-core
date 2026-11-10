@@ -197,7 +197,12 @@ import {
   credentialRefusal,
   GUARD_FAILED,
   hiddenCommandRefusal,
+  isInsideDir,
   isPartlyRead,
+  ledgerPathRefusal,
+  ledgerDirOf,
+  workbenchDirOf,
+  ledgerWriteRefusal,
   mentionsSearch,
   peerVerdict,
   provisioningRefusal,
@@ -207,7 +212,33 @@ import {
   summaryWriterRefusal,
   toolSearchRoots,
 } from './mods/guards'
-import type { SearchRoot } from './mods/guards'
+import type { CwdPlace, SearchRoot } from './mods/guards'
+import type { LedgerCommand, LedgerEntry, LedgerRead, Leftover } from './mods/ledger'
+import {
+  BACKGROUND_REFUSAL,
+  LEDGER_FILE,
+  LOCK_TRIES,
+  LOCK_WAIT_MS,
+  PRUNE_AFTER_MS,
+  corruptRefusal,
+  plainCommitDirOf,
+  lockedRefusal,
+  unitEntryOf,
+  isProvisioningLine,
+  ledgerCommandOf,
+  ledgerOf,
+  ledgerPathOf,
+  ledgerPlanOf,
+  ledgerTextOf,
+  leftoverBlockOf,
+  leftoverCorruptOf,
+  normalPathOf,
+  rootOf,
+  staleNoteOf,
+  unitDatabaseOf,
+  unitOf,
+  unwrittenRefusal,
+} from './mods/ledger'
 import { databaseRefusal, fileKey } from './mods/destructive-database'
 import type { Fact, FactGetter, ScopeVerdict } from './mods/destructive-scope'
 import { NO_ONE_TO_ASK, dirKey } from './mods/destructive-scope'
@@ -1418,6 +1449,141 @@ async function databaseOf($: EngineInterface, line: string, parse: WorkbenchShel
   return settled($, get => databaseRefusal(line, parse, cwd, home, get))
 }
 
+async function ledgerRead($: EngineInterface, path: string): Promise<LedgerRead> {
+  if (!(await $.fs.exists(path).catch(() => true))) return ledgerOf(undefined)
+  const text = await $.fs.read(path).catch(() => undefined)
+  return text === undefined ? { corrupt: 'the file cannot be read' } : ledgerOf(text)
+}
+
+const LEDGER_LOCK_SCRIPT = 'mkdir -p -- "${2%/*}" && . "$1" && dir_lock_take "$2"'
+
+async function ledgerEdit($: EngineInterface, path: string, edit: (entries: readonly LedgerEntry[]) => LedgerEntry[]): Promise<'done' | 'locked' | 'failed'> {
+  const lock = `${path}.lock`
+  for (let tries = 0; tries < LOCK_TRIES; tries++) {
+    const isTaken = await $.process
+      .run(['bash', '-c', LEDGER_LOCK_SCRIPT, 'ledger-lock', `${$.plugin.root}/hooks/lib/dir-lock.sh`, lock], { timeoutMs: 5_000 })
+      .then(({ exitCode }) => exitCode === 0, () => false)
+    if (isTaken) {
+      try {
+        const read = await ledgerRead($, path)
+        if ('corrupt' in read) return 'failed'
+        return await $.fs.write(path, ledgerTextOf(edit(read.entries))).then(
+          () => 'done' as const,
+          () => 'failed' as const,
+        )
+      } finally {
+        await $.process.run(['rmdir', lock], { timeoutMs: 5_000 }).catch(() => undefined)
+      }
+    }
+    await $.clock.sleep(LOCK_WAIT_MS)
+  }
+  return 'locked'
+}
+
+async function realPathOf($: EngineInterface, path: string): Promise<string> {
+  let dir = path
+  let rest = ''
+  while (dir !== '') {
+    const stat = await $.fs.stat(dir, { resolve: true }).catch(() => undefined)
+    if (stat !== undefined) return `${(stat.realPath ?? dir).replace(/\/+$/, '')}${rest}`
+    const cut = dir.lastIndexOf('/')
+    rest = `${dir.slice(cut)}${rest}`
+    dir = dir.slice(0, cut)
+  }
+  return path
+}
+
+async function cwdPlaceOf($: EngineInterface, home: string | undefined): Promise<CwdPlace> {
+  if (!home) return 'outside'
+  const cwd = await realPathOf($, await $.session.cwd())
+  if (isInsideDir(cwd, await realPathOf($, ledgerDirOf(home)))) return 'ledger'
+  return isInsideDir(cwd, await realPathOf($, workbenchDirOf(home))) ? 'workbench' : 'outside'
+}
+
+async function rootProblemOf($: EngineInterface, home: string, project: string): Promise<string | undefined> {
+  const root = rootOf(home, project)
+  const real = await realPathOf($, root)
+  const shared = await realPathOf($, `${home.replace(/\/+$/, '')}/Developer/worktrees`)
+  const herdr = `${await realPathOf($, project.slice(0, project.lastIndexOf('/')) || '/')}/worktrees/${project.slice(project.lastIndexOf('/') + 1)}`.replace(/^\/\//, '/')
+  if (real.startsWith(`${shared}/`) || real === herdr) return undefined
+  return `the worktree root ${root} resolves to ${real}, outside the allowed roots: a folder inside ${shared}, or ${herdr}, the worktrees folder beside this repository`
+}
+
+async function isRealUnit($: EngineInterface, home: string, project: string, unit: string, path: string): Promise<boolean> {
+  return (await realPathOf($, normalPathOf(path) ?? path)) === `${await realPathOf($, rootOf(home, project))}/${unit}`
+}
+
+async function isLedgerUnitTree($: EngineInterface, dir: string | undefined): Promise<boolean> {
+  const home = await $.env.get('HOME')
+  if (dir === undefined || !home) return false
+  const project = await $.session.root()
+  const read = await ledgerRead($, ledgerPathOf(home))
+  const entry = 'corrupt' in read ? undefined : unitEntryOf(read.entries, home, project, dir)
+  if (entry === undefined || entry.worktree === null || (await rootProblemOf($, home, project)) !== undefined || !(await isRealUnit($, home, project, entry.unit, entry.worktree))) return false
+  return (await gitOut($, entry.worktree, ['symbolic-ref', '-q', 'HEAD'])) === `refs/heads/${entry.branch}`
+}
+
+async function isUnitCommitLine($: EngineInterface, command: string): Promise<boolean> {
+  return isLedgerUnitTree($, plainCommitDirOf(parseShell(command)))
+}
+
+async function ledgerCall($: EngineInterface, e: { command: string; agentId?: string; run_in_background?: boolean }, command: LedgerCommand, next: (e: never) => Promise<ToolCallResult>): Promise<ToolCallResult> {
+  const lane = await $.workbench.callerLane(e.agentId === undefined ? {} : { agentId: e.agentId }).catch((): WorkbenchCallerLane => 'sub-agent')
+  if (lane === 'main' && command.kind === 'branch-delete') return next(e as never)
+  const home = await $.env.get('HOME')
+  if (!home) return corruptRefusal(`~/${LEDGER_FILE}`, 'HOME is not set, so the file cannot be named')
+  const path = ledgerPathOf(home)
+  const project = await $.session.root()
+  const isTreeLine = command.kind === 'add' || command.kind === 'remove'
+  const unit = isTreeLine ? unitOf(command.path, home, project) : undefined
+  const database = command.kind === 'add' && unit !== undefined ? await unitDatabaseOf(project, unit) : undefined
+  const target = command.kind === 'add' && unit !== undefined ? normalPathOf(command.path) : undefined
+  const isPathTaken = target !== undefined && (await $.fs.stat(target).then(() => true, () => false))
+  const isRealTree = isTreeLine && unit !== undefined ? await isRealUnit($, home, project, unit, command.path) : true
+  const read = lane === 'main' || command.kind === 'branch-delete' ? await ledgerRead($, path) : { entries: [] }
+  const names: Record<string, string> = {}
+  if ((command.kind === 'create' || command.kind === 'drop') && 'entries' in read) {
+    for (const entry of read.entries.filter(other => other.project === project)) names[entry.unit] = await unitDatabaseOf(project, entry.unit)
+  }
+  const rootProblem = isTreeLine ? await rootProblemOf($, home, project) : undefined
+  const facts = { lane, home, project, cwd: await $.session.cwd(), session: await $.session.id(), now: await $.clock.now(), isPathTaken, isRealTree, database, names, rootProblem }
+  const plan = ledgerPlanOf(command, facts, read, path)
+  if (plan === 'pass') return next(e as never)
+  if ('deny' in plan) return plan
+  if (e.run_in_background === true) return BACKGROUND_REFUSAL
+  const before = plan.before === undefined ? 'done' : await ledgerEdit($, path, plan.before)
+  if (before !== 'done') return before === 'locked' ? lockedRefusal(path) : unwrittenRefusal(path)
+  const result = await next(e as never)
+  const isDone = result.deny === undefined && result.isError !== true
+  const edit = isDone ? plan.after : plan.failed
+  const edited = edit === undefined ? 'done' : await ledgerEdit($, path, edit)
+  const notes = [...(isDone && plan.advise !== undefined ? [plan.advise] : []), ...(edited === 'done' ? [] : [staleNoteOf(path, edited, plan.stale)])]
+  return notes.length === 0 || result.deny !== undefined ? result : { ...result, context: [...(result.context ?? []), ...notes] }
+}
+
+async function leftoverBlock($: EngineInterface): Promise<string | undefined> {
+  const home = await $.env.get('HOME')
+  if (!home) return undefined
+  const path = ledgerPathOf(home)
+  const read = await ledgerRead($, path)
+  if ('corrupt' in read) return leftoverCorruptOf(path, read.corrupt)
+  const session = await $.session.id()
+  const now = await $.clock.now()
+  const leftovers: Leftover[] = []
+  const gone: LedgerEntry[] = []
+  for (const entry of read.entries.filter(other => other.session !== session && now - other.createdAt >= PRUNE_AFTER_MS)) {
+    const hasTree = entry.worktree !== null && (await $.fs.stat(entry.worktree).then(() => true, () => false))
+    const hasBranch = await $.process
+      .run(['git', '-C', entry.project, 'rev-parse', '--verify', '--quiet', `refs/heads/${entry.branch}`], { timeoutMs: 5_000 })
+      .then(({ exitCode }) => exitCode === 0, () => true)
+    if (hasTree || hasBranch || entry.isDatabaseCreated) leftovers.push({ entry, hasTree, hasBranch })
+    else gone.push(entry)
+  }
+  const isGone = (entry: LedgerEntry): boolean => gone.some(other => other.session === entry.session && other.createdAt === entry.createdAt && other.worktree === entry.worktree)
+  if (gone.length > 0) await ledgerEdit($, path, entries => entries.filter(entry => !isGone(entry)))
+  return leftoverBlockOf(leftovers)
+}
+
 async function vaultGitOf($: EngineInterface, line: string, parse: WorkbenchShellParse, home: string | undefined): Promise<string | undefined> {
   if (!needsVaultGit(line, parse)) return undefined
   // A vault root that cannot be read is a broken install, not a command
@@ -1518,7 +1684,14 @@ async function guardVerdict($: EngineInterface, e: Guarded, isAttended: boolean)
     case 'Glob': {
       const home = await $.env.get('HOME')
       const path = text(e.file_path ?? e.notebook_path ?? e.path)
-      const refusal = path === '' ? undefined : credentialPathRefusal(path, home)
+      const isWrite = e.tool === 'Write' || e.tool === 'Edit' || e.tool === 'NotebookEdit'
+      const ledgerRefusal = async (): Promise<string | undefined> => {
+        const resolved = resolvePath(path, await $.session.cwd(), home)
+        const real = resolved === undefined ? undefined : await realPathOf($, resolved)
+        const realDir = home ? await realPathOf($, ledgerDirOf(home)) : undefined
+        return ledgerPathRefusal(path, real, realDir)
+      }
+      const refusal = path === '' ? undefined : (credentialPathRefusal(path, home) ?? (isWrite ? await ledgerRefusal() : undefined))
       if (refusal !== undefined) return { deny: refusal }
       if (e.tool !== 'Grep' && e.tool !== 'Glob') return undefined
       const roots = await withRealPaths($, toolSearchRoots(e.tool, { path: e.path, pattern: e.pattern }, await $.session.cwd(), home))
@@ -1529,14 +1702,16 @@ async function guardVerdict($: EngineInterface, e: Guarded, isAttended: boolean)
       const line = text(e.command)
       const parse = parseShell(line)
       const home = await $.env.get('HOME')
+      const isLedgerLine = isProvisioningLine(ledgerCommandOf(parse))
       const refusal =
         hiddenCommandRefusal(parse) ??
+        ledgerWriteRefusal(parse, await $.session.cwd(), home, await cwdPlaceOf($, home)) ??
         credentialRefusal(line, home, parse, await regularFiles($, bodyTargets(parse), home)) ??
-        provisioningRefusal(line, parse) ??
+        (isLedgerLine ? undefined : provisioningRefusal(line, parse)) ??
         bareSetRefusal(line, parse) ??
         ((await $.env.get('WORKBENCH_SUMMARY_WRITER')) === '1' ? summaryWriterRefusal(parse) : undefined) ??
         ((await $.env.get('WORKBENCH_MEETING_WRITER')) === '1' ? meetingWriterRefusal(parse) : undefined) ??
-        (await databaseOf($, line, parse, home)) ??
+        (isLedgerLine ? undefined : await databaseOf($, line, parse, home)) ??
         (await vaultGitOf($, line, parse, home)) ??
         (await bashProseOf($, line, parse, home))
       if (refusal !== undefined) return { deny: refusal }
@@ -1670,7 +1845,9 @@ export const register: Register = on => {
     // The transcript the log checkpoint copies from. Every source sets it,
     // `clear` too, which starts a new transcript under a new session id.
     if (typeof e.transcript_path === 'string' && e.transcript_path !== '') await $.state.set(TRANSCRIPT, e.transcript_path)
-    const result = await next(e)
+    const beneath = await next(e)
+    const leftovers = e.source === 'startup' || e.source === 'resume' ? await leftoverBlock($).catch(() => undefined) : undefined
+    const result = leftovers === undefined ? beneath : { ...beneath, additionalContext: [...(beneath.additionalContext ?? []), leftovers] }
     const meetings = await meetingsDir($).catch(() => undefined)
     if (e.source === 'startup' || e.source === 'resume') {
       const payload = JSON.stringify({ source: e.source, session_id: e.session_id })
@@ -1826,6 +2003,12 @@ export const register: Register = on => {
       if (writes.commits + writes.pushes + releases + merges.local.length + merges.pr + rewrites + aliases + apiIntoDefault === 0) {
         return subject !== undefined ? { deny: subject } : withScanRecall($, 'Bash', e.command, e.agentId, await next(e))
       }
+      const isUnitOnly = writes.commits === 1 && writes.pushes + releases + merges.local.length + merges.pr + rewrites + aliases + apiIntoDefault === 0
+      if (isUnitOnly && (await isUnitCommitLine($, e.command).catch(() => false))) {
+        const treeRefusal = await treeRefusalOf($, e.command, commit, e.tool_use_id)
+        if (treeRefusal !== undefined) return { deny: treeRefusal }
+        return subject !== undefined ? { deny: subject } : withScanRecall($, 'Bash', e.command, e.agentId, await next(e))
+      }
       const request = await read($, turnRequest)
       const intoDefault = merges.pr + (await mergesIntoDefault($, merges.local))
       const gate = gateOf({ writes, releases, merges: intoDefault, rewrites, aliases, apiWrites: apiIntoDefault }, approval, request, e.command)
@@ -1953,6 +2136,11 @@ export const register: Register = on => {
 
   on('tool.call', { tool: JUDGED_TOOL }, ($, e, next) => (judging.has(e.tool_use_id) ? next(e) : { deny: GUARD_FAILED }))
 
+  on('tool.call', { tool: /^Bash$/ }, async ($, e, next) => {
+    const command = e.tool === 'Bash' ? ledgerCommandOf(parseShell(e.command)) : undefined
+    return e.tool !== 'Bash' || command === undefined ? next(e) : ledgerCall($, e, command, next as (e: never) => Promise<ToolCallResult>)
+  }).catch(($, e, next) => (next.called || e.tool !== 'Bash' || ledgerCommandOf(parseShell(e.command)) === undefined ? next(e) : { deny: GUARD_FAILED }))
+
   on('tool.call', { tool: /^(mcp__.+|Bash|Read|WebFetch|Glob|Write|NotebookEdit)$/ }, async ($, e, next) => {
     const key = callerKeyOf(e.agentId, e.tool)
     const caller = e.agentId ?? 'main'
@@ -2020,6 +2208,8 @@ export const register: Register = on => {
     const approval = await read($, commitApproval)
     if (approval !== 'none' && approval.line === command) return { ...result, decision: { behavior: 'allow' } }
     if (!(await isCommitGated($, sessionAttended, undefined))) return result
+    const isUnitCommit = (await isUnitCommitLine($, command).catch(() => false)) && (await treeRefusalOf($, command, readLine(command).commit, undefined).catch(() => GUARD_FAILED)) === undefined
+    if (isUnitCommit) return { ...result, decision: { behavior: 'allow' } }
     const { writes } = readLine(command)
     const isOne = writes.commits <= 1 && writes.pushes <= 1
     const picked: Action[] = !isOne || approval === 'none' || approval.line !== undefined ? [] : [approval.action as Action]

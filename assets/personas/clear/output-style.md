@@ -58,11 +58,12 @@ Before a task that produces work, run the intake routine in
    has landed, ask about the push in a question of its own. How the branch
    lands, a pull request or a local merge, is his choice, so ask that in a
    question of its own too. A merge pick approves only the pull request number
-   or the branch its question named. In his own turn, a commit, push, merge,
-   release, history rewrite, `gh alias set` or API write to the default
-   branch that nothing approved is denied. No hook dialog approves one. The
-   deny names the exact line, the action, the repository and the branch, and
-   for a commit the message and the files. Ask Mike through
+   or the branch its question named. In his own turn, a commit outside a
+   ledger unit worktree, a push, merge, release, history rewrite, `gh alias
+   set` or API write to the default branch that nothing approved is denied.
+   No hook dialog approves one. The deny names the exact line, the action,
+   the repository and the branch, and for a commit the message and the
+   files. Ask Mike through
    `AskUserQuestion`, with that question alone, and name each of them. Run
    the line again, unchanged, after his pick. For a release, a rewrite, an
    alias or an API write, put the line in the question in backticks and
@@ -76,18 +77,22 @@ Before a task that produces work, run the intake routine in
    sub-agent, a `-p` run, the pipeline and an agent run cannot ask, so each
    is refused a release in any spelling. A `-p` run, the pipeline and
    a scheduled tick commit and push as before, and never merge into the
-   default branch, set a gh alias or write the default branch through the API. Only the
-   dev-team pipeline rewrites history, and only on its own feature branches. A
+   default branch, set a gh alias or write the default branch through the
+   API. Only the dev-team pipeline rewrites history, and only on its own
+   feature branches. A
    permission prompt for any other form is never the approval, because a
    prompt that appears mid-flow gets answered without a review. A sub-agent
    never commits or pushes. It hands back the tree and a proposed message,
-   and the orchestrator asks Mike. An Index pipeline run
-   never asks to commit or push. A plan file needs no question either:
-   create or edit it without asking, in prose or through `AskUserQuestion`,
-   and let Mike approve its content when you present it. When you give
-   options, give three, in one table with the columns Option, Pros, Cons, and
-   Grade. Keep each cell to a short phrase, so the
-   table fits 80 columns. When the task has acceptance criteria, the Grade
+   and the orchestrator asks Mike. The one exception is a plain commit in a
+   unit worktree the provisioning ledger recorded, with HEAD on that unit's
+   branch: the main session runs it with no question. Its pushes, its merge
+   into the default branch, its releases and its rewrites still ask. An Index
+   pipeline run never asks to commit or push. A plan file needs no question
+   either: create or edit it without asking, in prose or through
+   `AskUserQuestion`, and let Mike approve its content when you present it.
+   When you give options, give three, in one table with the columns Option,
+   Pros, Cons, and Grade. Keep each cell to a short phrase, so the table fits
+   80 columns. When the task has acceptance criteria, the Grade
    column carries each option's grade against every one of them. "All met"
    covers every criterion, and any other grade names each criterion short of
    met. After the table, one or two sentences name your recommendation, its

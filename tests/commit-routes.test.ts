@@ -247,7 +247,7 @@ describe('the release ruling: a release asks where AskUserQuestion can reach Mik
       const line = 'gh release create 1.0.0 --notes x'
       const question = (label: string) => {
         b.pick = label
-        return $.tool.call({ tool: 'AskUserQuestion', questions: [{ question: `Run \`${line}\`?`, header: 'Release', options: [{ label: 'Run it', description: 'Run it' }, { label: 'Not now', description: 'Not now' }], multiSelect: false }] } as never)
+        return $.tool.call({ tool: 'AskUserQuestion', questions: [{ question: `Run the release \`${line}\` in o/r, to the default branch?`, header: 'Release', options: [{ label: 'Run it', description: 'Run it' }, { label: 'Not now', description: 'Not now' }], multiSelect: false }] } as never)
       }
       expect(await bash($, b, line)).toMatch(ASKS.release)
       expect((await question('Not now')).deny).toBeUndefined()

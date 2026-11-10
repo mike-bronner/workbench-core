@@ -119,7 +119,7 @@ import {
   recordOf,
   withChurn,
 } from './mods/cache-meter'
-import type { Action, ApiWrite, AskFacts, Commit, Gated, Head, Pick, Refs, RequestedCall } from './mods/commit-approval'
+import type { Action, ApiWrite, Approval, AskFacts, Commit, Gated, Head, PendingRelease, Pick, Refs, RequestedCall } from './mods/commit-approval'
 import {
   AGENT_CONFIG_MERGE_REFUSAL,
   AGENT_MERGE_REFUSAL,
@@ -147,12 +147,18 @@ import {
   lineKindOf,
   isOtherRepo,
   linePickOf,
+  picksLine,
+  releaseIdOf,
+  releasePickOf,
+  repoSlugOf,
+  sameRelease,
   originRepoOf,
   remoteTargetOf,
   isDefaultRef,
   rewritesAt,
   rewritesOf,
   bundleRefusalOf,
+  earlyReleaseRefusalOf,
   configuredMergesOf,
   dirOf,
   headsOf,
@@ -325,6 +331,7 @@ const delegationReminded = atom({ plugin: 'workbench-core', key: 'delegationRemi
 const commitApproval = atom({ plugin: 'workbench-core', key: 'commitApproval' } as const, 'none')
 const turnRequest = atom({ plugin: 'workbench-core', key: 'turnRequest' } as const, [])
 const pendingLines = atom({ plugin: 'workbench-core', key: 'pendingLines' } as const, {})
+const pendingReleases = atom({ plugin: 'workbench-core', key: 'pendingReleases' } as const, [])
 // Whether a schedule opened the current turn, so a commit in it is not gated.
 const turnScheduled = atom({ plugin: 'workbench-core', key: 'turnScheduled' } as const, false)
 const turnForwards = atom({ plugin: 'workbench-core', key: 'turnForwards' } as const, false)
@@ -637,10 +644,53 @@ async function releaseRefusalOf($: EngineInterface, line: string, agentId: strin
   return agentRelease !== undefined && (await isAgentLane($, agentId, sessionAttended)) ? agentRelease : undefined
 }
 
+const configOf = ($: EngineInterface, cwd: string, pattern: string): Promise<string | undefined> =>
+  $.process
+    .run(['git', '-C', cwd, 'config', '--get-regexp', pattern], { timeoutMs: 10_000 })
+    .then(({ exitCode, stdout }) => (exitCode === 0 ? stdout : exitCode === 1 ? '' : undefined), () => undefined)
+
+const entriesOf = (text: string | undefined): string[] | undefined => text?.split('\n').map(entry => entry.trim()).filter(entry => entry !== '')
+
+const remotesOf = ($: EngineInterface, cwd: string): Promise<{ name: string; url: string }[] | undefined> =>
+  $.process
+    .run(['git', '-C', cwd, 'remote', '-v'], { timeoutMs: 10_000 })
+    .then(
+      ({ exitCode, stdout }) =>
+        exitCode !== 0
+          ? undefined
+          : stdout.split('\n').flatMap(entry => {
+              const match = /^(\S+)\t(\S+) \(fetch\)$/.exec(entry.trim())
+              return match === null ? [] : [{ name: match[1] as string, url: match[2] as string }]
+            }),
+      () => undefined,
+    )
+
+async function pendingReleaseOf($: EngineInterface, command: string): Promise<PendingRelease | undefined> {
+  const cwd = await $.session.cwd()
+  const resolved = entriesOf(await configOf($, cwd, '^remote\\..*\\.gh-resolved$'))
+  const remotes = await remotesOf($, cwd)
+  const origin = originRepoOf(remotes?.find(remote => remote.name === 'origin')?.url)
+  const env = (await $.env.get('GH_REPO')) ?? ''
+  const github = remotes?.filter(remote => originRepoOf(remote.url) !== undefined)
+  const isOrigin =
+    resolved !== undefined && github !== undefined && (resolved.length > 0 ? resolved.every(entry => entry === 'remote.origin.gh-resolved base') : github.length === 1 && github[0]?.name === 'origin')
+  const release = releaseIdOf(command, env !== '' ? repoSlugOf(env) : isOrigin ? origin : undefined)
+  if (release === undefined) return undefined
+  const top = release.repo === origin ? await gitOut($, cwd, ['rev-parse', '--show-toplevel']) : undefined
+  return { ...release, names: top === undefined ? [release.repo] : [release.repo, top] }
+}
+
 async function askRefusal($: EngineInterface, missing: readonly Gated[], command: string, dir: string, commit: Commit | undefined): Promise<string> {
-  const kind = lineKindOf(missing, command)
+  const release = missing.length === 1 && missing[0] === 'release' ? await pendingReleaseOf($, command) : undefined
+  if (release !== undefined) await update($, pendingReleases, releases => [...releases.filter(each => !sameRelease(each, release)), release])
+  const kind = release === undefined ? lineKindOf(missing, command) : undefined
   if (kind !== undefined) await update($, pendingLines, lines => ({ ...lines, [command]: kind }))
-  return askRefusalOf(missing, await askFactsOf($, command, dir, commit))
+  const facts = await askFactsOf($, command, dir, commit)
+  return askRefusalOf(missing, release === undefined ? facts : { ...facts, release })
+}
+
+async function pickedReleaseOf($: EngineInterface, approval: Approval, command: string): Promise<PendingRelease | undefined> {
+  return approval !== 'none' && approval.release !== undefined ? pendingReleaseOf($, command) : undefined
 }
 
 async function commitGuardOf($: EngineInterface, command: unknown, agentId: string | undefined, sessionAttended: boolean | undefined): Promise<string | undefined> {
@@ -1874,6 +1924,7 @@ export const register: Register = on => {
     const isMike = isPersonOrigin(e.origin) && !isScheduledFire(e.text)
     if (isMike) await update($, commitApproval, () => 'none' as const)
     if (isMike) await update($, pendingLines, () => ({}))
+    if (isMike) await update($, pendingReleases, () => [])
     await update($, turnRequest, request => (isMike ? requestedOf(e.text) : e.turnId === undefined ? [] : request))
     if (isMike) await update($, intake, state => ({ ...state, task: state.task + 1 }))
     const forwards = e.origin.kind === 'task-notification' && notificationForwards(e.text)
@@ -1944,9 +1995,13 @@ export const register: Register = on => {
     }
     if (e.tool === 'AskUserQuestion') {
       const isGated = await isCommitGated($, sessionAttended, e.agentId)
-      const pending = e.agentId === undefined && sessionAttended === true ? await read($, pendingLines) : {}
-      const bundled = isGated || Object.keys(pending).length > 0 ? bundleRefusalOf(e.questions, pending) : undefined
+      const isAsker = e.agentId === undefined && sessionAttended === true
+      const pending = isAsker ? await read($, pendingLines) : {}
+      const releases = isAsker ? await read($, pendingReleases) : []
+      const bundled = isGated || Object.keys(pending).length > 0 || releases.length > 0 ? bundleRefusalOf(e.questions, pending, releases) : undefined
       if (bundled !== undefined) return { deny: bundled }
+      const early = isAsker ? earlyReleaseRefusalOf(e.questions, pending, releases) : undefined
+      if (early !== undefined) return { deny: early }
       // The question rule. A call no message holds (another plugin's
       // $.ui.ask) is let through: there is no message to read the context from.
       if (e.agentId === undefined && sessionAttended === true && (await read($, turnAttended))) {
@@ -1955,6 +2010,11 @@ export const register: Register = on => {
         if (refusal !== undefined) return { deny: refusal }
       }
       const result = await next(e)
+      const releasePick = result.deny === undefined ? releasePickOf(e.questions, result.result, releases) : undefined
+      if (releasePick !== undefined) {
+        await update($, commitApproval, () => ({ action: 'release' as const, heads: [], release: releasePick }))
+        return result
+      }
       const linePick = result.deny === undefined ? linePickOf(e.questions, result.result, pending) : undefined
       if (linePick !== undefined) {
         const heads = linePick.kind === 'rewrite' ? await headsAt($) : []
@@ -1989,7 +2049,8 @@ export const register: Register = on => {
           if (sessionAttended !== true || e.agentId !== undefined) return { deny: e.agentId === undefined ? RELEASE_REFUSAL : AGENT_RELEASE_REFUSAL }
           if (releases > 1) return { deny: ONE_REFUSAL }
           const approval = await read($, commitApproval)
-          if (approval === 'none' || approval.action !== 'release' || approval.line !== e.command) return { deny: await askRefusal($, ['release'], e.command, await $.session.cwd(), undefined) }
+          const picked = await pickedReleaseOf($, approval, e.command)
+          if (approval === 'none' || approval.action !== 'release' || !picksLine(approval, e.command, picked)) return { deny: await askRefusal($, ['release'], e.command, await $.session.cwd(), undefined) }
           return next(e).finally(() => update($, commitApproval, () => 'none' as const))
         }
         return withScanRecall($, 'Bash', e.command, e.agentId, await next(e))
@@ -2011,8 +2072,9 @@ export const register: Register = on => {
       }
       const request = await read($, turnRequest)
       const intoDefault = merges.pr + (await mergesIntoDefault($, merges.local))
-      const gate = gateOf({ writes, releases, merges: intoDefault, rewrites, aliases, apiWrites: apiIntoDefault }, approval, request, e.command)
-      const isLinePaid = approval !== 'none' && approval.line === e.command && !gate.missing.includes(approval.action)
+      const picked = await pickedReleaseOf($, approval, e.command)
+      const gate = gateOf({ writes, releases, merges: intoDefault, rewrites, aliases, apiWrites: apiIntoDefault }, approval, request, e.command, picked)
+      const isLinePaid = approval !== 'none' && picksLine(approval, e.command, picked) && !gate.missing.includes(approval.action)
       if (gate.isOne) return { deny: ONE_REFUSAL }
       const treeRefusal = writes.commits === 1 ? await treeRefusalOf($, e.command, commit, e.tool_use_id) : undefined
       if (treeRefusal !== undefined) return { deny: treeRefusal }
@@ -2206,13 +2268,13 @@ export const register: Register = on => {
     const command = (e.tool_input as { command?: unknown } | null | undefined)?.command
     if (typeof command !== 'string') return result
     const approval = await read($, commitApproval)
-    if (approval !== 'none' && approval.line === command) return { ...result, decision: { behavior: 'allow' } }
+    if (approval !== 'none' && picksLine(approval, command, await pickedReleaseOf($, approval, command))) return { ...result, decision: { behavior: 'allow' } }
     if (!(await isCommitGated($, sessionAttended, undefined))) return result
     const isUnitCommit = (await isUnitCommitLine($, command).catch(() => false)) && (await treeRefusalOf($, command, readLine(command).commit, undefined).catch(() => GUARD_FAILED)) === undefined
     if (isUnitCommit) return { ...result, decision: { behavior: 'allow' } }
     const { writes } = readLine(command)
     const isOne = writes.commits <= 1 && writes.pushes <= 1
-    const picked: Action[] = !isOne || approval === 'none' || approval.line !== undefined ? [] : [approval.action as Action]
+    const picked: Action[] = !isOne || approval === 'none' || approval.line !== undefined || approval.release !== undefined ? [] : [approval.action as Action]
     const approved = [...new Set([...(await read($, turnRequest)), ...picked])]
     return (await isApprovedLine($, command, approved)) ? { ...result, decision: { behavior: 'allow' } } : result
   })

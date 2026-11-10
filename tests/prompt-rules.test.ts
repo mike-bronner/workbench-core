@@ -484,7 +484,9 @@ describe('the working rules on commits and code comments', () => {
   test('an unapproved gated action is denied, and the deny sends the question through AskUserQuestion', () => {
     expect(RULES).toContain('that no request or pick approved is denied. No hook dialog ever approves one.')
     expect(RULES).toContain('Ask the user that question on its own, never beside another, and name each of them in it.')
-    expect(RULES).toContain('write the line in the question in backticks and offer "Run it": that pick approves that one line, once.')
+    expect(RULES).toContain('For a release, run the line first, so the gate names its tag, repository and target. A question about running a release asked before that is refused.')
+    expect(RULES).toContain('that pick approves one `gh release create` of that tag in that repository, to that target, once, whatever its title, notes, flags or quoting.')
+    expect(RULES).toContain('For a history rewrite, `gh alias set` or an API write, write the line in the question in backticks, in the escaped form the deny shows when it holds a hidden character, and offer "Run it": that pick approves that one line, once.')
     expect(RULES).toContain('A sub-agent, a `-p` run, the pipeline and an agent run cannot ask, so each of them is refused a release in any spelling.')
     expect(RULES).not.toContain('approval dialog')
     expect(RULES).not.toContain('ten minutes')

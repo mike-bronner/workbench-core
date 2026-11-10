@@ -377,9 +377,9 @@ const permission = ($: Engine, command: string, agentId?: string) =>
     } as never)
     .then(result => (result as { decision?: unknown }).decision)
 
-const runIt = ($: Engine, b: Bench, line: string) => {
+const runIt = ($: Engine, b: Bench, line: string, where = 'on feat') => {
   b.pick = 'Run it'
-  const question = { question: `Run \`${line}\` in /repo, on feat?`, header: 'Approve', options: [{ label: 'Run it', description: 'x' }, { label: 'Not now', description: 'y' }], multiSelect: false }
+  const question = { question: `Run \`${line}\` in /repo, ${where}?`, header: 'Approve', options: [{ label: 'Run it', description: 'x' }, { label: 'Not now', description: 'y' }], multiSelect: false }
   return $.tool.call({ tool: 'AskUserQuestion', questions: [question] } as never)
 }
 
@@ -400,7 +400,7 @@ describe('finding 6: the permission prompt is answered only for the line Mike pi
       expect(await permission($, line)).toBeUndefined()
       expect(await bash($, b, line)).toMatch(ASKS[kind])
       expect(await permission($, line)).toBeUndefined()
-      expect((await runIt($, b, line)).deny).toBeUndefined()
+      expect((await runIt($, b, line, kind === 'release' ? 'to the default branch' : 'on feat')).deny).toBeUndefined()
       expect(await bash($, b, line)).toBeUndefined()
       expect(seen).toEqual([undefined, undefined, { behavior: 'allow' }])
       expect(await permission($, line)).toBeUndefined()

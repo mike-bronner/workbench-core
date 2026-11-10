@@ -59,7 +59,7 @@ const ACTIONS: readonly [string, string, readonly string[]][] = [
   ['a push', 'git push origin main', ['git push', '/repo', 'main', 'git push origin main']],
   ['a merge', 'git merge fix/x', ['merge into the default branch', 'git merge fix/x']],
   ['a pull request merge', 'gh pr merge 12 --squash', ['merge into the default branch', 'gh pr merge 12 --squash']],
-  ['a release', 'gh release create 1.0.0 --notes x', ['release', 'gh release create 1.0.0']],
+  ['a release', 'gh release create 1.0.0 --notes x', ['release', 'its tag 1.0.0 and its repository o/r', 'targets the default branch']],
   ['a cherry-pick', 'git cherry-pick abc1234', ['history rewrite', 'git cherry-pick abc1234']],
   ['a gh alias set', "gh alias set co 'pr checkout'", ['gh alias set', 'gh alias set co']],
   ['an API write to the default branch', 'gh api -X PUT repos/o/r/contents/f -f branch=main -f message=x', ['GitHub API write to the default branch', 'the repository /repo, and the branch main.']],
@@ -79,7 +79,8 @@ const QUESTIONS: Readonly<Record<string, readonly [string, string, string]>> = {
   'a pull request merge': ['Merge PR 12 into main?', 'Merge it', 'Open a PR'],
 }
 
-const questionFor = (name: string, line: string): readonly [string, string, string] => QUESTIONS[name] ?? [`Run \`${line}\` in /repo, on main?`, 'Run it', 'Not now']
+const questionFor = (name: string, line: string): readonly [string, string, string] =>
+  QUESTIONS[name] ?? [name === 'a release' ? `Run the release \`${line}\` in o/r, to the default branch?` : `Run \`${line}\` in /repo, on main?`, 'Run it', 'Not now']
 
 async function picks($: Engine, b: Bench, name: string, line: string, label?: string): Promise<void> {
   const [question, yes, no] = questionFor(name, line)
@@ -96,8 +97,8 @@ describe('AC6: in an attended session an unapproved gated action is denied, with
       b.pick = 'Yes'
       const deny = await bash($, b, line)
       expect(deny).toContain('Ask him through AskUserQuestion, with this question alone in its call.')
-      expect(deny).toContain(`name the exact line \`${line}\``)
-      expect(deny).toContain('After he picks, run the line again, unchanged.')
+      expect(deny).toContain(name === 'a release' ? 'say that it is a release, name its tag 1.0.0' : `name the exact line \`${line}\``)
+      expect(deny).toContain(name === 'a release' ? 'After he picks, run the release again.' : 'After he picks, run the line again, unchanged.')
       for (const word of words) expect([word, deny?.includes(word)]).toEqual([word, true])
       expect(dialogs(b)).toEqual([])
     })
@@ -142,9 +143,6 @@ describe('AC6: in an attended session an unapproved gated action is denied, with
   })
 
   for (const [name, line, repo, branch] of [
-    ['a release with -R', 'gh release create 1.0.0 -R x/y --notes n', 'x/y on GitHub', 'the default branch of x/y'],
-    ['a release with --repo=', 'gh release create 1.0.0 --repo=x/y --notes n', 'x/y on GitHub', 'the default branch of x/y'],
-    ['a release under GH_REPO', 'GH_REPO=x/y gh release create 1.0.0 --notes n', 'x/y on GitHub', 'the default branch of x/y'],
     ['an API write to another repository', 'gh api -X PUT repos/x/y/contents/f -f branch=feat -f message=x', 'x/y on GitHub', 'feat'],
   ] as const) {
     test(`AC6: ${name} is denied naming that repository and its branch, not the session's`, async ($, on) => {
@@ -152,6 +150,19 @@ describe('AC6: in an attended session an unapproved gated action is denied, with
       const deny = await bash($, b, line)
       expect(deny).toContain(`the repository ${repo}, and the branch ${branch}.`)
       expect(deny).not.toContain('the repository /repo')
+    })
+  }
+
+  for (const [name, line] of [
+    ['a release with -R', 'gh release create 1.0.0 -R x/y --notes n'],
+    ['a release with --repo=', 'gh release create 1.0.0 --repo=x/y --notes n'],
+    ['a release under GH_REPO', 'GH_REPO=x/y gh release create 1.0.0 --notes n'],
+  ] as const) {
+    test(`AC6: ${name} is denied naming that repository, not the session's`, async ($, on) => {
+      const b = await attended($, on)
+      const deny = await bash($, b, line)
+      expect(deny).toContain('its repository x/y, and say that it targets the default branch.')
+      expect(deny).not.toContain('o/r')
     })
   }
 
@@ -179,7 +190,6 @@ describe('AC6: in an attended session an unapproved gated action is denied, with
 
 describe('AC7: a pick approves exactly one action of the kind its question names', () => {
   for (const [name, line] of [
-    ['a release', 'gh release create 1.0.0 --notes x'],
     ['a cherry-pick', 'git cherry-pick abc1234'],
     ['a gh alias set', "gh alias set co 'pr checkout'"],
     ['an API write to the default branch', 'gh api -X PUT repos/o/r/contents/f -f branch=main -f message=x'],

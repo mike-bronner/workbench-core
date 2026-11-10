@@ -329,9 +329,11 @@ declare module 'claude-code' {
             heads: readonly { top: string; ref: string }[]
             names?: { prs: readonly string[]; words: readonly string[]; bases?: readonly string[] }
             line?: string
+            release?: { repo: string; tag: string; target: string }
           }
       turnRequest: readonly ('commit' | 'push' | 'merge' | 'release')[]
       pendingLines: Readonly<Record<string, 'release' | 'rewrite' | 'alias' | 'api'>>
+      pendingReleases: readonly { repo: string; tag: string; target: string; names: readonly string[] }[]
       // Whether a schedule opened the current turn: the scheduled-trigger
       // origin, or the `<scheduled-task ` wrapper. The commit rule skips it.
       turnScheduled: boolean

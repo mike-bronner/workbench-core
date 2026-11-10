@@ -438,7 +438,9 @@ export function dirOf(steps: readonly string[] | null | undefined, cwd: string, 
 export type PickAction = 'commit' | 'push' | 'merge'
 export type LineKind = 'release' | 'rewrite' | 'alias' | 'api'
 export type Head = { top: string; ref: string }
-export type Pick = { action: PickAction | LineKind; heads: readonly Head[]; names?: MergeNames; line?: string }
+export type ReleaseId = { repo: string; tag: string; target: string }
+export type PendingRelease = ReleaseId & { names: readonly string[] }
+export type Pick = { action: PickAction | LineKind; heads: readonly Head[]; names?: MergeNames; line?: string; release?: ReleaseId }
 export type Approval = 'none' | Pick
 export type PendingLines = Readonly<Record<string, LineKind>>
 
@@ -471,9 +473,16 @@ const GATED_NAMES: Readonly<Record<Gated, string>> = {
   api: 'GitHub API write to the default branch',
 }
 
-export function gateOf(counts: Counts, approval: Approval, request: readonly Action[], line = ''): Gate {
+export const sameRelease = (one: ReleaseId, other: ReleaseId): boolean => one.repo === other.repo && one.tag === other.tag && one.target === other.target
+
+const isLinePick = (approval: Approval): boolean => approval !== 'none' && (approval.line !== undefined || approval.release !== undefined)
+
+export const picksLine = (approval: Approval, line: string, release?: ReleaseId): boolean =>
+  approval !== 'none' && (approval.release === undefined ? approval.line === line : release !== undefined && sameRelease(approval.release, release))
+
+export function gateOf(counts: Counts, approval: Approval, request: readonly Action[], line = '', release?: ReleaseId): Gate {
   const { writes, releases, merges, rewrites, aliases, apiWrites } = counts
-  const picked = approval === 'none' || approval.line !== undefined ? undefined : approval.action
+  const picked = approval === 'none' || isLinePick(approval) ? undefined : approval.action
   const missing: Gated[] = []
   if (releases === 1 && !request.includes('release')) missing.push('release')
   if (writes.commits === 1 && picked !== 'commit' && !grants(request, 'commit')) missing.push('commit')
@@ -484,7 +493,7 @@ export function gateOf(counts: Counts, approval: Approval, request: readonly Act
   if (apiWrites > 0) missing.push('api')
   const isOne = writes.commits > 1 || writes.pushes > 1 || merges > 1 || releases > 1
   const many: Readonly<Record<Gated, boolean>> = { commit: false, push: false, merge: false, release: false, rewrite: rewrites > 1, alias: aliases > 1, api: apiWrites > 1 }
-  const isLined = approval !== 'none' && approval.line !== undefined && approval.line === line && missing.includes(approval.action)
+  const isLined = approval !== 'none' && isLinePick(approval) && picksLine(approval, line, release) && missing.includes(approval.action)
   return { isOne, missing: isLined ? missing.filter(kind => many[kind]) : missing }
 }
 
@@ -514,7 +523,7 @@ const codeOf = (char: string): string => {
 
 export const shownOf = (text: string): string => text.replace(HIDDEN, char => (char === ' ' ? char : (SHOWN_ESCAPES[char] ?? codeOf(char))))
 
-export type AskFacts = { command: string; repo?: string; branch?: string; message?: string; files?: readonly string[] }
+export type AskFacts = { command: string; repo?: string; branch?: string; message?: string; files?: readonly string[]; release?: ReleaseId }
 
 const LINE_HOW =
   'Write the line in the question in backticks, exactly as it stands here, and offer "Run it" and "Not now". ' +
@@ -534,8 +543,21 @@ const ASK_HOW: Readonly<Record<Gated, string>> = {
   api: LINE_HOW,
 }
 
+const targetOf = (release: ReleaseId): string => (release.target === '' ? 'the default branch' : release.target)
+
+const releaseRefusalOf = (release: ReleaseId): string =>
+  [
+    'This release was refused: Mike has not approved it.',
+    'Ask him through AskUserQuestion, with this question alone in its call.',
+    `In the question, say that it is a release, name its tag ${release.tag} and its repository ${release.repo}, and say that it targets ${targetOf(release)}.`,
+    'Offer "Run it" and "Not now".',
+    `A "Run it" pick approves one gh release create of tag ${release.tag} in ${release.repo} with that target, once, whatever its title, notes, flags or quoting.`,
+    'After he picks, run the release again. Its title, notes and flags may change, and its tag, repository and target may not.',
+  ].join(' ')
+
 export function askRefusalOf(missing: readonly Gated[], facts: AskFacts): string {
   const [kind] = missing
+  if (facts.release !== undefined && missing.length === 1 && kind === 'release') return releaseRefusalOf(facts.release)
   if (kind === undefined || (missing.length > 1 && lineKindOf(missing, facts.command) === undefined)) {
     return (
       `This line was refused: it runs a ${namesOfGated(missing)}, and Mike has approved none of them. ` +
@@ -587,7 +609,7 @@ export function filesOf(status: string): string[] {
 const grants = (request: readonly Action[], action: 'commit' | 'push'): boolean => request.includes(action) || request.includes('release')
 
 export function isPaidByPick(writes: Writes, merges: number, approval: Approval, request: readonly Action[]): boolean {
-  if (approval === 'none' || approval.line !== undefined) return false
+  if (approval === 'none' || isLinePick(approval)) return false
   if (approval.action === 'commit') return writes.commits === 1 && !grants(request, 'commit')
   if (approval.action === 'push') return writes.pushes === 1 && !grants(request, 'push')
   return merges === 1 && !request.includes('merge')
@@ -1154,6 +1176,55 @@ const isUnreadRelease = (st: ShellStatement, line: string): boolean => {
 
 const isPlainReleaseCreate = (st: ShellStatement): boolean => hasPlainCommand(st) && plainOf(st)(st.nameAt + 2)
 
+const RELEASE_VALUES: ReadonlySet<string> = new Set(['--target', '--title', '--notes', '--notes-file', '--discussion-category', '--notes-start-tag', '--repo', '-t', '-n', '-F', '-R'])
+const RELEASE_FLAGS: ReadonlySet<string> = new Set(['--draft', '--prerelease', '--generate-notes', '--verify-tag', '--latest', '--fail-on-no-commits', '-d', '-p'])
+const RELEASE_NAME = /^[A-Za-z0-9][A-Za-z0-9._+/-]*$/
+const REPO_SLUG = /^[a-z0-9._-]+\/[a-z0-9._-]+$/
+
+export const repoSlugOf = (repo: string): string | undefined => {
+  const slug = repo.toLowerCase().replace(/^(?:https:\/\/)?github\.com\//, '').replace(/\.git$/, '')
+  return REPO_SLUG.test(slug) ? slug : undefined
+}
+
+const NOTES_VALUES: ReadonlySet<string> = new Set(['--title', '--notes', '-t', '-n'])
+
+const isHeredocCat = (st: ShellStatement): boolean =>
+  st.depth > 0 && st.name === 'cat' && st.nameAt === 0 && st.args.length === 0 && st.redirects.length === 1 && st.heredocs.length === 1
+
+export function releaseIdOf(line: string, defaultRepo: string | undefined): ReleaseId | undefined {
+  const { statements, unknowns } = parseShell(line)
+  const outer = statements.filter(each => each.depth === 0)
+  const [st] = outer
+  if (unknowns.length > 0 || outer.length !== 1 || !statements.every(each => each === st || isHeredocCat(each)) || st === undefined || st.name !== 'gh' || st.nameAt !== st.assignments.length || st.depth !== 0 || st.subcommandAt !== 0) return undefined
+  if (st.args[0] !== 'release' || st.args[1] !== 'create' || !isPlainReleaseCreate(st) || !st.assignments.every(word => word.startsWith('GH_REPO='))) return undefined
+  const isPlain = plainOf(st)
+  const values = new Map<string, string>()
+  let tag: string | undefined
+  for (let i = 2; i < st.args.length; i++) {
+    const word = st.args[i] ?? ''
+    const eq = word.startsWith('--') ? word.indexOf('=') : -1
+    const name = eq === -1 ? (/^-[tnFR]./.test(word) ? word.slice(0, 2) : word) : word.slice(0, eq)
+    if (!word.startsWith('-')) {
+      if (tag !== undefined) return undefined
+      tag = isPlain(st.nameAt + 1 + i) ? word : ''
+      continue
+    }
+    if (RELEASE_FLAGS.has(name)) continue
+    if (!RELEASE_VALUES.has(name)) return undefined
+    const at = eq !== -1 || name !== word ? i : ++i
+    const value = eq !== -1 ? word.slice(eq + 1) : name !== word ? word.slice(2) : st.args[i]
+    if (value === undefined) return undefined
+    values.set(name, isPlain(st.nameAt + 1 + at) ? value : '\0')
+  }
+  if (statements.length > 1 && !st.args.every((_, i) => isPlain(st.nameAt + 1 + i) || NOTES_VALUES.has(st.args[i - 1] ?? ''))) return undefined
+  const target = values.get('--target') ?? ''
+  const named = values.get('--repo') ?? values.get('-R') ?? st.assignments.at(-1)?.slice('GH_REPO='.length)
+  const repo = named === undefined ? defaultRepo : repoSlugOf(named)
+  if (values.has('--repo') && values.has('-R')) return undefined
+  if (tag === undefined || !RELEASE_NAME.test(tag) || (target !== '' && !RELEASE_NAME.test(target)) || repo === undefined) return undefined
+  return { repo, tag, target }
+}
+
 export function releasesOf(line: string): number {
   return parseShell(line).statements.filter(st => isPlainRelease(st, line)).length
 }
@@ -1415,16 +1486,54 @@ export function approvalOf(question: Question, label: string): PickAction | unde
 const offersApproval = (question: Question): boolean =>
   isCommitQuestion(question) || labelsOf(question).some(label => approvalOf(question, label) !== undefined)
 
-export function linesNamedOf(question: Question, pending: PendingLines): string[] {
-  const text = textOf(question?.question)
-  return Object.keys(pending).filter(line => text.includes(`\`${shownOf(line)}\``))
+const VISIBLE_SPECIALS = /[\n\t`\\]/g
+
+const isVisible = (line: string): boolean => {
+  const rest = line.replace(VISIBLE_SPECIALS, '')
+  return shownOf(rest) === rest
 }
 
-export function bundleRefusalOf(questions: unknown, pending: PendingLines = {}): string | undefined {
+export function linesNamedOf(question: Question, pending: PendingLines): string[] {
+  const text = textOf(question?.question)
+  return Object.keys(pending).filter(line => text.includes(`\`${shownOf(line)}\``) || (isVisible(line) && text.includes(`\`${line}\``)))
+}
+
+const escapedPattern = (text: string): string => text.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')
+
+const isNamedIn = (text: string, name: string): boolean => new RegExp(`(?<![A-Za-z0-9_.-])${escapedPattern(name)}(?![A-Za-z0-9_/-]|\\.[A-Za-z0-9_])`).test(text)
+
+const RELEASE_WORD = /\brelease\b/i
+const DEFAULT_BRANCH = /\bdefault branch\b/i
+
+const isTargetNamed = (text: string, release: ReleaseId): boolean => (release.target === '' ? DEFAULT_BRANCH.test(text) : isNamedIn(text, release.target))
+
+export function releasesNamedOf(question: Question, pending: readonly PendingRelease[]): PendingRelease[] {
+  const text = textOf(question?.question)
+  const lower = text.toLowerCase()
+  if (!RELEASE_WORD.test(text)) return []
+  return pending.filter(release => isNamedIn(text, release.tag) && isTargetNamed(text, release) && release.names.some(name => isNamedIn(lower, name.toLowerCase())))
+}
+
+export const EARLY_RELEASE_REFUSAL =
+  'AskUserQuestion was refused: it asks Mike to run a release, and no release waits for his pick in this turn, so the pick would approve nothing. ' +
+  'Run the gh release create line first. The gate refuses it and names the tag, the repository and the target to put in the question. ' +
+  'If this question is not about running a release, ask it without an option that reads as approval, such as "Run it" or "Yes".'
+
+export function earlyReleaseRefusalOf(questions: unknown, pending: PendingLines, releases: readonly PendingRelease[]): string | undefined {
+  if (!Array.isArray(questions) || releases.length > 0 || Object.values(pending).includes('release')) return undefined
+  const isEarly = (question: Question): boolean =>
+    RELEASE_WORD.test(textOf(question?.question)) && labelsOf(question).some(isRunLabel) && linesNamedOf(question, pending).length === 0 && !offersApproval(question)
+  return (questions as Question[]).some(isEarly) ? EARLY_RELEASE_REFUSAL : undefined
+}
+
+const namedCountOf = (question: Question, pending: PendingLines, releases: readonly PendingRelease[]): number =>
+  linesNamedOf(question, pending).length + releasesNamedOf(question, releases).length
+
+export function bundleRefusalOf(questions: unknown, pending: PendingLines = {}, releases: readonly PendingRelease[] = []): string | undefined {
   if (!Array.isArray(questions)) return undefined
   const asked = questions as Question[]
-  if (asked.some(question => linesNamedOf(question, pending).length > 1)) return LINES_BUNDLE_REFUSAL
-  if (asked.length > 1 && asked.some(question => offersApproval(question) || linesNamedOf(question, pending).length > 0)) return BUNDLE_REFUSAL
+  if (asked.some(question => namedCountOf(question, pending, releases) > 1)) return LINES_BUNDLE_REFUSAL
+  if (asked.length > 1 && asked.some(question => offersApproval(question) || namedCountOf(question, pending, releases) > 0)) return BUNDLE_REFUSAL
   return asked.some(question => isCommitQuestion(question) && namedActionsOf(question).size > 0) ? NAMED_BUNDLE_REFUSAL : undefined
 }
 
@@ -1463,6 +1572,18 @@ export function linePickOf(questions: unknown, result: unknown, pending: Pending
     const label = pickedLabelOf(question, answers)
     const kind = line === undefined ? undefined : pending[line]
     if (line !== undefined && kind !== undefined && others.length === 0 && label !== undefined && isRunLabel(label)) return { line, kind }
+  }
+  return undefined
+}
+
+export function releasePickOf(questions: unknown, result: unknown, pending: readonly PendingRelease[]): ReleaseId | undefined {
+  const answers = answersOf(questions, result)
+  if (answers === undefined) return undefined
+  for (const question of questions as Question[]) {
+    const named = releasesNamedOf(question, pending)
+    const label = pickedLabelOf(question, answers)
+    const [release] = named
+    if (release !== undefined && named.length === 1 && label !== undefined && isRunLabel(label)) return { repo: release.repo, tag: release.tag, target: release.target }
   }
   return undefined
 }

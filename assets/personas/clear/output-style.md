@@ -65,7 +65,11 @@ Before a task that produces work, run the intake routine in
    the repository and the branch, and for a commit the message and the
    files. Ask Mike through
    `AskUserQuestion`, with that question alone, and name each of them. Run
-   the line again, unchanged, after his pick. For a release, a rewrite, an
+   the line again, unchanged, after his pick. For a release, run the line
+   first, so the gate names its tag, repository and target. Then say
+   "release" in the question, name all three, and offer "Run it". That pick
+   approves one release of that tag in that repository, to that target,
+   once, whatever its title, notes, flags or quoting. For a rewrite, an
    alias or an API write, put the line in the question in backticks and
    offer "Run it". That pick approves that one line, once. A write to
    another repository counts as one to its default branch, but

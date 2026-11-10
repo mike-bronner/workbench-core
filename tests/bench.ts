@@ -59,7 +59,7 @@ export type Bench = {
   // The repository `git -C <dir> rev-parse` reads, by directory: HEAD, and
   // what @{push} points at. A directory not here, or a field left out, makes
   // git fail, as outside a repository or with no push target.
-  repos: Record<string, { head?: string; pushed?: string; branch?: string | null; originHead?: string; originUrl?: string }>
+  repos: Record<string, { head?: string; pushed?: string; branch?: string | null; originHead?: string; originUrl?: string; ghResolved?: string | null; remoteUrls?: string | null; remotesShown?: string }>
   trees: Record<string, string | null>
   shown?: string
   permissionBeneath: Record<string, unknown>
@@ -218,6 +218,20 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     const answer = (out: string | undefined) => ({ value: out === undefined ? { ...ran(''), exitCode: 1 } : ran(`${out}\n`) })
     if (gitAt !== undefined && verb === 'rev-parse --show-toplevel') return answer(e.argv[2])
     if (gitAt !== undefined && verb === 'config --get remote.origin.url') return answer(gitAt.originUrl)
+    if (gitAt !== undefined && verb === 'config --get-regexp ^remote\\..*\\.gh-resolved$') return gitAt.ghResolved === null ? { value: { ...ran(''), exitCode: 128 } } : answer(gitAt.ghResolved)
+    if (gitAt !== undefined && verb === 'remote -v') {
+      if (gitAt.remoteUrls === null) return { value: { ...ran(''), exitCode: 128 } }
+      const configured = gitAt.remoteUrls ?? (gitAt.originUrl === undefined ? '' : `remote.origin.url ${gitAt.originUrl}`)
+      const shown = configured.split('\n').flatMap(entry => {
+        const match = /^remote\.(\S+)\.url (\S+)$/.exec(entry)
+        return match === null ? [] : [`${match[1]}\t${match[2]} (fetch)`, `${match[1]}\t${match[2]} (push)`]
+      })
+      return { value: ran(gitAt.remotesShown ?? shown.map(entry => `${entry}\n`).join('')) }
+    }
+    if (gitAt !== undefined && verb === 'config --get-regexp ^remote\\..*\\.url$') {
+      if (gitAt.remoteUrls === null) return { value: { ...ran(''), exitCode: 128 } }
+      return answer(gitAt.remoteUrls ?? (gitAt.originUrl === undefined ? undefined : `remote.origin.url ${gitAt.originUrl}`))
+    }
     if (gitAt !== undefined && verb === 'symbolic-ref -q HEAD') return answer(branchRef(gitAt))
     if (gitAt !== undefined && verb === 'symbolic-ref -q refs/remotes/origin/HEAD') return answer(gitAt.originHead === undefined ? undefined : `refs/remotes/origin/${gitAt.originHead}`)
     if (gitAt !== undefined && verb === 'worktree list --porcelain') {

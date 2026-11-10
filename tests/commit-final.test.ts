@@ -193,7 +193,7 @@ const RELEASE = 'gh release create 1.0.0 --notes x'
 
 const runIt = (line: string) => ({
   tool: 'AskUserQuestion' as const,
-  questions: [{ question: `Run \`${line}\` in /repo, on feat?`, header: 'Approve', options: [{ label: 'Run it', description: 'Run it' }, { label: 'Not now', description: 'Not now' }], multiSelect: false }],
+  questions: [{ question: `Run the release \`${line}\` in /repo, to the default branch?`, header: 'Approve', options: [{ label: 'Run it', description: 'Run it' }, { label: 'Not now', description: 'Not now' }], multiSelect: false }],
 })
 
 describe('a release asks where AskUserQuestion can reach Mike, and is refused where it cannot', () => {

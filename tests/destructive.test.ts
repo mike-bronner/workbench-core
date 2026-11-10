@@ -48,7 +48,7 @@ type Verdict = { decision: 'allow' | 'ask' | 'deny' | 'beneath'; reason: string 
 
 // A session in /repo. Attended: a person answers permission prompts.
 async function session($: Engine, on: Parameters<typeof bench>[0], isAttended = true): Promise<Bench> {
-  const b = bench(on, { env: { HOME } })
+  const b = bench(on, { env: { HOME, WORKBENCH_ORCHESTRATOR: '0' } })
   b.scripts['scratch-roots.sh'] = () => ''
   install(b, WORLD, { roots: ROOTS, vault: '/vault' })
   await $.session.start(start(isAttended))

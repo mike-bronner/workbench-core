@@ -93,7 +93,7 @@ async function differential($: Engine, b: Bench, guard: string, writer: string):
 }
 
 const benchFor = (on: Parameters<typeof bench>[0], writer: string): Bench => {
-  const b = bench(on, { env: { HOME, ...(writer === '1' ? { WORKBENCH_SUMMARY_WRITER: '1' } : {}) } })
+  const b = bench(on, { env: { HOME, WORKBENCH_ORCHESTRATOR: '0', ...(writer === '1' ? { WORKBENCH_SUMMARY_WRITER: '1' } : {}) } })
   b.scripts['scratch-roots.sh'] = () => '/scratch\n'
   return b
 }
@@ -239,7 +239,7 @@ describe('AC2: each disk-reading port refuses or asks on everything its retired 
   for (const [key, cases] of groupsOf(WORLD_DENIED)) {
     const [guard = '', source = '', vault = ''] = key.split('\u0000')
     test(`${guard}, ${source} cases${vault === '' ? '' : ' with a vault'}: each is refused or asked, or sandbox-proven harmless and listed`, { timeoutMs: 120_000 }, async ($, on) => {
-      const b = bench(on, { env: { HOME } })
+      const b = bench(on, { env: { HOME, WORKBENCH_ORCHESTRATOR: '0' } })
       b.scripts['scratch-roots.sh'] = () => ''
       const { letThrough, unproven, misses } = await worldDifferential($, b, cases)
       expect([...new Set(misses)]).toEqual([])
@@ -294,7 +294,7 @@ describe('AC2: the outbound prose port refuses every body its retired bash guard
   let replayedTotal = 0
   for (const vault of vaults) {
     test(`outbound-prose-guard, ${vault === '' ? 'the default vault' : `the vault ${vault}`}: every refused body is refused`, { timeoutMs: 60_000 }, async ($, on) => {
-      const b = bench(on, { env: { HOME } })
+      const b = bench(on, { env: { HOME, WORKBENCH_ORCHESTRATOR: '0' } })
       b.scripts['vault-resolve.sh'] = () => `root\t${vault === '' ? `${HOME}/Documents/Claude/Memory` : vault}\n`
       await $.session.start(start(false))
       const letThrough: string[] = []

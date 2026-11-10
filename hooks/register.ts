@@ -157,6 +157,8 @@ import { FAILED_REFUSAL, commitVerdict } from './mods/commit-guard'
 import { subjectVerdict } from './mods/commit-subject'
 import { isAttendedPrompt, isAttendedSession, isDesktopSession, isScheduledFire, laneOf } from './mods/lane'
 import { bareSetRefusal, repairedNotice, runsGit } from './mods/false-bare'
+import type { Script } from './mods/full-suite'
+import { installPathsOf, suiteRefusal } from './mods/full-suite'
 import { parseShell } from './mods/shell'
 import { callerKeyOf, freshnessOf, isFinalDescription, isMcpTool, isOutwardTool, isRepeated, isSubmitLine, readSourceOf, readsAfter, refusalTextOf, refusalsAfter, repeatReminderOf, sourcesRefusalOf } from './mods/outward'
 import type { FolderChange } from './mods/listings'
@@ -592,6 +594,26 @@ async function commitGuardOf($: EngineInterface, command: unknown, agentId: stri
   const lane = await $.workbench.callerLane(agentId === undefined ? {} : { agentId }).catch(() => undefined)
   const isUnattended = sessionAttended !== true || !(await read($, turnAttended))
   return commitVerdict(parseShell(line), line, { lane, isUnattended })?.deny
+}
+
+async function scriptAt($: EngineInterface, path: string): Promise<Script | undefined> {
+  const stat = await $.fs.stat(path, { resolve: true })
+  if (stat.kind !== 'file') return undefined
+  if (stat.size > 1_000_000) return { kind: 'program' }
+  const text = await $.fs.read(path)
+  return text.includes('\0') ? { kind: 'program' } : { kind: 'text', text }
+}
+
+async function suiteRefusalOf($: EngineInterface, command: unknown, agentId: string | undefined): Promise<string | undefined> {
+  if ((await $.workbench.callerLane(agentId === undefined ? {} : { agentId }).catch((): WorkbenchCallerLane => 'main')) !== 'main') return undefined
+  const home = await $.env.get('HOME')
+  const configDir = await $.env.get('CLAUDE_CONFIG_DIR')
+  const registries = [...new Set([configDir, home && `${home}/.claude`].filter(dir => dir?.startsWith('/')).map(dir => `${dir}/plugins/installed_plugins.json`))]
+  const installed = (await Promise.all(registries.map(path => readIfAny($, path)))).flatMap(text => (text === undefined ? [] : installPathsOf(text)))
+  const pluginRoots = [(await $.env.get('CLAUDE_PLUGIN_ROOT')) || $.plugin.root, ...installed]
+  const refusal = await suiteRefusal(typeof command === 'string' ? command : '', await $.session.cwd(), home, pluginRoots, path => scriptAt($, path))
+  if (refusal === undefined || (await $.env.get('WORKBENCH_ORCHESTRATOR')) === '0' || !(await orchestratorOn($))) return undefined
+  return refusal
 }
 
 async function unreadRefusalOf($: EngineInterface, line: string, agentId: string | undefined, sessionAttended: boolean | undefined): Promise<string | undefined> {
@@ -1633,6 +1655,8 @@ export const register: Register = on => {
     if (unread !== undefined) return { deny: unread }
     const guarded = e.tool === 'Bash' ? await commitGuardOf($, e.command, e.agentId, sessionAttended).catch(() => FAILED_REFUSAL.deny) : undefined
     if (guarded !== undefined) return { deny: guarded }
+    const suite = e.tool === 'Bash' ? await suiteRefusalOf($, e.command, e.agentId).catch(() => GUARD_FAILED) : undefined
+    if (suite !== undefined) return { deny: suite }
     if (e.tool === 'Bash') await repairBeforeGit($, e.command, sessionAttended === true).catch(() => undefined)
     if (verdict !== undefined) {
       const result = await next(e)

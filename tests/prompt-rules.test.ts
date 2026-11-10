@@ -517,6 +517,13 @@ describe('the working rule on one project per session', () => {
     expect(row).toContain('any type but `Explore` and `Plan`')
     expect(row).toContain('inside this project, a git worktree of its repository, or a scratch root')
   })
+
+  test('the gates table lists the full-suite gate', () => {
+    const row = RULES.split('\n').find(line => line.startsWith('| Full-suite gate |')) ?? ''
+    expect(row).toContain('The main agent does not run a project\'s full test suite, directly or through a script, or a script it cannot read.')
+    expect(row).toContain('Holmes\'s `Final suite run:` dispatch')
+    expect(row).toContain('One test file, a filter or one case still runs. Sub-agents run anything.')
+  })
 })
 
 describe('the working rule on pull request reviews', () => {

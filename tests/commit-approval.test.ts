@@ -188,6 +188,7 @@ describe('AC1: one "Commit it" pick allows one commit, and no push', () => {
     b.onBash = () => {
       other.head = 'o2'
     }
+    b.files.set('/repo/scripts/release.sh', 'echo released\n')
     await session($)
     await pick($, b)
     expect(await bash($, b, './scripts/release.sh && git commit -m "fix: 🐛 X."')).toBeUndefined()
@@ -225,6 +226,7 @@ describe('AC1: one "Commit it" pick allows one commit, and no push', () => {
         if (writesOf(command).commits > 0) other.head = 'o2'
         return { isError: true }
       }
+      b.files.set('/repo/env.sh', 'export X=1\n')
       await session($)
       await pick($, b)
       b.runs.length = 0
@@ -483,6 +485,7 @@ describe('AC1: one "Commit it" pick allows one commit, and no push', () => {
 
   test('every caught line of the corpus is refused with no pick, and every read is let through', async ($, on) => {
     const b = bench(on)
+    b.files.set('/repo/script.sh', 'echo hi\n')
     await session($, 'look around')
     for (const [line] of CAUGHT) expect(await bash($, b, line)).toBeDefined()
     for (const line of LET_THROUGH) expect(await bash($, b, line)).toBe(hiddenCommandRefusal(parseShell(line)))

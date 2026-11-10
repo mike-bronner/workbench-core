@@ -69,6 +69,7 @@ These hooks guard every session. Each deny explains its own way through, so read
 | Outbound prose guard | \`gh\`, board-MCP and GitHub-MCP prose must pass the output style's mechanical checks. |
 | Peer message gate | A sub-agent messages only its orchestrator or the agents it spawned. |
 | Whole-disk search guard | A search (\`find\`, \`fd\`, \`rg\`, \`grep -r\`, \`mdfind\`, \`Grep\`, \`Glob\`) may not start at \`/\`, a home folder, \`~/Library\`, \`/Users\`, \`/System\`, \`/Library\`, \`/Applications\`, \`/Volumes\`, \`/private\`, \`/var\`, \`/opt\` or \`/usr\`. |
+| Full-suite gate | The main agent does not run a project's full test suite, directly or through a script, or a script it cannot read. The suite runs once, in Holmes's \`Final suite run:\` dispatch. One test file, a filter or one case still runs. Sub-agents run anything. \`/orchestrator off\` stands it down. |
 
 Every guard refuses a Bash line whose command it cannot name: a command name from a variable or a substitution, a wrapper option it cannot read, or a script piped into a shell. Write the command name out plainly. A plain \`"$NAME/…"\` or \`"\${NAME}/…"\`, inside double quotes, in front of a literal path is fine.
 

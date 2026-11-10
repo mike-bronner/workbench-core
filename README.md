@@ -235,7 +235,7 @@ core/
 │   │                             request-meter, cache-meter, status-line, commit-approval, vault-write,
 │   │                             pending-summaries, shell (the shell reader behind parseShell),
 │   │                             checkpoint, capture, recall, learnings, intake, prompt-rules, guards,
-│   │                             project-scope, false-bare, meetings
+│   │                             project-scope, false-bare, full-suite, meetings
 │   ├── session-log.sh          — raw log capture + summary-writer dispatch (not at SessionEnd or per turn)
 │   ├── session-warmup.sh       — retention cleanup + dead-marker sweep + session reconciler + notices;
 │   │                             summary drain + Chat-skill scan run deferred; prints only a stale-style notice
@@ -486,6 +486,43 @@ A path that does not exist yet is judged by its deepest existing folder, and a `
 **It fails closed.** A git or file system read that fails throws to the hook's `.catch`, which refuses the call, because `Agent` is a guarded tool.
 
 Tests: `tests/project-scope.test.ts` (each work type refused outside the project, a folder in no repository, `~`, several paths on one line, an unreadable `Workdir:`, `/orchestrator off`, a failed git read; the project, a new folder in it, a worktree outside the project folder, a session started in a worktree, and a scratch root allowed; `Explore` and `Plan` never judged; a non-project session, the pipeline shapes, a sub-agent's and a top-level run's dispatch left alone).
+
+### Full-suite gate
+
+**The main agent never runs a project's full test suite.** The workbench-dev-team orchestrate skill says the full suite runs once, last, in a Holmes dispatch whose brief has a Goal that begins "Final suite run:". That rule was prose only, and an orchestrator session broke it three times, the last time through a script that hid the runner. This gate enforces it (`hooks/mods/full-suite.ts`, judged in the `tool.call` hook of `hooks/register.ts` on a main-loop `Bash` call, after the commit guard).
+
+**What counts as the full suite.** A test runner with no test file, filter or one case:
+
+- `pest`, `phpunit`, `paratest`, `php artisan test`, `sail test`, `pytest`, `python -m pytest`, `vitest`, `jest`, `mocha`, `node --test`, `bun test`, `deno test` and `go test`, directly or through `vendor/bin/`, `php`, a versioned interpreter such as `python3.12` or `php8.3`, or a launcher (`npx`, `bunx`, `pnpx`, and `uv`, `poetry`, `pipenv`, `hatch` and `pdm` with `run`);
+- the same runners as the command of `docker` or `podman` `exec` or `run`, `docker compose`, `kubectl exec -- …`, `ssh`, `sail`, `lando`, `ddev`, `wp-env run`, `watch`, `parallel`, `eval` and `find -exec`. Only the command such a line runs is judged, so `docker logs pytest` and `find … -exec grep pytest {} \;` run. A shell's `-c` script in that command is read too, as in `docker exec app bash -lc "vendor/bin/pest"`;
+- a package script named `test` or `tests` (`npm test`, `composer test`, `yarn test:unit`), or `ci` through `run` (`npm run ci`), after the package manager's global and workspace options (`pnpm -r test`, `pnpm --filter web test`, `npm --prefix web test`, `yarn workspace app test`). `npm ci` installs, and runs;
+- `cargo test` with no filter, `make test`, `make check` or `make ci` exactly, and `claude plugin test`, which has no file filter at all;
+- a `for` loop over a glob whose last part names test files, such as `for t in hooks/test-*.sh`, when the loop body runs each item with a shell, an interpreter or a runner. A loop that only lists or echoes the files runs.
+
+A file is a test file by its name: `*Test.php`, `*.test.ts`, `*.spec.js`, `test_*.py`, `*_test.go`, `test-*.sh` and `lint-*.sh`, with a `:12` line or a `::case` after it. A folder, a glob or a config file narrows nothing, and neither does the value of an option such as `--config` or `--ignore`. A filter is `--filter`, `-t`, `--testNamePattern`, `--test-name-pattern`, `-k`, `-run`, `--grep`, `-g`, `--testPathPattern` or `--testPathPatterns` with a value. A run with `--version`, `-V`, `--help`, `-h`, `--list-tests`, `--collect-only` or `--init` runs no tests, and runs.
+
+**A script is read, not trusted.** A script the line runs (`bash x.sh`, `./x.sh`, `source x.sh`, `bash < x.sh`, `python3 x.py`) is read and judged by what it runs, and so is each script it runs in turn, up to four levels deep. A heredoc fed to a shell is judged as part of the line. A script in another language, or code given with `-c`, `-e` or on standard input, is refused when its code names a test runner. Comments and import or require specifiers are taken out first, so a `jest` comment or an `import … from 'vitest/config'` line refuses nothing. Each interpreter skips the values of its own options (`node -r x`, `php -d x`, `ruby -I dir`), finds the script it runs, and judges a known runner there (`php -d x artisan test`, `node node_modules/.bin/jest`). Perl and Ruby code in a clustered flag (`perl -pe`, `perl -lne`, `ruby -ne`) is code, not a path. A shell run with only options, such as `bash --version`, runs. One that reads its script from standard input (`bash -s`, `bash -es`) is refused. A binary file runs. A script the gate cannot read is refused, because it may run the suite: a missing file, or a path it cannot resolve. Mike accepted that trade on 2026-11-10. On the line itself, `$HOME` and `$CLAUDE_PLUGIN_ROOT` are resolved, braced or not, so the skills' `bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup-config.sh"` lines are read like a literal path. The hook cannot tell which plugin's skill wrote the line, so the gate tries every plugin root it knows: `CLAUDE_PLUGIN_ROOT` from the environment, or this module's own root when that is unset, and every `installPath` in `plugins/installed_plugins.json` under `CLAUDE_CONFIG_DIR` and under `~/.claude`. Each plugin that holds the file is judged, and the line is refused when any of them runs the suite. A file no plugin holds is refused as a script the gate cannot read, and so is every plugin-root script when the registry does not parse. A path built from any other variable is refused, so write it out in full. Inside a script the gate reads, a helper named by a variable and a literal file name (`. "$DIR/lib/env.sh"`) is looked for beside the script and under the project, and is not followed when it is not found. A script run by a path built wholly from a variable (`bash "$f"`) is refused when the script names tests anywhere in its words.
+
+`source` of a missing file is refused as unreadable, so `source .venv/bin/activate` in a project with no virtual environment is refused. That follows the same fail-closed rule.
+
+**One test file stays open.** A script named as a test file is one test file. The gate still reads it and refuses a runner or a test loop in it, but a helper in it that the gate cannot read does not refuse the run.
+
+**What it leaves alone.** Every call from a sub-agent and from a top-level `--agent` run, so Watson and Holmes run tests as before. `WORKBENCH_ORCHESTRATOR=0` and `/orchestrator off` stand it down, as they do the agent dispatch gate. A lane the gate cannot read counts as the main agent's.
+
+**The refusal names the way through.** It names the run it refused and why, and tells the orchestrator to dispatch Holmes with a brief whose Goal begins "Final suite run:", or to name one test file, a filter or one case.
+
+**It fails closed.** A script it cannot read refuses the call as above. Any other read that fails, such as the working directory or the orchestrator mode, refuses it with the guards' failure text.
+
+**Known limits.** Mike chose not to judge these on 2026-11-10:
+
+- `tox`, `nox`, `rspec`, `bundle exec rspec`, `gradlew test`, `dotnet test`, `mix test` and `playwright test` are not known runners;
+- the gate does not read `package.json` or `composer.json`, so `npm run <custom>` and `composer <custom>` run whatever the script holds;
+- a script named as a test file relaxes the helper rule above, so a suite script named `test-all.sh` that builds its file list from variables runs;
+- `uvx pytest`, `uv tool run pytest` and `docker container exec` are not read as launchers or wrappers;
+- `make test FILE=x` is refused, because the gate does not know which make variables narrow a run;
+- `sh -c "$(cat x.sh)"` takes its script from a substitution this gate does not follow. On the line itself the shared rule for a command the reader cannot name refuses it, but inside a script the gate reads it runs.
+
+Tests: `tests/full-suite.test.ts` (each runner and loop refused, each script shape refused, each unreadable script refused, the skills' plugin-root lines read and allowed, a missing or suite-running plugin-root script refused, a script found in another installed plugin from a fixture registry, each narrow run and ordinary command allowed, a sub-agent and a top-level run never refused, a lane it cannot read counted as the main agent's, `WORKBENCH_ORCHESTRATOR=0`, `/orchestrator off` and back on, and the deny text), and `tests/prompt-rules.test.ts` for its row in the gates table.
 
 ### Task intake
 
@@ -1130,6 +1167,8 @@ The [destructive database guard](#destructive-database-guard) runs in the same h
 The [project scope guard](#project-scope-guard) runs in the same hook, on a main-loop `Agent` call right after the agent dispatch gate, with its logic in `hooks/mods/project-scope.ts`. It is new, and replaced no bash hook.
 
 The [vault git guard](#vault-git-guard) runs in the same hook, after the database guard, with its logic in `hooks/mods/vault-git.ts`. It was a bash hook until batch C2, and that hook is now retired the same way.
+
+The [full-suite gate](#full-suite-gate) runs in the same hook, on a main-loop Bash call after the commit guard, with its logic in `hooks/mods/full-suite.ts`. It is new, and replaced no bash hook.
 
 The [false-bare guard](#false-bare-guard) runs in the same hook, on Bash after the provisioning guard, with its logic in `hooks/mods/false-bare.ts`. Its repair half also runs at `session.start`. It is new, and replaced no bash hook.
 

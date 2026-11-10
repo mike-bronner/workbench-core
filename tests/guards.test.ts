@@ -893,7 +893,7 @@ describe('decision A: a line whose command the reader cannot name is refused by 
     "# don't\nls",
   ]) {
     test(`allows ${JSON.stringify(line)}`, async ($, on) => {
-      const b = await session($, on)
+      const b = await session($, on, { WORKBENCH_ORCHESTRATOR: '0' })
       expect(await refusal($, b, bash(line))).toBeUndefined()
     })
   }

@@ -63,6 +63,40 @@ export const PROGRESS_FILTERS = { type: 'progress' } as const
 export const PROGRESS_OPEN_FILTERS = { type: 'progress', task_status: 'open' } as const
 const PROGRESS_SUMMARY_MAX_CHARS = 300
 const PATH_MAX_CHARS = 200
+export const FEEDBACK_LIMIT = 3
+export const FEEDBACK_FETCH = 12
+export const FEEDBACK_MIN_SCORE = 0.02
+export const FEEDBACK_TIMEOUT_MS = 1500
+export const FEEDBACK_FILTERS = { type: 'feedback' } as const
+export const FEEDBACK_QUERY_MAX_CHARS = 1000
+
+export const isDevTeamAgent = (type: unknown): boolean => typeof type === 'string' && /^(?:[\w-]+:)?(?:watson|holmes|lestrade)(?:-[\w-]+)?$/.test(type)
+
+const queryOf = (parts: readonly (string | undefined)[]): string =>
+  lineOf(
+    parts
+      .map(part => part?.trim() ?? '')
+      .filter(part => part !== '')
+      .join('. '),
+    Number.POSITIVE_INFINITY,
+  ).slice(0, FEEDBACK_QUERY_MAX_CHARS)
+
+export const skillQuery = (skill: string, args: string | undefined, description: string | undefined, prompt: string | undefined): string =>
+  queryOf([prompt, description === undefined ? skill : `${skill}: ${description}`, args])
+
+export const dispatchQuery = (type: string, description: unknown, prompt: unknown): string =>
+  queryOf([type, typeof description === 'string' ? description : undefined, typeof prompt === 'string' ? prompt : undefined])
+
+export const feedbackOf = (hits: readonly Hit[], seen: readonly string[], minScore: number): Hit[] =>
+  hits
+    .filter(hit => hit.type === 'feedback' && hit.score >= minScore && !seen.includes(hit.path))
+    .filter((hit, i, all) => all.findIndex(other => other.path === hit.path) === i)
+
+export function feedbackBlockOf(hits: readonly Hit[], trigger: string): string {
+  const header = `📎 Feedback notes from the vault for ${lineOf(trigger, 80)}. They reflect what was true when written, so verify them before acting. Read each one that bears on this step:`
+  const bullets = hits.map(hit => `• ${lineOf(hit.title, TITLE_MAX_CHARS)} - ${lineOf(hit.summary, PROGRESS_SUMMARY_MAX_CHARS)} (${lineOf(hit.path, PATH_MAX_CHARS)})`)
+  return [header, ...bullets].join('\n')
+}
 
 // One line of at most `max` characters: a note's title or summary is the
 // vault's text, so a newline in it must not open a line of its own in the

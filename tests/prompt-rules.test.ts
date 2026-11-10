@@ -381,7 +381,7 @@ describe('AC2: the harness memory section is dropped, and memory routing is stat
     expect(MEMORY).toContain('a memory-capture write needs no options round and no confirmation')
     expect(MEMORY).toContain('Recall comes FIRST')
     expect(MEMORY).toContain('BEFORE you scan the repo')
-    expect(MEMORY).toContain('Auto-recall searches only the wording of each prompt and the patterns of your file searches')
+    expect(MEMORY).toContain('Auto-recall searches only the wording of each prompt, the patterns of your file searches, open progress notes on the first prompt, and feedback notes when a skill loads or a dev-team agent is dispatched')
     expect(MEMORY).not.toContain('opening prompt')
     expect(MEMORY).toContain('Recall = vault `search`, not directory reads.')
     expect(MEMORY).toContain('Omit `mode`: the server picks hybrid when the vault has embeddings')

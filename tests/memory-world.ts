@@ -54,6 +54,7 @@ export type World = {
   prompts: { text: string; context?: readonly string[] }[]
   // A tool whose calls a hook beneath refuses.
   refuse?: string
+  fails?: string
   // What a `read` of a missing note answers instead of the server's "not
   // found": another error, or a rejection.
   readFails?: 'error' | 'reject'
@@ -100,7 +101,7 @@ export function memoryWorld(on: On, env: Record<string, string> = {}): World {
   })
   on('turn.complete', ($, e) => ({ text: e.answer }))
   // Every tool call the module passes on runs, unless the test refuses it.
-  on('tool.call', ($, e) => (w.refuse === e.tool ? { deny: 'refused beneath' } : { result: {} as never }))
+  on('tool.call', ($, e) => (w.refuse === e.tool ? { deny: 'refused beneath' } : w.fails === e.tool ? { result: 'failed' as never, isError: true as const } : { result: {} as never }))
   on('classic.SessionStart', () => {
     w.beneath?.('SessionStart')
     return {}

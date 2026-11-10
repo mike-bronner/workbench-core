@@ -69,6 +69,11 @@ import {
 import type { Hit } from './mods/recall'
 import {
   CLASSIFY_TIMEOUT_MS,
+  FEEDBACK_FETCH,
+  FEEDBACK_FILTERS,
+  FEEDBACK_LIMIT,
+  FEEDBACK_MIN_SCORE,
+  FEEDBACK_TIMEOUT_MS,
   FETCH_FACTOR,
   LABELS as RELEVANCE_LABELS,
   PROGRESS_FETCH,
@@ -84,7 +89,11 @@ import {
   acceptedOf,
   blockOf,
   candidatesOf,
+  dispatchQuery,
+  feedbackBlockOf,
+  feedbackOf,
   hitsOf,
+  isDevTeamAgent,
   mayScan,
   noteOf,
   openProgressOf,
@@ -94,6 +103,7 @@ import {
   relevanceText,
   relevantOf,
   scanQuery,
+  skillQuery,
   tokensOf,
 } from './mods/recall'
 import {
@@ -295,6 +305,7 @@ const pane = atom({ plugin: 'workbench-core', key: 'pane' } as const, { title: '
 const capture = atom({ plugin: 'workbench-core', key: 'capture' } as const, { turns: 0, hasFired: false, written: [] })
 const recall = atom({ plugin: 'workbench-core', key: 'recall' } as const, { seen: [], queries: [] })
 const progressRecalled = atom({ plugin: 'workbench-core', key: 'progressRecalled' } as const, false)
+const recallPrompt = atom({ plugin: 'workbench-core', key: 'recallPrompt' } as const, '')
 const intake = atom({ plugin: 'workbench-core', key: 'intake' } as const, { task: 0, checked: 0 })
 const outwardDenied = atom({ plugin: 'workbench-core', key: 'outwardDenied' } as const, [])
 const mcpRefusals = atom({ plugin: 'workbench-core', key: 'mcpRefusals' } as const, {})
@@ -1090,6 +1101,45 @@ async function progressBlock($: EngineInterface, query: string): Promise<string 
   return block
 }
 
+const skillDescriptions = new Map<string, string>()
+const skillKeyOf = (skill: string): string => skill.slice(skill.lastIndexOf(':') + 1)
+
+async function feedbackHits($: EngineInterface, query: string): Promise<Hit[]> {
+  const server = await memoryServer($)
+  const found = await $.mcp.call(server, 'search', { query, limit: FEEDBACK_FETCH, filters: FEEDBACK_FILTERS })
+  if (found.isError) return []
+  const candidates = feedbackOf(hitsOf(found.content), (await read($, recall)).seen, FEEDBACK_MIN_SCORE)
+  if (candidates.length === 0) return []
+  return acceptedOf(candidates, await labelsOf($, query, candidates)).slice(0, FEEDBACK_LIMIT)
+}
+
+async function feedbackRecall($: EngineInterface, query: string): Promise<Hit[]> {
+  if ((await $.env.get('WORKBENCH_MEMORY_RECALL')) === '0' || (await isQuiet($))) return []
+  const timeout = $.clock.sleep(FEEDBACK_TIMEOUT_MS).then(
+    () => [],
+    () => [],
+  )
+  return Promise.race([feedbackHits($, query).catch(() => []), timeout])
+}
+
+async function feedbackShown($: EngineInterface, hits: readonly Hit[], trigger: string): Promise<string | undefined> {
+  let fresh: Hit[] = []
+  await update($, recall, state => {
+    fresh = hits.filter(hit => !state.seen.includes(hit.path))
+    return { ...state, seen: [...state.seen, ...fresh.map(hit => hit.path)] }
+  })
+  if (fresh.length === 0) return undefined
+  const block = feedbackBlockOf(fresh, trigger)
+  $.ui.log(`workbench feedback recall: ${fresh.length} notes for ${trigger}, about ${tokensOf(block)} tokens`, { to: 'debug' })
+  return block
+}
+
+async function skillRecall($: EngineInterface, skill: string, args: unknown): Promise<Hit[]> {
+  const prompt = (await read($, recallPrompt)) || undefined
+  const key = skillKeyOf(skill)
+  return feedbackRecall($, skillQuery(key, typeof args === 'string' ? args : undefined, skillDescriptions.get(key), prompt))
+}
+
 // Whether recall and the nudges stay out: a lane nobody answers in, as
 // $.workbench.isUnattended reads it, or a lane it cannot read.
 const isQuiet = ($: EngineInterface): Promise<boolean> => $.workbench.isUnattended().catch(() => true)
@@ -1155,6 +1205,7 @@ async function promptRecall($: EngineInterface, text: string): Promise<string[]>
   if ((await $.env.get('WORKBENCH_MEMORY_RECALL')) === '0' || (await isQuiet($))) return []
   const query = promptQuery(text)
   if (query === undefined) return []
+  await update($, recallPrompt, () => query)
   const home = await $.env.get('HOME')
   const stateDir = (await $.env.get('WORKBENCH_MEMORY_RECALL_STATE')) || (home ? `${home}/.claude-workbench/memory-recall` : undefined)
   const now = Math.floor((await $.clock.now()) / 1000)
@@ -1845,12 +1896,15 @@ export const register: Register = on => {
         if (deny !== undefined) return { deny }
         const outside = await projectScopeOf($, e as { prompt?: unknown; subagent_type?: unknown })
         if (outside !== undefined) return { deny: outside }
+        const { subagent_type: type, description, prompt } = e as { subagent_type?: unknown; description?: unknown; prompt?: unknown }
+        const recalled = isDevTeamAgent(type) ? feedbackRecall($, dispatchQuery(String(type), description, prompt)).catch(() => []) : Promise.resolve([])
         const result = await next(e)
         if (result.deny !== undefined) return result
         const output = result.result as { status?: unknown } | undefined
         const isHandBack = output?.status === 'completed'
         if (isHandBack && agentResultForwards(output)) await update($, turnForwards, () => true)
-        const added = [...(hint === undefined ? [] : [hint]), ...(isHandBack && sessionAttended === true ? [HAND_BACK_REMINDER] : [])]
+        const feedback = result.isError === true ? undefined : await feedbackShown($, await recalled, `this ${String(type)} dispatch`).catch(() => undefined)
+        const added = [...(hint === undefined ? [] : [hint]), ...(feedback === undefined ? [] : [feedback]), ...(isHandBack && sessionAttended === true ? [HAND_BACK_REMINDER] : [])]
         return added.length === 0 ? result : { ...result, context: [...(result.context ?? []), ...added] }
       }
       // The delegation reminder is advice, never a guard: it gives no verdict,
@@ -1874,6 +1928,8 @@ export const register: Register = on => {
     // skill has its learnings: the skill.prompt hook below merges them in.
     if (e.tool === 'Skill') {
       const result = await next(e)
+      const isRecalled = e.agentId === undefined && result.deny === undefined && result.isError !== true && typeof e.skill === 'string'
+      const recalled = isRecalled ? skillRecall($, e.skill, e.args).catch(() => []) : Promise.resolve([])
       const name = skillNameOf(e.skill)
       if (name !== undefined) {
         try {
@@ -1884,7 +1940,8 @@ export const register: Register = on => {
           // The line keeps what it showed.
         }
       }
-      return result
+      const feedback = await feedbackShown($, await recalled, `the ${e.skill} skill`).catch(() => undefined)
+      return feedback === undefined || result.deny !== undefined ? result : { ...result, context: [...(result.context ?? []), feedback] }
     }
     return next(e)
   }).catch(($, e, next) =>
@@ -2034,6 +2091,7 @@ export const register: Register = on => {
   // as it was.
   on('skill.prompt', async ($, e, next) => {
     const result = await next(e)
+    if (typeof e.frontmatter?.description === 'string') skillDescriptions.set(skillKeyOf(e.skill), e.frontmatter.description)
     const name = skillNameOf(e.skill)
     if (name === undefined) return result
     try {
@@ -2147,6 +2205,7 @@ export const register: Register = on => {
       await update($, capture, () => ({ turns: 0, hasFired: false, written: [] }))
       await update($, recall, () => ({ seen: [], queries: [] }))
       await update($, progressRecalled, () => false)
+      await update($, recallPrompt, () => '')
       await update($, intake, () => ({ task: 0, checked: 0 }))
       await drawStatus($)
     }

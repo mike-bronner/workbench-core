@@ -177,6 +177,12 @@ import {
   readLine,
   releaseCountOf,
   requestedOf,
+  INTENT_ACTIONS,
+  INTENT_LABELS,
+  cleanedOf,
+  intentText,
+  mayAskIntent,
+  withIntent,
   shapeOf,
   unnamedOf,
 } from './mods/commit-approval'
@@ -330,6 +336,7 @@ const reprompted = atom({ plugin: 'workbench-core', key: 'reprompted' } as const
 const delegationReminded = atom({ plugin: 'workbench-core', key: 'delegationReminded' } as const, '')
 const commitApproval = atom({ plugin: 'workbench-core', key: 'commitApproval' } as const, 'none')
 const turnRequest = atom({ plugin: 'workbench-core', key: 'turnRequest' } as const, [])
+const turnIntent = atom({ plugin: 'workbench-core', key: 'turnIntent' } as const, null)
 const pendingLines = atom({ plugin: 'workbench-core', key: 'pendingLines' } as const, {})
 const pendingReleases = atom({ plugin: 'workbench-core', key: 'pendingReleases' } as const, [])
 // Whether a schedule opened the current turn, so a commit in it is not gated.
@@ -1120,6 +1127,33 @@ async function labelsOf($: EngineInterface, task: string, hits: readonly Hit[]):
     () => undefined,
   )
   return Promise.race([pass, timeout])
+}
+
+async function intendedOf($: EngineInterface, prompt: string): Promise<Action[]> {
+  const pass = $.model.classify(intentText(prompt), INTENT_LABELS).catch(() => undefined)
+  const timeout = $.clock.sleep(CLASSIFY_TIMEOUT_MS).then(
+    () => undefined,
+    () => undefined,
+  )
+  return withIntent(prompt, await Promise.race([pass, timeout]))
+}
+
+let requestCount = 0
+let intentAsked: { id: number; answer: Promise<Action[]> } | undefined
+
+async function intendedRequest($: EngineInterface, asked: readonly Action[]): Promise<readonly Action[]> {
+  const intent = await read($, turnIntent)
+  if (intent === null) return asked
+  if (intentAsked?.id !== intent.id) intentAsked = { id: intent.id, answer: intendedOf($, intent.text) }
+  const intended = await intentAsked.answer
+  let isCurrent = requestCount === intent.id
+  await update($, turnIntent, now => {
+    isCurrent &&= now?.id === intent.id
+    return now
+  })
+  if (!isCurrent || requestCount !== intent.id) return asked
+  await update($, turnRequest, () => intended)
+  return intended
 }
 
 // One recall (hooks/mods/recall.ts): the vault search through the memory MCP,
@@ -1922,10 +1956,13 @@ export const register: Register = on => {
   // person opened gets recall's block beside the prompt, at the tail.
   on('prompt.submit', async ($, e, next) => {
     const isMike = isPersonOrigin(e.origin) && !isScheduledFire(e.text)
+    const isNewRequest = isMike || e.turnId === undefined
+    const id = isNewRequest ? ++requestCount : requestCount
     if (isMike) await update($, commitApproval, () => 'none' as const)
     if (isMike) await update($, pendingLines, () => ({}))
     if (isMike) await update($, pendingReleases, () => [])
     await update($, turnRequest, request => (isMike ? requestedOf(e.text) : e.turnId === undefined ? [] : request))
+    if (isNewRequest) await update($, turnIntent, () => (isMike && mayAskIntent(e.text) ? { id, text: cleanedOf(e.text) } : null))
     if (isMike) await update($, intake, state => ({ ...state, task: state.task + 1 }))
     const forwards = e.origin.kind === 'task-notification' && notificationForwards(e.text)
     const isHandBack = sessionAttended === true && e.origin.kind === 'task-notification' && notificationHandsBack(e.text)
@@ -2070,10 +2107,13 @@ export const register: Register = on => {
         if (treeRefusal !== undefined) return { deny: treeRefusal }
         return subject !== undefined ? { deny: subject } : withScanRecall($, 'Bash', e.command, e.agentId, await next(e))
       }
-      const request = await read($, turnRequest)
       const intoDefault = merges.pr + (await mergesIntoDefault($, merges.local))
       const picked = await pickedReleaseOf($, approval, e.command)
-      const gate = gateOf({ writes, releases, merges: intoDefault, rewrites, aliases, apiWrites: apiIntoDefault }, approval, request, e.command, picked)
+      const gateFor = (request: readonly Action[]) => gateOf({ writes, releases, merges: intoDefault, rewrites, aliases, apiWrites: apiIntoDefault }, approval, request, e.command, picked)
+      const asked = await read($, turnRequest)
+      const isIntentGap = gateFor(asked).missing.some(gated => INTENT_ACTIONS.includes(gated as Action))
+      const request = isIntentGap ? await intendedRequest($, asked) : asked
+      const gate = gateFor(request)
       const isLinePaid = approval !== 'none' && picksLine(approval, e.command, picked) && !gate.missing.includes(approval.action)
       if (gate.isOne) return { deny: ONE_REFUSAL }
       const treeRefusal = writes.commits === 1 ? await treeRefusalOf($, e.command, commit, e.tool_use_id) : undefined
@@ -2454,6 +2494,7 @@ export const register: Register = on => {
       await update($, replyRows, () => null)
       await update($, commitApproval, () => 'none' as const)
       await update($, turnRequest, () => [])
+      await update($, turnIntent, () => null)
       await update($, capture, () => ({ turns: 0, hasFired: false, written: [] }))
       await update($, recall, () => ({ seen: [], queries: [] }))
       await update($, progressRecalled, () => false)

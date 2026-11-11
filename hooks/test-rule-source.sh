@@ -79,6 +79,7 @@ has "rule 6 limits options to a real fork"          'real fork that Mike has not
 has "rule 6 keeps options before irreversible acts" 'outward-facing or irreversible action'
 has "rule 6 exempts commits and pushes from options" 'Commits and ordinary pushes are the exception'
 has "rule 6 takes a typed request as the approval"  "When Mike's own prompt asks for a commit, a push or a release, or any mix of them, that prompt approves the actions it names, for the turn it opened"
+has "rule 6 reads a request by its meaning"        'Its meaning counts, not its wording, so "ship 0.59.0" asks for a release as plainly as "release 0.59.0" does'
 has "rule 6 ends it at the next prompt"             'his next prompt ends the approval'
 has "rule 6 writes a plan file with no question"    'A plan file needs no question either: create or edit it without asking, in prose or through `AskUserQuestion`'
 has "rule 6 approves nothing on a negated prompt"   'A prompt that negates, defers or asks, such as "commit later" or "should I commit\?", approves nothing'

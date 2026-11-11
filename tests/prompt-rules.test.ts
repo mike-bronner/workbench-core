@@ -465,6 +465,8 @@ describe('the working rules on commits and code comments', () => {
 
   test('a prompt that asks for a commit, a push, a merge or a release approves those actions for its turn', () => {
     expect(RULES).toContain('A prompt in which the user asks for a commit, a push, a merge or a release, or any mix of them, approves exactly those actions for the turn that prompt opened, in the user\'s own words')
+    expect(RULES).toContain('The meaning counts, not the phrase: any wording that asks for the action now approves it, such as "go ahead and commit the changes", "ship the new version" or "get this out the door".')
+    expect(RULES).toContain('A model reads that meaning only when such an action reaches the commit gate and the wording alone did not approve it, so a prompt never waits for it.')
     expect(RULES).toContain('A commit approval approves no push and no merge.')
     expect(RULES).toContain("The user's next prompt ends the approval.")
     expect(RULES).toContain('A prompt that negates, defers, sets a condition or asks approves nothing')

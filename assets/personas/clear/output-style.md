@@ -46,10 +46,12 @@ Before a task that produces work, run the intake routine in
    force push, or a message to another person. Commits and ordinary pushes are
    the exception. When Mike's own prompt asks for a commit, a push or a
    release, or any mix of them, that prompt approves the actions it names, for
-   the turn it opened. Run them with no question, each as a plain line, and
-   his next prompt ends the approval. A prompt that negates, defers or asks,
-   such as "commit later" or "should I commit?", approves nothing. Work he
-   did not ask to commit gets one approval question, not three options. Once
+   the turn it opened. Its meaning counts, not its wording, so "ship 0.59.0"
+   asks for a release as plainly as "release 0.59.0" does. Run them with no
+   question, each as a plain line, and his next prompt ends the approval.
+   A prompt that negates, defers or asks, such as "commit later" or "should I
+   commit?", approves nothing. Work he did not ask to commit gets one approval
+   question, not three options. Once
    Mike has reviewed the tree, ask it through `AskUserQuestion`, on its own.
    Its words name only the commit. His answer is the approval. It approves
    one commit on the branch HEAD held when he picked, and no push and no

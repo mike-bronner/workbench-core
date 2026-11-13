@@ -34,6 +34,9 @@ FLAT="$(tr '\n' ' ' < "$SKILL" | tr -s ' ')"
 has() { # desc, extended regex
   if printf '%s' "$FLAT" | grep -qE -- "$2"; then ok "$1"; else no "$1" "no match for: $2"; fi
 }
+lacks() { # desc, fixed string
+  if printf '%s' "$FLAT" | grep -qF -- "$2"; then no "$1" "found: $2"; else ok "$1"; fi
+}
 has "frontmatter names the skill"                    '^--- name: intake '
 has "the description says when to run it"            'description: The task-intake routine for an interactive session'
 has "the description names both skips"               'Skip it for trivial asks and for pure questions'
@@ -111,10 +114,47 @@ else
 fi
 has "otherwise the agent proceeds and says so"       'Otherwise proceed on the top-graded option, and say so in one line'
 has "the proceed line carries each grade"            'names the option and its grade on each criterion'
+has "step 9 cuts the work into units"                '### 9\. Cut the work into units Cut the chosen option into the smallest units of work'
+has "a unit is one behaviour, slide, fix, or rule"   'A unit is one behaviour, one slide, one fix, or one rule'
+has "a unit is dispatched and checked on its own"    'It can be dispatched, handed back, and checked on its own'
+has "each hand-back is a checkpoint"                 'Each hand-back is a checkpoint Mike can steer from'
+has "the unit list sits outside the intake block"    'It is not part of the intake block and does not count against that block.s rows'
+has "the unit list has its own heading and lines"    '## Units 1\. <one step>\. Meets AC1, AC2\. Touches <files or area>\. Parallel\. 2\. .* After 1\.'
+has "a unit names the one step it delivers"          '- the one step it delivers,'
+has "a unit names the criteria it meets"             '- the criteria it meets, by number,'
+has "a unit names the files or area it touches"      '- the files or the area it touches,'
+has "a unit says parallel or after another unit"     '- whether it runs in parallel, or after another unit, named by its number'
+has "units are never merged to avoid a gap"          'Never merge units to avoid an interim gap between them'
+has "unrelated items are never batched"              'Never batch unrelated items into one unit'
+has "units run in parallel only on different files and no shared need" 'Units run in parallel only when they touch different files and need nothing from each other'
+lacks "different files alone never make units parallel" 'Units that touch different files run in parallel'
+has "units sharing files run in order, shortest first" 'Units that share files run in order, the shortest first'
+has "a unit that needs another unit's work runs after it" 'A unit that needs the work of another unit runs after that unit'
+has "every criterion is met by a unit"               'Every criterion is met by at least one unit'
+has "a one-step task has a list of one"              'A one-step task has a list of one unit\. Keep that step cheap'
+has "a dispatch delivers one unit"                   '\*\*A dispatch delivers one unit\.\*\*'
+has "a dispatch carries the full criteria list"      'Its brief carries the full criteria list of the task in `Acceptance:`, for context'
+has "a dispatch names its unit and that unit's criteria" 'Its `Unit:` line names its own unit and the criteria that unit meets'
+has "no brief carries a whole multi-step task"       'One brief never carries the whole of a multi-step task'
+if printf '%s' "$FLAT" | grep -qE -- '### 8\. Fork, or proceed .*### 9\. Cut the work into units .*## During and after the work'; then
+  ok "step 9 follows step 8 and closes the routine"
+else
+  no "step 9 follows step 8 and closes the routine" "the order of steps 8, 9 and the next section"
+fi
+if printf '%s' "$FLAT" | grep -qE -- '### 1[0-9]\.'; then
+  no "no step follows the unit list" "found a step numbered 10 or more"
+else
+  ok "no step follows the unit list"
+fi
 has "trivial asks skip it, and a hook does not decide" 'You decide that threshold, not a hook'
 has "the nudge is named as never blocking"           'It never blocks the edit'
 has "sub-agents never interview"                     'Other lanes never interview'
 has "a sub-agent takes the brief as its intake"      'The brief is the intake'
+has "a sub-agent sends a blocking gap back"          'Send a blocking gap back to the orchestrator rather than asking'
+has "with no Unit line, a sub-agent grades the whole list" 'With no `Unit:` line, grade your forks against the whole `Acceptance:` list'
+has "with a Unit line, a sub-agent grades only its unit" 'With a `Unit:` line, deliver and grade only the criteria that line names'
+has "the rest of Acceptance is context, and the unit ends the run" 'Read the rest of `Acceptance:` as context, and hand back when your unit is done'
+lacks "no sub-agent is told to grade the whole list unconditionally" 'Grade your forks against the `Acceptance:` list'
 has "the pipeline and scheduled ticks never interview" 'Index pipeline and scheduled ticks\.\*\* No interview and no nudge'
 has "a dispatch carries the criteria"                'copies them into its `Acceptance:` slot'
 has "the report maps to the criteria"                'The report maps to the criteria'

@@ -60,7 +60,9 @@ describe('AC2: $.workbench is registered and answers a dependent plugin', () => 
     const b = bench(on)
     await $.session.start(start())
     await $.prompt.submit(ask('Workdir: /x\nGoal: g\nContext: c\nConstraints: none\nAcceptance: a'))
-    expect(answer(b.files, 'check')).toEqual({ isComplete: false, missing: ['Done when:'], shape: 'brief' })
+    expect(answer(b.files, 'check')).toEqual({ isComplete: false, missing: ['Done when:'], shape: 'brief', criteria: 1 })
+    await $.prompt.submit(ask('Workdir: /x\nGoal: g\nContext: c\nConstraints: none\nUnit: 1 of 2, the parser. Meets AC1.\nAcceptance:\n- AC1: a\n- AC2: b\nDone when: d'))
+    expect(answer(b.files, 'check')).toEqual({ isComplete: true, missing: [], shape: 'brief', criteria: 2, unit: '1 of 2, the parser. Meets AC1.' })
     await $.prompt.submit(ask('Item ID: 12'))
     expect(answer(b.files, 'check')).toEqual({ isComplete: true, missing: [], shape: 'item-id' })
   })
@@ -248,5 +250,109 @@ describe('AC3: briefCheck gives the bash gate\'s verdict on every case of its su
     expect(checkBrief('Repo sweep: a/b').shape).toBe('repo-sweep')
     expect(checkBrief('Item ID: 3').shape).toBe('item-id')
     expect(checkBrief('Item ID: 3\nmore').shape).toBe('brief')
+  })
+})
+
+describe('briefCheck counts the criteria and reads the unit', () => {
+  const brief = (acceptance: string, extra = '') => `Workdir: /x\nGoal: g\nContext: c\nConstraints: none\n${extra}Acceptance:${acceptance}\nDone when: d`
+
+  test('each top-level bullet or numbered line in the slot is one criterion', () => {
+    expect(checkBrief(brief('\n- AC1: a\n- AC2: b\n* AC3: c\n+ AC4: d\n5. AC5: e\n6) AC6: f\n- AC7: g')).criteria).toBe(7)
+  })
+
+  test('a nested bullet and a wrapped line belong to the criterion above them', () => {
+    expect(checkBrief(brief('\n  - AC1: a\n    - detail\n    wraps on\n  - AC2: b')).criteria).toBe(2)
+  })
+
+  test('with no list, each non-blank line counts, the header line included', () => {
+    expect(checkBrief(brief(' the parser accepts empty input')).criteria).toBe(1)
+    expect(checkBrief(brief('\nAC1: a\n\nAC2: b')).criteria).toBe(2)
+  })
+
+  test('the slot ends at the next slot header', () => {
+    expect(checkBrief(`${brief('\n- a\n- b')}\n- after done\n- more`).criteria).toBe(2)
+  })
+
+  test('a Unit: line straight after the header, in any label form, ends nothing', () => {
+    const seven = Array.from({ length: 7 }, (_, i) => `- AC${i + 1}: c`).join('\n')
+    for (const line of ['Unit: 2 of 2', '**Unit:** 2 of 2', '# Unit: 2 of 2', 'Unit : 2 of 2', 'unit: 2 of 2', '__Unit__: 2 of 2', '## **Unit** :** 2 of 2', 'Unit:', '**Unit:**']) {
+      expect(checkBrief(brief(`\n${line}\n${seven}`)).criteria).toBe(7)
+    }
+  })
+
+  test('a Unit: line inside a slot with a list adds nothing, wherever it sits', () => {
+    expect(checkBrief(brief('\n- a\nUnit: 1 of 2\n- b')).criteria).toBe(2)
+    expect(checkBrief(brief('\n- a\n- b\nUnit: 1 of 2')).criteria).toBe(2)
+    expect(checkBrief(brief('\n  - a\n**Unit:** 1 of 2\n  - b')).criteria).toBe(2)
+  })
+
+  test('a Unit: line inside a slot with no list is not a counted line', () => {
+    expect(checkBrief(brief('\nUnit: 1 of 2\nAC1: a\nAC2: b')).criteria).toBe(2)
+    expect(checkBrief(brief('\nAC1: a\n# Unit: 1 of 2\nAC2: b')).criteria).toBe(2)
+    expect(checkBrief(brief('\nAC1: a\nAC2: b\nUnit: 1 of 2')).criteria).toBe(2)
+    expect(checkBrief(brief(' a\nUnit: 1 of 2')).criteria).toBe(1)
+    expect(checkBrief(brief('\nUnit: 1 of 2')).criteria).toBe(0)
+  })
+
+  test('a Unit: line inside the slot names the unit, and a * marker still makes it one', () => {
+    expect(checkBrief(brief('\n- a\n* Unit: 1 of 2\n- b'))).toMatchObject({ criteria: 2, unit: '1 of 2' })
+    expect(checkBrief(brief('\nUnit: 2 of 2\n- a\n- b'))).toMatchObject({ criteria: 2, unit: '2 of 2' })
+  })
+
+  test('a - Unit: line inside the slot is a criterion and names no unit', () => {
+    const check = checkBrief(brief('\n- a\n- Unit: x\n- b'))
+    expect(check.criteria).toBe(3)
+    expect('unit' in check).toBe(false)
+  })
+
+  test('a line that only mentions Unit: inside the slot still counts', () => {
+    expect(checkBrief(brief('\nAC1: a\nThe Unit: line is read.')).criteria).toBe(2)
+  })
+
+  test('a slot of 200,000 criteria counts without throwing', () => {
+    expect(checkBrief(brief(`\n${Array(200_000).fill('- x').join('\n')}`)).criteria).toBe(200_000)
+  })
+
+  test('a brief with no Acceptance: slot, or an empty one, carries no criteria', () => {
+    expect(checkBrief('Workdir: /x\nGoal: g').criteria).toBe(0)
+    expect(checkBrief(brief('')).criteria).toBe(0)
+  })
+
+  test('the unit is the text of the first Unit: line that names one, in any case', () => {
+    expect(checkBrief(brief(' a', '  unit:  2 of 4, the focus ring. Meets AC3, AC4.  \n')).unit).toBe('2 of 4, the focus ring. Meets AC3, AC4.')
+    expect(checkBrief(brief(' a', 'Unit:\nUnit: 3 of 4\n')).unit).toBe('3 of 4')
+  })
+
+  test('the Unit: label may carry markdown markers and spaces, and the unit drops them', () => {
+    for (const line of ['**Unit:** x', '# Unit: x', 'Unit : x', 'unit: x', ' \tUnit: x', '__Unit__: x', '`Unit`:` x', '## **Unit** :** x']) {
+      expect(checkBrief(brief(' a', `${line}\n`)).unit).toBe('x')
+    }
+  })
+
+  test('the label takes only the ASCII whitespace set, never NBSP', () => {
+    expect(checkBrief(brief(' a', '\u00a0Unit: x\n')).unit).toBeUndefined()
+    expect(checkBrief(brief(' a', 'Unit\u00a0: x\n')).unit).toBeUndefined()
+  })
+
+  test('a Unit: line with no text, or one inside a line, names no unit', () => {
+    expect(checkBrief(brief(' a', 'Unit: \t\n')).unit).toBeUndefined()
+    expect(checkBrief(brief(' a', '**Unit:**\n')).unit).toBeUndefined()
+    expect(checkBrief(brief(' a', 'See the Unit: line rule.\n')).unit).toBeUndefined()
+    expect(checkBrief(brief(' a', 'The Unit: line\n')).unit).toBeUndefined()
+    expect(checkBrief(brief(' a', 'Units are small.\n')).unit).toBeUndefined()
+    expect(checkBrief(brief(' a', 'Units: 2\n')).unit).toBeUndefined()
+    expect('unit' in checkBrief(brief(' a'))).toBe(false)
+  })
+
+  test('a blank or token prompt reports neither a count nor a unit', () => {
+    for (const prompt of ['', ' \t\n ', 'Item ID: 3', 'Repo sweep: a/b']) {
+      const check = checkBrief(prompt)
+      expect('criteria' in check || 'unit' in check).toBe(false)
+    }
+  })
+
+  test('the count and the unit never change the verdict', () => {
+    expect(checkBrief(brief('\n- a', 'Unit: 1 of 1\n'))).toMatchObject({ isComplete: true, missing: [] })
+    expect(checkBrief('Unit: 1 of 1\nAcceptance:\n- a').missing).toEqual(['Workdir:', 'Goal:', 'Context:', 'Constraints:', 'Done when:'])
   })
 })

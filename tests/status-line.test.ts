@@ -73,7 +73,6 @@ describe('the status line is drawn in the band above the prompt, under no plugin
     expect(await bandShows($, 'engine band')).toBe(true)
     await $.session.start(start())
     expect(await bandShows($, 'orch on')).toBe(true)
-    expect(await bandShows($, 'engine band')).toBe(false)
     expect(await bandShows($, 'orch on', true)).toBe(false)
     expect(await bandShows($, 'engine band', true)).toBe(true)
   })

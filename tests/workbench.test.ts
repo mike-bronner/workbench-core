@@ -294,6 +294,17 @@ describe('briefCheck counts the criteria and reads the unit', () => {
     expect(checkBrief(brief('\nUnit: 1 of 2')).criteria).toBe(0)
   })
 
+  test('a Unit: line inside the slot names the unit, and a * marker still makes it one', () => {
+    expect(checkBrief(brief('\n- a\n* Unit: 1 of 2\n- b'))).toMatchObject({ criteria: 2, unit: '1 of 2' })
+    expect(checkBrief(brief('\nUnit: 2 of 2\n- a\n- b'))).toMatchObject({ criteria: 2, unit: '2 of 2' })
+  })
+
+  test('a - Unit: line inside the slot is a criterion and names no unit', () => {
+    const check = checkBrief(brief('\n- a\n- Unit: x\n- b'))
+    expect(check.criteria).toBe(3)
+    expect('unit' in check).toBe(false)
+  })
+
   test('a line that only mentions Unit: inside the slot still counts', () => {
     expect(checkBrief(brief('\nAC1: a\nThe Unit: line is read.')).criteria).toBe(2)
   })

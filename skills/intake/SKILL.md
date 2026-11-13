@@ -39,8 +39,11 @@ never blocks the edit. If the task was trivial, carry on.
 **Other lanes never interview**, because no human is there to answer:
 
 - **Sub-agent.** The brief is the intake. `Goal:`, `Context:`, and
-  `Acceptance:` arrive filled in. Grade your forks against the `Acceptance:`
-  list, and send a blocking gap back to the orchestrator rather than asking.
+  `Acceptance:` arrive filled in. Send a blocking gap back to the orchestrator
+  rather than asking. With no `Unit:` line, grade your forks against the whole
+  `Acceptance:` list. With a `Unit:` line, deliver and grade only the criteria
+  that line names. Read the rest of `Acceptance:` as context, and hand back
+  when your unit is done.
 - **Index pipeline and scheduled ticks.** No interview and no nudge. The item's
   acceptance criteria, written at triage, are the criteria.
 
@@ -201,8 +204,10 @@ Cut by these rules:
 - Never merge units to avoid an interim gap between them. The next unit closes
   the gap.
 - Never batch unrelated items into one unit.
-- Units that touch different files run in parallel.
+- Units run in parallel only when they touch different files and need nothing
+  from each other.
 - Units that share files run in order, the shortest first.
+- A unit that needs the work of another unit runs after that unit.
 - Every criterion is met by at least one unit.
 - A one-step task has a list of one unit. Keep that step cheap: one line is
   enough.

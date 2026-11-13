@@ -111,6 +111,36 @@ else
 fi
 has "otherwise the agent proceeds and says so"       'Otherwise proceed on the top-graded option, and say so in one line'
 has "the proceed line carries each grade"            'names the option and its grade on each criterion'
+has "step 9 cuts the work into units"                '### 9\. Cut the work into units Cut the chosen option into the smallest units of work'
+has "a unit is one behaviour, slide, fix, or rule"   'A unit is one behaviour, one slide, one fix, or one rule'
+has "a unit is dispatched and checked on its own"    'It can be dispatched, handed back, and checked on its own'
+has "each hand-back is a checkpoint"                 'Each hand-back is a checkpoint Mike can steer from'
+has "the unit list sits outside the intake block"    'It is not part of the intake block and does not count against that block.s rows'
+has "the unit list has its own heading and lines"    '## Units 1\. <one step>\. Meets AC1, AC2\. Touches <files or area>\. Parallel\. 2\. .* After 1\.'
+has "a unit names the one step it delivers"          '- the one step it delivers,'
+has "a unit names the criteria it meets"             '- the criteria it meets, by number,'
+has "a unit names the files or area it touches"      '- the files or the area it touches,'
+has "a unit says parallel or after another unit"     '- whether it runs in parallel, or after another unit, named by its number'
+has "units are never merged to avoid a gap"          'Never merge units to avoid an interim gap between them'
+has "unrelated items are never batched"              'Never batch unrelated items into one unit'
+has "units on different files run in parallel"       'Units that touch different files run in parallel'
+has "units sharing files run in order, shortest first" 'Units that share files run in order, the shortest first'
+has "every criterion is met by a unit"               'Every criterion is met by at least one unit'
+has "a one-step task has a list of one"              'A one-step task has a list of one unit\. Keep that step cheap'
+has "a dispatch delivers one unit"                   '\*\*A dispatch delivers one unit\.\*\*'
+has "a dispatch carries the full criteria list"      'Its brief carries the full criteria list of the task in `Acceptance:`, for context'
+has "a dispatch names its unit and that unit's criteria" 'Its `Unit:` line names its own unit and the criteria that unit meets'
+has "no brief carries a whole multi-step task"       'One brief never carries the whole of a multi-step task'
+if printf '%s' "$FLAT" | grep -qE -- '### 8\. Fork, or proceed .*### 9\. Cut the work into units .*## During and after the work'; then
+  ok "step 9 follows step 8 and closes the routine"
+else
+  no "step 9 follows step 8 and closes the routine" "the order of steps 8, 9 and the next section"
+fi
+if printf '%s' "$FLAT" | grep -qE -- '### 1[0-9]\.'; then
+  no "no step follows the unit list" "found a step numbered 10 or more"
+else
+  ok "no step follows the unit list"
+fi
 has "trivial asks skip it, and a hook does not decide" 'You decide that threshold, not a hook'
 has "the nudge is named as never blocking"           'It never blocks the edit'
 has "sub-agents never interview"                     'Other lanes never interview'

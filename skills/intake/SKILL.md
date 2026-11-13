@@ -3,7 +3,7 @@ name: intake
 description: The task-intake routine for an interactive session. It sets the goal, asks about gaps through AskUserQuestion, writes acceptance criteria, and grades three options. Run it before the first work on a task that ends in a work product (a change, file, document, or plan). Skip it for trivial asks and for pure questions. Sub-agents and scheduled runs never interview.
 ---
 
-# Intake: goal, context, criteria, options
+# Intake: goal, context, criteria, options, units
 
 This routine runs before the work, not after the work goes wrong. It exists
 because asking had become only a fallback for vague requests, and several rules
@@ -170,6 +170,47 @@ show them in a reply.
 **Otherwise proceed on the top-graded option, and say so in one line** that
 names the option and its grade on each criterion. For example: "Proceeding on
 Option B (AC1 met, AC2 met, AC3 partly met: no test harness for the UI path)."
+
+### 9. Cut the work into units
+
+Cut the chosen option into the smallest units of work. A unit is one
+behaviour, one slide, one fix, or one rule. It can be dispatched, handed back,
+and checked on its own. Small units keep momentum, keep the context of each
+dispatch small, and let the orchestrator manage the process. Each hand-back is
+a checkpoint Mike can steer from.
+
+Write the list once the option is settled, before the first unit starts. Show
+it under its own heading, after the intake block. It is not part of the intake
+block and does not count against that block's rows. Give each unit one line:
+
+```
+## Units
+1. <one step>. Meets AC1, AC2. Touches <files or area>. Parallel.
+2. <one step>. Meets AC3. Touches <files or area>. After 1.
+```
+
+Each unit names four things:
+
+- the one step it delivers,
+- the criteria it meets, by number,
+- the files or the area it touches,
+- whether it runs in parallel, or after another unit, named by its number.
+
+Cut by these rules:
+
+- Never merge units to avoid an interim gap between them. The next unit closes
+  the gap.
+- Never batch unrelated items into one unit.
+- Units that touch different files run in parallel.
+- Units that share files run in order, the shortest first.
+- Every criterion is met by at least one unit.
+- A one-step task has a list of one unit. Keep that step cheap: one line is
+  enough.
+
+**A dispatch delivers one unit.** Its brief carries the full criteria list of
+the task in `Acceptance:`, for context. Its `Unit:` line names its own unit and
+the criteria that unit meets, such as `Unit: 2 of 4, the focus ring. Meets AC3,
+AC4.` One brief never carries the whole of a multi-step task.
 
 ## During and after the work
 

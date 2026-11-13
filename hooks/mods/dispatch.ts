@@ -42,7 +42,7 @@
 //
 // Pure functions only: the engine follows `$` into no imported function.
 
-import type { WorkbenchBriefSlot } from '../../types'
+import type { WorkbenchBriefCheck, WorkbenchBriefSlot } from '../../types'
 
 export const DEV_TEAM_LINE = 'The dev-team specialists and the brief they expect are in /workbench-dev-team:orchestrate.'
 
@@ -82,4 +82,14 @@ export function hintOf(prompt: string): string | undefined {
   ]
   if (markers.length === 0) return undefined
   return `${HINT_LEAD}: this brief carries ${markers.join(', ')}. A brief states the outcome and lets the sub-agent pick the method. The sub-agent has the repo in front of it and you do not. Prefer moving that detail into Done when: as an observable result, or into Constraints: as a hard limit. Send it as-is if the detail is genuinely a constraint rather than a recipe.`
+}
+
+export const UNIT_CRITERIA_LIMIT = 6
+
+const HOLMES_TYPE = /^workbench-dev-team:holmes(?:-[\w-]+)?$/
+
+export function unitHintOf(check: WorkbenchBriefCheck, type: unknown): string | undefined {
+  if (check.shape !== 'brief' || check.unit !== undefined || (check.criteria ?? 0) <= UNIT_CRITERIA_LIMIT) return undefined
+  if (typeof type === 'string' && HOLMES_TYPE.test(type)) return undefined
+  return `${HINT_LEAD}: this brief carries ${check.criteria} acceptance criteria and names no unit. Dispatch one unit of the work at a time, so each run stays short and can be steered between units. Keep the full list for context if it helps, and add a Unit: line that names the one step this dispatch delivers and the criteria it meets, such as "Unit: 2 of 4, the focus ring. Meets AC3, AC4."`
 }

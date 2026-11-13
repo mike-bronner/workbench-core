@@ -40,6 +40,24 @@ export const BRIEF_SLOTS: readonly WorkbenchBriefSlot[] = SLOTS.map(({ header, d
 const NONBLANK = new RegExp(`[^${WS}]`)
 const ITEM_ID = new RegExp(`^[${WS}]*Item ID:[${WS}]*[0-9]+[${WS}]*$`)
 const REPO_SWEEP = new RegExp(`^[${WS}]*Repo sweep:[${WS}]*[^${WS}/]+/[^${WS}/]+[${WS}]*$`)
+const UNIT = new RegExp(`^[${WS}]*Unit:`, 'i')
+const LIST_ITEM = new RegExp(`^([${WS}]*)(?:[-*+]|[0-9]+[.)])[${WS}]+[^${WS}]`)
+const ACCEPTANCE = SLOTS.find(slot => slot.header === 'Acceptance:')!
+
+function criteriaOf(lines: readonly string[]): number {
+  const start = lines.findIndex(line => ACCEPTANCE.pattern.test(line))
+  if (start === -1) return 0
+  const end = lines.findIndex((line, i) => i > start && (UNIT.test(line) || SLOTS.some(slot => slot.pattern.test(line))))
+  const [header = '', ...body] = lines.slice(start, end === -1 ? undefined : end)
+  const indents = body.flatMap(line => LIST_ITEM.exec(line)?.[1]?.length ?? [])
+  const top = indents.reduce((min, indent) => Math.min(min, indent), Infinity)
+  if (indents.length > 0) return indents.filter(indent => indent === top).length
+  return [header.replace(ACCEPTANCE.pattern, ''), ...body].filter(line => NONBLANK.test(line)).length
+}
+
+function unitOf(lines: readonly string[]): string | undefined {
+  return lines.map(line => (UNIT.test(line) ? line.replace(UNIT, '').trim() : '')).find(text => text !== '')
+}
 
 // The gate's verdict on one prompt. A prompt with no character outside the
 // ASCII set is blank, and the gate lets it through; so does a prompt whose
@@ -54,5 +72,6 @@ export function checkBrief(prompt: string): WorkbenchBriefCheck {
     if (lines.some(line => REPO_SWEEP.test(line))) return { isComplete: true, missing: [], shape: 'repo-sweep' }
   }
   const missing = SLOTS.filter(slot => !lines.some(line => slot.pattern.test(line))).map(slot => slot.header)
-  return { isComplete: missing.length === 0, missing, shape: 'brief' }
+  const unit = unitOf(lines)
+  return { isComplete: missing.length === 0, missing, shape: 'brief', criteria: criteriaOf(lines), ...(unit === undefined ? {} : { unit }) }
 }

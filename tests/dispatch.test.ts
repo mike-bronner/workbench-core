@@ -12,7 +12,8 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { DEV_TEAM_LINE, HINT_LEAD, hintOf } from '../hooks/mods/dispatch'
+import { checkBrief } from '../hooks/mods/brief'
+import { DEV_TEAM_LINE, HINT_LEAD, hintOf, unitHintOf } from '../hooks/mods/dispatch'
 import { HAND_BACK_REMINDER } from '../hooks/mods/question-rule'
 import type { Bench, BenchOptions } from './bench'
 import { HOME, bench, run, start } from './bench'
@@ -194,6 +195,58 @@ describe('the dispatch hint', () => {
     expect(hintOf('Read the output of git log first.')).toBeUndefined()
     expect(hintOf('make sure the suite is green\ntouch only these files')).toBeUndefined()
     expect(hintOf('    1. indented four is a code line\n2. b\n3. c')).toBeUndefined()
+  })
+})
+
+const briefWith = (count: number, unit = '') =>
+  BRIEF.replace('- an empty file parses to an empty list', Array.from({ length: count }, (_, i) => `- AC${i + 1}: criterion ${i + 1}`).join('\n')) + unit
+
+describe('the unit hint', () => {
+  test('a brief with seven criteria and no unit draws the hint and still goes through', async ($, on) => {
+    const b = await session($, on)
+    const { deny, isReached, hints } = await dispatch($, b, { ...agent(briefWith(7)), subagent_type: 'workbench-dev-team:watson' })
+    expect(deny).toBeUndefined()
+    expect(isReached).toBe(true)
+    expect(hints).toHaveLength(1)
+    expect(hints[0]).toContain('this brief carries 7 acceptance criteria and names no unit.')
+    expect(hints[0]).toContain('add a Unit: line')
+  })
+
+  test('six criteria, a named unit, a Holmes dispatch and a token prompt draw no unit hint', async ($, on) => {
+    const b = await session($, on)
+    expect((await dispatch($, b, agent(briefWith(6)))).hints).toEqual([])
+    expect((await dispatch($, b, agent(briefWith(7, '\nUnit: 1 of 3, the parser. Meets AC1, AC2.')))).hints).toEqual([])
+    for (const type of ['workbench-dev-team:holmes', 'workbench-dev-team:holmes-local', 'workbench-dev-team:holmes-lens']) {
+      expect((await dispatch($, b, { ...agent(briefWith(7)), subagent_type: type })).hints).toEqual([])
+    }
+    for (const prompt of ['Item ID: 12', 'Repo sweep: owner/repo', '']) {
+      expect((await dispatch($, b, agent(prompt))).hints).toEqual([])
+    }
+  })
+
+  test('a method-heavy brief with seven criteria draws both hints', async ($, on) => {
+    const b = await session($, on)
+    const { hints } = await dispatch($, b, agent(`${briefWith(7)}\n1. a\n2. b\n3. c`))
+    expect(hints).toHaveLength(2)
+    expect(hints[0]).toContain('3 numbered steps')
+    expect(hints[1]).toContain('7 acceptance criteria')
+  })
+
+  test("a sub-agent's seven-criteria brief draws no hint", async ($, on) => {
+    const b = await session($, on)
+    expect((await dispatch($, b, agent(briefWith(7), 'a1'))).hints).toEqual([])
+  })
+
+  test('the hint keys on the count, the unit, the shape and the Holmes type', () => {
+    expect(unitHintOf(checkBrief(briefWith(7)), undefined)).toContain(HINT_LEAD)
+    expect(unitHintOf(checkBrief(briefWith(7)), 'workbench-dev-team:watson')).toContain(HINT_LEAD)
+    expect(unitHintOf(checkBrief(briefWith(7)), 'holmes-local')).toContain(HINT_LEAD)
+    expect(unitHintOf(checkBrief(briefWith(7)), 'workbench-dev-team:holmesian')).toContain(HINT_LEAD)
+    expect(unitHintOf(checkBrief(briefWith(7, '\nUnit: ')), undefined)).toContain(HINT_LEAD)
+    expect(unitHintOf(checkBrief(briefWith(6)), undefined)).toBeUndefined()
+    expect(unitHintOf(checkBrief(briefWith(7)), 'workbench-dev-team:holmes')).toBeUndefined()
+    expect(unitHintOf({ isComplete: true, missing: [], shape: 'item-id', criteria: 9 }, undefined)).toBeUndefined()
+    expect(unitHintOf({ isComplete: true, missing: [], shape: 'brief' }, undefined)).toBeUndefined()
   })
 })
 

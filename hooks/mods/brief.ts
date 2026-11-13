@@ -40,7 +40,7 @@ export const BRIEF_SLOTS: readonly WorkbenchBriefSlot[] = SLOTS.map(({ header, d
 const NONBLANK = new RegExp(`[^${WS}]`)
 const ITEM_ID = new RegExp(`^[${WS}]*Item ID:[${WS}]*[0-9]+[${WS}]*$`)
 const REPO_SWEEP = new RegExp(`^[${WS}]*Repo sweep:[${WS}]*[^${WS}/]+/[^${WS}/]+[${WS}]*$`)
-const UNIT = new RegExp(`^[${WS}]*Unit:`, 'i')
+const UNIT = new RegExp(`^[#*_\`${WS}]*Unit[*_\`${WS}]*:[*_\`]*`, 'i')
 const LIST_ITEM = new RegExp(`^([${WS}]*)(?:[-*+]|[0-9]+[.)])[${WS}]+[^${WS}]`)
 const ACCEPTANCE = SLOTS.find(slot => slot.header === 'Acceptance:')!
 

@@ -243,6 +243,12 @@ describe('the unit hint', () => {
     expect(unitHintOf(checkBrief(briefWith(7)), 'holmes-local')).toContain(HINT_LEAD)
     expect(unitHintOf(checkBrief(briefWith(7)), 'workbench-dev-team:holmesian')).toContain(HINT_LEAD)
     expect(unitHintOf(checkBrief(briefWith(7, '\nUnit: ')), undefined)).toContain(HINT_LEAD)
+    for (const unit of ['**Unit:** x', '# Unit: x', 'Unit : x', 'unit: x']) {
+      expect(unitHintOf(checkBrief(briefWith(7, `\n${unit}`)), undefined)).toBeUndefined()
+    }
+    for (const mention of ['Units are small.', 'The Unit: line']) {
+      expect(unitHintOf(checkBrief(briefWith(7, `\n${mention}`)), undefined)).toContain(HINT_LEAD)
+    }
     expect(unitHintOf(checkBrief(briefWith(6)), undefined)).toBeUndefined()
     expect(unitHintOf(checkBrief(briefWith(7)), 'workbench-dev-team:holmes')).toBeUndefined()
     expect(unitHintOf({ isComplete: true, missing: [], shape: 'item-id', criteria: 9 }, undefined)).toBeUndefined()

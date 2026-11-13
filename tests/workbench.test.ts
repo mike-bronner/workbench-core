@@ -288,9 +288,24 @@ describe('briefCheck counts the criteria and reads the unit', () => {
     expect(checkBrief(brief(' a', 'Unit:\nUnit: 3 of 4\n')).unit).toBe('3 of 4')
   })
 
+  test('the Unit: label may carry markdown markers and spaces, and the unit drops them', () => {
+    for (const line of ['**Unit:** x', '# Unit: x', 'Unit : x', 'unit: x', ' \tUnit: x', '__Unit__: x', '`Unit`:` x', '## **Unit** :** x']) {
+      expect(checkBrief(brief(' a', `${line}\n`)).unit).toBe('x')
+    }
+  })
+
+  test('the label takes only the ASCII whitespace set, never NBSP', () => {
+    expect(checkBrief(brief(' a', '\u00a0Unit: x\n')).unit).toBeUndefined()
+    expect(checkBrief(brief(' a', 'Unit\u00a0: x\n')).unit).toBeUndefined()
+  })
+
   test('a Unit: line with no text, or one inside a line, names no unit', () => {
     expect(checkBrief(brief(' a', 'Unit: \t\n')).unit).toBeUndefined()
+    expect(checkBrief(brief(' a', '**Unit:**\n')).unit).toBeUndefined()
     expect(checkBrief(brief(' a', 'See the Unit: line rule.\n')).unit).toBeUndefined()
+    expect(checkBrief(brief(' a', 'The Unit: line\n')).unit).toBeUndefined()
+    expect(checkBrief(brief(' a', 'Units are small.\n')).unit).toBeUndefined()
+    expect(checkBrief(brief(' a', 'Units: 2\n')).unit).toBeUndefined()
     expect('unit' in checkBrief(brief(' a'))).toBe(false)
   })
 

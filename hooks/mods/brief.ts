@@ -47,8 +47,9 @@ const ACCEPTANCE = SLOTS.find(slot => slot.header === 'Acceptance:')!
 function criteriaOf(lines: readonly string[]): number {
   const start = lines.findIndex(line => ACCEPTANCE.pattern.test(line))
   if (start === -1) return 0
-  const end = lines.findIndex((line, i) => i > start && (UNIT.test(line) || SLOTS.some(slot => slot.pattern.test(line))))
-  const [header = '', ...body] = lines.slice(start, end === -1 ? undefined : end)
+  const end = lines.findIndex((line, i) => i > start && SLOTS.some(slot => slot.pattern.test(line)))
+  const [header = '', ...rest] = lines.slice(start, end === -1 ? undefined : end)
+  const body = rest.filter(line => !UNIT.test(line))
   const indents = body.flatMap(line => LIST_ITEM.exec(line)?.[1]?.length ?? [])
   const top = indents.reduce((min, indent) => Math.min(min, indent), Infinity)
   if (indents.length > 0) return indents.filter(indent => indent === top).length

@@ -224,6 +224,16 @@ describe('the unit hint', () => {
     }
   })
 
+  test('an empty Unit: line straight after the Acceptance: header still counts all seven criteria', async ($, on) => {
+    const b = await session($, on)
+    for (const label of ['Unit:', '**Unit:**', '# Unit:']) {
+      const { deny, hints } = await dispatch($, b, agent(briefWith(7).replace('Acceptance:\n', `Acceptance:\n${label}\n`)))
+      expect(deny).toBeUndefined()
+      expect(hints).toHaveLength(1)
+      expect(hints[0]).toContain('this brief carries 7 acceptance criteria and names no unit.')
+    }
+  })
+
   test('a method-heavy brief with seven criteria draws both hints', async ($, on) => {
     const b = await session($, on)
     const { hints } = await dispatch($, b, agent(`${briefWith(7)}\n1. a\n2. b\n3. c`))

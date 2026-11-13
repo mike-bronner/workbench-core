@@ -269,9 +269,33 @@ describe('briefCheck counts the criteria and reads the unit', () => {
     expect(checkBrief(brief('\nAC1: a\n\nAC2: b')).criteria).toBe(2)
   })
 
-  test('the slot ends at the next slot header or Unit: line', () => {
+  test('the slot ends at the next slot header', () => {
     expect(checkBrief(`${brief('\n- a\n- b')}\n- after done\n- more`).criteria).toBe(2)
-    expect(checkBrief(brief('\n- a\nUnit: 1 of 2\n- b')).criteria).toBe(1)
+  })
+
+  test('a Unit: line straight after the header, in any label form, ends nothing', () => {
+    const seven = Array.from({ length: 7 }, (_, i) => `- AC${i + 1}: c`).join('\n')
+    for (const line of ['Unit: 2 of 2', '**Unit:** 2 of 2', '# Unit: 2 of 2', 'Unit : 2 of 2', 'unit: 2 of 2', '__Unit__: 2 of 2', '## **Unit** :** 2 of 2', 'Unit:', '**Unit:**']) {
+      expect(checkBrief(brief(`\n${line}\n${seven}`)).criteria).toBe(7)
+    }
+  })
+
+  test('a Unit: line inside a slot with a list adds nothing, wherever it sits', () => {
+    expect(checkBrief(brief('\n- a\nUnit: 1 of 2\n- b')).criteria).toBe(2)
+    expect(checkBrief(brief('\n- a\n- b\nUnit: 1 of 2')).criteria).toBe(2)
+    expect(checkBrief(brief('\n  - a\n**Unit:** 1 of 2\n  - b')).criteria).toBe(2)
+  })
+
+  test('a Unit: line inside a slot with no list is not a counted line', () => {
+    expect(checkBrief(brief('\nUnit: 1 of 2\nAC1: a\nAC2: b')).criteria).toBe(2)
+    expect(checkBrief(brief('\nAC1: a\n# Unit: 1 of 2\nAC2: b')).criteria).toBe(2)
+    expect(checkBrief(brief('\nAC1: a\nAC2: b\nUnit: 1 of 2')).criteria).toBe(2)
+    expect(checkBrief(brief(' a\nUnit: 1 of 2')).criteria).toBe(1)
+    expect(checkBrief(brief('\nUnit: 1 of 2')).criteria).toBe(0)
+  })
+
+  test('a line that only mentions Unit: inside the slot still counts', () => {
+    expect(checkBrief(brief('\nAC1: a\nThe Unit: line is read.')).criteria).toBe(2)
   })
 
   test('a slot of 200,000 criteria counts without throwing', () => {

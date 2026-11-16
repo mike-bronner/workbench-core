@@ -18,7 +18,7 @@ export type World = {
   // The classifier's answer. An Error makes the classify call reject.
   label: string | Error
   // What a hook beneath answers to classic.Stop.
-  stopBeneath: { block?: string }
+  stopBeneath: { block?: string; additionalContext?: string[] }
   // The blocks of the assistant message ahead of the AskUserQuestion call.
   // Null leaves the call out of every message.
   blocksBefore: Block[] | null

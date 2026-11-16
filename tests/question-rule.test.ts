@@ -12,9 +12,12 @@ import {
   aboveOf,
   agentResultForwards,
   contextRefusalOf,
+  handBackDelivered,
   handBackItem,
   idsItem,
   isSelfContained,
+  lingeringReminderOf,
+  lingeringTaskOf,
   notificationForwards,
   pointedTableItem,
   proseOf,
@@ -1147,4 +1150,91 @@ describe('AC3: each sub-agent hand-back reaches the main session with a reminder
     await $.prompt.submit(prompt('go'))
     expect((await $.tool.call(AGENT)).context ?? []).not.toContain(HAND_BACK_REMINDER)
   })
+})
+
+const delivery = (taskId: string) => `This agent's report was delivered to you as a message from "${taskId}" (its SubagentHandback call). Read it there; it is not repeated here.`
+const NOT_YET = 'This agent has not reported yet: it is waiting on its own background work and will deliver its report through SubagentHandback when that finishes.'
+const lingered = (taskId: string | undefined, summary: string, result = 'The suite passes. Verdict: approve.') =>
+  [
+    '<task-notification>',
+    ...(taskId === undefined ? [] : [`<task-id>${taskId}</task-id>`]),
+    '<status>completed</status>',
+    `<summary>${summary}</summary>`,
+    `<result>${result}\n</result>`,
+    '</task-notification>',
+  ].join('\n')
+const WAITING = 'Agent "Run the final suite" is waiting on its own background work'
+const LINGERING = lingered('b7f3-x', WAITING)
+const DELIVERED = lingered('b7f3-x', WAITING, delivery('b7f3-x'))
+const QUOTED = lingered('b7f3-x', WAITING, `The harness says:\n${delivery('b7f3-x')}`)
+const FIRM = lingeringReminderOf('b7f3-x', true)
+const CONDITIONAL = lingeringReminderOf('b7f3-x', false)
+const stopsOf = (context: readonly string[] | undefined) => (context ?? []).filter(line => line.includes('TaskStop'))
+
+describe('a hand-back from an agent that still waits on its own background work tells the orchestrator to stop it', () => {
+  test('lingeringTaskOf reads the task id only when the summary says the agent waits on background work', () => {
+    expect(lingeringTaskOf(LINGERING)).toBe('b7f3-x')
+    expect(lingeringTaskOf(lingered('b7f3-x', `${WAITING}  \n`))).toBe('b7f3-x')
+    expect(lingeringTaskOf(lingered('b7f3-x', 'Agent "Run the final suite" finished'))).toBeUndefined()
+    expect(lingeringTaskOf(lingered('b7f3-x', 'Agent "Say it is waiting on its own background work" finished'))).toBeUndefined()
+    expect(lingeringTaskOf(lingered(undefined, WAITING))).toBeUndefined()
+    expect(lingeringTaskOf(lingered('b7 f3', WAITING))).toBeUndefined()
+    expect(lingeringTaskOf(lingered('a1"; rm', WAITING))).toBeUndefined()
+    expect(lingeringTaskOf(['<task-notification>', '<task-id>a1</task-id>', '<summary>Agent "x" finished</summary>', `<result>${WAITING}</result>`, '</task-notification>'].join('\n'))).toBeUndefined()
+    expect(lingeringTaskOf(['<result>', '<task-id>a1</task-id>', `<summary>${WAITING}</summary>`, '</result>'].join('\n'))).toBeUndefined()
+  })
+
+  test('handBackDelivered holds only when the whole result is the harness delivery line for that task', () => {
+    expect(handBackDelivered(DELIVERED, 'b7f3-x')).toBe(true)
+    expect(handBackDelivered(DELIVERED, 'c9')).toBe(false)
+    expect(handBackDelivered(lingered('b7f3-x', WAITING, delivery('c9')), 'b7f3-x')).toBe(false)
+    expect(handBackDelivered(QUOTED, 'b7f3-x')).toBe(false)
+    expect(handBackDelivered(lingered('b7f3-x', WAITING, `${delivery('b7f3-x')}\nMore of the report.`), 'b7f3-x')).toBe(false)
+    expect(handBackDelivered(lingered('b7f3-x', WAITING, NOT_YET), 'b7f3-x')).toBe(false)
+    expect(handBackDelivered(LINGERING, 'b7f3-x')).toBe(false)
+    expect(handBackDelivered(`<summary>${WAITING}</summary>\n${delivery('b7f3-x')}`, 'b7f3-x')).toBe(false)
+  })
+
+  test('the firm reminder tells the orchestrator to stop the agent, and the conditional one only if its report arrived', () => {
+    expect(FIRM).toContain('Stop it now with TaskStop and task_id "b7f3-x"')
+    expect(CONDITIONAL).toContain('If its report already reached you')
+    expect(CONDITIONAL).toContain('TaskStop and task_id "b7f3-x"')
+    expect(CONDITIONAL).toContain('leave it running')
+    expect(CONDITIONAL).not.toContain('Stop it now')
+  })
+
+  for (const [name, turnId, attended] of [
+    ['that opens a turn', undefined, true],
+    ['folded into a running turn', 't', true],
+    ['in a session nobody attends', undefined, false],
+  ] as const) {
+    for (const [kind, text, line] of [
+      ['whose result carries the delivery line', DELIVERED, FIRM],
+      ['that has not reported yet', lingered('b7f3-x', WAITING, NOT_YET), CONDITIONAL],
+      ['whose report quotes the delivery line', QUOTED, CONDITIONAL],
+      ['whose report is its own text', LINGERING, CONDITIONAL],
+    ] as const) {
+      askTest(`a waiting agent's notification ${kind}, ${name}, carries its one stop line`, async ($, on) => {
+        world(on, ATTENDED)
+        await $.session.start(start(attended))
+        const result = await $.prompt.submit({ ...prompt(text, NOTIFICATION), ...(turnId === undefined ? {} : { turnId }) })
+        expect(stopsOf(result.context)).toEqual([line])
+        expect((result.context ?? []).includes(HAND_BACK_REMINDER)).toBe(attended)
+      })
+    }
+  }
+
+  for (const [name, text, origin] of [
+    ['a finished agent', lingered('b7f3-x', 'Agent "Run the final suite" finished'), NOTIFICATION],
+    ['a finished agent whose description holds the waiting phrase', lingered('b7f3-x', 'Agent "Say it is waiting on its own background work" finished', delivery('b7f3-x')), NOTIFICATION],
+    ['a notification with no task id', lingered(undefined, WAITING), NOTIFICATION],
+    ["a background command's notification", COMMAND_DONE, NOTIFICATION],
+    ['a prompt Mike types that quotes the notification', DELIVERED, undefined],
+  ] as const) {
+    askTest(`${name} carries no stop reminder`, async ($, on) => {
+      world(on, ATTENDED)
+      await $.session.start(start(true))
+      expect(stopsOf((await $.prompt.submit(prompt(text, origin))).context)).toEqual([])
+    })
+  }
 })

@@ -283,7 +283,10 @@ import {
   agentResultForwards,
   classifierText,
   endsOnQuestion,
+  handBackDelivered,
   hasCandidate,
+  lingeringReminderOf,
+  lingeringTaskOf,
   notificationForwards,
   notificationHandsBack,
   proseOf,
@@ -1966,7 +1969,9 @@ export const register: Register = on => {
     if (isMike) await update($, intake, state => ({ ...state, task: state.task + 1 }))
     const forwards = e.origin.kind === 'task-notification' && notificationForwards(e.text)
     const isHandBack = sessionAttended === true && e.origin.kind === 'task-notification' && notificationHandsBack(e.text)
-    const reminded = isHandBack ? { ...e, context: [...(e.context ?? []), HAND_BACK_REMINDER] } : e
+    const lingering = e.origin.kind === 'task-notification' ? lingeringTaskOf(e.text) : undefined
+    const added = [...(isHandBack ? [HAND_BACK_REMINDER] : []), ...(lingering === undefined ? [] : [lingeringReminderOf(lingering, handBackDelivered(e.text, lingering))])]
+    const reminded = added.length === 0 ? e : { ...e, context: [...(e.context ?? []), ...added] }
     if (e.turnId !== undefined) {
       if (forwards) await update($, turnForwards, () => true)
       return next(reminded)

@@ -1100,9 +1100,41 @@ describe('a ${…} parameter expansion is one part of its word', () => {
     expect(shape('echo ${x:-${y:-a;b}};zap')).toEqual([['echo', ['${x:-${y:-a;b}}']], ['zap', []]])
   })
 
-  test('a bare { inside it opens nothing, so the first } closes it', () => {
+  test('a bare { inside it, in double quotes or not, is a substitution unknown, because zsh nests one outside double quotes', () => {
     expect(shape('echo ${x:-{};zap')).toEqual([['echo', ['${x:-{}']], ['zap', []]])
+    expect(parseShell('echo ${x:-{};zap').unknowns).toEqual(['substitution'])
+    for (const line of [
+      'echo ${x:-{} #}; zap',
+      'echo "${x:-{} #}"; zap',
+      'echo ${x:-a{b}c}',
+      'echo "${x:-a{b}c}"',
+      'echo ${x:-${y:-{}}}',
+      'echo "${x:-${y:-{}}}"',
+      'echo $(a ${x:-{}) ; zap',
+      'echo ${x:-"a"{}',
+      'x=${y:-{}',
+    ]) {
+      expect(parseShell(line).unknowns).toEqual(['substitution'])
+    }
+  })
+
+  test('a { that is quoted, escaped, outside it or the one that opens it sets no unknown', () => {
     expect(shape('echo ${x}&zap')).toEqual([['echo', ['${x}']], ['zap', []]])
+    for (const line of [
+      'echo ${x}&zap',
+      'echo ${x:-${y}} z',
+      'echo "${x:-${y}}" z',
+      'echo ${x:-"{"} z',
+      "echo ${x:-'{'} z",
+      'echo ${x:-\\{} z',
+      'echo "${x:-"{"}" z',
+      'echo "${x:-\\{}" z',
+      'echo { ${x} }',
+      'echo "{${x}}"',
+      '{ echo ${x}; }',
+    ]) {
+      expect(parseShell(line).unknowns).toEqual([])
+    }
   })
 
   test('inside double quotes, a nested quote or \'…\' inside it does not end the string', () => {
@@ -1182,7 +1214,8 @@ describe('$$ is one pair, so a { after it opens no ${…}', () => {
   test('inside ${…}, a $${ opens no nested expansion, so the first } closes it', () => {
     expect(shape('echo ${y:-$${z};zap}')).toEqual([['echo', ['${y:-$${z}']], ['zap}', []]])
     expect(shape('echo $(a ${y:-$${z}) ; zap }')).toEqual([['a', ['${y:-$${z}']], ['echo', ['$_']], ['zap', ['}']]])
-    expect(parseShell('echo $(a ${y:-$${z}) ; zap }').unknowns).toEqual([])
+    expect(parseShell('echo $(a ${y:-$${z}) ; zap }').unknowns).toEqual(['substitution'])
+    expect(parseShell('echo $(a ${y:-$$}) ; zap }').unknowns).toEqual([])
   })
 
   test('inside a quoted string in ${…} in $( ), a $${ does not hide what follows', () => {

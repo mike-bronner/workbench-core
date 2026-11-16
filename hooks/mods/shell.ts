@@ -873,6 +873,9 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
           word += '${'
           nest.push('{')
           i++
+        } else if (d === '{' && nest.at(-1) === '{') {
+          reading.unknowns.add('substitution')
+          word += d
         } else if (d === '}' && nest.at(-1) === '{') {
           word += d
           nest.pop()
@@ -965,6 +968,9 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       hasWord = true
       braces++
       i++
+    } else if (braces > 0 && c === '{') {
+      reading.unknowns.add('substitution')
+      word += c
     } else if (braces > 0 && c === '}') {
       word += c
       braces--

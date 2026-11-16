@@ -192,6 +192,7 @@ import { isAttendedPrompt, isAttendedSession, isDesktopSession, isScheduledFire,
 import { bareSetRefusal, repairedNotice, runsGit } from './mods/false-bare'
 import type { Script } from './mods/full-suite'
 import { installPathsOf, suiteRefusal } from './mods/full-suite'
+import { bufferWarningOf } from './mods/monitor'
 import { parseShell } from './mods/shell'
 import { callerKeyOf, freshnessOf, isFinalDescription, isMcpTool, isOutwardTool, isRepeated, isSubmitLine, readSourceOf, readsAfter, refusalTextOf, refusalsAfter, repeatReminderOf, sourcesRefusalOf } from './mods/outward'
 import type { FolderChange } from './mods/listings'
@@ -2269,6 +2270,13 @@ export const register: Register = on => {
     if (report !== undefined) await markReported($, caller, folders)
     const added = [...(isRepeat ? [repeatReminderOf(e.tool)] : []), ...(fresh === undefined ? [] : [fresh]), ...(report === undefined ? [] : [report])]
     return added.length === 0 ? result : { ...result, context: [...(result.context ?? []), ...added] }
+  }).catch(($, e, next) => next(e))
+
+  on('tool.call', { tool: /^Monitor$/ }, async ($, e, next) => {
+    const result = await next(e)
+    if (e.tool !== 'Monitor' || typeof e.command !== 'string' || result.deny !== undefined || result.isError === true) return result
+    const warning = bufferWarningOf(e.command)
+    return warning === undefined ? result : { ...result, context: [...(result.context ?? []), warning] }
   }).catch(($, e, next) => next(e))
 
   // The destructive-scope guard's other two verdicts, given where the engine

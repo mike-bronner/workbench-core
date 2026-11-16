@@ -256,6 +256,7 @@ function closingParen(line: string, from: number, countsCases = true): number {
     else if (countsCases && isWord('esac') && cases > 0) cases--
     if (c === '\\') i++
     else if (c === '$' && line[i + 1] === "'") i = closingAnsiQuote(line, i + 2)
+    else if (countsCases && c === '$' && line[i + 1] === '{') i = closingBrace(line, i + 2)
     else if (c === "'") i = line.indexOf("'", i + 1) === -1 ? line.length : line.indexOf("'", i + 1)
     else if (c === '"') {
       for (i++; i < line.length && line[i] !== '"'; i++) if (line[i] === '\\') i++
@@ -263,6 +264,30 @@ function closingParen(line: string, from: number, countsCases = true): number {
     else if (c === ')' && !(depth === 1 && cases > 0) && --depth === 0) return i
   }
   return line.length
+}
+
+function closingBrace(text: string, from: number): number {
+  for (let i = from; i < text.length; i++) {
+    const c = text[i]
+    if (c === '\\') i++
+    else if (c === '$' && text[i + 1] === "'") i = closingAnsiQuote(text, i + 2)
+    else if (c === '$' && text[i + 1] === '{') i = closingBrace(text, i + 2)
+    else if (c === '$' && text[i + 1] === '(') i = closingParen(text, i + 2)
+    else if (c === '`') i = closingTick(text, i + 1)
+    else if (c === "'") i = text.indexOf("'", i + 1) === -1 ? text.length : text.indexOf("'", i + 1)
+    else if (c === '"') i = closingQuote(text, i + 1)
+    else if (c === '}') return i
+  }
+  return text.length
+}
+
+function closingQuote(text: string, from: number): number {
+  for (let i = from; i < text.length; i++) {
+    if (text[i] === '\\') i++
+    else if (text[i] === '$' && text[i + 1] === '{') i = closingBrace(text, i + 2)
+    else if (text[i] === '"') return i
+  }
+  return text.length
 }
 
 // The index of the backtick that closes one opened just before `from`.
@@ -302,7 +327,7 @@ function substitutionsOf(text: string, isCompat = false): string[] {
 // What the heredoc scanner is inside: unquoted text (the line itself, a $( ),
 // or a backtick), a quoted string ('' or ""), or arithmetic, where << is a
 // shift. A $'…' string is skipped whole, through closingAnsiQuote.
-type Context = 'top' | '$(' | '`' | "'" | '"' | '(('
+type Context = 'top' | '$(' | '`' | "'" | '"' | '((' | '${'
 
 // Whether a word starts at `i`: a `#` there opens a comment, and `((` there
 // opens arithmetic.
@@ -447,10 +472,28 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; bodie
       stack.push('$(')
       continue
     }
+    if (c === '$' && next === '{' && !reading.isCompat) {
+      out += '${'
+      i++
+      stack.push('${')
+      continue
+    }
     if (context === '"') {
       out += c
       if (c === '"') stack.pop()
       else if (c === '`') stack.push('`')
+      continue
+    }
+    if (context === '${' && c === '$' && next === "'") {
+      const end = closingAnsiQuote(text, i + 2)
+      out += text.slice(i, end + 1)
+      i = end
+      continue
+    }
+    if (context === '${') {
+      out += c
+      if (c === '}') stack.pop()
+      else if (c === "'" || c === '"' || c === '`') stack.push(c)
       continue
     }
     // Unquoted text: the line itself, a $( ), or a backtick.
@@ -669,6 +712,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
   // Where in the command's words a reserved `case` stands, or -1. A quoted
   // or escaped `case` is an ordinary command name, and opens no case.
   let caseAt = -1
+  let braces = 0
   const endWord = () => {
     if (isPattern && hasWord && isBare && word === 'esac' && words.length === 0) {
       isPattern = false
@@ -803,11 +847,31 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     } else if (c === '"') {
       hasWord = true
       isBare = false
-      for (i++; i < line.length && line[i] !== '"'; i++) {
+      const nest: string[] = []
+      for (i++; i < line.length && (line[i] !== '"' || nest.length > 0); i++) {
         const d = line[i] as string
         const close = d === '$' && line[i + 1] === '(' && line[i + 2] === '(' ? arithmeticEnd(line, i + 3) : -1
         if (d === '\\' && i + 1 < line.length && '"\\$`'.includes(line[i + 1] as string)) {
           word += line[++i]
+        } else if (d === '\\' && i + 1 < line.length && nest.length > 0) {
+          word += d + line[++i]
+        } else if (exact && d === '$' && line[i + 1] === '{') {
+          isExpanding = true
+          word += '${'
+          nest.push('{')
+          i++
+        } else if (d === '}' && nest.at(-1) === '{') {
+          word += d
+          nest.pop()
+        } else if (d === '"') {
+          if (nest.at(-1) === '{') nest.push('"')
+          else nest.pop()
+        } else if (d === "'" && nest.at(-1) === '{') {
+          const end = line.indexOf("'", i + 1)
+          const quoted = line.slice(i, end === -1 ? line.length : end + 1)
+          word += quoted
+          redirects.push(...textual(quoted))
+          i = end === -1 ? line.length : end
         } else if (close !== -1) {
           if (close === line.length) reading.unknowns.add('substitution')
           arithmetic(line.slice(i + 3, close))
@@ -878,7 +942,18 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       // Bash allows nothing after it but a redirect or a separator, so a word
       // after it is read as a command of its own.
       if (/^[ \t]*[^ \t\n;&|()<>]/.test(line.slice(i + 1))) endCommand()
-    } else if (isTest && (c === '<' || c === '>') && !(hasWord && isBare && word === ']]')) {
+    } else if (exact && c === '$' && next === '{') {
+      word += UNQUOTED + '${'
+      hasWord = true
+      braces++
+      i++
+    } else if (braces > 0 && c === '}') {
+      word += c
+      braces--
+    } else if (braces > 0 && /[ \t\n;&|()<>#]/.test(c) && !(/[<>]/.test(c) && next === '(')) {
+      word += c
+      redirects.push(...textual(c))
+    } else if (braces === 0 && isTest && (c === '<' || c === '>') && !(hasWord && isBare && word === ']]')) {
       // A < or > in a test compares strings. A ]] right before it ends the
       // test, so then it is a redirect.
       endWord()
@@ -984,6 +1059,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
   // An array or case still open where its script ends is a syntax error bash
   // runs nothing of, and the reader cannot tell where it was meant to end.
   if (isArray || cases > 0) reading.unknowns.add('compound')
+  if (braces > 0) reading.unknowns.add('substitution')
   return commands
 }
 

@@ -1047,3 +1047,117 @@ describe('expandingOf: which words of a statement the shell expands', () => {
     expect(expandingOf(copy)).toBeUndefined()
   })
 })
+
+describe('a ${…} parameter expansion is one part of its word', () => {
+  const shape = (line: string) => statements(line).map(s => [s.name, s.args])
+
+  test('& ; | > and < inside it are text, never a background, separator, pipe or redirect', () => {
+    for (const [line, arg] of [
+      ['echo ${x//&/and}', '${x//&/and}'],
+      ['echo ${x/;/,}', '${x/;/,}'],
+      ['echo ${x/|/:}', '${x/|/:}'],
+      ['echo ${x/>/}', '${x/>/}'],
+      ['echo ${x/</}', '${x/</}'],
+    ] as const) {
+      const parse = parseShell(line)
+      expect(parse.unknowns).toEqual([])
+      expect(only(line)).toMatchObject({ name: 'echo', args: [arg], isCertain: true })
+      expect(real(line)).toEqual([])
+    }
+    const assignment = parseShell('out=${v/a/&}')
+    expect(assignment.unknowns).toEqual([])
+    expect(only('out=${v/a/&}')).toMatchObject({ nameAt: -1, name: '', assignments: ['out=${v/a/&}'], isCertain: true })
+    expect(only('echo ${x/>/}').redirects).toEqual([{ op: '>', fd: '', target: '', isReal: false }])
+  })
+
+  test('a blank, a newline, a # and a ( ) inside it stay in the word, as bash reads them', () => {
+    expect(shape('echo ${x:-a b} c')).toEqual([['echo', ['${x:-a b}', 'c']]])
+    expect(shape('echo ${x:-a\nb} c')).toEqual([['echo', ['${x:-a\nb}', 'c']]])
+    expect(shape('echo ${x:-a # b} c')).toEqual([['echo', ['${x:-a # b}', 'c']]])
+    expect(shape('x=(${a/)/;})')).toEqual([['', []]])
+  })
+
+  test('a <( ) or >( ) inside it is a nested statement, as it is outside one', () => {
+    const outside = statements('echo <(zap) c')
+    expect(outside.map(s => s.name)).toEqual(['zap', 'echo'])
+    for (const [line, name] of [['echo ${x:-<(zap)} c', 'echo'], ['echo ${x:->(zap)} c', 'echo'], ['[[ -n ${x:-<(zap)} ]]', '[[']] as const) {
+      const parse = parseShell(line)
+      expect(parse.unknowns).toEqual([])
+      expect(parse.statements.map(s => s.name)).toEqual(['zap', name])
+      expect(parse.statements[0]).toEqual(outside[0])
+      expect(real(line)).toEqual([])
+    }
+    expect(shape('echo ${x:-<(zap)} c')).toEqual([['zap', []], ['echo', ['${x:-$_}', 'c']]])
+    expect(shape('echo ${x:-a<b} c')).toEqual([['echo', ['${x:-a<b}', 'c']]])
+    expect(shape('echo "${x:-<(zap)}" c')).toEqual([['echo', ['${x:-<(zap)}', 'c']]])
+  })
+
+  test('it ends at its own }, past quotes, a backslash and a nested ${…}', () => {
+    expect(shape("echo ${x:-'}';y} z")).toEqual([['echo', ['${x:-};y}', 'z']]])
+    expect(shape('echo ${x:-"};"} z')).toEqual([['echo', ['${x:-};}', 'z']]])
+    expect(shape('echo ${x:-\\};y} z')).toEqual([['echo', ['${x:-};y}', 'z']]])
+    expect(shape('echo ${x:-${y}&} z')).toEqual([['echo', ['${x:-${y}&}', 'z']]])
+    expect(shape('echo ${x:-${y:-a;b}};zap')).toEqual([['echo', ['${x:-${y:-a;b}}']], ['zap', []]])
+  })
+
+  test('a bare { inside it opens nothing, so the first } closes it', () => {
+    expect(shape('echo ${x:-{};zap')).toEqual([['echo', ['${x:-{}']], ['zap', []]])
+    expect(shape('echo ${x}&zap')).toEqual([['echo', ['${x}']], ['zap', []]])
+  })
+
+  test('inside double quotes, a nested quote or \'…\' inside it does not end the string', () => {
+    expect(shape('echo "${x:-"a;b"}" c')).toEqual([['echo', ['${x:-a;b}', 'c']]])
+    expect(shape('echo "${x:-"}"}" c')).toEqual([['echo', ['${x:-}}', 'c']]])
+    expect(shape('echo "${x:-\'}\'}" c')).toEqual([['echo', ["${x:-'}'}", 'c']]])
+    expect(shape('echo "${x:-\\}}" c')).toEqual([['echo', ['${x:-\\}}', 'c']]])
+    expect(parseShell('echo "${x:-"a b"}" c').unknowns).toEqual([])
+  })
+
+  test('a substitution inside it is a nested statement, as it is outside one', () => {
+    const outside = statements('echo $(rm -rf y)')
+    for (const line of ['echo ${x:-$(rm -rf y)}', 'echo "${x:-$(rm -rf y)}"', 'echo ${x:-`rm -rf y`}', 'echo ${x:-${z:-$(rm -rf y)}}']) {
+      const all = statements(line)
+      expect(all.map(s => s.name)).toEqual(['rm', 'echo'])
+      expect(all[0]).toEqual(outside[0])
+      expect(all[1]?.args).toHaveLength(1)
+    }
+    expect(shape('echo ${x:-$(rm a;zap b)};c')).toEqual([['rm', ['a']], ['zap', ['b']], ['echo', ['${x:-$_}']], ['c', []]])
+  })
+
+  test('a } or ) inside it does not close a $( ) around it', () => {
+    expect(shape('echo $(a ${x/)/;} b) c')).toEqual([['a', ['${x/)/;}', 'b']], ['echo', ['$_', 'c']]])
+    expect(parseShell('echo $(a ${x/)/;} b) c').unknowns).toEqual([])
+  })
+
+  test('a << inside it is no heredoc', () => {
+    const parse = parseShell('cat <<E ${x/<<F/}\nbody\nE')
+    expect(parse.unknowns).toEqual([])
+    expect(parse.statements).toHaveLength(1)
+    expect(parse.statements[0]?.heredocs.map(doc => [doc.delimiter, doc.body])).toEqual([['E', 'body']])
+    expect(parse.statements[0]?.args).toEqual(['${x/<<F/}'])
+  })
+
+  test('an unclosed ${ is an unknown, as an unclosed $( is, and never throws', () => {
+    expect(parseShell('echo $(x').unknowns).toEqual(['substitution'])
+    for (const line of ['echo ${x', 'echo ${x;zap', 'echo ${x:-${y}', 'echo $(a ${x)', 'echo ${', '${']) {
+      expect(parseShell(line).unknowns).toContain('substitution')
+    }
+    expect(shape('echo ${x;zap')).toEqual([['echo', ['${x;zap']]])
+    for (const line of ['echo "${x', 'echo "${x:-"a}"', "echo ${x:-'a", "echo \"${x:-'a"]) {
+      expect(parseShell(line).unknowns).toContain('quote')
+    }
+    expect(() => commandsOf('echo ${x:-$(', true)).not.toThrow()
+  })
+
+  test('the frozen compat reading still reads it as the gate of 77bb2f3 did', () => {
+    expect(commandsOf('echo ${x/;/ git push}', true)).toEqual([['echo', '${x/'], ['/', 'git', 'push}']])
+    expect(commandsOf('echo ${x/;/ git push}')).toEqual([['echo', '${x/;/ git push}']])
+    expect(commandsOf('echo $(a ${x/)/;} git push)', true).some(words => words.includes('git'))).toBe(true)
+  })
+
+  test('the word keeps its expansion marks, so a ${…} command name stays unknown', () => {
+    expect(parseShell('${X:-/bin/rm;x} y').unknowns).toEqual(['expansion'])
+    expect(expandingOf(only('echo ${x//&/and} plain'))).toEqual([1])
+    expect(parseShell('"${P}"/bin/x y').unknowns).toEqual([])
+  })
+})

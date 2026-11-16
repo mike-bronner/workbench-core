@@ -1104,6 +1104,11 @@ describe('a ${…} parameter expansion is one part of its word', () => {
     expect(shape('x=(${a/)/;})')).toEqual([['', []]])
   })
 
+  test('an unclosed ( inside it stays in the word, and a ; after it ends nothing', () => {
+    expect(parseShell('echo ${x:-(a;b} c').unknowns).toEqual([])
+    expect(only('echo ${x:-(a;b} c')).toMatchObject({ name: 'echo', args: ['${x:-(a;b}', 'c'] })
+  })
+
   test('a <( ) or >( ) inside it is a nested statement, as it is outside one', () => {
     const outside = statements('echo <(zap) c')
     expect(outside.map(s => s.name)).toEqual(['zap', 'echo'])
@@ -1312,6 +1317,15 @@ describe('$$ is one pair, so a { after it opens no ${…}', () => {
     expect(commandsOf("echo $(a $$'\\')'; zap) c", true)).toEqual([['a', "$')\uE000"], ['zap'], ['echo', '$_', 'c']])
   })
 
+  test("the frozen compat reading's \"…\" reader reads a $$ and a $${ as the gate of 77bb2f3 did", () => {
+    for (const line of ['echo "$${x"; zap', 'echo "$$(zap)"']) {
+      expect(commandsOf(line, true)).toEqual(oracleCommandsOf(line))
+    }
+    expect(commandsOf('echo "$${x"; zap', true)).toEqual([['echo', '$${x'], ['zap']])
+    expect(commandsOf('echo "$$(zap)"', true)).toEqual([['zap'], ['echo', '$$_']])
+    expect(commandsOf('echo "$$(zap)"')).toEqual([['echo', '$$(zap)']])
+  })
+
   test('an unquoted $$ word stays expanding', () => {
     expect(expandingOf(only('echo $$ a'))).toEqual([1])
   })
@@ -1341,6 +1355,13 @@ describe("a ' inside a double-quoted ${…} is an unknown, because bash and zsh 
 
   test('a balanced pair sets it too, because zsh still reads the quotes as text', () => {
     expect(parseShell(`echo "\${x:-'a'}" c`).unknowns).toEqual(['quote'])
+  })
+
+  test("a > or < inside the '…' sets only the quote unknown, and is no real redirect", () => {
+    for (const [line, op] of [[`echo "\${x:-'>f'}"`, '>'], [`echo "\${x:-'<f'}"`, '<']] as const) {
+      expect(parseShell(line).unknowns).toEqual(['quote'])
+      expect(only(line).redirects).toEqual([{ op, fd: '', target: '', isReal: false }])
+    }
   })
 
   test('a quote that bash and zsh both read the same way sets no unknown', () => {
@@ -1407,6 +1428,19 @@ describe("a heredoc's text starts at a separator that ends the command at its ow
     for (const line of ['{ bash; } <<EOF\nzap\nEOF', '(bash) <<EOF\nzap\nEOF', '(true; bash) <<EOF\nzap\nEOF', '{ true; bash; } <<EOF\nzap\nEOF', '{\nbash\n} <<EOF\nzap\nEOF', '( (bash) ) <<EOF\nzap\nEOF']) {
       expect(fed(line)).toBe(true)
       expect(names(line)).toContain('zap')
+    }
+  })
+
+  test('a } with a < or ) right after it still closes the group, so the heredoc feeds the shell in it', () => {
+    for (const line of ['{ bash; }<<EOF\nzap\nEOF', '( { bash; })<<EOF\nzap\nEOF']) {
+      expect(fed(line)).toBe(true)
+      expect(names(line)).toEqual(['bash', '', 'zap'])
+      expect(parseShell(line).unknowns).toEqual(['stdin'])
+    }
+    for (const line of ['{ cat; }<<EOF\nzap\nEOF', '( { cat; })<<EOF\nzap\nEOF']) {
+      expect(fed(line)).toBe(false)
+      expect(names(line)).toEqual(['cat', ''])
+      expect(parseShell(line).unknowns).toEqual([])
     }
   })
 
@@ -1558,6 +1592,13 @@ describe('the ${…} end readers reach each branch, and each changes where a $( 
     const line = 'echo $(echo "${x:-")"}"); id'
     expect(commandsOf(line, true)).toEqual(oracleCommandsOf(line))
     expect(commandsOf(line, true)).not.toEqual(commandsOf(line))
+  })
+
+  test("the frozen compat reading's $( ) end lets a ) inside a ${…} end the $( ), as the gate of 77bb2f3 did", () => {
+    const line = 'echo $(a ${x:-)} b) c'
+    expect(commandsOf(line, true)).toEqual(oracleCommandsOf(line))
+    expect(commandsOf(line, true)).toEqual([['a', '${x:-'], ['echo', '$_}', 'b'], ['c']])
+    expect(commandsOf(line)).toEqual([['a', '${x:-)}', 'b'], ['echo', '$_', 'c']])
   })
 
   test('a quote left open inside it runs to the end of the text, and is an unknown', () => {

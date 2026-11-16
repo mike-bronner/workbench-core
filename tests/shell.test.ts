@@ -1161,3 +1161,59 @@ describe('a ${…} parameter expansion is one part of its word', () => {
     expect(parseShell('"${P}"/bin/x y').unknowns).toEqual([])
   })
 })
+
+describe('$$ is one pair, so a { after it opens no ${…}', () => {
+  const shape = (line: string) => statements(line).map(s => [s.name, s.args])
+
+  test('a command after a separator past $${ is a statement of its own', () => {
+    for (const line of ['echo $${x; zap; echo }', 'echo "$${x"; zap; echo "}"']) {
+      expect(parseShell(line).unknowns).toEqual([])
+      expect(shape(line)).toEqual([['echo', ['$${x']], ['zap', []], ['echo', ['}']]])
+    }
+    expect(parseShell('echo $${x').unknowns).toEqual([])
+  })
+
+  test('inside $( ), a $${ does not run the substitution past its )', () => {
+    const line = 'echo $(a $${x) ; zap; echo }'
+    expect(parseShell(line).unknowns).toEqual([])
+    expect(shape(line)).toEqual([['a', ['$${x']], ['echo', ['$_']], ['zap', []], ['echo', ['}']]])
+  })
+
+  test('inside ${…}, a $${ opens no nested expansion, so the first } closes it', () => {
+    expect(shape('echo ${y:-$${z};zap}')).toEqual([['echo', ['${y:-$${z}']], ['zap}', []]])
+    expect(shape('echo $(a ${y:-$${z}) ; zap }')).toEqual([['a', ['${y:-$${z}']], ['echo', ['$_']], ['zap', ['}']]])
+    expect(parseShell('echo $(a ${y:-$${z}) ; zap }').unknowns).toEqual([])
+  })
+
+  test('inside a quoted string in ${…} in $( ), a $${ does not hide what follows', () => {
+    const line = 'echo $(a ${y:-"$${"};zap) c'
+    expect(parseShell(line).unknowns).toEqual([])
+    expect(shape(line)).toEqual([['a', ['${y:-$${}']], ['zap', []], ['echo', ['$_', 'c']]])
+  })
+
+  test('on a heredoc line, a $${ does not hide the heredoc after it', () => {
+    for (const line of ['echo $${x; cat <<E; echo }\nbody\nE', 'echo "$${x"; cat <<E; echo "}"\nbody\nE']) {
+      const parse = parseShell(line)
+      expect(parse.unknowns).toEqual([])
+      expect(parse.statements.map(s => [s.name, s.args])).toEqual([['echo', ['$${x']], ['cat', []], ['echo', ['}']]])
+      expect(parse.statements[1]?.heredocs.map(doc => [doc.delimiter, doc.body])).toEqual([['E', 'body']])
+    }
+  })
+
+  test('a ${…} after a $$ pair is still one expansion', () => {
+    expect(shape('echo $$${x;y} c')).toEqual([['echo', ['$$${x;y}', 'c']]])
+    expect(shape('echo "$$${x:-"a;b"}" c')).toEqual([['echo', ['$$${x:-a;b}', 'c']]])
+    expect(shape('echo $(a $$${x/)/;} b) c')).toEqual([['a', ['$$${x/)/;}', 'b']], ['echo', ['$_', 'c']]])
+    expect(shape('echo ${y:-$$${x}};zap')).toEqual([['echo', ['${y:-$$${x}}']], ['zap', []]])
+    for (const line of ['echo $$${x;y} c', 'echo "$$${x:-"a;b"}" c', 'echo $(a $$${x/)/;} b) c']) expect(parseShell(line).unknowns).toEqual([])
+    const heredoc = parseShell('cat <<E $$${x/<<F/}\nbody\nE')
+    expect(heredoc.unknowns).toEqual([])
+    expect(heredoc.statements[0]?.heredocs.map(doc => [doc.delimiter, doc.body])).toEqual([['E', 'body']])
+    expect(heredoc.statements[0]?.args).toEqual(['$$${x/<<F/}'])
+  })
+
+  test('the frozen compat reading is unchanged', () => {
+    expect(commandsOf('echo $$(zap)', true).some(words => words.includes('zap'))).toBe(true)
+    expect(commandsOf("echo $$'a;b'", true)).toEqual(commandsOf("echo $'a;b'", true).map(words => words.map(w => (w === 'echo' ? w : `$${w}`))))
+  })
+})

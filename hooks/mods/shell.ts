@@ -255,6 +255,7 @@ function closingParen(line: string, from: number, countsCases = true): number {
     // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
     else if (countsCases && isWord('esac') && cases > 0) cases--
     if (c === '\\') i++
+    else if (countsCases && c === '$' && line[i + 1] === '$') i++
     else if (c === '$' && line[i + 1] === "'") i = closingAnsiQuote(line, i + 2)
     else if (countsCases && c === '$' && line[i + 1] === '{') i = closingBrace(line, i + 2)
     else if (c === "'") i = line.indexOf("'", i + 1) === -1 ? line.length : line.indexOf("'", i + 1)
@@ -269,7 +270,7 @@ function closingParen(line: string, from: number, countsCases = true): number {
 function closingBrace(text: string, from: number): number {
   for (let i = from; i < text.length; i++) {
     const c = text[i]
-    if (c === '\\') i++
+    if (c === '\\' || (c === '$' && text[i + 1] === '$')) i++
     else if (c === '$' && text[i + 1] === "'") i = closingAnsiQuote(text, i + 2)
     else if (c === '$' && text[i + 1] === '{') i = closingBrace(text, i + 2)
     else if (c === '$' && text[i + 1] === '(') i = closingParen(text, i + 2)
@@ -283,7 +284,7 @@ function closingBrace(text: string, from: number): number {
 
 function closingQuote(text: string, from: number): number {
   for (let i = from; i < text.length; i++) {
-    if (text[i] === '\\') i++
+    if (text[i] === '\\' || (text[i] === '$' && text[i + 1] === '$')) i++
     else if (text[i] === '$' && text[i + 1] === '{') i = closingBrace(text, i + 2)
     else if (text[i] === '"') return i
   }
@@ -449,6 +450,11 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; bodie
     }
     if (c === '\\') {
       out += c + (next ?? '')
+      i++
+      continue
+    }
+    if (c === '$' && next === '$' && !reading.isCompat) {
+      out += '$$'
       i++
       continue
     }
@@ -855,6 +861,10 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
           word += line[++i]
         } else if (d === '\\' && i + 1 < line.length && nest.length > 0) {
           word += d + line[++i]
+        } else if (exact && d === '$' && line[i + 1] === '$') {
+          isExpanding = true
+          word += '$$'
+          i++
         } else if (exact && d === '$' && line[i + 1] === '{') {
           isExpanding = true
           word += '${'
@@ -942,6 +952,10 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       // Bash allows nothing after it but a redirect or a separator, so a word
       // after it is read as a command of its own.
       if (/^[ \t]*[^ \t\n;&|()<>]/.test(line.slice(i + 1))) endCommand()
+    } else if (exact && c === '$' && next === '$') {
+      word += UNQUOTED + '$' + UNQUOTED + '$'
+      hasWord = true
+      i++
     } else if (exact && c === '$' && next === '{') {
       word += UNQUOTED + '${'
       hasWord = true

@@ -135,22 +135,6 @@ const opsIn = (text: string): Op[] => {
   return ops
 }
 
-export const GIT_MERGE_VALUES: ReadonlySet<string> = new Set(['-m', '-F', '--file', '-s', '--strategy', '-X', '--strategy-option', '--into-name', '--cleanup'])
-const FF_MODES: ReadonlySet<string> = new Set(['--ff', '--no-ff', '--ff-only'])
-const COMMIT_MODES: ReadonlySet<string> = new Set(['--commit', '--no-commit', '--squash', '--no-squash'])
-
-export function makesMergeCommit(rest: readonly string[]): boolean {
-  const options: string[] = []
-  for (let i = 0; i < rest.length && rest[i] !== '--'; i++) {
-    if (GIT_MERGE_VALUES.has(rest[i] ?? '')) i++
-    else options.push(rest[i] ?? '')
-  }
-  if (options.includes('--abort') || options.includes('--quit')) return false
-  const lastOf = (modes: ReadonlySet<string>) => options.filter(arg => modes.has(arg)).at(-1)
-  const commitMode = lastOf(COMMIT_MODES)
-  return lastOf(FF_MODES) !== '--ff-only' && commitMode !== '--no-commit' && commitMode !== '--squash'
-}
-
 function configOf(args: readonly string[], end: number): { key: string; value: string }[] {
   const config: { key: string; value: string }[] = []
   for (let i = 0; i < end; i++) {
@@ -350,7 +334,6 @@ function readGit(s: Statement): Read {
     read.code.push(...rest.map(arg => arg.replace(/^(?:-O|--open-files[a-z-]*=?)/, ' ')))
   }
   if (sub === 'commit' || sub === 'push') read.ops.push(sub)
-  if (sub === 'merge' && makesMergeCommit(rest)) read.ops.push('commit')
   if (sub === 'push' && rest.some(isForceArg)) read.isForce = true
   return read
 }

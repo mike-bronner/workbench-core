@@ -119,7 +119,7 @@ import {
   recordOf,
   withChurn,
 } from './mods/cache-meter'
-import type { Action, ApiWrite, Approval, AskFacts, Commit, Gated, Head, PendingRelease, Pick, Refs, RequestedCall } from './mods/commit-approval'
+import type { Action, ApiWrite, Approval, AskFacts, Commit, Gated, Head, Landing, PendingRelease, Pick, Refs, RequestedCall } from './mods/commit-approval'
 import {
   AGENT_CONFIG_MERGE_REFUSAL,
   AGENT_MERGE_REFUSAL,
@@ -186,7 +186,7 @@ import {
   shapeOf,
   unnamedOf,
 } from './mods/commit-approval'
-import { FAILED_REFUSAL, commitVerdict } from './mods/commit-guard'
+import { FAILED_REFUSAL, SUBAGENT_REFUSAL, commitVerdict } from './mods/commit-guard'
 import { subjectVerdict } from './mods/commit-subject'
 import { isAttendedPrompt, isAttendedSession, isDesktopSession, isScheduledFire, laneOf } from './mods/lane'
 import { bareSetRefusal, repairedNotice, runsGit } from './mods/false-bare'
@@ -244,9 +244,11 @@ import {
   ledgerTextOf,
   leftoverBlockOf,
   leftoverCorruptOf,
+  namesUnitBranch,
   normalPathOf,
   rootOf,
   staleNoteOf,
+  unitBranchesOf,
   unitDatabaseOf,
   unitOf,
   unwrittenRefusal,
@@ -710,6 +712,11 @@ async function commitGuardOf($: EngineInterface, command: unknown, agentId: stri
   return commitVerdict(parseShell(line), line, { lane, isUnattended })?.deny
 }
 
+async function isSubAgentCaller($: EngineInterface, agentId: string | undefined): Promise<boolean> {
+  const lane = await $.workbench.callerLane(agentId === undefined ? {} : { agentId }).catch(() => undefined)
+  return lane !== 'main' && lane !== 'top-level-agent'
+}
+
 async function scriptAt($: EngineInterface, path: string): Promise<Script | undefined> {
   const stat = await $.fs.stat(path, { resolve: true })
   if (stat.kind !== 'file') return undefined
@@ -806,11 +813,28 @@ async function mergesIntoDefault($: EngineInterface, dirs: readonly (string | nu
   return count
 }
 
-async function mergeCommitDirsOf($: EngineInterface, dirs: readonly (string | null)[]): Promise<string[]> {
+async function isBranchRemote($: EngineInterface, at: string, source: string): Promise<boolean> {
+  const branch = (await gitOut($, at, ['symbolic-ref', '-q', 'HEAD']))?.replace(/^refs\/heads\//, '')
+  return branch !== undefined && (await gitOut($, at, ['config', '--get', `branch.${branch}.remote`])) === source
+}
+
+async function landedRefsOf($: EngineInterface, landing: Landing, at: string): Promise<readonly string[] | null> {
+  if (landing.upstream === undefined) return landing.refs
+  if (landing.source !== undefined && !(await isBranchRemote($, at, landing.source))) return null
+  const upstream = await gitOut($, at, ['rev-parse', '--symbolic-full-name', '@{upstream}'])
+  return upstream === undefined ? null : [upstream]
+}
+
+async function unitLandingDirsOf($: EngineInterface, landings: readonly Landing[]): Promise<string[]> {
   const found: string[] = []
-  for (const dir of dirs) {
-    const at = dir === null ? undefined : dir === '' ? await $.session.cwd() : dir
-    if (at !== undefined && !(await isMergeIntoDefault($, at))) found.push(at)
+  for (const landing of landings) {
+    const at = landing.dir === null ? undefined : landing.dir === '' ? await $.session.cwd() : landing.dir
+    if (at === undefined || (await isMergeIntoDefault($, at))) continue
+    const refs = await landedRefsOf($, landing, at)
+    if (refs !== null && refs.length === 0) continue
+    const home = await $.env.get('HOME')
+    const branches = home ? unitBranchesOf(await ledgerRead($, ledgerPathOf(home)), await $.session.root()) : undefined
+    if (refs === null || branches === undefined || refs.some(ref => namesUnitBranch(ref, branches))) found.push(at)
   }
   return found
 }
@@ -2091,8 +2115,13 @@ export const register: Register = on => {
       const apiWrites = apiWritesOf(e.command)
       const apiIntoDefault = apiWrites.length === 0 ? 0 : await apiWritesIntoDefault($, apiWrites)
       if (!(await isCommitGated($, sessionAttended, e.agentId))) {
-        if ((await mergesIntoDefault($, mergesOf(e.command).local)) > 0) {
+        const agentMerges = mergesOf(e.command)
+        if ((await mergesIntoDefault($, agentMerges.local)) > 0) {
           return { deny: (await mergesIntoDefault($, configuredMergesOf(e.command))) > 0 ? AGENT_CONFIG_MERGE_REFUSAL : AGENT_MERGE_REFUSAL }
+        }
+        const isCommitting = agentMerges.landings.some(landing => landing.commitless === undefined)
+        if (agentMerges.landings.length > 0 && (await isSubAgentCaller($, e.agentId)) && (isCommitting || (await unitLandingDirsOf($, agentMerges.landings)).length > 0)) {
+          return { deny: SUBAGENT_REFUSAL.deny }
         }
         if (rewrites > 0 && !(await isPipelineRewrite($, e.command, e.agentId))) return { deny: REWRITE_REFUSAL }
         if (aliases > 0) return { deny: ALIAS_REFUSAL }
@@ -2125,7 +2154,7 @@ export const register: Register = on => {
         return subject !== undefined ? { deny: subject } : withScanRecall($, 'Bash', e.command, e.agentId, await next(e))
       }
       const intoDefault = merges.pr + (await mergesIntoDefault($, merges.local))
-      const mergeDirs = await mergeCommitDirsOf($, merges.commits)
+      const mergeDirs = await unitLandingDirsOf($, merges.landings)
       const committed = { commits: writes.commits + mergeDirs.length, pushes: writes.pushes }
       const picked = await pickedReleaseOf($, approval, e.command)
       const gateFor = (request: readonly Action[]) => gateOf({ writes: committed, releases, merges: intoDefault, rewrites, aliases, apiWrites: apiIntoDefault }, approval, request, e.command, picked)

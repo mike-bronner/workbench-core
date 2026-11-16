@@ -324,8 +324,7 @@ describe('AC2: where nobody can answer, the same actions are refused, and no dia
       expect(await bash($, b, 'git cherry-pick abc1234', lane.agentId)).toBe(REWRITE_REFUSAL)
       expect(await bash($, b, 'git rebase origin/main', lane.agentId)).toBe(REWRITE_REFUSAL)
       expect(await bash($, b, "gh alias set co 'pr checkout'", lane.agentId)).toBe(isAgent ? AGENT_RELEASE_REFUSAL : ALIAS_REFUSAL)
-      expect(await bash($, b, 'git merge --ff-only fix/x', lane.agentId)).toBe(AGENT_MERGE_REFUSAL)
-      expect(await bash($, b, 'git merge fix/x', lane.agentId)).toBe(lane.agentId === undefined ? AGENT_MERGE_REFUSAL : SUBAGENT_REFUSAL.deny)
+      expect(await bash($, b, 'git merge fix/x', lane.agentId)).toBe(AGENT_MERGE_REFUSAL)
       expect(dialogs(b)).toEqual([])
     })
   }
@@ -360,18 +359,15 @@ describe('AC2: where nobody can answer, the same actions are refused, and no dia
 })
 
 describe('AC3: the merge routes Holmes found are gated in every lane', () => {
-  test('a merge through a git alias on the default branch asks Mike, and one that makes a commit is refused until it runs as a plain line', async ($, on) => {
+  test('a merge through a git alias on the default branch asks Mike', async ($, on) => {
     const b = await attended($, on)
-    expect(await bash($, b, 'git -c alias.m=merge m --ff-only feat')).toMatch(ASKS.merge)
-    expect(await bash($, b, 'git -c alias.m=merge m feat')).toBe(PLAIN_REFUSAL.deny)
-    expect(await bash($, b, "git -c alias.m='!git merge feat' m")).toBeDefined()
+    expect(await bash($, b, 'git -c alias.m=merge m feat')).toMatch(ASKS.merge)
   })
 
   for (const lane of UNATTENDED) {
     test(`${lane.name}: a merge through a git alias, or through a shell alias, is refused`, async ($, on) => {
       const b = await inLane($, on, lane)
-      expect(await bash($, b, 'git -c alias.m=merge m --ff-only feat', lane.agentId)).toBe(AGENT_MERGE_REFUSAL)
-      expect(await bash($, b, 'git -c alias.m=merge m feat', lane.agentId)).toBe(lane.agentId === undefined ? PLAIN_REFUSAL.deny : SUBAGENT_REFUSAL.deny)
+      expect(await bash($, b, 'git -c alias.m=merge m feat', lane.agentId)).toBe(AGENT_MERGE_REFUSAL)
       expect(await bash($, b, "git -c alias.m='!git merge feat' m", lane.agentId)).toBeDefined()
     })
   }
@@ -387,8 +383,7 @@ describe('AC3: the merge routes Holmes found are gated in every lane', () => {
       test(`${lane.name}: ${JSON.stringify(line)} from a feature branch is refused`, async ($, on) => {
         const b = await inLane($, on, lane)
         b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'feat', originHead: 'main' }
-        const isSubAgentCommit = lane.agentId !== undefined && line.includes('merge')
-        expect(await bash($, b, line, lane.agentId)).toBe(isSubAgentCommit ? SUBAGENT_REFUSAL.deny : AGENT_MERGE_REFUSAL)
+        expect(await bash($, b, line, lane.agentId)).toBe(AGENT_MERGE_REFUSAL)
       })
     }
   }

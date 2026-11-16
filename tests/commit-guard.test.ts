@@ -12,7 +12,7 @@ import { HOME, PERSON, bench, start } from './bench'
 import { COMMIT_MAIN_PASSES, COMMIT_PASSES, COMMIT_REFUSALS, GREP_READS, GREP_WRITES } from './commit-guard-cases'
 import type { CommitLane } from './commit-guard-cases'
 import type { Kind } from './commit-guard-parity'
-import { DEV_TEAM_VERDICTS, INTENDED_DIFFERENCES, MERGE_COMMIT_DIFFERENCES, SOURCE } from './commit-guard-parity'
+import { DEV_TEAM_VERDICTS, INTENDED_DIFFERENCES, SOURCE } from './commit-guard-parity'
 
 const CALLERS: Readonly<Record<CommitLane, Caller>> = {
   main: { lane: 'main', isUnattended: false },
@@ -74,7 +74,7 @@ describe('the commit guard: the false positives pass', () => {
 describe('the commit guard gives workbench-dev-team 0.55.0\'s verdict on its corpus and core\'s, in four lanes', () => {
   const FOUR: readonly Caller[] = [CALLERS.main, CALLERS['sub-agent'], CALLERS.pipeline, { lane: 'sub-agent', isUnattended: true }]
   test('the record covers the hostile corpus and the bash suite', () => {
-    expect(DEV_TEAM_VERDICTS.length).toBe(449)
+    expect(DEV_TEAM_VERDICTS.length).toBe(450)
     expect(SOURCE).toBe('workbench-dev-team a4ccfc5b (0.55.0)')
     expect(DEV_TEAM_VERDICTS.some(([, ...kinds]) => kinds.includes('plain'))).toBe(true)
     expect(DEV_TEAM_VERDICTS.some(([, ...kinds]) => kinds.includes('subagent'))).toBe(true)
@@ -91,40 +91,25 @@ describe('the commit guard gives workbench-dev-team 0.55.0\'s verdict on its cor
       expect(FOUR.map(caller => kindOf(line, caller))).toEqual(['pass', 'pass', 'pass', 'pass'])
     })
   }
-  for (const [line, ...kinds] of MERGE_COMMIT_DIFFERENCES) {
-    test(`an intended difference, a merge that makes a commit, which dev-team passes and core refuses to a sub-agent: ${JSON.stringify(line)}`, () => {
-      expect(DEV_TEAM_VERDICTS.some(([named]) => named === line)).toBe(false)
-      expect(kinds).toEqual(['pass', 'pass', 'pass', 'pass'])
-      expect(FOUR.map(caller => kindOf(line, caller))).toEqual(['pass', 'subagent', 'pass', 'subagent'])
-    })
-  }
 })
 
-describe('the commit guard reads a local git merge that makes a commit as a commit', () => {
+describe('the commit guard leaves a local merge it can read to the landing gate, and refuses one in program code', () => {
   for (const line of [
     'git merge --no-ff unit/a',
     'git -C /repo merge --no-ff unit/a',
-    'git merge unit/a',
+    'git merge origin/main',
     'git merge --continue',
-    'git merge --ff-only --no-ff unit/a',
-    'git merge --squash --no-squash unit/a',
-    'git merge --no-commit --commit unit/a',
-    'git merge --ff-o unit/a',
-    'git merge -m --ff-only unit/a',
-    'git merge -m x -- --ff-only',
+    'git pull --no-ff . unit/a',
+    'git -c alias.m=merge m --no-ff unit/a',
+    'git merge-base main x',
+    'git log --merges',
+    'git branch --merged',
   ]) {
-    test(`a sub-agent is refused it as a commit, and the main loop runs it plainly: ${JSON.stringify(line)}`, () => {
-      expect(verdictOf(line, CALLERS['sub-agent'])).toBe(SUBAGENT_REFUSAL)
-      expect(verdictOf(line, CALLERS.main)).toBeUndefined()
-      expect(verdictOf(line, CALLERS.pipeline)).toBeUndefined()
-    })
-  }
-  for (const line of ['git merge --ff-only unit/a', 'git merge --no-ff --ff-only unit/a', 'git merge --squash unit/a', 'git merge --no-commit --no-ff unit/a', 'git merge --abort', 'git merge --quit', 'git merge-base main x', 'git log --merges', 'git branch --merged']) {
-    test(`a merge that makes no commit, or no merge at all, is not a commit: ${JSON.stringify(line)}`, () => {
+    test(`every lane passes it here: ${JSON.stringify(line)}`, () => {
       for (const lane of LANES) expect([lane, verdictOf(line, CALLERS[lane])]).toEqual([lane, undefined])
     })
   }
-  for (const line of ['git -c alias.m=merge m --no-ff unit/a', "git -c alias.m='!git merge unit/a' m", 'python3 -c "import os; os.system(\'git merge --no-ff unit/a\')"', 'bash -c "git merge --no-ff unit/a"']) {
+  for (const line of ["git -c alias.m='!git merge unit/a' m", 'python3 -c "import os; os.system(\'git merge --no-ff unit/a\')"', 'bash -c "git merge --no-ff unit/a"']) {
     test(`a merge the ask rules cannot see is refused in the main loop as a line to run plainly: ${JSON.stringify(line)}`, () => {
       expect(verdictOf(line, CALLERS.main)).toBe(PLAIN_REFUSAL)
       expect(verdictOf(line, CALLERS['sub-agent'])).toBe(SUBAGENT_REFUSAL)
@@ -345,12 +330,18 @@ describe('the commit guard: a for loop whose body only reads is judged as a read
     })
   }
 
-  test('a loop body that merges with a commit is refused for a sub-agent as a commit', () => {
-    expect(verdictOf('for s in a b; do git merge "$s"; done', CALLERS['sub-agent'])).toEqual(SUBAGENT_REFUSAL)
+  test('a loop body on a feature branch that merges a ref built at run time, or makes a commit, is refused for a sub-agent', async ($, on) => {
+    const b = bench(on)
+    b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'feat/x', originHead: 'main' }
+    await $.session.start(start())
+    await $.prompt.submit({ text: 'delegate it', wait: false, origin: PERSON })
+    expect(await refusalOf($, b, 'for s in a b; do git merge --ff-only "$s"; done', 'a1')).toBe(SUBAGENT_REFUSAL.deny)
+    expect(await refusalOf($, b, 'for s in a b; do git merge origin/main; done', 'a1')).toBe(SUBAGENT_REFUSAL.deny)
+    expect(await refusalOf($, b, 'for s in a b; do git merge --ff-only origin/main; done', 'a1')).toBeUndefined()
   })
 
-  for (const line of ['for s in a b; do git pull; done', 'for s in a b; do git merge --ff-only "$s"; done']) {
-    test(`the commit guard leaves a local pull or a merge that makes no commit in a loop to the merge gate: ${JSON.stringify(line)}`, () => {
+  for (const line of ['for s in a b; do git pull; done', 'for s in a b; do git merge "$s"; done']) {
+    test(`the commit guard leaves a local pull or merge in a loop to the merge gate: ${JSON.stringify(line)}`, () => {
       expect(verdictOf(line, CALLERS['sub-agent'])).toBeUndefined()
       expect(mergesOf(line).local).toEqual([''])
     })

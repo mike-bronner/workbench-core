@@ -62,7 +62,7 @@ Before a task that produces work, run the intake routine in
    question of its own too. A merge pick approves only the pull request number
    or the branch its question named. In his own turn, a commit outside a
    ledger unit worktree with no `origin` remote now or at its add, a local
-   merge that makes a commit, a push, merge, release, history rewrite, `gh alias set` or API write to the default branch that nothing approved is denied.
+   merge or pull that lands a unit branch, a push, merge, release, history rewrite, `gh alias set` or API write to the default branch that nothing approved is denied.
    No hook dialog approves one. The deny names the exact line, the action,
    the repository and the branch, and for a commit the message and the
    files. Ask Mike through
@@ -97,11 +97,17 @@ Before a task that produces work, run the intake routine in
    removing that remote later frees nothing. A unit whose repository has an
    `origin` remote, had one at the add, or whose remotes cannot be read asks
    Mike before each commit. Its pushes, its merge into the default branch, its
-   releases and its rewrites still ask. A local `git merge` that makes a
-   commit, such as `git merge --no-ff`, counts as a commit in every tree, so
-   landing a unit on another branch asks Mike first. A commit request
-   approves such merges for its turn, and a commit pick approves one. A merge
-   into the default branch stays a merge. An Index
+   releases and its rewrites still ask. A local `git merge` or `git pull`
+   that lands a ledger unit branch counts as a commit in every tree, so it
+   asks Mike first, whatever its options, a fast-forward included. It lands
+   one when a branch or ref it merges names a unit branch the ledger
+   recorded for this project. A `git pull` lands one from any source, a
+   remote included. One whose merged refs or the ledger cannot be read asks
+   too. A
+   catch-up merge of any other branch, such as `git merge origin/main`, runs
+   with no question. A commit request approves such merges for its turn, and
+   a commit pick approves one. A merge into the default branch stays a
+   merge. An Index
    pipeline run never asks to commit or push. A plan file needs no question
    either: create or edit it without asking, in prose or through
    `AskUserQuestion`, and let Mike approve its content when you present it.

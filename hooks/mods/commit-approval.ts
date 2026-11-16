@@ -48,7 +48,7 @@
 // Pure functions only: the engine follows `$` into no imported function.
 
 import type { WorkbenchShellStatement as ShellStatement } from '../../types'
-import { GIT_MERGE_VALUES, MERGE_MUTATION, findOps, makesMergeCommit } from './commit-guard'
+import { MERGE_MUTATION, findOps } from './commit-guard'
 import { hiddenCommandRefusal, isPartlyRead } from './guards'
 import { ASSIGNMENT, GIT_VALUE_OPTIONS, KEYWORDS, SHELLS, WRAPPERS, commandsOf, decodedOf, expandingOf, isEscaped, isExpanded, nameOf, parseShell, shellScriptOf } from './shell'
 
@@ -717,7 +717,8 @@ function writesHead(st: ShellStatement, sub: string | undefined): boolean {
   if (sub === 'symbolic-ref') return rest.some(arg => arg === '-d' || isLongFor(arg, '--delete')) || positionalsOf(rest, SYMREF_VALUES).length >= 2
   if (sub === 'branch') return rest.some(isBranchWrite)
   if (sub === 'rebase') return rebaseNamesBranch(rest)
-  if (sub === 'fetch' || sub === 'pull') return refspecsOf(rest).length > 0
+  if (sub === 'pull') return refspecsOf(rest).some(spec => !spec.includes('://'))
+  if (sub === 'fetch') return refspecsOf(rest).length > 0
   if (sub === 'push') return refspecsOf(rest, PUSH_VALUES).length > 0 && isLocalRemote(pushRemoteOf(rest))
   return false
 }
@@ -897,12 +898,39 @@ export function remoteTargetOf(line: string, origin: string | undefined): Remote
 }
 
 export type MergeTarget ={ pr?: string; refs: readonly string[]; bases?: readonly string[] }
-export type Merges = { local: readonly (string | null)[]; commits: readonly (string | null)[]; pr: number; targets: readonly MergeTarget[] }
+export type Landing = { dir: string | null; refs: readonly string[] | null; upstream?: true; source?: string; commitless?: true }
+export type Merges = { local: readonly (string | null)[]; landings: readonly Landing[]; pr: number; targets: readonly MergeTarget[] }
 
 const MERGE_STOPS: ReadonlySet<string> = new Set(['--abort', '--quit'])
 const PULL_MERGE = /pulls\/([^\s/]+)\/merge(?![A-Za-z0-9_/-])/i
 const BRANCH_MERGE = /(?:^|\/)repos\/\S+\/merges(?:\?|$)/i
 const GH_MERGE_VALUES: ReadonlySet<string> = new Set(['-b', '--body', '-F', '--body-file', '-t', '--subject', '-A', '--author-email', '--match-head-commit', '-R', '--repo'])
+const GIT_MERGE_VALUES: ReadonlySet<string> = new Set(['-m', '-F', '--file', '-s', '--strategy', '-X', '--strategy-option', '--into-name', '--cleanup'])
+const MERGED_VALUES: Readonly<Record<'merge' | 'pull', { short: string; long: readonly string[] }>> = {
+  merge: { short: 'mFsX', long: ['--message', '--file', '--strategy', '--strategy-option', '--into-name', '--cleanup'] },
+  pull: {
+    short: 'sXjo',
+    long: [
+      '--strategy',
+      '--strategy-option',
+      '--cleanup',
+      '--depth',
+      '--deepen',
+      '--shallow-since',
+      '--shallow-exclude',
+      '--jobs',
+      '--server-option',
+      '--upload-pack',
+      '--negotiation-tip',
+      '--negotiation-restrict',
+      '--negotiation-include',
+      '--refmap',
+      '--filter',
+    ],
+  },
+}
+const READ_REF = /^[A-Za-z0-9][A-Za-z0-9._/+-]*$/
+const UNREAD_REF = /^[0-9a-f]{4,40}$|^[a-z_]*head$/i
 const REMOTE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 const REMOTE_CHANGES: ReadonlySet<string> = new Set(['set-url', 'add', 'rename'])
 
@@ -939,6 +967,56 @@ const localTargetOf = (st: ShellStatement, sub: string | undefined, isRemoteChan
   return { refs: isRemoteChanged || remote === undefined || !REMOTE_NAME.test(remote) ? [] : found.slice(1) }
 }
 
+function mergedWordsOf(rest: readonly string[], sub: 'merge' | 'pull'): { words: string[]; options: string[] } {
+  const values = MERGED_VALUES[sub]
+  const words: string[] = []
+  const options: string[] = []
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i] ?? ''
+    if (arg === '--') {
+      words.push(...rest.slice(i + 1))
+      break
+    }
+    if (arg.startsWith('--')) {
+      options.push(arg)
+      if (values.long.some(full => isLongFor(arg, full))) i++
+    } else if (arg.startsWith('-') && arg !== '-') {
+      options.push(arg)
+      for (let at = 1; at < arg.length; at++) {
+        if (arg[at] === 'S') break
+        if (!values.short.includes(arg[at] ?? '')) continue
+        if (at === arg.length - 1) i++
+        break
+      }
+    } else words.push(arg)
+  }
+  return { words, options }
+}
+
+const isReadRef = (ref: string): boolean => {
+  const name = ref.replace(/(?:[~^]\d*)+$/, '')
+  return READ_REF.test(name) && !UNREAD_REF.test(name)
+}
+
+const isCommitless = (options: readonly string[], sub: 'merge' | 'pull'): boolean => {
+  const lastOf = (modes: readonly string[]) => options.filter(arg => modes.includes(arg)).at(-1)
+  const isRebasing = sub === 'pull' && options.some(arg => arg.startsWith('--rebase') || isLongFor(arg, '--rebase') || /^-[^-sXjoS]*r/.test(arg))
+  const commitMode = lastOf(['--commit', '--no-commit', '--squash', '--no-squash'])
+  return !isRebasing && (lastOf(['--ff', '--no-ff', '--ff-only']) === '--ff-only' || commitMode === '--no-commit' || commitMode === '--squash')
+}
+
+const landingOf = (st: ShellStatement, sub: string | undefined, dir: string | null): Landing | undefined => {
+  const isAliased = sub !== (st.args[st.subcommandAt] ?? '').toLowerCase()
+  const kind = sub === 'pull' ? 'pull' : 'merge'
+  const { words, options } = mergedWordsOf(restOf(st), kind)
+  if (options.some(arg => isLongFor(arg, '--abort') || isLongFor(arg, '--quit'))) return undefined
+  if (isAliased || options.some(arg => isLongFor(arg, '--continue'))) return { dir, refs: null }
+  const mode = isCommitless(options, kind) ? { commitless: true as const } : {}
+  const refs = sub === 'pull' ? words.slice(1).map(refspec => refspec.replace(/^\+/, '').replace(/:.*$/, '')) : words
+  if (refs.length === 0) return { dir, refs: [], upstream: true, ...(words.length > 0 ? { source: words[0] } : {}), ...mode }
+  return { dir, refs: refs.every(isReadRef) ? refs : null, ...mode }
+}
+
 const mergeDirOf = (st: ShellStatement, isPlaced: boolean): string | null => {
   const globals = st.args.slice(0, st.subcommandAt)
   if (!isPlaced || globals.some(word => GIT_PLACE_OPTION.test(word))) return null
@@ -968,13 +1046,10 @@ export function mergesOf(line: string): Merges {
   const merging = mergingOf(parse.statements, line)
   const prs = parse.statements.map(prTargetOf).filter((target): target is MergeTarget => target !== undefined)
   const hidden = prs.length === 0 && findOps(parse, line).ops.has('merge') ? [{ refs: [] }] : []
-  const isCommitting = (st: ShellStatement): boolean => {
-    const sub = gitSubOf(st, line)
-    return sub === SHELL_ALIAS || (sub === 'merge' && makesMergeCommit(restOf(st)))
-  }
+  const landings = merging.map(st => landingOf(st, gitSubOf(st, line), mergeDirOf(st, isPlaced)))
   return {
     local: merging.map(st => mergeDirOf(st, isPlaced)),
-    commits: merging.filter(isCommitting).map(st => mergeDirOf(st, isPlaced)),
+    landings: landings.filter((landing): landing is Landing => landing !== undefined),
     pr: prs.length + hidden.length,
     targets: [...merging.map(st => localTargetOf(st, gitSubOf(st, line), isRemoteChanged)), ...prs, ...hidden],
   }

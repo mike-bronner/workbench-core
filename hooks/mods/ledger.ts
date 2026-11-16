@@ -375,6 +375,14 @@ export function ledgerPlanOf(command: LedgerCommand, facts: LedgerFacts, read: L
 export const unitEntryOf = (entries: readonly LedgerEntry[], home: string | undefined, project: string, session: string, dir: string): LedgerEntry | undefined =>
   entries.find(entry => entry.worktree === normalPathOf(dir) && entry.session === session && isUnitForm(entry, home, project))
 
+export const unitBranchesOf = (read: LedgerRead, project: string): string[] | undefined =>
+  'corrupt' in read ? undefined : read.entries.filter(entry => entry.project === project).map(entry => entry.branch.toLowerCase())
+
+export function namesUnitBranch(ref: string, branches: readonly string[]): boolean {
+  const name = ref.replace(/(?:[~^]\d*)+$/, '').toLowerCase()
+  return branches.some(branch => name === branch || name.endsWith(`/${branch}`))
+}
+
 export type Leftover = { entry: LedgerEntry; hasTree: boolean; hasBranch: boolean }
 
 export function leftoverBlockOf(leftovers: readonly Leftover[]): string | undefined {

@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 
 import { AGENT_WORKTREE_REFUSAL, ENTER_WORKTREE_REFUSAL, EXIT_WORKTREE_REFUSAL, provisioningRefusal } from '../hooks/mods/guards'
 import type { LedgerEntry } from '../hooks/mods/ledger'
-import { LEDGER_WRITE_REFUSAL, LOCK_TRIES, LOCK_WAIT_MS, MAX_DATABASE, NAME_FORM, PRUNE_AFTER_MS, ROOT_FORM, ledgerCommandOf, unitDatabaseOf } from '../hooks/mods/ledger'
+import { LEDGER_WRITE_REFUSAL, LOCK_TRIES, LOCK_WAIT_MS, MAX_DATABASE, NAME_FORM, PRUNE_AFTER_MS, ROOT_FORM, ledgerCommandOf, namesUnitBranch, unitBranchesOf, unitDatabaseOf } from '../hooks/mods/ledger'
 import { SUBAGENT_REFUSAL } from '../hooks/mods/commit-guard'
 import { parseShell } from '../hooks/mods/shell'
 import type { Bench } from './bench'
@@ -389,7 +389,7 @@ describe("a session removes only the units it recorded, and another session's un
 })
 
 describe('AC4: the commit gate lets a unit branch be made and deleted, and asks before it lands on a feature branch', () => {
-  for (const line of ['git branch unit/b', 'git branch -d unit/a', 'git branch -D unit/a', 'git branch -D other/b', 'git merge --ff-only unit/a']) {
+  for (const line of ['git branch unit/b', 'git branch -d unit/a', 'git branch -D unit/a', 'git branch -D other/b', 'git merge origin/main', 'git merge --no-ff main', 'git pull --no-ff . feat/y']) {
     test(`on a feature branch, with unit/a in the ledger, ${JSON.stringify(line)} runs with no question`, async ($, on) => {
       const b = await attended($, on)
       await bash($, b, ADD)
@@ -397,7 +397,14 @@ describe('AC4: the commit gate lets a unit branch be made and deleted, and asks 
     })
   }
 
-  for (const line of ['git merge --no-ff unit/a', 'git -C /repo merge --no-ff -m "Merge unit/a" unit/a']) {
+  for (const line of [
+    'git merge --no-ff unit/a',
+    'git merge --ff-only unit/a',
+    'git merge -nm --squash unit/a',
+    'git merge --squash --no-squ unit/a',
+    'git pull --no-ff . unit/a',
+    'git -C /repo merge --no-ff -m "Merge unit/a" unit/a',
+  ]) {
     test(`on a feature branch, with unit/a in the ledger, ${JSON.stringify(line)} asks Mike as a commit, and a commit request runs it`, async ($, on) => {
       const b = await attended($, on)
       await bash($, b, ADD)
@@ -409,21 +416,47 @@ describe('AC4: the commit gate lets a unit branch be made and deleted, and asks 
     })
   }
 
-  test('a merge that makes a commit inside a unit tree with no origin gets no unit exemption', async ($, on) => {
+  test('a unit branch that only another project recorded lands with no question', async ($, on) => {
+    const b = await attended($, on)
+    seed(b, [entry({ project: '/other' })])
+    expect(await bash($, b, 'git merge --no-ff unit/a')).toEqual({ deny: undefined, reached: true, context: [] })
+  })
+
+  test('a unit branch whose worktree is gone still asks when it lands', async ($, on) => {
+    const b = await attended($, on)
+    seed(b, [entry({ worktree: null })])
+    expect((await bash($, b, 'git merge --no-ff unit/a')).deny).toMatch(ASKS.commit)
+  })
+
+  test('a catch-up merge inside a unit tree runs with no question, and a merge of another unit there asks', async ($, on) => {
     const b = await inUnit($, on)
-    const line = `git -C ${TREE} merge --no-ff feat/x`
-    const answer = await bash($, b, line)
+    seed(b, [entry({ session: SID, hasOrigin: false }), entry({ unit: 'unit-b', worktree: `${ROOT}/unit-b`, branch: 'unit/b', database: 'wt_repo_unit_b_testing' })])
+    expect(await bash($, b, `git -C ${TREE} merge --no-ff feat/x`)).toEqual({ deny: undefined, reached: true, context: [] })
+    const answer = await bash($, b, `git -C ${TREE} merge --no-ff unit/b`)
     expect(answer.reached).toBe(false)
     expect(answer.deny).toMatch(ASKS.commit)
-    expect(await permission($, line)).toBeUndefined()
     expect(await bash($, b, UNIT_COMMIT)).toEqual({ deny: undefined, reached: true, context: [] })
   })
 
-  test('a sub-agent is refused a unit landing as a commit', async ($, on) => {
+  test('a sub-agent is refused a unit landing and a catch-up merge that makes a commit, and runs a catch-up merge that makes none', async ($, on) => {
     const b = await attended($, on)
     await bash($, b, ADD)
-    const answer = await bash($, b, 'git merge --no-ff unit/a', { agentId: SUB })
-    expect(answer).toEqual({ deny: SUBAGENT_REFUSAL.deny, reached: false, context: [] })
+    for (const line of ['git merge --no-ff unit/a', 'git merge --ff-only unit/a', 'git pull --no-ff . unit/a', 'git merge origin/main']) {
+      expect([line, await bash($, b, line, { agentId: SUB })]).toEqual([line, { deny: SUBAGENT_REFUSAL.deny, reached: false, context: [] }])
+    }
+    expect(await bash($, b, 'git merge --ff-only origin/main', { agentId: SUB })).toEqual({ deny: undefined, reached: true, context: [] })
+  })
+
+  test('the unit branch reader matches a branch the ledger recorded for this project, in any ref spelling', () => {
+    const branches = unitBranchesOf({ entries: [entry(), entry({ project: '/other', branch: 'unit/c' })] }, '/repo') ?? []
+    expect(branches).toEqual(['unit/a'])
+    for (const ref of ['unit/a', 'Unit/A', 'origin/unit/a', 'refs/heads/unit/a', 'refs/remotes/origin/unit/a', 'unit/a~2', 'unit/a^']) {
+      expect([ref, namesUnitBranch(ref, branches)]).toEqual([ref, true])
+    }
+    for (const ref of ['unit/ab', 'unit/a-b', 'main', 'origin/main', 'unit/c', 'xunit/a']) {
+      expect([ref, namesUnitBranch(ref, branches)]).toEqual([ref, false])
+    }
+    expect(unitBranchesOf({ corrupt: 'the file is not valid JSON' }, '/repo')).toBeUndefined()
   })
 
   test('a merge of a unit branch into the default branch still asks Mike', async ($, on) => {

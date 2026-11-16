@@ -331,15 +331,21 @@ echo "every statement of the commit approval rule names the ledger unit-commit e
 DENIED='nothing approved is denied|no request or pick approved is denied|no typed request and no pick is denied'
 for source in "$ROOT/README.md" "$ROOT/hooks/mods/prompt-rules.ts"; do
   stated="$(grep -cE "$DENIED" "$source")"
-  bare="$(grep -E "$DENIED" "$source" | grep -cv 'outside a ledger unit worktree')"
+  bare="$(grep -E "$DENIED" "$source" | grep -cvE 'outside a ledger unit worktree with no \\?`origin\\?` remote')"
   if [ "$stated" -gt 0 ] && [ "$bare" -eq 0 ]; then
     ok "${source#"$ROOT"/} names the exemption in each of its $stated statements"
   else
     no "${source#"$ROOT"/} names the exemption in each statement" "$bare of $stated statements leave it out"
   fi
+  if grep -qE 'an \\?`origin\\?` remote,? or (whose remotes|remotes that) cannot be read' "$source"; then
+    ok "${source#"$ROOT"/} says a unit with an origin remote, or unreadable remotes, asks"
+  else
+    no "${source#"$ROOT"/} says a unit with an origin remote, or unreadable remotes, asks" "no statement of the origin rule"
+  fi
 done
-has "rule 6 names the exemption in its denial"        'a commit outside a ledger unit worktree, a push, merge, release'
-has "rule 6 states the unit commit with no question"  'The one exception is a plain commit in a unit worktree the provisioning ledger recorded, with HEAD on that unit.s branch: the main session runs it with no question'
+has "rule 6 names the exemption in its denial"        'a commit outside a ledger unit worktree with no `origin` remote, a push, merge, release'
+has "rule 6 states the unit commit with no question"  'The one exception is a plain commit in a unit worktree the provisioning ledger recorded, with HEAD on that unit.s branch, in a repository with no `origin` remote: the main session runs it with no question'
+has "rule 6 says a unit with an origin remote asks"   'A unit whose repository has an `origin` remote, or whose remotes cannot be read, asks Mike before each commit'
 
 echo
 echo "$PASS passed, $FAIL failed"

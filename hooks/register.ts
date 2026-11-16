@@ -672,6 +672,9 @@ const remotesOf = ($: EngineInterface, cwd: string): Promise<{ name: string; url
       () => undefined,
     )
 
+const remoteNamesOf = ($: EngineInterface, cwd: string): Promise<string[] | undefined> =>
+  $.process.run(['git', '-C', cwd, 'remote'], { timeoutMs: 10_000 }).then(({ exitCode, stdout }) => (exitCode === 0 ? stdout.split('\n') : undefined), () => undefined)
+
 async function pendingReleaseOf($: EngineInterface, command: string): Promise<PendingRelease | undefined> {
   const cwd = await $.session.cwd()
   const resolved = entriesOf(await configOf($, cwd, '^remote\\..*\\.gh-resolved$'))
@@ -1608,7 +1611,8 @@ async function isLedgerUnitTree($: EngineInterface, dir: string | undefined): Pr
 }
 
 async function isUnitCommitLine($: EngineInterface, command: string): Promise<boolean> {
-  return isLedgerUnitTree($, plainCommitDirOf(parseShell(command)))
+  const dir = plainCommitDirOf(parseShell(command))
+  return dir !== undefined && (await isLedgerUnitTree($, dir)) && (await remoteNamesOf($, dir))?.includes('origin') === false
 }
 
 async function ledgerCall($: EngineInterface, e: { command: string; agentId?: string; run_in_background?: boolean }, command: LedgerCommand, next: (e: never) => Promise<ToolCallResult>): Promise<ToolCallResult> {

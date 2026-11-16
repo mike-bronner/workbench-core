@@ -61,8 +61,8 @@ Before a task that produces work, run the intake routine in
    lands, a pull request or a local merge, is his choice, so ask that in a
    question of its own too. A merge pick approves only the pull request number
    or the branch its question named. In his own turn, a commit outside a
-   ledger unit worktree, a push, merge, release, history rewrite, `gh alias
-   set` or API write to the default branch that nothing approved is denied.
+   ledger unit worktree with no `origin` remote, a push, merge, release,
+   history rewrite, `gh alias set` or API write to the default branch that nothing approved is denied.
    No hook dialog approves one. The deny names the exact line, the action,
    the repository and the branch, and for a commit the message and the
    files. Ask Mike through
@@ -91,7 +91,9 @@ Before a task that produces work, run the intake routine in
    never commits or pushes. It hands back the tree and a proposed message,
    and the orchestrator asks Mike. The one exception is a plain commit in a
    unit worktree the provisioning ledger recorded, with HEAD on that unit's
-   branch: the main session runs it with no question. Its pushes, its merge
+   branch, in a repository with no `origin` remote: the main session runs it
+   with no question. A unit whose repository has an `origin` remote, or
+   whose remotes cannot be read, asks Mike before each commit. Its pushes, its merge
    into the default branch, its releases and its rewrites still ask. An Index
    pipeline run never asks to commit or push. A plan file needs no question
    either: create or edit it without asking, in prose or through

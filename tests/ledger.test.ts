@@ -513,7 +513,7 @@ const NOT_APPROVED = /was refused: Mike has not approved it\./
 async function inUnit($: Engine, on: Parameters<typeof bench>[0], branch: string | null = 'unit/a'): Promise<World> {
   const b = await attended($, on)
   seed(b, [entry({ session: SID })])
-  b.repos[TREE] = { head: 'c2', pushed: 'c2', branch, originHead: 'main', originUrl: 'git@github.com:o/r.git' }
+  b.repos[TREE] = { head: 'c2', pushed: 'c2', branch, originHead: 'main' }
   b.trees[TREE] = 'M  a.ts\0'
   return b
 }
@@ -598,6 +598,67 @@ describe('AC11: a plain commit in a ledger worktree on its unit branch runs with
     const answer = await bash($, b, UNIT_COMMIT)
     expect(answer.reached).toBe(false)
     expect(answer.deny).toContain('b.ts')
+    expect(await permission($, UNIT_COMMIT)).toBeUndefined()
+  })
+})
+
+describe('a unit from a repository with an origin remote asks before each commit', () => {
+  test('the plain unit commit is refused with the commit question, and the dialog gets no answer', async ($, on) => {
+    const b = await inUnit($, on)
+    b.repos[TREE] = { ...b.repos[TREE], originUrl: 'git@github.com:o/r.git' }
+    const answer = await bash($, b, UNIT_COMMIT)
+    expect([answer.reached, ASKS.commit.test(answer.deny ?? '')]).toEqual([false, true])
+    expect(await permission($, UNIT_COMMIT)).toBeUndefined()
+  })
+
+  test('once Mike asks for the commit, the same line runs', async ($, on) => {
+    const b = await inUnit($, on)
+    b.repos[TREE] = { ...b.repos[TREE], originUrl: 'git@github.com:o/r.git' }
+    expect((await bash($, b, UNIT_COMMIT)).reached).toBe(false)
+    await $.prompt.submit({ text: 'commit it', wait: false, origin: PERSON })
+    expect(await bash($, b, UNIT_COMMIT)).toEqual({ deny: undefined, reached: true, context: [] })
+  })
+
+  test('an origin beside other remotes still asks', async ($, on) => {
+    const b = await inUnit($, on)
+    b.repos[TREE] = { ...b.repos[TREE], remoteUrls: 'remote.fork.url git@github.com:me/r.git\nremote.origin.url /srv/prod.git' }
+    expect((await bash($, b, UNIT_COMMIT)).deny).toMatch(ASKS.commit)
+    expect(await permission($, UNIT_COMMIT)).toBeUndefined()
+  })
+
+  test('a repository whose only remote has another name keeps the free commit', async ($, on) => {
+    const b = await inUnit($, on)
+    b.repos[TREE] = { ...b.repos[TREE], remoteUrls: 'remote.upstream.url git@github.com:o/r.git' }
+    expect(await bash($, b, UNIT_COMMIT)).toEqual({ deny: undefined, reached: true, context: [] })
+    expect(await permission($, UNIT_COMMIT)).toEqual({ behavior: 'allow' })
+  })
+
+  for (const [name, repo] of [
+    ['a partial-clone origin, which git remote -v prints with a filter after (fetch)', { remoteUrls: 'remote.origin.url /srv/prod.git\nremote.origin.promisor true\nremote.origin.partialclonefilter blob:none', remotesShown: 'origin\t/srv/prod.git (fetch) [blob:none]\norigin\t/srv/prod.git (push)\n' }],
+    ['an origin whose URL holds a space', { remoteUrls: 'remote.origin.url /srv/prod repo.git', remotesShown: 'origin\t/srv/prod repo.git (fetch)\norigin\t/srv/prod repo.git (push)\n' }],
+    ['an origin with only a pushurl', { remoteUrls: 'remote.origin.pushurl /srv/prod.git', remotesShown: 'origin\t/srv/prod.git (push)\n' }],
+  ] as const) {
+    test(`${name} still asks`, async ($, on) => {
+      const b = await inUnit($, on)
+      b.repos[TREE] = { ...b.repos[TREE], ...repo }
+      const answer = await bash($, b, UNIT_COMMIT)
+      expect([answer.reached, ASKS.commit.test(answer.deny ?? '')]).toEqual([false, true])
+      expect(await permission($, UNIT_COMMIT)).toBeUndefined()
+    })
+  }
+
+  test('a repository with no remote at all keeps the free commit', async ($, on) => {
+    const b = await inUnit($, on)
+    b.repos[TREE] = { ...b.repos[TREE], remoteUrls: '' }
+    expect(await bash($, b, UNIT_COMMIT)).toEqual({ deny: undefined, reached: true, context: [] })
+    expect(await permission($, UNIT_COMMIT)).toEqual({ behavior: 'allow' })
+  })
+
+  test('remotes that cannot be read count as an origin, and the commit asks', async ($, on) => {
+    const b = await inUnit($, on)
+    b.repos[TREE] = { ...b.repos[TREE], remoteUrls: null }
+    const answer = await bash($, b, UNIT_COMMIT)
+    expect([answer.reached, ASKS.commit.test(answer.deny ?? '')]).toEqual([false, true])
     expect(await permission($, UNIT_COMMIT)).toBeUndefined()
   })
 })

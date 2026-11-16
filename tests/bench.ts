@@ -228,6 +228,12 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
       })
       return { value: ran(gitAt.remotesShown ?? shown.map(entry => `${entry}\n`).join('')) }
     }
+    if (gitAt !== undefined && verb === 'remote') {
+      if (gitAt.remoteUrls === null) return { value: { ...ran(''), exitCode: 128 } }
+      const configured = gitAt.remoteUrls ?? (gitAt.originUrl === undefined ? '' : `remote.origin.url ${gitAt.originUrl}`)
+      const names = new Set(configured.split('\n').flatMap(entry => /^remote\.(\S+)\.[^.\s]+ /.exec(entry)?.[1] ?? []))
+      return { value: ran([...names].map(name => `${name}\n`).join('')) }
+    }
     if (gitAt !== undefined && verb === 'config --get-regexp ^remote\\..*\\.url$') {
       if (gitAt.remoteUrls === null) return { value: { ...ran(''), exitCode: 128 } }
       return answer(gitAt.remoteUrls ?? (gitAt.originUrl === undefined ? undefined : `remote.origin.url ${gitAt.originUrl}`))

@@ -1710,7 +1710,7 @@ Each script has a `--self-test` that uses no network, and the redirect checks ru
 
 #### Trigger evals
 
-`evals/` holds 35 `claude plugin eval` cases. Each skill has at least three that must fire it and two that must not. A case folder is named `<skill>--fires--<slug>`, `<skill>--quiet--<slug>` or `both--fires--<slug>`. Each grader is a `tool_used` check on the `Skill` tool, with `input_match` set to a skill's name: `min: 1` where the skill must fire, `min: 0` and `max: 0` where it must not. `arm: both` makes the check count toward the score rather than show beside it. The cases cover:
+`evals/` holds 37 `claude plugin eval` cases. Each skill has at least three that must fire it and two that must not. A case folder is named `<skill>--fires--<slug>`, `<skill>--quiet--<slug>` or `both--fires--<slug>`. Each grader is a `tool_used` check on the `Skill` tool, with `input_match` set to a skill's name: `min: 1` where the skill must fire, `min: 0` and `max: 0` where it must not. `arm: both` makes the check count toward the score rather than show beside it. The cases cover:
 
 - **Each skill's own moments**, three or more prompts per skill. Each prompt carries the content it needs inline.
 - **Prompts that belong to no skill**, or to a sibling, as negatives.

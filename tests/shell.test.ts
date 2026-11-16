@@ -1285,3 +1285,67 @@ describe('a separator inside ${…} or quotes does not end the text a heredoc fe
     expect(commandsOf('bash "a;b" <<EOF\nzap\nEOF', true)).toEqual(commandsOf('bash "a;b" <<EOF\nEOF', true))
   })
 })
+
+describe('the ${…} end readers reach each branch, and each changes where a $( ) ends', () => {
+  const shape = (line: string) => statements(line).map(s => [s.name, s.args])
+  const docs = (line: string) => statements(line).flatMap(s => s.heredocs.map(doc => [doc.delimiter, doc.body]))
+
+  test("closingBrace steps past a '…', a \"…\", a backslash, a $'…', a nested ${…}, a $( ) and a backtick", () => {
+    for (const [line, expected] of [
+      ["echo $(a ${x:-'}'} b) c", [['a', ['${x:-}}', 'b']], ['echo', ['$_', 'c']]]],
+      ['echo $(a ${x:-"}"} b) c', [['a', ['${x:-}}', 'b']], ['echo', ['$_', 'c']]]],
+      ['echo $(a ${x:-\\}} b) c', [['a', ['${x:-}}', 'b']], ['echo', ['$_', 'c']]]],
+      ['echo $(a ${x:-\\})} b) c', [['a', ['${x:-})}', 'b']], ['echo', ['$_', 'c']]]],
+      ["echo $(a ${x:-$'}'} b) c", [['a', ['${x:-}}', 'b']], ['echo', ['$_', 'c']]]],
+      ["echo $(a ${x:-$'\\'}'} b) c", [['a', ["${x:-'}}", 'b']], ['echo', ['$_', 'c']]]],
+      ['echo $(a ${x:-${y}} b) c', [['a', ['${x:-${y}}', 'b']], ['echo', ['$_', 'c']]]],
+      ['echo $(a ${x:-${y})} b) c', [['a', ['${x:-${y})}', 'b']], ['echo', ['$_', 'c']]]],
+      ['echo $(a ${x:-$(zap })} b) c', [['zap', ['}']], ['a', ['${x:-$_}', 'b']], ['echo', ['$_', 'c']]]],
+      ['echo $(a ${x:-`zap }`} b) c', [['zap', ['}']], ['a', ['${x:-$_}', 'b']], ['echo', ['$_', 'c']]]],
+      ['echo $(a ${x:-`zap } \\\\)`} b) c', [['zap', ['}', ')']], ['a', ['${x:-$_}', 'b']], ['echo', ['$_', 'c']]]],
+    ] as const) {
+      expect(parseShell(line).unknowns).toEqual([])
+      expect(shape(line)).toEqual(expected)
+    }
+  })
+
+  test('closingQuote steps past a backslash, a $$ and a nested ${…}, and ends at its own "', () => {
+    for (const [line, expected] of [
+      ['echo $(a ${x:-"\\"}"} b) c', [['a', ['${x:-"}}', 'b']], ['echo', ['$_', 'c']]]],
+      ['echo $(a ${x:-"$$"} b) c', [['a', ['${x:-$$}', 'b']], ['echo', ['$_', 'c']]]],
+      ['echo $(a ${x:-"${y:-}}"} b) c', [['a', ['${x:-${y:-}}}', 'b']], ['echo', ['$_', 'c']]]],
+      ['echo $(a ${x:-"${y:-"})"}"} b) c', [['a', ['${x:-${y:-})}}', 'b']], ['echo', ['$_', 'c']]]],
+    ] as const) {
+      expect(parseShell(line).unknowns).toEqual([])
+      expect(shape(line)).toEqual(expected)
+    }
+  })
+
+  test('a quote left open inside it runs to the end of the text, and is an unknown', () => {
+    for (const line of ['echo $(a ${x:-"a} b) c', 'echo $(a ${x:-"a']) {
+      expect(parseShell(line).unknowns).toEqual(['quote', 'substitution'])
+    }
+    expect(shape('echo $(a ${x:-"a} b) c')).toEqual([['a', ['${x:-a} b) c']], ['echo', ['$_']]])
+  })
+
+  test("on a heredoc line, a $'…', '…', \"…\" or backtick inside it hides a << from the scanner", () => {
+    for (const [line, arg] of [
+      ["cat <<E ${x:-$'}<<F'}\nbody\nE", '${x:-}<<F}'],
+      ["cat <<E ${x:-$'\\'}<<F'}\nbody\nE", "${x:-'}<<F}"],
+      ["cat <<E ${x:-'}<<F'}\nbody\nE", '${x:-}<<F}'],
+      ['cat <<E ${x:-"}<<F"}\nbody\nE', '${x:-}<<F}'],
+    ] as const) {
+      expect(parseShell(line).unknowns).toEqual([])
+      expect(shape(line)).toEqual([['cat', [arg]]])
+      expect(docs(line)).toEqual([['E', 'body']])
+    }
+    const tick = 'cat <<E ${x:-`echo }`<<F}\nbody\nE'
+    expect(parseShell(tick).unknowns).toEqual([])
+    expect(shape(tick)).toEqual([['echo', ['}']], ['cat', ['${x:-$_<<F}']]])
+    expect(docs(tick)).toEqual([['E', 'body']])
+  })
+
+  test('a ) inside it in an array assignment leaves no unknown', () => {
+    expect(parseShell('x=(${a/)/;})').unknowns).toEqual([])
+  })
+})

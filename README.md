@@ -227,15 +227,15 @@ core/
 │   ├── register.ts             — the hooks module (a mod): $.workbench, question rule, request meter,
 │   │                             cache meter, status line, commit approval, vault write checks,
 │   │                             the warmup's deferred half, the per-turn log checkpoint, memory
-│   │                             capture, recall, skill learnings, the intake nudge, the workbench
-│   │                             rules in the system prompt, /orchestrator, /memory-status, /notices,
+│   │                             capture, recall, skill learnings, the intake nudge, the Monitor
+│   │                             buffer check, the workbench rules in the system prompt, /orchestrator, /memory-status, /notices,
 │   │                             /process-pending-summaries, the FluidVoice meeting watch, and six guards
 │   │                             (see Guards in the hooks module)
 │   ├── mods/                   — the module's pure logic: brief, lane, orchestrator, question-rule,
 │   │                             request-meter, cache-meter, status-line, commit-approval, vault-write,
 │   │                             pending-summaries, shell (the shell reader behind parseShell),
 │   │                             checkpoint, capture, recall, learnings, intake, prompt-rules, guards,
-│   │                             project-scope, false-bare, full-suite, meetings
+│   │                             project-scope, false-bare, full-suite, meetings, monitor
 │   ├── session-log.sh          — raw log capture + summary-writer dispatch (not at SessionEnd or per turn)
 │   ├── session-warmup.sh       — retention cleanup + dead-marker sweep + session reconciler + notices;
 │   │                             summary drain + Chat-skill scan run deferred; prints only a stale-style notice
@@ -848,6 +848,33 @@ The desktop app wrote the flag outside any tool call, so a guard on agent comman
 **No worktree is created or removed for this.** The stray desktop worktree is Mike's to remove. Claude creates no worktree outside the [provisioning ledger](#the-provisioning-ledger), and the [provisioning guard](#provisioning-guard) holds that rule.
 
 Tests: `hooks/test-false-bare.sh` runs the script on real repositories: a repair from a subfolder, each true spelling, a folder that shares the main checkout's config as a worktree does (through `GIT_DIR` and `GIT_COMMON_DIR`, so no worktree is made), `core.bare` in `config.worktree` alone and in both files, two real bare repositories and a bare clone at `<folder>/.git` left byte for byte the same, a config the script cannot write (exit 1, no repository named), and a healthy repository, a plain folder and a missing folder left alone. `tests/false-bare.test.ts` covers the repair at session start and before a git line, the worktree session, the unattended lane at start and before a git line, a repair that fails or prints something other than a path (no toast in either case), the refusal's place in the Bash guard chain, and, as direct calls to the pure function, each set form and `init --bare` form refused and each read form allowed.
+
+### Monitor buffer check
+
+**A `Monitor` command that pipes through a stage that buffers its output can run its whole timeout and deliver no events.** Monitor turns each stdout line of its command into an event, and it reads that output through a pipe. A stage such as `cut` buffers its output in blocks when a pipe reads it, so the lines wait in the buffer while the watch looks idle. On 2026-11-16 a watch ended in `tail -F … | grep --line-buffered … | cut -c1-400`, ran 30 minutes, and expired with no events, although the log gained several lines Mike needed to see.
+
+The hooks module checks each `Monitor` call (`hooks/mods/monitor.ts`, judged in a `tool.call` hook of `hooks/register.ts`). It reads the command with the [shell reader](#the-shell-reader-parseshell), and warns about each stage below. The warning names the stage and a form of it that flushes each line:
+
+| Stage | Passes when |
+|---|---|
+| `cut`, `tr`, `uniq`, `head` | `stdbuf -oL`, `stdbuf -o0` or `unbuffer` runs it. Otherwise use awk with `fflush()` |
+| `sort`, `tac`, `wc` | never: each prints only when its input ends, and `tail -F` never ends, so no buffering setting helps |
+| `grep` | it has `--line-buffered`, or it runs in a mode that prints no matched lines: `-q` (`--quiet`, `--silent`), `-c` (`--count`), `-l` (`--files-with-matches`) or `-L` (`--files-without-match`) |
+| `sed` | it has `-u`, `--unbuffered`, or `-l` with no number after it. In BSD sed, which macOS ships, `-l` flushes each line. In GNU sed, `-l N` sets the line-wrap length and does not flush, so that form draws advice that names the difference |
+| `jq` | it has `--unbuffered` |
+| `python`, `python3` | it has `-u`, `PYTHONUNBUFFERED` is set in front of it, or `unbuffer` runs it. `stdbuf` does not count, because Python's own I/O layer ignores it |
+| `awk`, `gawk`, `mawk`, `nawk` | its program calls `fflush`, or it has `-W interactive`, which makes mawk flush each line. A program read with `-f` or `--file` draws advice to check that the program calls `fflush()`, because the check does not read the file |
+
+The awk form suggested for `uniq` prints a line only when it differs from the line before it, so it drops only adjacent repeats, as `uniq` does. `uniq -c` and `uniq -u` print each line only when a different line arrives, so each line arrives one line late even when they flush.
+
+The `grep`, `sed`, `jq` and awk stages also pass behind `stdbuf -oL`, `stdbuf -o0` or `unbuffer`. An `unbuffer` that reads a pipe draws its own warning when it lacks `-p`, because without `-p` it does not read the pipe. A stage inside a `>( )` or `<( )` process substitution is checked. Its output reaches Monitor, either directly or through the command that reads it. A stage inside a `$( )` or backtick substitution is skipped, because its output goes to the command line and not to Monitor.
+
+Beside the shell reader, a small text scanner in `hooks/mods/monitor.ts` reads the raw command. It finds the `<( )` and `>( )` regions, and each stage after a `|` or `|&`. It skips quoted text, `$( )` and backtick substitutions, comments and `||`, so `tail -F x # | unbuffer cut -c1-4` and `tail -F x || unbuffer cut -c1-4` draw no warning. The scanner has two known gaps:
+
+- It misses a `>( )` inside `bash -c '...'`, because it skips quoted text.
+- Heredoc or `case` text that holds `|` or `>(` can draw an extra warning, or hide a later one.
+
+**The check warns, and never refuses.** The warning reaches the calling agent as context on the `Monitor` result, in the main session and in a sub-agent, so a false positive never blocks a watch. A command the reader cannot read whole draws no warning, and so does a `ws` watch, a call another hook denied, and a call that failed to start. `tests/monitor.test.ts` covers each stage, each passing form, the `sed -l` and `awk -f` advice, the `uniq` advice, the wrapper and substitution forms, the scanner's comment and `||` skips, the incident command, and the hook in both lanes.
 
 ### Logging pipeline
 

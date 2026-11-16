@@ -230,7 +230,6 @@ export const DEV_TEAM_VERDICTS: readonly (readonly [string, Kind, Kind, Kind, Ki
   ["git log | grep commit","pass","pass","pass","pass"],
   ["git log | grep push","pass","pass","pass","pass"],
   ["git log; doas git push","plain","subagent","plain","subagent"],
-  ["git merge origin/main","pass","pass","pass","pass"],
   ["git push","pass","subagent","pass","subagent"],
   ["git push --delete origin x","force","force","force","force"],
   ["git push --dry-run","pass","subagent","pass","subagent"],
@@ -466,4 +465,8 @@ export const INTENDED_DIFFERENCES: readonly (readonly [string, Kind, Kind, Kind,
   ["grep -n 'git push' f | awk -F: '{print $1}'","pass","subagent","pass","subagent"],
   ["rg -n 'git push' f | sed -n '/commit/p'","pass","subagent","pass","subagent"],
   ["grep -rn 'git push' . | sed -n '1,/x/p'","pass","subagent","pass","subagent"],
+]
+
+export const MERGE_COMMIT_DIFFERENCES: readonly (readonly [string, Kind, Kind, Kind, Kind])[] = [
+  ["git merge origin/main","pass","pass","pass","pass"],
 ]

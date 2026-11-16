@@ -87,7 +87,7 @@ has "rule 6 asks one approval question"             'one approval question, not 
 has "rule 6 asks it alone, after the review"        'reviewed the tree, ask it through `AskUserQuestion`, on its own'
 has "rule 6 names the answer as the approval"       'His answer is the approval'
 has "rule 6 runs a picked commit with no prompt"     'Run that commit yourself as a plain line, and no permission prompt opens'
-has "rule 6 approves no push and no merge on a pick"  'It approves one commit on the branch HEAD held when he picked, and no push and no merge'
+has "rule 6 approves no push and no merge on a pick"  'It approves one commit on the branch HEAD held when he picked, and no push and no merge into the default branch'
 has "rule 6 asks the push on its own"                'ask about the push in a question of its own'
 has "rule 6 leaves how a branch lands to Mike"       'a pull request or a local merge, is his choice'
 has "rule 6 never takes a prompt as the approval"    'A permission prompt for any other form is never the approval'
@@ -327,25 +327,39 @@ routes "a peer session is not a store"                    "A peer session's cont
 routes "a message coordinates and the vault stores"       'A message coordinates, and the vault stores.'
 
 echo
-echo "every statement of the commit approval rule names the ledger unit-commit exemption:"
+echo "every statement of the commit approval rule names the ledger unit-commit exemption and the merge commit:"
 DENIED='nothing approved is denied|no request or pick approved is denied|no typed request and no pick is denied'
 for source in "$ROOT/README.md" "$ROOT/hooks/mods/prompt-rules.ts"; do
   stated="$(grep -cE "$DENIED" "$source")"
-  bare="$(grep -E "$DENIED" "$source" | grep -cvE 'outside a ledger unit worktree with no \\?`origin\\?` remote')"
+  bare="$(grep -E "$DENIED" "$source" | grep -cvE 'outside a ledger unit worktree with no \\?`origin\\?` remote now or at its add, a local merge that makes a commit')"
   if [ "$stated" -gt 0 ] && [ "$bare" -eq 0 ]; then
-    ok "${source#"$ROOT"/} names the exemption in each of its $stated statements"
+    ok "${source#"$ROOT"/} names the exemption and the merge commit in each of its $stated statements"
   else
-    no "${source#"$ROOT"/} names the exemption in each statement" "$bare of $stated statements leave it out"
+    no "${source#"$ROOT"/} names the exemption and the merge commit in each statement" "$bare of $stated statements leave them out"
   fi
-  if grep -qE 'an \\?`origin\\?` remote,? or (whose remotes|remotes that) cannot be read' "$source"; then
-    ok "${source#"$ROOT"/} says a unit with an origin remote, or unreadable remotes, asks"
+  if grep -qE 'an \\?`origin\\?` remote, had one at the add, or whose remotes cannot be read' "$source"; then
+    ok "${source#"$ROOT"/} says a unit with an origin remote now or at the add, or unreadable remotes, asks"
   else
-    no "${source#"$ROOT"/} says a unit with an origin remote, or unreadable remotes, asks" "no statement of the origin rule"
+    no "${source#"$ROOT"/} says a unit with an origin remote now or at the add, or unreadable remotes, asks" "no statement of the origin rule"
+  fi
+  if grep -qE 'records at the add whether the repository had an \\?`origin\\?`' "$source"; then
+    ok "${source#"$ROOT"/} states the origin record the add makes"
+  else
+    no "${source#"$ROOT"/} states the origin record the add makes" "no statement of the record"
+  fi
+  if grep -qE 'A local \\?`git merge\\?` that makes a commit.{0,80}counts as a commit in every tree' "$source"; then
+    ok "${source#"$ROOT"/} says a local merge that makes a commit counts as a commit"
+  else
+    no "${source#"$ROOT"/} says a local merge that makes a commit counts as a commit" "no statement of the merge rule"
   fi
 done
-has "rule 6 names the exemption in its denial"        'a commit outside a ledger unit worktree with no `origin` remote, a push, merge, release'
-has "rule 6 states the unit commit with no question"  'The one exception is a plain commit in a unit worktree the provisioning ledger recorded, with HEAD on that unit.s branch, in a repository with no `origin` remote: the main session runs it with no question'
-has "rule 6 says a unit with an origin remote asks"   'A unit whose repository has an `origin` remote, or whose remotes cannot be read, asks Mike before each commit'
+has "rule 6 names the exemption and the merge in its denial" 'a commit outside a ledger unit worktree with no `origin` remote now or at its add, a local merge that makes a commit, a push, merge, release'
+has "rule 6 states the unit commit with no question"  'The one exception is a plain commit in a unit worktree the provisioning ledger recorded, with HEAD on that unit.s branch, in a repository with no `origin` remote now and none when the worktree was added: the main session runs it with no question'
+has "rule 6 states the origin record the add makes"   'The ledger records at the add whether the repository had an `origin`, so renaming or removing that remote later frees nothing'
+has "rule 6 says a unit with an origin remote asks"   'A unit whose repository has an `origin` remote, had one at the add, or whose remotes cannot be read asks Mike before each commit'
+has "rule 6 counts a merge that makes a commit"       'A local `git merge` that makes a commit, such as `git merge --no-ff`, counts as a commit in every tree, so landing a unit on another branch asks Mike first'
+has "rule 6 lets a commit approval cover the merge"   'A commit request approves such merges for its turn, and a commit pick approves one'
+has "rule 6 keeps a default-branch merge a merge"     'A merge into the default branch stays a merge'
 
 echo
 echo "$PASS passed, $FAIL failed"

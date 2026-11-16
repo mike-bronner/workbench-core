@@ -170,7 +170,7 @@ describe('the ref-moving follow-ups', () => {
 
   const ROUTES: readonly [string, string, string][] = [
     ['git pull origin x:main', 'merge into the default branch', AGENT_MERGE_REFUSAL],
-    ['git bisect reset main && git merge x', 'merge into the default branch', AGENT_MERGE_REFUSAL],
+    ['git bisect reset main && git merge --ff-only x', 'merge into the default branch', AGENT_MERGE_REFUSAL],
     ['git branch -f main x', 'history rewrite', REWRITE_REFUSAL],
     ['git fetch origin x:main', 'history rewrite', REWRITE_REFUSAL],
   ]

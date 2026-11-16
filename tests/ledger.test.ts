@@ -388,14 +388,43 @@ describe("a session removes only the units it recorded, and another session's un
   })
 })
 
-describe('AC4: the commit gate lets a unit branch be made, deleted and merged into a feature branch', () => {
-  for (const line of ['git branch unit/b', 'git branch -d unit/a', 'git branch -D unit/a', 'git branch -D other/b', 'git merge --no-ff unit/a', 'git -C /repo merge --no-ff -m "Merge unit/a" unit/a']) {
+describe('AC4: the commit gate lets a unit branch be made and deleted, and asks before it lands on a feature branch', () => {
+  for (const line of ['git branch unit/b', 'git branch -d unit/a', 'git branch -D unit/a', 'git branch -D other/b', 'git merge --ff-only unit/a']) {
     test(`on a feature branch, with unit/a in the ledger, ${JSON.stringify(line)} runs with no question`, async ($, on) => {
       const b = await attended($, on)
       await bash($, b, ADD)
       expect(await bash($, b, line)).toEqual({ deny: undefined, reached: true, context: [] })
     })
   }
+
+  for (const line of ['git merge --no-ff unit/a', 'git -C /repo merge --no-ff -m "Merge unit/a" unit/a']) {
+    test(`on a feature branch, with unit/a in the ledger, ${JSON.stringify(line)} asks Mike as a commit, and a commit request runs it`, async ($, on) => {
+      const b = await attended($, on)
+      await bash($, b, ADD)
+      const answer = await bash($, b, line)
+      expect(answer.reached).toBe(false)
+      expect(answer.deny).toMatch(ASKS.commit)
+      await $.prompt.submit({ text: 'commit it', wait: false, origin: PERSON })
+      expect(await bash($, b, line)).toEqual({ deny: undefined, reached: true, context: [] })
+    })
+  }
+
+  test('a merge that makes a commit inside a unit tree with no origin gets no unit exemption', async ($, on) => {
+    const b = await inUnit($, on)
+    const line = `git -C ${TREE} merge --no-ff feat/x`
+    const answer = await bash($, b, line)
+    expect(answer.reached).toBe(false)
+    expect(answer.deny).toMatch(ASKS.commit)
+    expect(await permission($, line)).toBeUndefined()
+    expect(await bash($, b, UNIT_COMMIT)).toEqual({ deny: undefined, reached: true, context: [] })
+  })
+
+  test('a sub-agent is refused a unit landing as a commit', async ($, on) => {
+    const b = await attended($, on)
+    await bash($, b, ADD)
+    const answer = await bash($, b, 'git merge --no-ff unit/a', { agentId: SUB })
+    expect(answer).toEqual({ deny: SUBAGENT_REFUSAL.deny, reached: false, context: [] })
+  })
 
   test('a merge of a unit branch into the default branch still asks Mike', async ($, on) => {
     const b = await attended($, on)

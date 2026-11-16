@@ -599,11 +599,12 @@ describe('AC3: a commit approval approves no push and no merge, and each gets it
     expect(await bash($, b, 'git merge fix/x')).toMatch(DECLINED.merge)
   })
 
-  test('a local merge or pull on a feature branch, and an aborted merge, need no merge approval', async ($, on) => {
+  test('a pull or a merge that makes no commit on a feature branch, and an aborted merge, need no merge approval, and a merge there that makes a commit asks as a commit', async ($, on) => {
     const b = bench(on)
     b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'fix/x', originHead: 'main' }
     await session($)
-    expect(await bash($, b, 'git merge origin/main')).toBeUndefined()
+    expect(await bash($, b, 'git merge --ff-only origin/main')).toBeUndefined()
+    expect(await bash($, b, 'git merge origin/main')).toMatch(DECLINED.commit)
     expect(await bash($, b, 'git pull')).toBeUndefined()
     b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'main', originHead: 'main' }
     expect(await bash($, b, 'git merge --abort')).toBeUndefined()
@@ -619,7 +620,8 @@ describe('AC3: a commit approval approves no push and no merge, and each gets it
     expect(await bash($, b, 'git merge fix/x')).toMatch(DECLINED.merge)
     expect(await bash($, b, 'git pull')).toMatch(DECLINED.merge)
     b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'trunk', originHead: 'develop' }
-    expect(await bash($, b, 'git merge fix/x')).toBeUndefined()
+    expect(await bash($, b, 'git merge --ff-only fix/x')).toBeUndefined()
+    expect(await bash($, b, 'git merge fix/x')).toMatch(DECLINED.commit)
   })
 
   const LANES: readonly [string, Parameters<typeof bench>[1], boolean, string | undefined][] = [
@@ -629,16 +631,19 @@ describe('AC3: a commit approval approves no push and no merge, and each gets it
     ['the pipeline', { env: { HOME, WORKBENCH_DEV_TEAM_PIPELINE: '1' } }, true, undefined],
   ]
   for (const [lane, options, isInteractive, agentId] of LANES) {
-    test(`${lane}: a git merge or pull on the default branch is refused, and one on a feature branch runs`, async ($, on) => {
+    test(`${lane}: a git merge or pull on the default branch is refused, and one on a feature branch runs where a commit would`, async ($, on) => {
       const b = bench(on, options)
       b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'main', originHead: 'main' }
       await $.session.start(start(isInteractive))
       await $.prompt.submit(prompt('Item ID: 12', isInteractive ? PERSON : { kind: 'sdk' }))
-      expect(await bash($, b, 'git merge fix/x', agentId)).toBe(AGENT_MERGE_REFUSAL)
+      const isSubAgent = agentId !== undefined
+      expect(await bash($, b, 'git merge --ff-only fix/x', agentId)).toBe(AGENT_MERGE_REFUSAL)
+      expect(await bash($, b, 'git merge fix/x', agentId)).toBe(isSubAgent ? SUBAGENT_REFUSAL.deny : AGENT_MERGE_REFUSAL)
       expect(await bash($, b, 'git pull', agentId)).toBe(AGENT_MERGE_REFUSAL)
-      expect(await bash($, b, "bash -c 'git -C /repo merge fix/x'", agentId)).toBe(AGENT_MERGE_REFUSAL)
+      expect(await bash($, b, "bash -c 'git -C /repo merge --ff-only fix/x'", agentId)).toBe(isSubAgent ? SUBAGENT_REFUSAL.deny : PLAIN_REFUSAL.deny)
       b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'fix/x', originHead: 'main' }
-      expect(await bash($, b, 'git merge origin/main', agentId)).toBeUndefined()
+      expect(await bash($, b, 'git merge --ff-only origin/main', agentId)).toBeUndefined()
+      expect(await bash($, b, 'git merge origin/main', agentId)).toBe(isSubAgent ? SUBAGENT_REFUSAL.deny : undefined)
     })
   }
 
@@ -678,22 +683,22 @@ describe('AC3: a commit approval approves no push and no merge, and each gets it
   })
 
   test('the merge reader finds each merge and where it runs, and a doubt reads as the default branch', () => {
-    expect(mergesOf('git merge x')).toEqual({ local: [''], pr: 0, targets: [{ refs: ['x'] }] })
-    expect(mergesOf('git -C /a pull')).toEqual({ local: ['/a'], pr: 0, targets: [{ refs: [] }] })
-    expect(mergesOf('git pull origin main')).toEqual({ local: [''], pr: 0, targets: [{ refs: ['main'] }] })
-    expect(mergesOf('git merge -m "Merge it." --no-ff fix/x')).toEqual({ local: [''], pr: 0, targets: [{ refs: ['fix/x'] }] })
+    expect(mergesOf('git merge x')).toEqual({ local: [''], commits: [''], pr: 0, targets: [{ refs: ['x'] }] })
+    expect(mergesOf('git -C /a pull')).toEqual({ local: ['/a'], commits: [], pr: 0, targets: [{ refs: [] }] })
+    expect(mergesOf('git pull origin main')).toEqual({ local: [''], commits: [], pr: 0, targets: [{ refs: ['main'] }] })
+    expect(mergesOf('git merge -m "Merge it." --no-ff fix/x')).toEqual({ local: [''], commits: [''], pr: 0, targets: [{ refs: ['fix/x'] }] })
     expect(mergesOf('cd /a && git merge x').local).toEqual([null])
     expect(mergesOf('git -C rel merge x').local).toEqual([null])
     expect(mergesOf('GIT_DIR=/x/.git git merge y').local).toEqual([null])
     expect(mergesOf("bash -c 'git merge x'").local).toEqual([''])
-    expect(mergesOf('git merge --abort; git log --merges')).toEqual({ local: [], pr: 0, targets: [] })
-    expect(mergesOf('gh pr merge 1; gh pr view 1')).toEqual({ local: [], pr: 1, targets: [{ pr: '1', refs: [] }] })
-    expect(mergesOf('gh pr merge --squash -b "Done." 12')).toEqual({ local: [], pr: 1, targets: [{ pr: '12', refs: [] }] })
-    expect(mergesOf('gh pr merge https://github.com/o/r/pull/7')).toEqual({ local: [], pr: 1, targets: [{ pr: '7', refs: [] }] })
-    expect(mergesOf('gh pr merge fix/x')).toEqual({ local: [], pr: 1, targets: [{ refs: ['fix/x'] }] })
-    expect(mergesOf('gh api repos/o/r/pulls/1/merge -X PUT')).toEqual({ local: [], pr: 1, targets: [{ pr: '1', refs: [] }] })
-    expect(mergesOf('gh api repos/o/r/merges -f base=main -f head=feat')).toEqual({ local: [], pr: 1, targets: [{ refs: ['feat'], bases: ['main'] }] })
-    expect(mergesOf('grep -n "git merge" notes.md')).toEqual({ local: [], pr: 0, targets: [] })
+    expect(mergesOf('git merge --abort; git log --merges')).toEqual({ local: [], commits: [], pr: 0, targets: [] })
+    expect(mergesOf('gh pr merge 1; gh pr view 1')).toEqual({ local: [], commits: [], pr: 1, targets: [{ pr: '1', refs: [] }] })
+    expect(mergesOf('gh pr merge --squash -b "Done." 12')).toEqual({ local: [], commits: [], pr: 1, targets: [{ pr: '12', refs: [] }] })
+    expect(mergesOf('gh pr merge https://github.com/o/r/pull/7')).toEqual({ local: [], commits: [], pr: 1, targets: [{ pr: '7', refs: [] }] })
+    expect(mergesOf('gh pr merge fix/x')).toEqual({ local: [], commits: [], pr: 1, targets: [{ refs: ['fix/x'] }] })
+    expect(mergesOf('gh api repos/o/r/pulls/1/merge -X PUT')).toEqual({ local: [], commits: [], pr: 1, targets: [{ pr: '1', refs: [] }] })
+    expect(mergesOf('gh api repos/o/r/merges -f base=main -f head=feat')).toEqual({ local: [], commits: [], pr: 1, targets: [{ refs: ['feat'], bases: ['main'] }] })
+    expect(mergesOf('grep -n "git merge" notes.md')).toEqual({ local: [], commits: [], pr: 0, targets: [] })
     expect(isDefaultBranch('refs/heads/main', undefined)).toBe(true)
     expect(isDefaultBranch('refs/heads/fix/x', undefined)).toBe(true)
     expect(isDefaultBranch('refs/heads/fix/x', 'refs/remotes/origin/main')).toBe(false)
@@ -990,5 +995,112 @@ describe('the shell reader, against the hostile-input corpus', () => {
     expect(commandsOf('git \\\n  push')).toEqual([['git', 'push']])
     expect(commandsOf('git -C $(pwd) push')).toEqual([['pwd'], ['git', '-C', '$_', 'push']])
     expect(commandsOf('2>/dev/null git push >out')).toEqual([['git', 'push']])
+  })
+})
+
+describe('a local git merge that makes a commit is gated as a commit', () => {
+  const FEATURE = { head: 'c1', pushed: 'c1', branch: 'fix/x', originHead: 'main' }
+
+  for (const line of ['git merge --no-ff unit/a', 'git -C /repo merge --no-ff unit/a', 'git merge unit/a', 'git merge --continue']) {
+    test(`with no approval, it asks Mike as a commit and names its line: ${JSON.stringify(line)}`, async ($, on) => {
+      const b = bench(on)
+      b.repos['/repo'] = { ...FEATURE }
+      await session($)
+      const refusal = await bash($, b, line)
+      expect(refusal).toMatch(DECLINED.commit)
+      expect(refusal).toContain(`\`${line}\``)
+      expect(refusal).toContain('the branch fix/x')
+    })
+  }
+
+  test('a merge that makes no commit on a feature branch runs with no approval', async ($, on) => {
+    const b = bench(on)
+    b.repos['/repo'] = { ...FEATURE }
+    await session($)
+    for (const line of ['git merge --ff-only unit/a', 'git merge --squash unit/a', 'git merge --no-commit --no-ff unit/a', 'git merge --abort']) {
+      expect([line, await bash($, b, line)]).toEqual([line, undefined])
+    }
+  })
+
+  test('a commit pick approves one such merge, and nothing after it', async ($, on) => {
+    const b = bench(on)
+    b.repos['/repo'] = { ...FEATURE }
+    await session($)
+    await pick($, b)
+    expect(await bash($, b, 'git merge --no-ff unit/a')).toBeUndefined()
+    expect(await bash($, b, 'git merge --no-ff unit/b')).toMatch(DECLINED.commit)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
+  })
+
+  test('a commit pick used by a commit approves no merge after it', async ($, on) => {
+    const b = bench(on)
+    b.repos['/repo'] = { ...FEATURE }
+    await session($)
+    await pick($, b)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
+    expect(await bash($, b, 'git merge --no-ff unit/a')).toMatch(DECLINED.commit)
+  })
+
+  test('the pick is tied to the branch HEAD held when Mike picked', async ($, on) => {
+    const b = bench(on)
+    b.repos['/repo'] = { ...FEATURE }
+    await session($)
+    await pick($, b)
+    b.repos['/repo'] = { ...FEATURE, branch: 'feat/y' }
+    const refusal = await bash($, b, 'git -C /repo merge --no-ff unit/a')
+    expect(refusal).toContain('HEAD was on fix/x')
+    expect(refusal).toContain('HEAD is now on feat/y')
+    b.repos['/repo'] = { ...FEATURE }
+    expect(await bash($, b, 'git -C /repo merge --no-ff unit/a')).toMatch(DECLINED.commit)
+  })
+
+  test('a typed commit request approves such merges for its turn, and a push or merge request approves none', async ($, on) => {
+    const b = bench(on)
+    b.repos['/repo'] = { ...FEATURE }
+    await session($, 'commit it')
+    expect(await bash($, b, 'git merge --no-ff unit/a')).toBeUndefined()
+    expect(await bash($, b, 'git -C /repo merge --no-ff unit/b')).toBeUndefined()
+    await $.prompt.submit(prompt('push it'))
+    expect(await bash($, b, 'git merge --no-ff unit/c')).toMatch(DECLINED.commit)
+  })
+
+  test('a merge pick or a typed merge request approves no merge that makes a commit on a feature branch', async ($, on) => {
+    const b = bench(on)
+    b.repos['/repo'] = { ...FEATURE }
+    await session($)
+    await pick($, b, 'Merge locally', [MERGE_QUESTION])
+    expect(await bash($, b, 'git merge --no-ff fix/x')).toMatch(DECLINED.commit)
+    await $.prompt.submit(prompt('merge it locally'))
+    expect(await bash($, b, 'git merge --no-ff fix/x')).toMatch(DECLINED.commit)
+    b.repos['/repo'] = { ...FEATURE, branch: 'main' }
+    expect(await bash($, b, 'git merge --no-ff fix/x')).toBeUndefined()
+  })
+
+  test('a merge and a commit on one line count as two commits, and are refused under any approval', async ($, on) => {
+    const b = bench(on)
+    b.repos['/repo'] = { ...FEATURE }
+    await session($, 'commit it')
+    expect(await bash($, b, 'git merge --no-ff unit/a && git commit -m "fix: 🐛 X."')).toBe(ONE_REFUSAL)
+    expect(await bash($, b, 'git merge --no-ff unit/a; git merge --no-ff unit/b')).toBe(ONE_REFUSAL)
+  })
+
+  test('on the default branch it stays a merge: a commit pick or request approves none, and a merge pick does', async ($, on) => {
+    const b = bench(on)
+    b.repos['/repo'] = { ...FEATURE, branch: 'main' }
+    await session($, 'commit it')
+    expect(await bash($, b, 'git merge --no-ff fix/x')).toMatch(DECLINED.merge)
+    await $.prompt.submit(prompt('my review is done'))
+    await pick($, b)
+    expect(await bash($, b, 'git merge --no-ff fix/x')).toMatch(DECLINED.merge)
+    await pick($, b, 'Merge locally', [MERGE_QUESTION])
+    expect(await bash($, b, 'git merge --no-ff fix/x')).toBeUndefined()
+  })
+
+  test('a merge whose branch the gate cannot read is a merge into the default branch', async ($, on) => {
+    const b = bench(on)
+    b.repos['/repo'] = { ...FEATURE }
+    await session($, 'commit it')
+    expect(await bash($, b, 'cd /repo && git merge --no-ff unit/a')).toMatch(DECLINED.merge)
+    expect(await bash($, b, 'git -C rel merge --no-ff unit/a')).toMatch(DECLINED.merge)
   })
 })

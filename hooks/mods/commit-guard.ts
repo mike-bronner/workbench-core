@@ -15,7 +15,7 @@ type Found = {
 
 const W = '[^A-Za-z0-9_.-]'
 const SEG = '[^;&|\\n]'
-const GIT_OP = `git${W}(?:${SEG}*[^A-Za-z0-9_-])?(commit|push)(?:$|[^A-Za-z0-9_-])`
+const GIT_OP = `git${W}(?:${SEG}*[^A-Za-z0-9_-])?(commit|push|merge)(?:$|[^A-Za-z0-9_-])`
 const MERGE_OP = `gh${W}(?:${SEG}*[^A-Za-z0-9_-])?(?:pr\\s+merge|api${W}${SEG}*pulls/[^\\s/]+/merge|api${W}${SEG}*repos/\\S+/merges)(?:$|[^A-Za-z0-9_/-])`
 const MENTION = new RegExp(`(?:^|${W})(?:${GIT_OP}|${MERGE_OP})`, 'im')
 const FORCE_TEXT = new RegExp(
@@ -131,8 +131,24 @@ const withoutComments = (text: string): string =>
 const opsIn = (text: string): Op[] => {
   const ops: Op[] = []
   const match = new RegExp(MENTION.source, 'gim')
-  for (const m of text.matchAll(match)) ops.push(m[1] === undefined ? 'merge' : (m[1].toLowerCase() as Op))
+  for (const m of text.matchAll(match)) ops.push(m[1] === undefined ? 'merge' : m[1].toLowerCase() === 'push' ? 'push' : 'commit')
   return ops
+}
+
+export const GIT_MERGE_VALUES: ReadonlySet<string> = new Set(['-m', '-F', '--file', '-s', '--strategy', '-X', '--strategy-option', '--into-name', '--cleanup'])
+const FF_MODES: ReadonlySet<string> = new Set(['--ff', '--no-ff', '--ff-only'])
+const COMMIT_MODES: ReadonlySet<string> = new Set(['--commit', '--no-commit', '--squash', '--no-squash'])
+
+export function makesMergeCommit(rest: readonly string[]): boolean {
+  const options: string[] = []
+  for (let i = 0; i < rest.length && rest[i] !== '--'; i++) {
+    if (GIT_MERGE_VALUES.has(rest[i] ?? '')) i++
+    else options.push(rest[i] ?? '')
+  }
+  if (options.includes('--abort') || options.includes('--quit')) return false
+  const lastOf = (modes: ReadonlySet<string>) => options.filter(arg => modes.has(arg)).at(-1)
+  const commitMode = lastOf(COMMIT_MODES)
+  return lastOf(FF_MODES) !== '--ff-only' && commitMode !== '--no-commit' && commitMode !== '--squash'
 }
 
 function configOf(args: readonly string[], end: number): { key: string; value: string }[] {
@@ -334,6 +350,7 @@ function readGit(s: Statement): Read {
     read.code.push(...rest.map(arg => arg.replace(/^(?:-O|--open-files[a-z-]*=?)/, ' ')))
   }
   if (sub === 'commit' || sub === 'push') read.ops.push(sub)
+  if (sub === 'merge' && makesMergeCommit(rest)) read.ops.push('commit')
   if (sub === 'push' && rest.some(isForceArg)) read.isForce = true
   return read
 }

@@ -48,7 +48,7 @@
 // Pure functions only: the engine follows `$` into no imported function.
 
 import type { WorkbenchShellStatement as ShellStatement } from '../../types'
-import { MERGE_MUTATION, findOps } from './commit-guard'
+import { GIT_MERGE_VALUES, MERGE_MUTATION, findOps, makesMergeCommit } from './commit-guard'
 import { hiddenCommandRefusal, isPartlyRead } from './guards'
 import { ASSIGNMENT, GIT_VALUE_OPTIONS, KEYWORDS, SHELLS, WRAPPERS, commandsOf, decodedOf, expandingOf, isEscaped, isExpanded, nameOf, parseShell, shellScriptOf } from './shell'
 
@@ -897,13 +897,12 @@ export function remoteTargetOf(line: string, origin: string | undefined): Remote
 }
 
 export type MergeTarget ={ pr?: string; refs: readonly string[]; bases?: readonly string[] }
-export type Merges = { local: readonly (string | null)[]; pr: number; targets: readonly MergeTarget[] }
+export type Merges = { local: readonly (string | null)[]; commits: readonly (string | null)[]; pr: number; targets: readonly MergeTarget[] }
 
 const MERGE_STOPS: ReadonlySet<string> = new Set(['--abort', '--quit'])
 const PULL_MERGE = /pulls\/([^\s/]+)\/merge(?![A-Za-z0-9_/-])/i
 const BRANCH_MERGE = /(?:^|\/)repos\/\S+\/merges(?:\?|$)/i
 const GH_MERGE_VALUES: ReadonlySet<string> = new Set(['-b', '--body', '-F', '--body-file', '-t', '--subject', '-A', '--author-email', '--match-head-commit', '-R', '--repo'])
-const GIT_MERGE_VALUES: ReadonlySet<string> = new Set(['-m', '-F', '--file', '-s', '--strategy', '-X', '--strategy-option', '--into-name', '--cleanup'])
 const REMOTE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 const REMOTE_CHANGES: ReadonlySet<string> = new Set(['set-url', 'add', 'rename'])
 
@@ -969,8 +968,13 @@ export function mergesOf(line: string): Merges {
   const merging = mergingOf(parse.statements, line)
   const prs = parse.statements.map(prTargetOf).filter((target): target is MergeTarget => target !== undefined)
   const hidden = prs.length === 0 && findOps(parse, line).ops.has('merge') ? [{ refs: [] }] : []
+  const isCommitting = (st: ShellStatement): boolean => {
+    const sub = gitSubOf(st, line)
+    return sub === SHELL_ALIAS || (sub === 'merge' && makesMergeCommit(restOf(st)))
+  }
   return {
     local: merging.map(st => mergeDirOf(st, isPlaced)),
+    commits: merging.filter(isCommitting).map(st => mergeDirOf(st, isPlaced)),
     pr: prs.length + hidden.length,
     targets: [...merging.map(st => localTargetOf(st, gitSubOf(st, line), isRemoteChanged)), ...prs, ...hidden],
   }

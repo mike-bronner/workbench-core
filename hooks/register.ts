@@ -792,15 +792,27 @@ async function isPipelineRewrite($: EngineInterface, line: string, agentId: stri
   return true
 }
 
+async function isMergeIntoDefault($: EngineInterface, at: string | undefined): Promise<boolean> {
+  const branch = at === undefined ? undefined : await gitOut($, at, ['symbolic-ref', '-q', 'HEAD'])
+  const originHead = at === undefined ? undefined : await gitOut($, at, ['symbolic-ref', '-q', 'refs/remotes/origin/HEAD'])
+  return isDefaultBranch(branch, originHead)
+}
+
 async function mergesIntoDefault($: EngineInterface, dirs: readonly (string | null)[]): Promise<number> {
   let count = 0
   for (const dir of dirs) {
-    const at = dir === null ? undefined : dir === '' ? await $.session.cwd() : dir
-    const branch = at === undefined ? undefined : await gitOut($, at, ['symbolic-ref', '-q', 'HEAD'])
-    const originHead = at === undefined ? undefined : await gitOut($, at, ['symbolic-ref', '-q', 'refs/remotes/origin/HEAD'])
-    if (isDefaultBranch(branch, originHead)) count++
+    if (await isMergeIntoDefault($, dir === null ? undefined : dir === '' ? await $.session.cwd() : dir)) count++
   }
   return count
+}
+
+async function mergeCommitDirsOf($: EngineInterface, dirs: readonly (string | null)[]): Promise<string[]> {
+  const found: string[] = []
+  for (const dir of dirs) {
+    const at = dir === null ? undefined : dir === '' ? await $.session.cwd() : dir
+    if (at !== undefined && !(await isMergeIntoDefault($, at))) found.push(at)
+  }
+  return found
 }
 
 const PLAN_FILE = 'A plan file in the login home\'s .claude/plans folder, written by the main session.'
@@ -2113,8 +2125,10 @@ export const register: Register = on => {
         return subject !== undefined ? { deny: subject } : withScanRecall($, 'Bash', e.command, e.agentId, await next(e))
       }
       const intoDefault = merges.pr + (await mergesIntoDefault($, merges.local))
+      const mergeDirs = await mergeCommitDirsOf($, merges.commits)
+      const committed = { commits: writes.commits + mergeDirs.length, pushes: writes.pushes }
       const picked = await pickedReleaseOf($, approval, e.command)
-      const gateFor = (request: readonly Action[]) => gateOf({ writes, releases, merges: intoDefault, rewrites, aliases, apiWrites: apiIntoDefault }, approval, request, e.command, picked)
+      const gateFor = (request: readonly Action[]) => gateOf({ writes: committed, releases, merges: intoDefault, rewrites, aliases, apiWrites: apiIntoDefault }, approval, request, e.command, picked)
       const asked = await read($, turnRequest)
       const isIntentGap = gateFor(asked).missing.some(gated => INTENT_ACTIONS.includes(gated as Action))
       const request = isIntentGap ? await intendedRequest($, asked) : asked
@@ -2124,8 +2138,9 @@ export const register: Register = on => {
       const treeRefusal = writes.commits === 1 ? await treeRefusalOf($, e.command, commit, e.tool_use_id) : undefined
       if (treeRefusal !== undefined) return { deny: treeRefusal }
       if (subject !== undefined) return { deny: subject }
-      const dir = dirOf(steps, await $.session.cwd(), await $.env.get('HOME'))
-      const isPaid = approval !== 'none' && isPaidByPick(writes, intoDefault, approval, request)
+      const [mergeDir] = mergeDirs
+      const dir = writes.commits + writes.pushes === 0 && mergeDir !== undefined ? mergeDir : dirOf(steps, await $.session.cwd(), await $.env.get('HOME'))
+      const isPaid = approval !== 'none' && isPaidByPick(committed, intoDefault, approval, request)
       if (isPaid && approval.action === 'merge') {
         const target = mergeTargetRefusalOf(approval.names, merges.targets)
         if (target !== undefined) return { deny: target }

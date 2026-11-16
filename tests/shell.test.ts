@@ -1255,3 +1255,33 @@ describe("a ' inside a double-quoted ${…} is an unknown, because bash and zsh 
     expect(commandsOf(`echo "\${x:-'}"; zap; echo "'}"`, true)).toEqual([['echo', "${x:-'}"], ['zap'], ['echo', "'}"]])
   })
 })
+
+describe('a separator inside ${…} or quotes does not end the text a heredoc feeds a shell from', () => {
+  const fed = (line: string) => statements(line).flatMap(s => s.heredocs).at(-1)?.feedsShell
+  const read = (line: string) => statements(line).map(s => [s.name, s.source])
+
+  test('a ; inside ${…} before a heredoc to bash still feeds bash, as bash <<EOF does', () => {
+    expect(fed('bash ${x/;/} <<EOF\nzap\nEOF')).toBe(true)
+    expect(read('bash ${x/;/} <<EOF\nzap\nEOF')).toEqual(read('bash <<EOF\nzap\nEOF'))
+    expect(read('bash <<EOF\nzap\nEOF')).toEqual([['bash', 'line'], ['zap', 'heredoc']])
+  })
+
+  test('an & or | inside ${…}, or a separator inside quotes, does not end it either', () => {
+    for (const line of ['bash ${x/&/} <<EOF\nzap\nEOF', 'bash ${x/|/} <<EOF\nzap\nEOF', 'bash "${x/;/}" <<EOF\nzap\nEOF', 'bash "a;b" <<EOF\nzap\nEOF', "bash 'a|b' <<EOF\nzap\nEOF", 'eval "$(a; cat <<EOF\nzap\nEOF\n)"']) {
+      expect(fed(line)).toBe(true)
+      expect(read(line).map(([name]) => name)).toContain('zap')
+    }
+  })
+
+  test('a separator outside quotes and ${…} still ends it', () => {
+    expect(fed('echo a | bash <<EOF\nzap\nEOF')).toBe(true)
+    for (const line of ['cat <<EOF; bash\nzap\nEOF', 'bash x; cat <<EOF\nzap\nEOF', 'bash x & cat <<EOF\nzap\nEOF', 'bash x | cat <<EOF\nzap\nEOF', 'echo ${x/;/}; cat <<EOF\nzap\nEOF', 'bash <<A\nA\ncat <<B\nzap\nB']) {
+      expect(fed(line)).toBe(false)
+      expect(read(line).map(([name]) => name)).not.toContain('zap')
+    }
+  })
+
+  test('the frozen compat reading is unchanged', () => {
+    expect(commandsOf('bash "a;b" <<EOF\nzap\nEOF', true)).toEqual(commandsOf('bash "a;b" <<EOF\nEOF', true))
+  })
+})

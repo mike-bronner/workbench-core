@@ -388,8 +388,7 @@ const STDIN_PATHS: ReadonlySet<string> = new Set(['/dev/stdin', '/dev/fd/0', '/p
 // end. A substitution does not end that text, because `eval "$(cat <<EOF`
 // runs the body too. `source` or `.` with a path that reads stdin runs it as
 // well. Quotes and backslashes go before the compare, so `b\ash` is bash.
-function feedsShell(before: string): boolean {
-  const segment = before.split(/;|&|\||\n/).pop() ?? ''
+function feedsShell(segment: string): boolean {
   const words = segment.replace(/["'\\]/g, '').split(/[ \t\n]+/)
   return words.some(
     (word, k) =>
@@ -426,6 +425,8 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; bodie
   // How deep each open arithmetic is in its own parentheses.
   const depths: number[] = []
   let pending: ShellHeredoc[] = []
+  let segmentStart = 0
+  const isSeparator = (c: string) => /[;&|\n]/.test(c) && !stack.some(s => s === '"' || s === '${')
   for (let i = 0; i < text.length; i++) {
     const c = text[i] as string
     const next = text[i + 1]
@@ -540,7 +541,7 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; bodie
         out += '<<'
         i++
       } else {
-        const doc: ShellHeredoc = { delimiter, body: '', isQuoted, stripsTabs, feedsShell: feedsShell(out), isTerminated: false }
+        const doc: ShellHeredoc = { delimiter, body: '', isQuoted, stripsTabs, feedsShell: feedsShell(reading.isCompat ? (out.split(/;|&|\||\n/).pop() ?? '') : out.slice(segmentStart)), isTerminated: false }
         reading.heredocs.push(doc)
         pending.push(doc)
         out += `<${HEREDOC}${reading.heredocs.length - 1}`
@@ -548,6 +549,7 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; bodie
       }
     } else if (c === '\n' && pending.length > 0) {
       out += '\n'
+      if (isSeparator(c)) segmentStart = out.length
       let at = i + 1
       for (const doc of pending) {
         const body: string[] = []
@@ -589,6 +591,7 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; bodie
       i = at - 1
     } else {
       out += c
+      if (isSeparator(c)) segmentStart = out.length
     }
   }
   // A heredoc whose line ends the text has no body yet.

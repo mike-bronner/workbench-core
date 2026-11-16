@@ -31,9 +31,37 @@ const hasShortFlag = (arg: string, letter: string, valued: string): boolean => {
   return false
 }
 
-const optionsOf = (args: readonly string[]): readonly string[] => {
-  const end = args.findIndex(arg => !arg.startsWith('-') || arg === '--')
-  return end === -1 ? args : args.slice(0, end)
+function pythonOptionsOf(args: readonly string[]): readonly string[] {
+  const options: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] as string
+    if (!arg.startsWith('-') || arg === '-' || arg === '--') break
+    options.push(arg)
+    const valued = /^-[A-Za-z]*?([cmWX])(.*)$/.exec(arg)
+    if (valued?.[1] === 'c' || valued?.[1] === 'm') break
+    if (valued?.[2] === '' || arg === '--check-hash-based-pycs') i++
+  }
+  return options
+}
+
+const GREP_SILENT = /^--(quiet|silent|count|files-with-matches|files-without-match)$/
+const GREP_VALUED = /^--(regexp|file|max-count|after-context|before-context|context|label|include|exclude|exclude-from|exclude-dir|directories|devices|binary-files|group-separator)$/
+
+function printsNoLines(args: readonly string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] as string
+    if (arg === '--') return false
+    if (GREP_SILENT.test(arg)) return true
+    if (GREP_VALUED.test(arg)) i++
+    if (!/^-[A-Za-z]/.test(arg)) continue
+    for (const [at, c] of [...arg.slice(1)].entries()) {
+      if ('qclL'.includes(c)) return true
+      if (!'efmABCdD'.includes(c)) continue
+      if (at === arg.length - 2) i++
+      break
+    }
+  }
+  return false
 }
 
 const wrapperWordsOf = (statement: Statement, wrapper: string): readonly string[] => {
@@ -81,12 +109,12 @@ function adviceOf(statement: Statement): string | undefined {
   if (Object.hasOwn(AT_END, name)) return AT_END[name]
   if (isFlushedByWrapper(statement)) return undefined
   if (Object.hasOwn(ALWAYS, name)) return ALWAYS[name]
-  if (name === 'grep') return args.includes('--line-buffered') ? undefined : use('grep --line-buffered')
+  if (name === 'grep') return args.includes('--line-buffered') || printsNoLines(args) ? undefined : use('grep --line-buffered')
   if (name === 'sed') return sedAdviceOf(args)
   if (name === 'jq') return args.includes('--unbuffered') ? undefined : use('jq --unbuffered')
   if (AWKS.has(name)) return awkAdviceOf(args)
   if (isPython(name)) {
-    const isUnbuffered = statement.assignments.some(word => /^PYTHONUNBUFFERED=./.test(word)) || optionsOf(args).some(arg => hasShortFlag(arg, 'u', 'cmWX'))
+    const isUnbuffered = statement.assignments.some(word => /^PYTHONUNBUFFERED=./.test(word)) || pythonOptionsOf(args).some(arg => hasShortFlag(arg, 'u', 'cmWX'))
     return isUnbuffered ? undefined : use(`${name} -u`)
   }
   return undefined

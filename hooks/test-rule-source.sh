@@ -331,21 +331,16 @@ echo "every statement of the commit approval rule names the ledger unit-commit e
 DENIED='nothing approved is denied|no request or pick approved is denied|no typed request and no pick is denied'
 for source in "$ROOT/README.md" "$ROOT/hooks/mods/prompt-rules.ts"; do
   stated="$(grep -cE "$DENIED" "$source")"
-  bare="$(grep -E "$DENIED" "$source" | grep -cvE 'outside a ledger unit worktree with no \\?`origin\\?` remote now or at its add, a local merge or pull that lands a unit branch')"
+  bare="$(grep -E "$DENIED" "$source" | grep -cvE 'outside a ledger unit worktree, a local merge or pull that lands a unit branch')"
   if [ "$stated" -gt 0 ] && [ "$bare" -eq 0 ]; then
     ok "${source#"$ROOT"/} names the exemption and the unit landing in each of its $stated statements"
   else
     no "${source#"$ROOT"/} names the exemption and the unit landing in each statement" "$bare of $stated statements leave them out"
   fi
-  if grep -qE 'an \\?`origin\\?` remote, had one at the add, or whose remotes cannot be read' "$source"; then
-    ok "${source#"$ROOT"/} says a unit with an origin remote now or at the add, or unreadable remotes, asks"
+  if grep -qE "ledger branch,? (and the whole tree staged, )?whatever the repository's remotes" "$source" && ! grep -qiE 'origin\\?` remote now|had one at the add|records at the add whether|remote named \\?`origin\\?`' "$source"; then
+    ok "${source#"$ROOT"/} says a unit commit runs free whatever the remotes, and keeps no origin condition"
   else
-    no "${source#"$ROOT"/} says a unit with an origin remote now or at the add, or unreadable remotes, asks" "no statement of the origin rule"
-  fi
-  if grep -qE 'records at the add whether the repository had an \\?`origin\\?`' "$source"; then
-    ok "${source#"$ROOT"/} states the origin record the add makes"
-  else
-    no "${source#"$ROOT"/} states the origin record the add makes" "no statement of the record"
+    no "${source#"$ROOT"/} says a unit commit runs free whatever the remotes, and keeps no origin condition" "no statement of the free commit, or a stale origin condition"
   fi
   if grep -qE 'A local \\?`git merge\\?` or \\?`git pull\\?` that lands a ledger unit branch counts as a commit in every tree' "$source"; then
     ok "${source#"$ROOT"/} says a local merge or pull that lands a unit branch counts as a commit"
@@ -380,10 +375,9 @@ if grep -qF '**The merge gate guards against mistakes, not against evasion**' "$
 else
   no "README.md scopes the merge gate to mistakes and names the alias and self-remote routes" "no scope statement, or a route left out"
 fi
-has "rule 6 names the exemption and the landing in its denial" 'a commit outside a ledger unit worktree with no `origin` remote now or at its add, a local merge or pull that lands a unit branch, a push, merge, release'
-has "rule 6 states the unit commit with no question"  'The one exception is a plain commit in a unit worktree the provisioning ledger recorded, with HEAD on that unit.s branch, in a repository with no `origin` remote now and none when the worktree was added: the main session runs it with no question'
-has "rule 6 states the origin record the add makes"   'The ledger records at the add whether the repository had an `origin`, so renaming or removing that remote later frees nothing'
-has "rule 6 says a unit with an origin remote asks"   'A unit whose repository has an `origin` remote, had one at the add, or whose remotes cannot be read asks Mike before each commit'
+has "rule 6 names the exemption and the landing in its denial" 'a commit outside a ledger unit worktree, a local merge or pull that lands a unit branch, a push, merge, release'
+has "rule 6 states the unit commit with no question"  'The one exception is a plain commit in a unit worktree the provisioning ledger recorded, with HEAD on that unit.s branch: the main session runs it with no question, whatever the repository.s remotes'
+lacks "rule 6 keeps no origin condition on a unit commit" 'origin` remote now|had one at the add|records at the add whether|asks Mike before each commit'
 has "rule 6 counts a unit landing as a commit"        'A local `git merge` or `git pull` that lands a ledger unit branch counts as a commit in every tree, so it asks Mike first, whatever its options, a fast-forward included'
 has "rule 6 reads a pull from any source"             'A `git pull` lands one from any source, a remote included'
 has "rule 6 asks when refs or the ledger are unread"  'One whose merged refs or the ledger cannot be read asks too'

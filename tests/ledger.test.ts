@@ -103,7 +103,7 @@ describe('AC1: a worktree add', () => {
       const answer = await bash($, b, line as string)
       expect([answer.deny, answer.reached]).toEqual([undefined, true])
       expect(entries(b).map(({ createdAt, ...rest }) => [typeof createdAt, rest])).toEqual([
-        ['number', { project: '/repo', session: SID, unit: 'unit-a', worktree: path, branch: 'unit/a', database: DB, connection: '', isDatabaseCreated: false, hasOrigin: true }],
+        ['number', { project: '/repo', session: SID, unit: 'unit-a', worktree: path, branch: 'unit/a', database: DB, connection: '', isDatabaseCreated: false }],
       ])
       expect(answer.context.join('\n')).toContain(`Its unit test database name is ${DB}.`)
     })
@@ -430,7 +430,7 @@ describe('AC4: the commit gate lets a unit branch be made and deleted, and asks 
 
   test('a catch-up merge inside a unit tree runs with no question, and a merge of another unit there asks', async ($, on) => {
     const b = await inUnit($, on)
-    seed(b, [entry({ session: SID, hasOrigin: false }), entry({ unit: 'unit-b', worktree: `${ROOT}/unit-b`, branch: 'unit/b', database: 'wt_repo_unit_b_testing' })])
+    seed(b, [entry({ session: SID }), entry({ unit: 'unit-b', worktree: `${ROOT}/unit-b`, branch: 'unit/b', database: 'wt_repo_unit_b_testing' })])
     expect(await bash($, b, `git -C ${TREE} merge --no-ff feat/x`)).toEqual({ deny: undefined, reached: true, context: [] })
     const answer = await bash($, b, `git -C ${TREE} merge --no-ff unit/b`)
     expect(answer.reached).toBe(false)
@@ -574,7 +574,7 @@ const NOT_APPROVED = /was refused: Mike has not approved it\./
 
 async function inUnit($: Engine, on: Parameters<typeof bench>[0], branch: string | null = 'unit/a'): Promise<World> {
   const b = await attended($, on)
-  seed(b, [entry({ session: SID, hasOrigin: false })])
+  seed(b, [entry({ session: SID })])
   b.repos[TREE] = { head: 'c2', pushed: 'c2', branch, originHead: 'main' }
   b.trees[TREE] = 'M  a.ts\0'
   return b
@@ -664,130 +664,41 @@ describe('AC11: a plain commit in a ledger worktree on its unit branch runs with
   })
 })
 
-describe('a unit from a repository with an origin remote asks before each commit', () => {
-  test('the plain unit commit is refused with the commit question, and the dialog gets no answer', async ($, on) => {
-    const b = await inUnit($, on)
-    b.repos[TREE] = { ...b.repos[TREE], originUrl: 'git@github.com:o/r.git' }
-    const answer = await bash($, b, UNIT_COMMIT)
-    expect([answer.reached, ASKS.commit.test(answer.deny ?? '')]).toEqual([false, true])
-    expect(await permission($, UNIT_COMMIT)).toBeUndefined()
-  })
-
-  test('once Mike asks for the commit, the same line runs', async ($, on) => {
-    const b = await inUnit($, on)
-    b.repos[TREE] = { ...b.repos[TREE], originUrl: 'git@github.com:o/r.git' }
-    expect((await bash($, b, UNIT_COMMIT)).reached).toBe(false)
-    await $.prompt.submit({ text: 'commit it', wait: false, origin: PERSON })
-    expect(await bash($, b, UNIT_COMMIT)).toEqual({ deny: undefined, reached: true, context: [] })
-  })
-
-  test('an origin beside other remotes still asks', async ($, on) => {
-    const b = await inUnit($, on)
-    b.repos[TREE] = { ...b.repos[TREE], remoteUrls: 'remote.fork.url git@github.com:me/r.git\nremote.origin.url /srv/prod.git' }
-    expect((await bash($, b, UNIT_COMMIT)).deny).toMatch(ASKS.commit)
-    expect(await permission($, UNIT_COMMIT)).toBeUndefined()
-  })
-
-  test('a repository whose only remote has another name keeps the free commit', async ($, on) => {
-    const b = await inUnit($, on)
-    b.repos[TREE] = { ...b.repos[TREE], remoteUrls: 'remote.upstream.url git@github.com:o/r.git' }
-    expect(await bash($, b, UNIT_COMMIT)).toEqual({ deny: undefined, reached: true, context: [] })
-    expect(await permission($, UNIT_COMMIT)).toEqual({ behavior: 'allow' })
-  })
-
+describe('a unit commit runs with no question whatever the repository remotes', () => {
   for (const [name, repo] of [
-    ['a partial-clone origin, which git remote -v prints with a filter after (fetch)', { remoteUrls: 'remote.origin.url /srv/prod.git\nremote.origin.promisor true\nremote.origin.partialclonefilter blob:none', remotesShown: 'origin\t/srv/prod.git (fetch) [blob:none]\norigin\t/srv/prod.git (push)\n' }],
-    ['an origin whose URL holds a space', { remoteUrls: 'remote.origin.url /srv/prod repo.git', remotesShown: 'origin\t/srv/prod repo.git (fetch)\norigin\t/srv/prod repo.git (push)\n' }],
-    ['an origin with only a pushurl', { remoteUrls: 'remote.origin.pushurl /srv/prod.git', remotesShown: 'origin\t/srv/prod.git (push)\n' }],
+    ['an origin', { originUrl: 'git@github.com:o/r.git' }],
+    ['an origin beside other remotes', { remoteUrls: 'remote.fork.url git@github.com:me/r.git\nremote.origin.url /srv/prod.git' }],
+    ['only a remote with another name', { remoteUrls: 'remote.upstream.url git@github.com:o/r.git' }],
+    ['no remote at all', { remoteUrls: '' }],
+    ['remotes that cannot be read', { remoteUrls: null }],
   ] as const) {
-    test(`${name} still asks`, async ($, on) => {
+    test(`a repository with ${name} keeps the free commit`, async ($, on) => {
       const b = await inUnit($, on)
       b.repos[TREE] = { ...b.repos[TREE], ...repo }
-      const answer = await bash($, b, UNIT_COMMIT)
-      expect([answer.reached, ASKS.commit.test(answer.deny ?? '')]).toEqual([false, true])
-      expect(await permission($, UNIT_COMMIT)).toBeUndefined()
+      expect(await bash($, b, UNIT_COMMIT)).toEqual({ deny: undefined, reached: true, context: [] })
+      expect(await permission($, UNIT_COMMIT)).toEqual({ behavior: 'allow' })
     })
   }
 
-  test('a repository with no remote at all keeps the free commit', async ($, on) => {
-    const b = await inUnit($, on)
-    b.repos[TREE] = { ...b.repos[TREE], remoteUrls: '' }
-    expect(await bash($, b, UNIT_COMMIT)).toEqual({ deny: undefined, reached: true, context: [] })
-    expect(await permission($, UNIT_COMMIT)).toEqual({ behavior: 'allow' })
-  })
-
-  test('remotes that cannot be read count as an origin, and the commit asks', async ($, on) => {
-    const b = await inUnit($, on)
-    b.repos[TREE] = { ...b.repos[TREE], remoteUrls: null }
-    const answer = await bash($, b, UNIT_COMMIT)
-    expect([answer.reached, ASKS.commit.test(answer.deny ?? '')]).toEqual([false, true])
-    expect(await permission($, UNIT_COMMIT)).toBeUndefined()
-  })
-})
-
-describe('the ledger records at the add whether the repository had an origin, and a unit that had one keeps asking', () => {
-  async function added($: Engine, on: Parameters<typeof bench>[0], remoteUrls: string | null): Promise<World> {
+  test('a unit added in a repository with an origin records no origin field, and its commit runs with no question', async ($, on) => {
     const b = await attended($, on)
-    b.repos['/repo'] = { ...b.repos['/repo'], remoteUrls }
     expect((await bash($, b, ADD)).reached).toBe(true)
-    b.repos[TREE] = { head: 'c2', pushed: 'c2', branch: 'unit/a', originHead: 'main', remoteUrls: '' }
+    expect(entries(b).map(other => 'hasOrigin' in other)).toEqual([false])
+    b.repos[TREE] = { head: 'c2', pushed: 'c2', branch: 'unit/a', originHead: 'main', originUrl: 'git@github.com:o/r.git' }
     b.trees[TREE] = 'M  a.ts\0'
-    return b
-  }
-
-  for (const [name, remoteUrls] of [
-    ['renamed', 'remote.o2.url git@github.com:o/r.git'],
-    ['removed', ''],
-  ] as const) {
-    test(`a unit added with an origin asks before a commit after origin is ${name}`, async ($, on) => {
-      const b = await added($, on, 'remote.origin.url git@github.com:o/r.git')
-      expect(entries(b).map(other => other.hasOrigin)).toEqual([true])
-      b.repos[TREE] = { ...b.repos[TREE], remoteUrls }
-      const answer = await bash($, b, UNIT_COMMIT)
-      expect([answer.reached, ASKS.commit.test(answer.deny ?? '')]).toEqual([false, true])
-      expect(await permission($, UNIT_COMMIT)).toBeUndefined()
-    })
-  }
-
-  test('a unit added with no origin, that still has none, commits with no question', async ($, on) => {
-    const b = await added($, on, 'remote.upstream.url git@github.com:o/r.git')
-    expect(entries(b).map(other => other.hasOrigin)).toEqual([false])
     expect(await bash($, b, UNIT_COMMIT)).toEqual({ deny: undefined, reached: true, context: [] })
     expect(await permission($, UNIT_COMMIT)).toEqual({ behavior: 'allow' })
   })
 
-  test('a unit added with no origin asks once an origin appears', async ($, on) => {
-    const b = await added($, on, '')
-    expect(entries(b).map(other => other.hasOrigin)).toEqual([false])
-    b.repos[TREE] = { ...b.repos[TREE], remoteUrls: 'remote.origin.url /srv/prod.git' }
-    expect((await bash($, b, UNIT_COMMIT)).deny).toMatch(ASKS.commit)
-    expect(await permission($, UNIT_COMMIT)).toBeUndefined()
-  })
-
-  test('an add whose remotes cannot be read records an origin, and the unit asks', async ($, on) => {
-    const b = await added($, on, null)
-    expect(entries(b).map(other => other.hasOrigin)).toEqual([true])
-    expect((await bash($, b, UNIT_COMMIT)).deny).toMatch(ASKS.commit)
-    expect(await permission($, UNIT_COMMIT)).toBeUndefined()
-  })
-
-  test('an entry written before the record existed still reads, and its unit asks before a commit', async ($, on) => {
-    const b = await inUnit($, on)
-    const { hasOrigin, ...old } = entry({ session: SID })
-    seed(b, [old])
-    expect(hasOrigin).toBeUndefined()
-    const answer = await bash($, b, UNIT_COMMIT)
-    expect([answer.reached, ASKS.commit.test(answer.deny ?? '')]).toEqual([false, true])
-    expect(await permission($, UNIT_COMMIT)).toBeUndefined()
-    expect((await bash($, b, `git worktree remove ${TREE}`)).reached).toBe(true)
-  })
-
-  test('an entry whose record is not true or false makes the ledger unreadable, and the unit asks', async ($, on) => {
-    const b = await inUnit($, on)
-    b.files.set(LEDGER, JSON.stringify({ version: 1, entries: [{ ...entry({ session: SID }), hasOrigin: 'no' }] }))
-    expect((await bash($, b, UNIT_COMMIT)).deny).toMatch(ASKS.commit)
-    expect((await bash($, b, `git worktree remove ${TREE}`)).deny).toContain('cannot be read')
-  })
+  for (const hasOrigin of [true, false]) {
+    test(`a ledger whose entry carries hasOrigin ${hasOrigin} still reads, and its unit commits and is removed with no question`, async ($, on) => {
+      const b = await inUnit($, on)
+      b.files.set(LEDGER, JSON.stringify({ version: 1, entries: [{ ...entry({ session: SID }), hasOrigin }] }))
+      expect(await bash($, b, UNIT_COMMIT)).toEqual({ deny: undefined, reached: true, context: [] })
+      expect(await permission($, UNIT_COMMIT)).toEqual({ behavior: 'allow' })
+      expect((await bash($, b, `git worktree remove ${TREE}`)).reached).toBe(true)
+    })
+  }
 })
 
 describe('AC12: the unit-commit exemption reaches no push, merge into the default branch, release or rewrite', () => {
@@ -924,7 +835,6 @@ describe('AC15: only the guard writes the ledger, and a forged entry reaches not
   test('a symbolic-link root into the shared worktrees folder is followed, and the unit runs through it', async ($, on) => {
     const real = `${HOME}/Developer/worktrees/elsewhere/repo`
     const b = await attended($, on)
-    b.repos['/repo'] = { ...b.repos['/repo'], remoteUrls: '' }
     let hasTree = false
     b.stat = path => (path === ROOT ? { kind: 'dir', isLink: true, realPath: real } : path === TREE && hasTree ? { kind: 'dir', isLink: false, realPath: `${real}/unit-a` } : undefined)
     expect((await bash($, b, ADD)).reached).toBe(true)

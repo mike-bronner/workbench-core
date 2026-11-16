@@ -674,9 +674,6 @@ const remotesOf = ($: EngineInterface, cwd: string): Promise<{ name: string; url
       () => undefined,
     )
 
-const remoteNamesOf = ($: EngineInterface, cwd: string): Promise<string[] | undefined> =>
-  $.process.run(['git', '-C', cwd, 'remote'], { timeoutMs: 10_000 }).then(({ exitCode, stdout }) => (exitCode === 0 ? stdout.split('\n') : undefined), () => undefined)
-
 async function pendingReleaseOf($: EngineInterface, command: string): Promise<PendingRelease | undefined> {
   const cwd = await $.session.cwd()
   const resolved = entriesOf(await configOf($, cwd, '^remote\\..*\\.gh-resolved$'))
@@ -1636,19 +1633,18 @@ async function isRealUnit($: EngineInterface, home: string, project: string, uni
   return (await realPathOf($, normalPathOf(path) ?? path)) === `${await realPathOf($, rootOf(home, project))}/${unit}`
 }
 
-async function ledgerUnitOf($: EngineInterface, dir: string): Promise<LedgerEntry | undefined> {
+async function isLedgerUnitTree($: EngineInterface, dir: string | undefined): Promise<boolean> {
   const home = await $.env.get('HOME')
-  if (!home) return undefined
+  if (dir === undefined || !home) return false
   const project = await $.session.root()
   const read = await ledgerRead($, ledgerPathOf(home))
   const entry = 'corrupt' in read ? undefined : unitEntryOf(read.entries, home, project, await $.session.id(), dir)
-  if (entry === undefined || entry.worktree === null || (await rootProblemOf($, home, project)) !== undefined || !(await isRealUnit($, home, project, entry.unit, entry.worktree))) return undefined
-  return (await gitOut($, entry.worktree, ['symbolic-ref', '-q', 'HEAD'])) === `refs/heads/${entry.branch}` ? entry : undefined
+  if (entry === undefined || entry.worktree === null || (await rootProblemOf($, home, project)) !== undefined || !(await isRealUnit($, home, project, entry.unit, entry.worktree))) return false
+  return (await gitOut($, entry.worktree, ['symbolic-ref', '-q', 'HEAD'])) === `refs/heads/${entry.branch}`
 }
 
 async function isUnitCommitLine($: EngineInterface, command: string): Promise<boolean> {
-  const dir = plainCommitDirOf(parseShell(command))
-  return dir !== undefined && (await ledgerUnitOf($, dir))?.hasOrigin === false && (await remoteNamesOf($, dir))?.includes('origin') === false
+  return isLedgerUnitTree($, plainCommitDirOf(parseShell(command)))
 }
 
 async function ledgerCall($: EngineInterface, e: { command: string; agentId?: string; run_in_background?: boolean }, command: LedgerCommand, next: (e: never) => Promise<ToolCallResult>): Promise<ToolCallResult> {
@@ -1670,8 +1666,7 @@ async function ledgerCall($: EngineInterface, e: { command: string; agentId?: st
     for (const entry of read.entries.filter(other => other.project === project)) names[entry.unit] = await unitDatabaseOf(project, entry.unit)
   }
   const rootProblem = isTreeLine ? await rootProblemOf($, home, project) : undefined
-  const hasOrigin = command.kind === 'add' ? ((await remoteNamesOf($, project))?.includes('origin') ?? true) : true
-  const facts = { lane, home, project, cwd: await $.session.cwd(), session: await $.session.id(), now: await $.clock.now(), isPathTaken, isRealTree, database, names, rootProblem, hasOrigin }
+  const facts = { lane, home, project, cwd: await $.session.cwd(), session: await $.session.id(), now: await $.clock.now(), isPathTaken, isRealTree, database, names, rootProblem }
   const plan = ledgerPlanOf(command, facts, read, path)
   if (plan === 'pass') return next(e as never)
   if ('deny' in plan) return plan

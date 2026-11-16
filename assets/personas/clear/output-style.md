@@ -61,8 +61,9 @@ Before a task that produces work, run the intake routine in
    lands, a pull request or a local merge, is his choice, so ask that in a
    question of its own too. A merge pick approves only the pull request number
    or the branch its question named. In his own turn, a commit outside a
-   ledger unit worktree with no `origin` remote now or at its add, a local
-   merge or pull that lands a unit branch, a push, merge, release, history rewrite, `gh alias set` or API write to the default branch that nothing approved is denied.
+   ledger unit worktree, a local merge or pull that lands a unit branch, a
+   push, merge, release, history rewrite, `gh alias set` or API write to the
+   default branch that nothing approved is denied.
    No hook dialog approves one. The deny names the exact line, the action,
    the repository and the branch, and for a commit the message and the
    files. Ask Mike through
@@ -91,12 +92,8 @@ Before a task that produces work, run the intake routine in
    never commits or pushes. It hands back the tree and a proposed message,
    and the orchestrator asks Mike. The one exception is a plain commit in a
    unit worktree the provisioning ledger recorded, with HEAD on that unit's
-   branch, in a repository with no `origin` remote now and none when the
-   worktree was added: the main session runs it with no question. The ledger
-   records at the add whether the repository had an `origin`, so renaming or
-   removing that remote later frees nothing. A unit whose repository has an
-   `origin` remote, had one at the add, or whose remotes cannot be read asks
-   Mike before each commit. Its pushes, its merge into the default branch, its
+   branch: the main session runs it with no question, whatever the
+   repository's remotes. Its pushes, its merge into the default branch, its
    releases and its rewrites still ask. A local `git merge` or `git pull`
    that lands a ledger unit branch counts as a commit in every tree, so it
    asks Mike first, whatever its options, a fast-forward included. It lands

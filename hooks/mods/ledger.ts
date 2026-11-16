@@ -18,7 +18,6 @@ export type LedgerEntry = {
   database: string
   connection: string
   isDatabaseCreated: boolean
-  hasOrigin?: boolean
 }
 
 export type LedgerRead = { entries: LedgerEntry[] } | { corrupt: string }
@@ -46,7 +45,6 @@ export type LedgerFacts = {
   database: string | undefined
   names: Readonly<Record<string, string>>
   rootProblem: string | undefined
-  hasOrigin: boolean
 }
 
 export const LEDGER_RULES =
@@ -94,8 +92,7 @@ const isEntry = (value: unknown): value is LedgerEntry => {
     typeof e.branch === 'string' &&
     typeof e.database === 'string' &&
     typeof e.connection === 'string' &&
-    typeof e.isDatabaseCreated === 'boolean' &&
-    (e.hasOrigin === undefined || typeof e.hasOrigin === 'boolean')
+    typeof e.isDatabaseCreated === 'boolean'
   )
 }
 
@@ -311,7 +308,7 @@ export function ledgerPlanOf(command: LedgerCommand, facts: LedgerFacts, read: L
     if (facts.isPathTaken) return refusal(`${worktree} already exists, and a tree made by hand may be there`, 'Pick a unit folder that does not exist yet.')
     const taken = entries.find(entry => !isCleaned(entry) && (entry.worktree === worktree || entry.database === facts.database))
     if (taken !== undefined) return refusal(`the provisioning ledger already holds ${taken.worktree === worktree ? worktree : `the database name ${facts.database}`}`, 'Pick another unit folder name.')
-    const entry: LedgerEntry = { project: facts.project, session: facts.session, createdAt: facts.now, unit, worktree, branch: command.branch, database: facts.database, connection: '', isDatabaseCreated: false, hasOrigin: facts.hasOrigin }
+    const entry: LedgerEntry = { project: facts.project, session: facts.session, createdAt: facts.now, unit, worktree, branch: command.branch, database: facts.database, connection: '', isDatabaseCreated: false }
     const isThis = (other: LedgerEntry): boolean => other.worktree === worktree && other.session === facts.session && other.createdAt === facts.now
     return {
       before: current => [...current, entry],

@@ -55,14 +55,15 @@ Before a task that produces work, run the intake routine in
    Mike has reviewed the tree, ask it through `AskUserQuestion`, on its own.
    Its words name only the commit. His answer is the approval. It approves
    one commit on the branch HEAD held when he picked, and no push and no
-   merge. Run that commit yourself as a plain line, and no permission prompt
+   merge into the default branch. Run that commit yourself as a plain line, and no permission prompt
    opens. Run no checkout, switch, stash or reset before it. Once the commit
    has landed, ask about the push in a question of its own. How the branch
    lands, a pull request or a local merge, is his choice, so ask that in a
    question of its own too. A merge pick approves only the pull request number
    or the branch its question named. In his own turn, a commit outside a
-   ledger unit worktree, a push, merge, release, history rewrite, `gh alias
-   set` or API write to the default branch that nothing approved is denied.
+   ledger unit worktree, a local merge or pull that lands a unit branch, a
+   push, merge, release, history rewrite, `gh alias set` or API write to the
+   default branch that nothing approved is denied.
    No hook dialog approves one. The deny names the exact line, the action,
    the repository and the branch, and for a commit the message and the
    files. Ask Mike through
@@ -91,8 +92,19 @@ Before a task that produces work, run the intake routine in
    never commits or pushes. It hands back the tree and a proposed message,
    and the orchestrator asks Mike. The one exception is a plain commit in a
    unit worktree the provisioning ledger recorded, with HEAD on that unit's
-   branch: the main session runs it with no question. Its pushes, its merge
-   into the default branch, its releases and its rewrites still ask. An Index
+   branch: the main session runs it with no question, whatever the
+   repository's remotes. Its pushes, its merge into the default branch, its
+   releases and its rewrites still ask. A local `git merge` or `git pull`
+   that lands a ledger unit branch counts as a commit in every tree, so it
+   asks Mike first, whatever its options, a fast-forward included. It lands
+   one when a branch or ref it merges names a unit branch the ledger
+   recorded for this project. A `git pull` lands one from any source, a
+   remote included. One whose merged refs or the ledger cannot be read asks
+   too. A
+   catch-up merge of any other branch, such as `git merge origin/main`, runs
+   with no question. A commit request approves such merges for its turn, and
+   a commit pick approves one. A merge into the default branch stays a
+   merge. An Index
    pipeline run never asks to commit or push. A plan file needs no question
    either: create or edit it without asking, in prose or through
    `AskUserQuestion`, and let Mike approve its content when you present it.

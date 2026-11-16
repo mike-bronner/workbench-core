@@ -93,6 +93,30 @@ describe('the commit guard gives workbench-dev-team 0.55.0\'s verdict on its cor
   }
 })
 
+describe('the commit guard leaves a local merge it can read to the landing gate, and refuses one in program code', () => {
+  for (const line of [
+    'git merge --no-ff unit/a',
+    'git -C /repo merge --no-ff unit/a',
+    'git merge origin/main',
+    'git merge --continue',
+    'git pull --no-ff . unit/a',
+    'git -c alias.m=merge m --no-ff unit/a',
+    'git merge-base main x',
+    'git log --merges',
+    'git branch --merged',
+  ]) {
+    test(`every lane passes it here: ${JSON.stringify(line)}`, () => {
+      for (const lane of LANES) expect([lane, verdictOf(line, CALLERS[lane])]).toEqual([lane, undefined])
+    })
+  }
+  for (const line of ["git -c alias.m='!git merge unit/a' m", 'python3 -c "import os; os.system(\'git merge --no-ff unit/a\')"', 'bash -c "git merge --no-ff unit/a"']) {
+    test(`a merge the ask rules cannot see is refused in the main loop as a line to run plainly: ${JSON.stringify(line)}`, () => {
+      expect(verdictOf(line, CALLERS.main)).toBe(PLAIN_REFUSAL)
+      expect(verdictOf(line, CALLERS['sub-agent'])).toBe(SUBAGENT_REFUSAL)
+    })
+  }
+})
+
 describe('the commit guard: each refusal names its rule', () => {
   for (const [line, lane, words] of [
     ['git push --force', 'main', 'forces or deletes'],
@@ -305,6 +329,16 @@ describe('the commit guard: a for loop whose body only reads is judged as a read
       expect(verdictOf(line, CALLERS['sub-agent'])).toBeUndefined()
     })
   }
+
+  test('a loop body on a feature branch that merges a ref built at run time, or makes a commit, is refused for a sub-agent', async ($, on) => {
+    const b = bench(on)
+    b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'feat/x', originHead: 'main' }
+    await $.session.start(start())
+    await $.prompt.submit({ text: 'delegate it', wait: false, origin: PERSON })
+    expect(await refusalOf($, b, 'for s in a b; do git merge --ff-only "$s"; done', 'a1')).toBe(SUBAGENT_REFUSAL.deny)
+    expect(await refusalOf($, b, 'for s in a b; do git merge origin/main; done', 'a1')).toBe(SUBAGENT_REFUSAL.deny)
+    expect(await refusalOf($, b, 'for s in a b; do git merge --ff-only origin/main; done', 'a1')).toBeUndefined()
+  })
 
   for (const line of ['for s in a b; do git pull; done', 'for s in a b; do git merge "$s"; done']) {
     test(`the commit guard leaves a local pull or merge in a loop to the merge gate: ${JSON.stringify(line)}`, () => {

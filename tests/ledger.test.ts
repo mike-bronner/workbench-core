@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 
 import { AGENT_WORKTREE_REFUSAL, ENTER_WORKTREE_REFUSAL, EXIT_WORKTREE_REFUSAL, provisioningRefusal } from '../hooks/mods/guards'
 import type { LedgerEntry } from '../hooks/mods/ledger'
-import { LEDGER_WRITE_REFUSAL, LOCK_TRIES, LOCK_WAIT_MS, MAX_DATABASE, NAME_FORM, PRUNE_AFTER_MS, ROOT_FORM, ledgerCommandOf, unitDatabaseOf } from '../hooks/mods/ledger'
+import { LEDGER_WRITE_REFUSAL, LOCK_TRIES, LOCK_WAIT_MS, MAX_DATABASE, NAME_FORM, PRUNE_AFTER_MS, ROOT_FORM, ledgerCommandOf, namesUnitBranch, unitBranchesOf, unitDatabaseOf } from '../hooks/mods/ledger'
 import { SUBAGENT_REFUSAL } from '../hooks/mods/commit-guard'
 import { parseShell } from '../hooks/mods/shell'
 import type { Bench } from './bench'
@@ -388,14 +388,76 @@ describe("a session removes only the units it recorded, and another session's un
   })
 })
 
-describe('AC4: the commit gate lets a unit branch be made, deleted and merged into a feature branch', () => {
-  for (const line of ['git branch unit/b', 'git branch -d unit/a', 'git branch -D unit/a', 'git branch -D other/b', 'git merge --no-ff unit/a', 'git -C /repo merge --no-ff -m "Merge unit/a" unit/a']) {
+describe('AC4: the commit gate lets a unit branch be made and deleted, and asks before it lands on a feature branch', () => {
+  for (const line of ['git branch unit/b', 'git branch -d unit/a', 'git branch -D unit/a', 'git branch -D other/b', 'git merge origin/main', 'git merge --no-ff main', 'git pull --no-ff . feat/y']) {
     test(`on a feature branch, with unit/a in the ledger, ${JSON.stringify(line)} runs with no question`, async ($, on) => {
       const b = await attended($, on)
       await bash($, b, ADD)
       expect(await bash($, b, line)).toEqual({ deny: undefined, reached: true, context: [] })
     })
   }
+
+  for (const line of [
+    'git merge --no-ff unit/a',
+    'git merge --ff-only unit/a',
+    'git merge -nm --squash unit/a',
+    'git merge --squash --no-squ unit/a',
+    'git pull --no-ff . unit/a',
+    'git -C /repo merge --no-ff -m "Merge unit/a" unit/a',
+  ]) {
+    test(`on a feature branch, with unit/a in the ledger, ${JSON.stringify(line)} asks Mike as a commit, and a commit request runs it`, async ($, on) => {
+      const b = await attended($, on)
+      await bash($, b, ADD)
+      const answer = await bash($, b, line)
+      expect(answer.reached).toBe(false)
+      expect(answer.deny).toMatch(ASKS.commit)
+      await $.prompt.submit({ text: 'commit it', wait: false, origin: PERSON })
+      expect(await bash($, b, line)).toEqual({ deny: undefined, reached: true, context: [] })
+    })
+  }
+
+  test('a unit branch that only another project recorded lands with no question', async ($, on) => {
+    const b = await attended($, on)
+    seed(b, [entry({ project: '/other' })])
+    expect(await bash($, b, 'git merge --no-ff unit/a')).toEqual({ deny: undefined, reached: true, context: [] })
+  })
+
+  test('a unit branch whose worktree is gone still asks when it lands', async ($, on) => {
+    const b = await attended($, on)
+    seed(b, [entry({ worktree: null })])
+    expect((await bash($, b, 'git merge --no-ff unit/a')).deny).toMatch(ASKS.commit)
+  })
+
+  test('a catch-up merge inside a unit tree runs with no question, and a merge of another unit there asks', async ($, on) => {
+    const b = await inUnit($, on)
+    seed(b, [entry({ session: SID }), entry({ unit: 'unit-b', worktree: `${ROOT}/unit-b`, branch: 'unit/b', database: 'wt_repo_unit_b_testing' })])
+    expect(await bash($, b, `git -C ${TREE} merge --no-ff feat/x`)).toEqual({ deny: undefined, reached: true, context: [] })
+    const answer = await bash($, b, `git -C ${TREE} merge --no-ff unit/b`)
+    expect(answer.reached).toBe(false)
+    expect(answer.deny).toMatch(ASKS.commit)
+    expect(await bash($, b, UNIT_COMMIT)).toEqual({ deny: undefined, reached: true, context: [] })
+  })
+
+  test('a sub-agent is refused a unit landing and a catch-up merge that makes a commit, and runs a catch-up merge that makes none', async ($, on) => {
+    const b = await attended($, on)
+    await bash($, b, ADD)
+    for (const line of ['git merge --no-ff unit/a', 'git merge --ff-only unit/a', 'git pull --no-ff . unit/a', 'git merge origin/main']) {
+      expect([line, await bash($, b, line, { agentId: SUB })]).toEqual([line, { deny: SUBAGENT_REFUSAL.deny, reached: false, context: [] }])
+    }
+    expect(await bash($, b, 'git merge --ff-only origin/main', { agentId: SUB })).toEqual({ deny: undefined, reached: true, context: [] })
+  })
+
+  test('the unit branch reader matches a branch the ledger recorded for this project, in any ref spelling', () => {
+    const branches = unitBranchesOf({ entries: [entry(), entry({ project: '/other', branch: 'unit/c' })] }, '/repo') ?? []
+    expect(branches).toEqual(['unit/a'])
+    for (const ref of ['unit/a', 'Unit/A', 'origin/unit/a', 'refs/heads/unit/a', 'refs/remotes/origin/unit/a', 'unit/a~2', 'unit/a^']) {
+      expect([ref, namesUnitBranch(ref, branches)]).toEqual([ref, true])
+    }
+    for (const ref of ['unit/ab', 'unit/a-b', 'main', 'origin/main', 'unit/c', 'xunit/a']) {
+      expect([ref, namesUnitBranch(ref, branches)]).toEqual([ref, false])
+    }
+    expect(unitBranchesOf({ corrupt: 'the file is not valid JSON' }, '/repo')).toBeUndefined()
+  })
 
   test('a merge of a unit branch into the default branch still asks Mike', async ($, on) => {
     const b = await attended($, on)
@@ -513,7 +575,7 @@ const NOT_APPROVED = /was refused: Mike has not approved it\./
 async function inUnit($: Engine, on: Parameters<typeof bench>[0], branch: string | null = 'unit/a'): Promise<World> {
   const b = await attended($, on)
   seed(b, [entry({ session: SID })])
-  b.repos[TREE] = { head: 'c2', pushed: 'c2', branch, originHead: 'main', originUrl: 'git@github.com:o/r.git' }
+  b.repos[TREE] = { head: 'c2', pushed: 'c2', branch, originHead: 'main' }
   b.trees[TREE] = 'M  a.ts\0'
   return b
 }
@@ -600,6 +662,43 @@ describe('AC11: a plain commit in a ledger worktree on its unit branch runs with
     expect(answer.deny).toContain('b.ts')
     expect(await permission($, UNIT_COMMIT)).toBeUndefined()
   })
+})
+
+describe('a unit commit runs with no question whatever the repository remotes', () => {
+  for (const [name, repo] of [
+    ['an origin', { originUrl: 'git@github.com:o/r.git' }],
+    ['an origin beside other remotes', { remoteUrls: 'remote.fork.url git@github.com:me/r.git\nremote.origin.url /srv/prod.git' }],
+    ['only a remote with another name', { remoteUrls: 'remote.upstream.url git@github.com:o/r.git' }],
+    ['no remote at all', { remoteUrls: '' }],
+    ['remotes that cannot be read', { remoteUrls: null }],
+  ] as const) {
+    test(`a repository with ${name} keeps the free commit`, async ($, on) => {
+      const b = await inUnit($, on)
+      b.repos[TREE] = { ...b.repos[TREE], ...repo }
+      expect(await bash($, b, UNIT_COMMIT)).toEqual({ deny: undefined, reached: true, context: [] })
+      expect(await permission($, UNIT_COMMIT)).toEqual({ behavior: 'allow' })
+    })
+  }
+
+  test('a unit added in a repository with an origin records no origin field, and its commit runs with no question', async ($, on) => {
+    const b = await attended($, on)
+    expect((await bash($, b, ADD)).reached).toBe(true)
+    expect(entries(b).map(other => 'hasOrigin' in other)).toEqual([false])
+    b.repos[TREE] = { head: 'c2', pushed: 'c2', branch: 'unit/a', originHead: 'main', originUrl: 'git@github.com:o/r.git' }
+    b.trees[TREE] = 'M  a.ts\0'
+    expect(await bash($, b, UNIT_COMMIT)).toEqual({ deny: undefined, reached: true, context: [] })
+    expect(await permission($, UNIT_COMMIT)).toEqual({ behavior: 'allow' })
+  })
+
+  for (const hasOrigin of [true, false]) {
+    test(`a ledger whose entry carries hasOrigin ${hasOrigin} still reads, and its unit commits and is removed with no question`, async ($, on) => {
+      const b = await inUnit($, on)
+      b.files.set(LEDGER, JSON.stringify({ version: 1, entries: [{ ...entry({ session: SID }), hasOrigin }] }))
+      expect(await bash($, b, UNIT_COMMIT)).toEqual({ deny: undefined, reached: true, context: [] })
+      expect(await permission($, UNIT_COMMIT)).toEqual({ behavior: 'allow' })
+      expect((await bash($, b, `git worktree remove ${TREE}`)).reached).toBe(true)
+    })
+  }
 })
 
 describe('AC12: the unit-commit exemption reaches no push, merge into the default branch, release or rewrite', () => {

@@ -205,9 +205,9 @@ const ALIAS_MERGE = 'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.m GIT_CONFIG_VALU
 describe('a GIT_CONFIG_* variable that only removes configuration is not read as an alias', () => {
   test('the reader: NOSYSTEM, and GLOBAL or SYSTEM set to /dev/null, leave the git statement as it is', () => {
     for (const line of REMOVES_CONFIG) {
-      expect([line, mergesOf(line), configuredMergesOf(line), rewritesOf(line), movesHead(line)]).toEqual([line, { local: [], pr: 0, targets: [] }, [], 0, false])
+      expect([line, mergesOf(line), configuredMergesOf(line), rewritesOf(line), movesHead(line)]).toEqual([line, { local: [], landings: [], pr: 0, targets: [] }, [], 0, false])
     }
-    expect(mergesOf('env GIT_CONFIG_GLOBAL=/dev/null git merge feat')).toEqual({ local: [''], pr: 0, targets: [{ refs: ['feat'] }] })
+    expect(mergesOf('env GIT_CONFIG_GLOBAL=/dev/null git merge feat')).toEqual({ local: [''], landings: [{ dir: '', refs: ['feat'] }], pr: 0, targets: [{ refs: ['feat'] }] })
   })
 
   test('the reader: a variable that can add configuration is still read as an unknown alias', () => {

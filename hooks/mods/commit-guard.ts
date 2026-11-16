@@ -15,7 +15,7 @@ type Found = {
 
 const W = '[^A-Za-z0-9_.-]'
 const SEG = '[^;&|\\n]'
-const GIT_OP = `git${W}(?:${SEG}*[^A-Za-z0-9_-])?(commit|push)(?:$|[^A-Za-z0-9_-])`
+const GIT_OP = `git${W}(?:${SEG}*[^A-Za-z0-9_-])?(commit|push|merge)(?:$|[^A-Za-z0-9_-])`
 const MERGE_OP = `gh${W}(?:${SEG}*[^A-Za-z0-9_-])?(?:pr\\s+merge|api${W}${SEG}*pulls/[^\\s/]+/merge|api${W}${SEG}*repos/\\S+/merges)(?:$|[^A-Za-z0-9_/-])`
 const MENTION = new RegExp(`(?:^|${W})(?:${GIT_OP}|${MERGE_OP})`, 'im')
 const FORCE_TEXT = new RegExp(
@@ -131,7 +131,7 @@ const withoutComments = (text: string): string =>
 const opsIn = (text: string): Op[] => {
   const ops: Op[] = []
   const match = new RegExp(MENTION.source, 'gim')
-  for (const m of text.matchAll(match)) ops.push(m[1] === undefined ? 'merge' : (m[1].toLowerCase() as Op))
+  for (const m of text.matchAll(match)) ops.push(m[1] === undefined ? 'merge' : m[1].toLowerCase() === 'push' ? 'push' : 'commit')
   return ops
 }
 

@@ -1398,6 +1398,95 @@ describe("a heredoc's text starts at a separator that ends the command at its ow
   })
 })
 
+describe('a shell that reads stdin inside a compound is flagged when the line feeds stdin', () => {
+  const unknowns = (line: string) => parseShell(line).unknowns
+  const heredocs = [
+    'for i in 1; do bash; done <<EOF\nrm -rf y\nEOF',
+    'if true; then bash; fi <<EOF\nrm -rf y\nEOF',
+    'while read l; do bash; done <<EOF\nrm -rf y\nEOF',
+    'until false; do bash; done <<EOF\nrm -rf y\nEOF',
+    'select x in a; do bash; done <<EOF\nrm -rf y\nEOF',
+    'case a in a) bash;; esac <<EOF\nrm -rf y\nEOF',
+    '(case a in a) bash;; esac) <<EOF\nrm -rf y\nEOF',
+  ]
+  const strings = [
+    "(bash) <<<'rm -rf y'",
+    "{ bash; } <<<'rm -rf y'",
+    "if true; then bash; fi <<<'rm -rf y'",
+    "if true; then :; else sh -s; fi <<<'rm -rf y'",
+    "( { bash; } ) <<<'rm -rf y'",
+    "(true; sudo bash) <<<'rm -rf y'",
+    "(x=$(bash)) <<<'rm -rf y'",
+    "(f() { :; }; bash) <<<'rm -rf y'",
+    "(case a in a) :;; esac; bash) <<<'rm -rf y'",
+  ]
+  const pipes = [
+    "printf 'rm -rf y' | (bash)",
+    'cat <<EOF | (bash)\nrm -rf y\nEOF',
+    "printf 'rm -rf y' | if true; then bash; fi",
+    "printf 'rm -rf y' | { true; bash; }",
+    "printf 'rm -rf y' | while true; do zsh; done",
+  ]
+
+  test('a heredoc on a keyword compound with a shell inside sets the stdin unknown', () => {
+    for (const line of heredocs) expect(unknowns(line)).toContain('stdin')
+  })
+
+  test('a here-string on a compound with a shell inside sets the stdin unknown', () => {
+    for (const line of strings) expect(unknowns(line)).toContain('stdin')
+  })
+
+  test('a pipe into a compound with a shell inside sets the stdin unknown', () => {
+    for (const line of pipes) expect(unknowns(line)).toContain('stdin')
+  })
+
+  test('a heredoc on a group or subshell is still read as the script of the shell in it', () => {
+    for (const line of ['(bash) <<EOF\nzap\nEOF', '{ bash; } <<EOF\nzap\nEOF']) {
+      expect(unknowns(line)).toEqual(['stdin'])
+      expect(statements(line).map(s => s.name)).toContain('zap')
+    }
+  })
+
+  test('a shell outside any compound keeps its reading', () => {
+    expect(unknowns('bash <<EOF\nzap\nEOF')).toEqual([])
+    expect(statements('bash <<EOF\nzap\nEOF').map(s => s.name)).toContain('zap')
+    expect(unknowns('printf x | bash')).toEqual(['stdin'])
+    expect(unknowns('bash <<<x')).toEqual(['stdin'])
+  })
+
+  test('a compound with no shell that reads stdin sets no unknown', () => {
+    for (const line of ['for i in 1; do cat; done <<EOF\nzap\nEOF', '(cat) <<<x', '{ cat; } <<<x', 'printf x | (cat)', 'printf x | if true; then cat; fi', 'if true; then bash -c y; fi <<<x', '(bash script.sh) <<<x']) {
+      expect(unknowns(line)).toEqual([])
+    }
+  })
+
+  test("a shell with its own heredoc on stdin reads that heredoc, not the compound's stdin", () => {
+    for (const line of ['(bash <<EOF\nzap\nEOF\n) <<<x', 'if true; then bash <<-EOF\nzap\nEOF\nfi <<<x', 'printf x | (bash 0<<EOF\nzap\nEOF\n)']) {
+      expect(unknowns(line)).toEqual([])
+      expect(statements(line).map(s => s.name)).toContain('zap')
+    }
+    expect(unknowns("(bash 3<<EOF\nzap\nEOF\n) <<<'rm -rf y'")).toContain('stdin')
+  })
+
+  test('a compound with a shell inside sets no unknown when nothing on the line feeds stdin', () => {
+    for (const line of ['(bash)', '{ bash; }', 'if true; then bash; fi', 'for i in 1; do bash; done', '(bash) > out', '(bash) 2>&1']) {
+      expect(unknowns(line)).toEqual([])
+    }
+  })
+
+  test('each closer ends its compound, so a shell after it is outside', () => {
+    for (const line of ['(:) <<<x; bash', '{ :; } <<<x; bash', 'if :; then :; fi <<<x; bash', 'for i in 1; do :; done <<<x; bash', 'while :; do :; done <<<x; bash', 'until :; do :; done <<<x; bash', 'select x in a; do :; done <<<x; bash', 'case a in a) :;; esac <<<x; bash', '(case a in a) :;; esac ) <<<x; bash', 'f() { :; }; printf x | cat; bash']) {
+      expect(unknowns(line)).toEqual([])
+    }
+  })
+
+  test('the frozen compat reading is unchanged', () => {
+    for (const line of [...heredocs, ...strings, ...pipes]) {
+      expect(commandsOf(line, true)).toEqual(oracleCommandsOf(line))
+    }
+  })
+})
+
 describe('the ${…} end readers reach each branch, and each changes where a $( ) ends', () => {
   const shape = (line: string) => statements(line).map(s => [s.name, s.args])
   const docs = (line: string) => statements(line).flatMap(s => s.heredocs.map(doc => [doc.delimiter, doc.body]))

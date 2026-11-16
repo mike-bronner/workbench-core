@@ -86,6 +86,15 @@ export const KEYWORDS: ReadonlySet<string> = new Set(['if', 'then', 'else', 'eli
 // redirect after one (`{ x; } >out`) is the group's.
 const CLOSERS: ReadonlySet<string> = new Set(['}', 'fi', 'done', 'esac'])
 
+const COMPOUNDS: ReadonlyMap<string, readonly string[]> = new Map<string, readonly string[]>([
+  ...['(', '{', 'if', 'for', 'while', 'until', 'select', 'case'].map((opener): [string, readonly string[]] => [opener, []]),
+  [')', ['(']],
+  ['}', ['{']],
+  ['fi', ['if']],
+  ['done', ['for', 'while', 'until', 'select']],
+  ['esac', ['case']],
+])
+
 // Reserved words after which a statement may not run.
 const BRANCHES: ReadonlySet<string> = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', 'case', 'for', 'select', 'function'])
 
@@ -629,6 +638,7 @@ type Raw = {
   depth: number
   isCertain: boolean
   pipedFrom?: Raw
+  isInFedCompound?: boolean
   // The indices in `words` of each word that holds a `$` or backtick the
   // shell expands (unquoted or inside double quotes).
   expanding: number[]
@@ -741,6 +751,18 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
   // or escaped `case` is an ordinary command name, and opens no case.
   let caseAt = -1
   let braces = 0
+  const compounds: string[] = []
+  const inside: Raw[] = []
+  let isFed = false
+  const track = (word: string) => {
+    const opens = COMPOUNDS.get(word)
+    if (opens?.length === 0) compounds.push(word)
+    else if (opens?.includes(compounds.at(-1) ?? '')) compounds.pop()
+  }
+  const collect = (raws: Raw[]) => {
+    if (compounds.length > 0) inside.push(...raws)
+    commands.push(...raws)
+  }
   const endWord = () => {
     if (isPattern && hasWord && isBare && word === 'esac' && words.length === 0) {
       isPattern = false
@@ -756,6 +778,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       if (exact && isReserved && word === '[[') isTest = true
       else if (isTest && isBare && word === ']]') isTest = false
       isHead = isReserved && (KEYWORDS.has(word) || word === 'time' || (word === '-p' && words.at(-2) === 'time'))
+      if (isReserved) track(word)
     }
     if (hasWord && target !== undefined) {
       const plain = word.replaceAll(ESCAPED, '').replaceAll(UNQUOTED, '')
@@ -783,6 +806,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     target = undefined
     isTest = false
     isHead = true
+    if (redirects.some(r => r.isReal && r.op.startsWith('<<'))) isFed = true
     if (words.length > 0 || redirects.length > 0) {
       const head = nameOf(words.find(w => !ASSIGNMENT.test(w)) ?? '')
       const command: Raw = {
@@ -797,7 +821,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
         isTest: wasTest,
         ...(isPiped && last !== undefined ? { pipedFrom: last } : {}),
       }
-      commands.push(command)
+      collect([command])
       last = command
       if (BRANCHES.has(head)) isUncertain = true
       // `case x in` ended here, so its first pattern is still to come. A
@@ -823,7 +847,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     const moved = bodies.filter(b => b.at >= from && b.at <= from + inner.length)
     bodies.splice(0, bodies.length, ...bodies.filter(b => !moved.includes(b)))
     const shifted = moved.map(b => ({ at: b.at - from, script: b.script }))
-    commands.push(...lex(inner, reading, nestedSource, depth + 1, !isUncertain, isBody, shifted))
+    collect(lex(inner, reading, nestedSource, depth + 1, !isUncertain, isBody, shifted))
     word += SUBSTITUTED
     hasWord = true
     reading.takesInput = true
@@ -834,7 +858,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     reading.isArithmetic = true
     for (const inner of substitutionsOf(body)) {
       reading.takesInput = true
-      commands.push(...lex(inner, reading, nestedSource, depth + 1, !isUncertain, isBody))
+      collect(lex(inner, reading, nestedSource, depth + 1, !isUncertain, isBody))
     }
     redirects.push(...textual(body))
   }
@@ -843,7 +867,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
   const readBodies = (upTo: number) => {
     while (bodies.length > 0 && (bodies[0] as Body).at <= upTo) {
       endCommand()
-      commands.push(...lex((bodies.shift() as Body).script, reading, 'heredoc', depth + 1, !isUncertain, true))
+      collect(lex((bodies.shift() as Body).script, reading, 'heredoc', depth + 1, !isUncertain, true))
     }
   }
   for (let i = 0; i < line.length; i++) {
@@ -1075,6 +1099,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       endCommand()
       isTest = keep
       isPiped = true
+      isFed = true
       // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
       if (exact && next === '&') i++
     } else if ((c === '&' || c === '|') && next === c) {
@@ -1092,6 +1117,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       const keep: boolean = isTest && c !== ';' && c !== '&'
       endCommand()
       isTest = keep
+      if (c === '(' || c === ')') track(c)
     } else {
       word += exact && c === '$' ? UNQUOTED + c : c
       hasWord = true
@@ -1099,6 +1125,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
   }
   endCommand()
   readBodies(line.length)
+  if (isFed) for (const raw of inside) raw.isInFedCompound = true
   // An array or case still open where its script ends is a syntax error bash
   // runs nothing of, and the reader cannot tell where it was meant to end.
   if (isArray || cases > 0) reading.unknowns.add('compound')
@@ -1402,7 +1429,8 @@ function statementsOf(text: string, reading: Reading, source: ShellSource, depth
         doc.feedsShell = true
         nested(doc.body, statement, 'heredoc', statement.isCertain)
       }
-      if (strings.length > 0 || raw.pipedFrom !== undefined) reading.unknowns.add('stdin')
+      const hasOwnHeredoc = statement.redirects.some(r => r.isReal && (r.op === '<<' || r.op === '<<-') && (r.fd === '' || r.fd === '0'))
+      if (strings.length > 0 || raw.pipedFrom !== undefined || (raw.isInFedCompound === true && !hasOwnHeredoc)) reading.unknowns.add('stdin')
     }
   }
   return statements

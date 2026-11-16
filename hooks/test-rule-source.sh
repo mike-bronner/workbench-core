@@ -145,9 +145,6 @@ has "rule 12 asks right after the context appears"  'Ask each question right aft
 has "rule 12 does not hold the question for the end" 'Do not hold it for the end of the reply and restate that context there'
 has "rule 12 lets a verdict still close the reply"  'A verdict with no question can still close the reply'
 has "rule 12 bans pointing at text not restated"    'Never refer to earlier text that the reply does not restate'
-# Text before the end of a turn can reach Mike cut down or folded, so a command
-# he must run that sits only there, or a "listed above" pointer at it, never
-# reaches him. Mike set this on 2026-11-16.
 has "rule 12 shows every command Mike must run"     'Show every command Mike must run in full, in a bash block in the closing reply or in backticks inside the `AskUserQuestion` text'
 has "rule 12 keeps a command out of mid-turn text"  'Never leave it only in mid-turn text, because text written before the end of a turn can reach him cut down or folded'
 has "rule 12 bans a positional pointer at a command" 'Never point at a command or a step by its position, such as "listed above" or "the steps earlier"\. Repeat it in the reply instead'

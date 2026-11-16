@@ -857,7 +857,7 @@ The hooks module checks each `Monitor` call (`hooks/mods/monitor.ts`, judged in 
 |---|---|
 | `cut`, `tr`, `uniq`, `head` | `stdbuf -oL`, `stdbuf -o0` or `unbuffer` runs it. Otherwise use awk with `fflush()` |
 | `sort`, `tac`, `wc` | never: each prints only when its input ends, and `tail -F` never ends, so no buffering setting helps |
-| `grep` | it has `--line-buffered` |
+| `grep` | it has `--line-buffered`, or it runs in a mode that prints no matched lines: `-q` (`--quiet`, `--silent`), `-c` (`--count`), `-l` (`--files-with-matches`) or `-L` (`--files-without-match`) |
 | `sed` | it has `-u`, `--unbuffered`, or `-l` with no number after it. In BSD sed, which macOS ships, `-l` flushes each line. In GNU sed, `-l N` sets the line-wrap length and does not flush, so that form draws advice that names the difference |
 | `jq` | it has `--unbuffered` |
 | `python`, `python3` | it has `-u`, `PYTHONUNBUFFERED` is set in front of it, or `unbuffer` runs it. `stdbuf` does not count, because Python's own I/O layer ignores it |
@@ -867,7 +867,12 @@ The awk form suggested for `uniq` prints a line only when it differs from the li
 
 The `grep`, `sed`, `jq` and awk stages also pass behind `stdbuf -oL`, `stdbuf -o0` or `unbuffer`. An `unbuffer` that reads a pipe draws its own warning when it lacks `-p`, because without `-p` it does not read the pipe. A stage inside a `>( )` or `<( )` process substitution is checked. Its output reaches Monitor, either directly or through the command that reads it. A stage inside a `$( )` or backtick substitution is skipped, because its output goes to the command line and not to Monitor.
 
-**The check warns, and never refuses.** The warning reaches the calling agent as context on the `Monitor` result, in the main session and in a sub-agent, so a false positive never blocks a watch. A command the reader cannot read whole draws no warning, and so does a `ws` watch, a call another hook denied, and a call that failed to start. `tests/monitor.test.ts` covers each stage, each passing form, the `sed -l` and `awk -f` advice, the `uniq` advice, the wrapper and substitution forms, the incident command, and the hook in both lanes.
+Beside the shell reader, a small text scanner in `hooks/mods/monitor.ts` reads the raw command. It finds the `<( )` and `>( )` regions, and each stage after a `|` or `|&`. It skips quoted text, `$( )` and backtick substitutions, comments and `||`, so `tail -F x # | unbuffer cut -c1-4` and `tail -F x || unbuffer cut -c1-4` draw no warning. The scanner has two known gaps:
+
+- It misses a `>( )` inside `bash -c '...'`, because it skips quoted text.
+- Heredoc or `case` text that holds `|` or `>(` can draw an extra warning, or hide a later one.
+
+**The check warns, and never refuses.** The warning reaches the calling agent as context on the `Monitor` result, in the main session and in a sub-agent, so a false positive never blocks a watch. A command the reader cannot read whole draws no warning, and so does a `ws` watch, a call another hook denied, and a call that failed to start. `tests/monitor.test.ts` covers each stage, each passing form, the `sed -l` and `awk -f` advice, the `uniq` advice, the wrapper and substitution forms, the scanner's comment and `||` skips, the incident command, and the hook in both lanes.
 
 ### Logging pipeline
 

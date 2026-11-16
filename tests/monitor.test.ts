@@ -205,6 +205,8 @@ describe('the warning text', () => {
     'echo `cat <(tail -F x | cut -c1-4)`',
     "grep --line-buffered y '<(cut -c1-4)'",
     'grep --line-buffered y <(tail -F x | grep --line-buffered z)',
+    'tail -F x # | unbuffer cut -c1-4',
+    'tail -F x || unbuffer cut -c1-4',
   ]) {
     test(`${JSON.stringify(command)} draws no warning`, () => {
       expect(bufferWarningOf(command)).toBeUndefined()

@@ -1705,6 +1705,61 @@ describe('a shell that reads its script from stdin is flagged when anything on t
   })
 })
 
+describe('a shell, source or . whose script operand names stdin reads its script from stdin', () => {
+  const unknowns = (line: string) => parseShell(line).unknowns
+  const names = (line: string) => statements(line).map(s => s.name)
+  const paths = ['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0']
+  const fed = [
+    "printf 'zap' | bash /dev/stdin",
+    "bash /dev/fd/0 <<<'zap'",
+    "cat <<'EOF' | sh /proc/self/fd/0\nzap\nEOF",
+    "printf 'zap' | source /dev/stdin",
+  ]
+
+  test('a shell given a stdin path as its script file reads stdin', () => {
+    for (const path of paths) {
+      expect(shellScriptOf([path])).toEqual({ readsStdin: true })
+      expect(shellScriptOf(['-x', '--', path, 'arg'])).toEqual({ readsStdin: true })
+    }
+  })
+
+  test('each line that feeds a stdin path sets the stdin unknown', () => {
+    for (const line of fed) expect(unknowns(line)).toEqual(['stdin'])
+  })
+
+  test('a here-string or a piped heredoc on a shell given a stdin path is read as its script', () => {
+    for (const line of fed.slice(1, 3)) expect(names(line)).toContain('zap')
+  })
+
+  test('a pipe into each shell, source or . given each stdin path sets the stdin unknown', () => {
+    for (const name of ['bash', 'sh -x', 'zsh --', 'source', 'source --', '.']) {
+      for (const path of paths) expect(unknowns(`printf zap | ${name} ${path}`)).toEqual(['stdin'])
+    }
+  })
+
+  test('a source of a stdin path is flagged when a feed stands elsewhere on the line', () => {
+    for (const line of ['cat <<<x; source /dev/stdin', 'exec 3<f; . /dev/fd/0', 'source /dev/stdin <<<zap']) expect(unknowns(line)).toEqual(['stdin'])
+  })
+
+  test('a stdin path with nothing on the line feeding stdin sets no unknown', () => {
+    for (const line of ['bash /dev/stdin', 'source /dev/stdin', '. /proc/self/fd/0']) expect(unknowns(line)).toEqual([])
+  })
+
+  test('a script file or a sourced file that is no stdin path keeps its reading', () => {
+    for (const line of ['bash script.sh < in.txt', 'source ./env.sh', '. ./env.sh', 'printf x | source ./env.sh', 'printf x | bash ./dev/stdin']) {
+      expect(unknowns(line)).toEqual([])
+    }
+    expect(names('source ./env.sh')).toEqual(['source'])
+    expect(names('. ./env.sh')).toEqual(['.'])
+  })
+
+  test('the frozen compat reading is unchanged', () => {
+    for (const line of [...fed, 'source ./env.sh', '. ./env.sh', 'bash script.sh < in.txt']) {
+      expect(commandsOf(line, true)).toEqual(oracleCommandsOf(line))
+    }
+  })
+})
+
 describe('a ${…} that runs code held in its variable is the expansion unknown', () => {
   test("bash's @P and zsh's (e) set the expansion unknown, quoted or not", () => {
     for (const line of [': "${x@P}"', ': "${(e)x}"', ': ${x@P}', ': ${(e)x}', ': "${arr[@]@P}"', ': "${(Pe)x}"', ': ${y:-${x@P}}']) {

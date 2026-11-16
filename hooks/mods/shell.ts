@@ -392,6 +392,9 @@ function delimiterAt(text: string, from: number, isCompat = false): { delimiter:
 // The paths `source` and `.` read stdin through.
 const STDIN_PATHS: ReadonlySet<string> = new Set(['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0', '-'])
 
+const sourcesStdin = (statement: ShellStatement): boolean =>
+  (statement.name === 'source' || statement.name === '.') && STDIN_PATHS.has(statement.args[statement.args[0] === '--' ? 1 : 0] ?? '')
+
 function feedsShell(segment: string): boolean {
   const words = segment.replace(/["'\\]/g, '').split(/[ \t\n]+/)
   return words.some(
@@ -1290,7 +1293,6 @@ export const decodedOf = (statement: ShellStatement): readonly number[] | undefi
 // What a shell's arguments run, read as the shell reads its options: with -c
 // (in any cluster), the first operand after the options is the script, `--`
 // and `-` end the options, and -o, -O, --rcfile and --init-file take a value.
-// `readsStdin` is true when there is no script and no script file, or -s.
 export function shellScriptOf(args: readonly string[]): { script?: string; readsStdin: boolean } {
   const { at, readsStdin } = shellScriptAt(args)
   return at === undefined ? { readsStdin } : { script: args[at] ?? '', readsStdin }
@@ -1316,7 +1318,7 @@ function shellScriptAt(args: readonly string[]): { at?: number; readsStdin: bool
     } else if (!arg.startsWith('--')) break
   }
   if (hasScript) return { at: i, readsStdin: false }
-  return { readsStdin: readsStdin || i >= args.length }
+  return { readsStdin: readsStdin || i >= args.length || STDIN_PATHS.has(args[i] as string) }
 }
 
 // The script a statement runs, and whether it surely runs with the statement:
@@ -1408,7 +1410,7 @@ function statementsOf(text: string, reading: Reading, source: ShellSource, depth
     if (arithmeticIn(raw, statement)) reading.isArithmetic = true
     if (run !== undefined && expandsScript(raw, statement)) reading.unknowns.add('expansion')
     if (run !== undefined) nested(run.script, statement, 'script', run.isCertain)
-    else if (SHELLS.has(statement.name) && shellScriptOf(statement.args).readsStdin) {
+    else if ((SHELLS.has(statement.name) && shellScriptOf(statement.args).readsStdin) || sourcesStdin(statement)) {
       // A shell reading its script from stdin: a pipe or a here-string. A
       // heredoc of the command piped in feeds the shell, and is read as one.
       // What else a pipe carries is not seen, so it is unknown.

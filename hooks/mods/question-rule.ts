@@ -217,11 +217,31 @@ const asksMike = (handBack: string): boolean => {
 
 export const notificationHandsBack = (text: string): boolean => text.includes('<result>')
 
-export function notificationForwards(text: string): boolean {
+function resultOf(text: string): string | undefined {
   const start = text.indexOf('<result>')
-  if (start === -1) return false
+  if (start === -1) return undefined
   const end = text.lastIndexOf('</result>')
-  return asksMike(text.slice(start + '<result>'.length, end > start ? end : undefined))
+  return text.slice(start + '<result>'.length, end > start ? end : undefined)
+}
+
+export function lingeringTaskOf(text: string): string | undefined {
+  const head = text.split('<result>')[0] ?? ''
+  const summary = /<summary>([\s\S]*?)<\/summary>/.exec(head)?.[1] ?? ''
+  if (!/\bis waiting on its own background work$/i.test(summary.trim())) return undefined
+  return /<task-id>\s*([\w-]+)\s*<\/task-id>/.exec(head)?.[1]
+}
+
+export const handBackDelivered = (text: string, taskId: string): boolean =>
+  resultOf(text)?.trim() === `This agent's report was delivered to you as a message from "${taskId}" (its SubagentHandback call). Read it there; it is not repeated here.`
+
+export const lingeringReminderOf = (taskId: string, delivered: boolean): string =>
+  delivered
+    ? `Sub-agent task ${taskId} handed back its report through SubagentHandback, but it still waits on background work of its own, so it stays counted as running. Its hand-back does not end it. Stop it now with TaskStop and task_id "${taskId}".`
+    : `Sub-agent task ${taskId} waits on background work of its own. If its report already reached you, its hand-back did not end it, so stop it with TaskStop and task_id "${taskId}". If its report has not arrived, it is still working, so leave it running.`
+
+export function notificationForwards(text: string): boolean {
+  const result = resultOf(text)
+  return result !== undefined && asksMike(result)
 }
 
 export function agentResultForwards(result: unknown): boolean {

@@ -1319,6 +1319,45 @@ describe('a separator inside ${…} or quotes does not end the text a heredoc fe
   })
 })
 
+describe("a heredoc's text starts at a separator that ends the command at its own level", () => {
+  const fed = (line: string) => statements(line).flatMap(s => s.heredocs).at(-1)?.feedsShell
+  const names = (line: string) => statements(line).map(s => s.name)
+
+  test('the & or | of a redirect does not end it', () => {
+    for (const line of ['bash 2>&1 <<EOF\nzap\nEOF', 'bash >&2 <<EOF\nzap\nEOF', 'bash <&0 <<EOF\nzap\nEOF', 'bash &>/dev/null <<EOF\nzap\nEOF', 'bash &>>log <<EOF\nzap\nEOF', 'bash >|out <<EOF\nzap\nEOF']) {
+      expect(fed(line)).toBe(true)
+      expect(names(line)).toContain('zap')
+    }
+  })
+
+  test('a separator inside a $( ) or backtick that closed before the operator does not end it', () => {
+    for (const line of ['bash $(true;true) <<EOF\nzap\nEOF', 'bash `true;true` <<EOF\nzap\nEOF', 'bash "$(true;true)" <<EOF\nzap\nEOF', 'bash ${x:-$(true;true)} <<EOF\nzap\nEOF']) {
+      expect(fed(line)).toBe(true)
+      expect(names(line)).toContain('zap')
+    }
+  })
+
+  test('a heredoc on a group or subshell with a shell inside feeds that shell', () => {
+    for (const line of ['{ bash; } <<EOF\nzap\nEOF', '(bash) <<EOF\nzap\nEOF', '(true; bash) <<EOF\nzap\nEOF', '{ true; bash; } <<EOF\nzap\nEOF', '{\nbash\n} <<EOF\nzap\nEOF', '( (bash) ) <<EOF\nzap\nEOF']) {
+      expect(fed(line)).toBe(true)
+      expect(names(line)).toContain('zap')
+    }
+  })
+
+  test('a separator at its own level still ends it', () => {
+    for (const line of ['cat <<EOF; bash\nzap\nEOF', 'bash x; cat <<EOF\nzap\nEOF', 'echo a & cat <<EOF\nzap\nEOF', 'bash x |& cat <<EOF\nzap\nEOF', 'bash x 2>&1; cat <<EOF\nzap\nEOF', '{ bash; }; cat <<EOF\nzap\nEOF', '(bash); cat <<EOF\nzap\nEOF', 'bash {a,b}; cat <<EOF\nzap\nEOF', 'echo }; bash x; cat <<EOF\nzap\nEOF', 'echo "$(bash x; cat <<EOF\nzap\nEOF\n)"', '{ cat; } <<EOF\nzap\nEOF', '(cat) <<EOF\nzap\nEOF']) {
+      expect(fed(line)).toBe(false)
+      expect(names(line)).not.toContain('zap')
+    }
+  })
+
+  test('the frozen compat reading is unchanged', () => {
+    for (const shape of ['bash 2>&1 <<EOF', 'bash $(true;true) <<EOF', '(bash) <<EOF', '{ bash; } <<EOF']) {
+      expect(commandsOf(`${shape}\nzap\nEOF`, true)).toEqual(commandsOf(`${shape}\nEOF`, true))
+    }
+  })
+})
+
 describe('the ${…} end readers reach each branch, and each changes where a $( ) ends', () => {
   const shape = (line: string) => statements(line).map(s => [s.name, s.args])
   const docs = (line: string) => statements(line).flatMap(s => s.heredocs.map(doc => [doc.delimiter, doc.body]))

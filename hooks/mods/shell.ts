@@ -328,7 +328,7 @@ function substitutionsOf(text: string, isCompat = false): string[] {
 // What the heredoc scanner is inside: unquoted text (the line itself, a $( ),
 // or a backtick), a quoted string ('' or ""), or arithmetic, where << is a
 // shift. A $'…' string is skipped whole, through closingAnsiQuote.
-type Context = 'top' | '$(' | '`' | "'" | '"' | '((' | '${'
+type Context = 'top' | '$(' | '`' | '(' | '{' | "'" | '"' | '((' | '${'
 
 // Whether a word starts at `i`: a `#` there opens a comment, and `((` there
 // opens arithmetic.
@@ -425,8 +425,30 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; bodie
   // How deep each open arithmetic is in its own parentheses.
   const depths: number[] = []
   let pending: ShellHeredoc[] = []
-  let segmentStart = 0
-  const isSeparator = (c: string) => /[;&|\n]/.test(c) && !stack.some(s => s === '"' || s === '${')
+  const levels: { open: number; start: number }[] = [{ open: 0, start: 0 }]
+  const enter = (context: Context, opener: string) => {
+    levels.push({ open: out.length, start: out.length + opener.length })
+    out += opener
+    stack.push(context)
+  }
+  const leave = (closer: string) => {
+    out += closer
+    stack.pop()
+    levels.pop()
+  }
+  const isSeparator = (i: number) =>
+    /[;&|\n]/.test(text[i] as string) &&
+    !(text[i] === '&' && (/[<>]/.test(text[i - 1] ?? '') || text[i + 1] === '>')) &&
+    !(text[i] === '|' && text[i - 1] === '>')
+  const separate = () => {
+    const level = levels[levels.length - 1] as { start: number }
+    level.start = out.length
+  }
+  const segment = () =>
+    levels
+      .map((level, k) => out.slice(level.start, levels[k + 1]?.open ?? out.length))
+      .join(' ')
+      .replace(/[;&|()]/g, ' ')
   for (let i = 0; i < text.length; i++) {
     const c = text[i] as string
     const next = text[i + 1]
@@ -474,9 +496,8 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; bodie
       continue
     }
     if (c === '$' && next === '(') {
-      out += '$('
+      enter('$(', '$(')
       i++
-      stack.push('$(')
       continue
     }
     if (c === '$' && next === '{' && !reading.isCompat) {
@@ -486,9 +507,9 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; bodie
       continue
     }
     if (context === '"') {
-      out += c
+      if (c === '`') enter('`', c)
+      else out += c
       if (c === '"') stack.pop()
-      else if (c === '`') stack.push('`')
       continue
     }
     if (context === '${' && c === '$' && next === "'") {
@@ -498,9 +519,10 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; bodie
       continue
     }
     if (context === '${') {
-      out += c
+      if (c === '`') enter('`', c)
+      else out += c
       if (c === '}') stack.pop()
-      else if (c === "'" || c === '"' || c === '`') stack.push(c)
+      else if (c === "'" || c === '"') stack.push(c)
       continue
     }
     // Unquoted text: the line itself, a $( ), or a backtick.
@@ -522,12 +544,16 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; bodie
       stack.push('((')
       depths.push(0)
     } else if (c === '`') {
-      out += c
-      if (context === '`') stack.pop()
-      else stack.push('`')
-    } else if (c === ')' && context === '$(') {
-      out += c
-      stack.pop()
+      if (context === '`') leave(c)
+      else enter('`', c)
+    } else if (c === ')' && (context === '$(' || context === '(')) {
+      leave(c)
+    } else if (c === '(' && isWordStart(text, i) && !reading.isCompat) {
+      enter('(', c)
+    } else if (c === '{' && isWordStart(text, i) && /[ \t\n]/.test(next ?? '') && !reading.isCompat) {
+      enter('{', c)
+    } else if (c === '}' && context === '{' && isWordStart(text, i) && /^[ \t\n;&|<>)]?$/.test(next ?? '')) {
+      leave(c)
     } else if (c === '<' && next === '<' && text[i + 2] === '<') {
       out += '<<<'
       i += 2
@@ -541,7 +567,7 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; bodie
         out += '<<'
         i++
       } else {
-        const doc: ShellHeredoc = { delimiter, body: '', isQuoted, stripsTabs, feedsShell: feedsShell(reading.isCompat ? (out.split(/;|&|\||\n/).pop() ?? '') : out.slice(segmentStart)), isTerminated: false }
+        const doc: ShellHeredoc = { delimiter, body: '', isQuoted, stripsTabs, feedsShell: feedsShell(reading.isCompat ? (out.split(/;|&|\||\n/).pop() ?? '') : segment()), isTerminated: false }
         reading.heredocs.push(doc)
         pending.push(doc)
         out += `<${HEREDOC}${reading.heredocs.length - 1}`
@@ -549,7 +575,7 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; bodie
       }
     } else if (c === '\n' && pending.length > 0) {
       out += '\n'
-      if (isSeparator(c)) segmentStart = out.length
+      separate()
       let at = i + 1
       for (const doc of pending) {
         const body: string[] = []
@@ -591,7 +617,7 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; bodie
       i = at - 1
     } else {
       out += c
-      if (isSeparator(c)) segmentStart = out.length
+      if (isSeparator(i)) separate()
     }
   }
   // A heredoc whose line ends the text has no body yet.

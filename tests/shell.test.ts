@@ -556,6 +556,32 @@ describe('AC2, AC3, AC7: the shapes the first review found misread', () => {
     expect(shape('echo $(echo case x) zap)')).toEqual([['echo', ['case', 'x']], ['echo', ['$_', 'zap']]])
   })
 
+  test('a case pattern ) in a subshell or a nested $( ) does not close the outer $( )', () => {
+    expect(shape('echo "$( (case x in x) echo hi;; esac) ; zap )"')).toEqual([
+      ['case', ['x', 'in', 'x']],
+      ['echo', ['hi']],
+      ['zap', []],
+      ['echo', ['$_']],
+    ])
+    expect(shape('echo "$(f() (case x in x) :;; esac) ; zap )"')).toEqual([
+      ['f', []],
+      ['case', ['x', 'in', 'x']],
+      [':', []],
+      ['zap', []],
+      ['echo', ['$_']],
+    ])
+    expect(shape('echo "$( (case x in x) :;; esac ); zap)"').at(-2)).toEqual(['zap', []])
+    expect(shape('echo "$(echo $(case x in x) :;; esac); zap)"').slice(-2)).toEqual([['zap', []], ['echo', ['$_']]])
+  })
+
+  test('only an esac where a command starts closes the case, and a case after a pattern ) opens one', () => {
+    for (const line of ['echo "$(case x in x) echo esac;; y) zap;; esac)"', 'echo "$(case x in x) case y in y) :;; esac;; z) zap;; esac)"']) {
+      const parse = parseShell(line)
+      expect(parse.statements.map(s => [s.name, s.args]).slice(-2)).toEqual([['zap', []], ['echo', ['$_']]])
+      expect(parse.unknowns).toEqual([])
+    }
+  })
+
   // A pattern is read as words, as the gate of 77bb2f3 read it, so the gate
   // never finds less: a pattern may show as a statement, which errs toward
   // finding a command, and its substitutions are read.

@@ -252,17 +252,18 @@ function closingAnsiQuote(text: string, from: number): number {
 // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
 function closingParen(line: string, from: number, countsCases = true): number {
   let depth = 1
-  let cases = 0
+  const cases: number[] = []
   for (let i = from; i < line.length; i++) {
     const c = line[i]
     const isWord = (name: string) => line.startsWith(name, i) && isWordStart(line, i) && /[ \t\n;&|()]/.test(line[i + name.length] ?? ' ')
+    const isCommandStart = () => /(^|[;&|()\n])[ \t\n]*$/.test(line.slice(from, i))
     // A case counts only where a command starts, as `case WORD in`.
-    const isCase = () => /^case[ \t\n]+[^ \t\n]+[ \t\n]+in([ \t\n]|$)/.test(line.slice(i)) && /(^|[;&|(\n])[ \t\n]*$/.test(line.slice(from, i))
+    const isCase = () => /^case[ \t\n]+[^ \t\n]+[ \t\n]+in([ \t\n]|$)/.test(line.slice(i)) && isCommandStart()
     // The compat reading (commandsOf) counts no case.
     // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
-    if (countsCases && isWord('case') && isCase()) cases++
+    if (countsCases && isWord('case') && isCase()) cases.push(depth)
     // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
-    else if (countsCases && isWord('esac') && cases > 0) cases--
+    else if (countsCases && isWord('esac') && cases.at(-1) === depth && isCommandStart()) cases.pop()
     if (c === '\\') i++
     else if (countsCases && c === '$' && line[i + 1] === '$') i++
     else if (c === '$' && line[i + 1] === "'") i = closingAnsiQuote(line, i + 2)
@@ -272,7 +273,7 @@ function closingParen(line: string, from: number, countsCases = true): number {
     else if (c === '"') {
       for (i++; i < line.length && line[i] !== '"'; i++) if (line[i] === '\\') i++
     } else if (c === '(') depth++
-    else if (c === ')' && !(depth === 1 && cases > 0) && --depth === 0) return i
+    else if (c === ')' && cases.at(-1) !== depth && --depth === 0) return i
   }
   return line.length
 }

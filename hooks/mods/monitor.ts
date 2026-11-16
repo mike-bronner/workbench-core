@@ -14,7 +14,7 @@ const AT_END: Readonly<Record<string, string>> = {
 const ALWAYS: Readonly<Record<string, string>> = {
   cut: use(awkLike('{ print substr($0, 1, 400); fflush() }')),
   tr: use(awkLike('{ gsub(/a/, "b"); print; fflush() }')),
-  uniq: use(awkLike('!seen[$0]++ { print; fflush() }')),
+  uniq: `${use(awkLike('NR == 1 || $0 != last { print; fflush() } { last = $0 }'))}. Like uniq, it drops only adjacent repeats. With -c or -u, uniq prints each line only when a different line arrives, so each line arrives one line late`,
   head: use(awkLike('NR <= 10 { print; fflush() }')),
 }
 
@@ -45,6 +45,34 @@ const isFlushedByWrapper = (statement: Statement): boolean =>
   statement.wrappers.includes('unbuffer') ||
   (statement.wrappers.includes('stdbuf') && !isPython(statement.name) && /(^| )(-o ?|--output[= ])[L0]( |$)/.test(wrapperWordsOf(statement, 'stdbuf').join(' ')))
 
+const SED_WRAP = `in GNU sed, -l sets the line-wrap length and does not flush, although -l in BSD sed, which macOS ships, flushes each line. So ${use('sed -u')}`
+
+function sedAdviceOf(args: readonly string[]): string | undefined {
+  let wraps = false
+  for (const [i, arg] of args.entries()) {
+    if (arg === '--unbuffered') return undefined
+    if (!/^-[A-Za-z]/.test(arg)) continue
+    for (const [at, c] of [...arg.slice(1)].entries()) {
+      if (c === 'u') return undefined
+      if ('efiI'.includes(c)) break
+      if (c !== 'l') continue
+      if (!/^\d+$/.test(arg.slice(at + 2) || (args[i + 1] ?? ''))) return undefined
+      wraps = true
+      break
+    }
+  }
+  return wraps ? SED_WRAP : use('sed -u')
+}
+
+const isInteractiveAwk = (args: readonly string[]): boolean =>
+  args.some((arg, i) => /^-W/.test(arg) && (arg.slice(2) || (args[i + 1] ?? '')).split(',').some(option => option !== '' && 'interactive'.startsWith(option)))
+
+function awkAdviceOf(args: readonly string[]): string | undefined {
+  if (args.some(arg => arg.includes('fflush')) || isInteractiveAwk(args)) return undefined
+  if (args.some(arg => /^(-f|--file(=|$))/.test(arg))) return 'awk reads its program from a file this check does not read, so check that the program calls fflush() after each print'
+  return use(awkLike('{ print; fflush() }'))
+}
+
 const lacksPipeInput = (statement: Statement): boolean =>
   statement.wrappers.includes('unbuffer') && !wrapperWordsOf(statement, 'unbuffer').some(word => hasShortFlag(word, 'p', ''))
 
@@ -54,9 +82,9 @@ function adviceOf(statement: Statement): string | undefined {
   if (isFlushedByWrapper(statement)) return undefined
   if (Object.hasOwn(ALWAYS, name)) return ALWAYS[name]
   if (name === 'grep') return args.includes('--line-buffered') ? undefined : use('grep --line-buffered')
-  if (name === 'sed') return args.includes('--unbuffered') || args.some(arg => hasShortFlag(arg, 'u', 'efil')) ? undefined : use('sed -u')
+  if (name === 'sed') return sedAdviceOf(args)
   if (name === 'jq') return args.includes('--unbuffered') ? undefined : use('jq --unbuffered')
-  if (AWKS.has(name)) return args.some(arg => arg.includes('fflush')) ? undefined : use(awkLike('{ print; fflush() }'))
+  if (AWKS.has(name)) return awkAdviceOf(args)
   if (isPython(name)) {
     const isUnbuffered = statement.assignments.some(word => /^PYTHONUNBUFFERED=./.test(word)) || optionsOf(args).some(arg => hasShortFlag(arg, 'u', 'cmWX'))
     return isUnbuffered ? undefined : use(`${name} -u`)
@@ -129,7 +157,7 @@ export function bufferWarningOf(command: string): string | undefined {
   const found = new Map(advicesOf(command))
   if (found.size === 0) return undefined
   return [
-    'Monitor buffer check (workbench-core): this Monitor command runs a stage that buffers its output when a pipe reads it. ' +
+    'Monitor buffer check (workbench-core): this Monitor command runs a stage that can buffer its output when a pipe reads it. ' +
       'Monitor reads the command through a pipe too, so lines can wait in the buffer and the watch delivers no events.',
     ...[...found].map(([name, advice]) => `- \`${name}\`: ${advice}.`),
     'If the watch must deliver each line as it arrives, stop it with TaskStop and start it again with the fix.',

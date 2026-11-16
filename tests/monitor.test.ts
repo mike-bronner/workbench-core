@@ -37,12 +37,21 @@ describe('the warning text', () => {
     ["tail -F x | sed 's/a/b/'", 'sed', 'sed -u'],
     ["tail -F x | sed -n -e 's/u/b/p'", 'sed', 'sed -u'],
     ["tail -F x | sed -eu 's/a/b/'", 'sed', 'sed -u'],
+    ["tail -F x | sed -l 80 's/a/b/'", 'sed', 'in GNU sed, -l sets the line-wrap length'],
+    ["tail -F x | sed -nl80 's/a/b/p'", 'sed', 'in GNU sed, -l sets the line-wrap length'],
+    ["tail -F x | sed -n 's/a/b/p'", 'sed', 'sed -u'],
     ['tail -F x | jq .', 'jq', 'jq --unbuffered'],
     ['tail -F x | python3 filter.py', 'python3', 'python3 -u'],
     ['tail -F x | python filter.py -u', 'python', 'python -u'],
     ["tail -F x | python3 -c 'import sys' -u", 'python3', 'python3 -u'],
     ["tail -F x | awk '{ print $1 }'", 'awk', 'awk with fflush()'],
     ["tail -F x | gawk '{ print $1 }'", 'gawk', 'awk with fflush()'],
+    ['tail -F x | awk -f prog.awk', 'awk', 'check that the program calls fflush()'],
+    ['tail -F x | awk -fprog.awk', 'awk', 'check that the program calls fflush()'],
+    ['tail -F x | gawk --file=prog.awk', 'gawk', 'check that the program calls fflush()'],
+    ['tail -F x | gawk --file prog.awk', 'gawk', 'check that the program calls fflush()'],
+    ["tail -F x | mawk -W posix_space '{ print }'", 'mawk', 'awk with fflush()'],
+    ["tail -F x | mawk -W '{ print }'", 'mawk', 'awk with fflush()'],
     ['tail -F x | grep y', 'grep', 'grep --line-buffered'],
     ['stdbuf -eL cut -c1-4 x', 'cut', 'awk with fflush()'],
     ['tail -F x | cut -c1-4 | grep --line-buffered y', 'cut', 'awk with fflush()'],
@@ -77,6 +86,32 @@ describe('the warning text', () => {
     expect(bufferWarningOf('tail -F x | sort')).toContain("- `sort`: sort prints nothing until its input ends, so drop it and do the per-line work in awk with fflush(), such as `awk '{ print; fflush() }'`.")
   })
 
+  test('the header says a stage can buffer, not that it does', () => {
+    expect(bufferWarningOf('tail -F x | awk -f prog.awk')).toContain('runs a stage that can buffer its output when a pipe reads it.')
+  })
+
+  test('uniq gets the adjacent-repeat awk form, and the note that -c and -u lag one line', () => {
+    expect(bufferWarningOf('tail -F x | uniq')).toContain(
+      "- `uniq`: use awk with fflush(), such as `awk 'NR == 1 || $0 != last { print; fflush() } { last = $0 }'` instead. Like uniq, it drops only adjacent repeats. With -c or -u, uniq prints each line only when a different line arrives, so each line arrives one line late.",
+    )
+  })
+
+  test('sed -l with a number names the GNU and BSD difference', () => {
+    expect(bufferWarningOf("tail -F x | sed -l 80 's/a/b/'")).toContain(
+      '- `sed`: in GNU sed, -l sets the line-wrap length and does not flush, although -l in BSD sed, which macOS ships, flushes each line. So use sed -u instead.',
+    )
+  })
+
+  test('plain sed advice does not name -l', () => {
+    expect(bufferWarningOf("tail -F x | sed 's/a/b/'")).toContain('- `sed`: use sed -u instead.')
+  })
+
+  test('awk -f says to check the program file, and does not claim that it buffers', () => {
+    const warning = bufferWarningOf('tail -F x | awk -f prog.awk') ?? ''
+    expect(warning).toContain('- `awk`: awk reads its program from a file this check does not read, so check that the program calls fflush() after each print.')
+    expect(warning).not.toContain('use awk with fflush()')
+  })
+
   test('the unbuffer line says why -p is needed', () => {
     expect(bufferWarningOf('tail -F x | unbuffer cut -c1-4')).toContain('- `unbuffer`: without -p, unbuffer does not read the pipe, so use unbuffer -p instead.')
   })
@@ -93,6 +128,17 @@ describe('the warning text', () => {
     "tail -F x | sed -u 's/a/b/'",
     "tail -F x | sed -nu 's/a/b/p'",
     "tail -F x | sed --unbuffered 's/a/b/'",
+    "tail -F x | sed -l 's/a/b/'",
+    "tail -F x | sed -nl 's/a/b/p'",
+    "tail -F x | sed -ln 's/a/b/p'",
+    "tail -F x | sed -l -n 's/a/b/p'",
+    "tail -F x | sed -l 80 -u 's/a/b/'",
+    "tail -F x | mawk -W interactive '{ print }'",
+    "tail -F x | mawk -Winteractive '{ print }'",
+    "tail -F x | mawk -Wi '{ print }'",
+    "tail -F x | mawk -W posix_space,interactive '{ print }'",
+    'tail -F x | awk -W interactive -f prog.awk',
+    "tail -F x | awk -f prog.awk -e '{ fflush() }'",
     'tail -F x | jq --unbuffered .',
     'tail -F x | python3 -u filter.py',
     'tail -F x | python3 -um filter',

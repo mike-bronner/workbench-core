@@ -858,14 +858,16 @@ The hooks module checks each `Monitor` call (`hooks/mods/monitor.ts`, judged in 
 | `cut`, `tr`, `uniq`, `head` | `stdbuf -oL`, `stdbuf -o0` or `unbuffer` runs it. Otherwise use awk with `fflush()` |
 | `sort`, `tac`, `wc` | never: each prints only when its input ends, and `tail -F` never ends, so no buffering setting helps |
 | `grep` | it has `--line-buffered` |
-| `sed` | it has `-u` or `--unbuffered` |
+| `sed` | it has `-u`, `--unbuffered`, or `-l` with no number after it. In BSD sed, which macOS ships, `-l` flushes each line. In GNU sed, `-l N` sets the line-wrap length and does not flush, so that form draws advice that names the difference |
 | `jq` | it has `--unbuffered` |
 | `python`, `python3` | it has `-u`, `PYTHONUNBUFFERED` is set in front of it, or `unbuffer` runs it. `stdbuf` does not count, because Python's own I/O layer ignores it |
-| `awk`, `gawk`, `mawk`, `nawk` | its program calls `fflush` |
+| `awk`, `gawk`, `mawk`, `nawk` | its program calls `fflush`, or it has `-W interactive`, which makes mawk flush each line. A program read with `-f` or `--file` draws advice to check that the program calls `fflush()`, because the check does not read the file |
+
+The awk form suggested for `uniq` prints a line only when it differs from the line before it, so it drops only adjacent repeats, as `uniq` does. `uniq -c` and `uniq -u` print each line only when a different line arrives, so each line arrives one line late even when they flush.
 
 The `grep`, `sed`, `jq` and awk stages also pass behind `stdbuf -oL`, `stdbuf -o0` or `unbuffer`. An `unbuffer` that reads a pipe draws its own warning when it lacks `-p`, because without `-p` it does not read the pipe. A stage inside a `>( )` process substitution is checked, because its output reaches Monitor. A stage inside a `$( )` or backtick substitution is skipped, because its output goes to the command line and not to Monitor.
 
-**The check warns, and never refuses.** The warning reaches the calling agent as context on the `Monitor` result, in the main session and in a sub-agent, so a false positive never blocks a watch. A command the reader cannot read whole draws no warning, and so does a `ws` watch, a call another hook denied, and a call that failed to start. `tests/monitor.test.ts` covers each stage, each passing form, the wrapper and substitution forms, the incident command, and the hook in both lanes.
+**The check warns, and never refuses.** The warning reaches the calling agent as context on the `Monitor` result, in the main session and in a sub-agent, so a false positive never blocks a watch. A command the reader cannot read whole draws no warning, and so does a `ws` watch, a call another hook denied, and a call that failed to start. `tests/monitor.test.ts` covers each stage, each passing form, the `sed -l` and `awk -f` advice, the `uniq` advice, the wrapper and substitution forms, the incident command, and the hook in both lanes.
 
 ### Logging pipeline
 

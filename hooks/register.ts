@@ -49,6 +49,7 @@ import type { CaptureNote } from './mods/capture'
 import { FIRST, REPEAT, capturePrompt, duplicateOf, isCaptureDue, isNotFound, notesOf, replacedText, savedText, thresholdOf, writeOutcome } from './mods/capture'
 import type { CheckpointMode } from './mods/checkpoint'
 import { checkpointRequest, endTimeoutOf } from './mods/checkpoint'
+import { COMMAND_POINTER_REMINDER, pointsAtUnshownCommand } from './mods/command-pointer'
 import { NUDGE, intakeShown } from './mods/intake'
 import { learningsPath, withLearnings } from './mods/learnings'
 import type { PromptLane } from './mods/prompt-rules'
@@ -1990,7 +1991,9 @@ export const register: Register = on => {
   // stack. The memory capture checkpoint opens no turn and blocks no stop: it
   // is a fork in turn.complete below.
   on('classic.Stop', async ($, e, next) => {
-    const result = await next(e)
+    const beneath = await next(e)
+    const isReminded = sessionAttended === true && !e.agent_id && !e.agent_type && !e.stop_hook_active && pointsAtUnshownCommand(e.last_assistant_message ?? '')
+    const result = isReminded ? { ...beneath, additionalContext: [...(beneath.additionalContext ?? []), COMMAND_POINTER_REMINDER] } : beneath
     const isOurs =
       sessionAttended === true &&
       !e.agent_id &&

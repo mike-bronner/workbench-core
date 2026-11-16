@@ -6,7 +6,7 @@ import type { Bench } from './bench'
 import { bench, start } from './bench'
 
 const HEAD = 'Monitor buffer check (workbench-core):'
-const MEGA = "tail -n 0 -F events.log | grep --line-buffered -E 'x' | cut -c1-400"
+const INCIDENT = "tail -n 0 -F events.log | grep --line-buffered -E 'x' | cut -c1-400"
 
 const monitor = (command: string, agentId?: string) =>
   ({ tool: 'Monitor', tool_use_id: 'toolu_1', description: 'd', timeout_ms: 1000, command, ...(agentId === undefined ? {} : { agentId }) }) as never
@@ -21,7 +21,7 @@ async function warningsFor($: Engine, b: Bench, call: never): Promise<string[]> 
 
 describe('the warning text', () => {
   test('the incident command names cut and suggests awk with fflush()', () => {
-    const warning = bufferWarningOf(MEGA) ?? ''
+    const warning = bufferWarningOf(INCIDENT) ?? ''
     expect(warning.startsWith(HEAD)).toBe(true)
     expect(warning).toContain("- `cut`: use awk with fflush(), such as `awk '{ print substr($0, 1, 400); fflush() }'` instead.")
     expect(warning).not.toContain('`grep`')
@@ -37,6 +37,8 @@ describe('the warning text', () => {
     ["tail -F x | sed 's/a/b/'", 'sed', 'sed -u'],
     ["tail -F x | sed -n -e 's/u/b/p'", 'sed', 'sed -u'],
     ["tail -F x | sed -eu 's/a/b/'", 'sed', 'sed -u'],
+    ["tail -F x | sed -iu 's/a/b/'", 'sed', 'sed -u'],
+    ['tail -F x | sed -fu x', 'sed', 'sed -u'],
     ["tail -F x | sed -l 80 's/a/b/'", 'sed', 'in GNU sed, -l sets the line-wrap length'],
     ["tail -F x | sed -nl80 's/a/b/p'", 'sed', 'in GNU sed, -l sets the line-wrap length'],
     ["tail -F x | sed -n 's/a/b/p'", 'sed', 'sed -u'],
@@ -44,6 +46,9 @@ describe('the warning text', () => {
     ['tail -F x | python3 filter.py', 'python3', 'python3 -u'],
     ['tail -F x | python filter.py -u', 'python', 'python -u'],
     ["tail -F x | python3 -c 'import sys' -u", 'python3', 'python3 -u'],
+    ['tail -F x | python3 -- -u f.py', 'python3', 'python3 -u'],
+    ['tail -F x | python3 -Xu f.py', 'python3', 'python3 -u'],
+    ["tail -F x | python3 -cu 'import sys'", 'python3', 'python3 -u'],
     ["tail -F x | awk '{ print $1 }'", 'awk', 'awk with fflush()'],
     ["tail -F x | gawk '{ print $1 }'", 'gawk', 'awk with fflush()'],
     ['tail -F x | awk -f prog.awk', 'awk', 'check that the program calls fflush()'],
@@ -176,15 +181,15 @@ describe('the Monitor hook', () => {
   test('a main-session Monitor call runs and carries the warning as context', async ($, on) => {
     const b = bench(on)
     await $.session.start(start())
-    const warnings = await warningsFor($, b, monitor(MEGA))
-    expect(warnings).toEqual([bufferWarningOf(MEGA)])
+    const warnings = await warningsFor($, b, monitor(INCIDENT))
+    expect(warnings).toEqual([bufferWarningOf(INCIDENT)])
   })
 
   test("a sub-agent's Monitor call runs and carries the warning as context", async ($, on) => {
     const b = bench(on)
     await $.session.start(start())
-    const warnings = await warningsFor($, b, monitor(MEGA, 'a5a2f4470341f9233'))
-    expect(warnings).toEqual([bufferWarningOf(MEGA)])
+    const warnings = await warningsFor($, b, monitor(INCIDENT, 'a5a2f4470341f9233'))
+    expect(warnings).toEqual([bufferWarningOf(INCIDENT)])
   })
 
   test('a flushing Monitor command runs with no warning', async ($, on) => {
@@ -206,11 +211,20 @@ describe('the Monitor hook', () => {
     expect(await warningsFor($, b, call)).toEqual([])
   })
 
+  test('a Monitor call denied beneath the hook stays denied and carries no warning', async ($, on) => {
+    const b = bench(on)
+    await $.session.start(start())
+    b.denyBeneath = tool => (tool === 'Monitor' ? 'no' : undefined)
+    const result = await $.tool.call(monitor(INCIDENT))
+    expect(result.deny).toBe('no')
+    expect((result.context ?? []).map(String).filter(text => text.startsWith(HEAD))).toEqual([])
+  })
+
   test('a Monitor call that failed to start carries no warning', async ($, on) => {
     const b = bench(on)
     await $.session.start(start())
     b.errorBeneath = tool => tool === 'Monitor'
-    const result = await $.tool.call(monitor(MEGA))
+    const result = await $.tool.call(monitor(INCIDENT))
     expect(result.isError).toBe(true)
     expect((result.context ?? []).map(String).filter(text => text.startsWith(HEAD))).toEqual([])
   })

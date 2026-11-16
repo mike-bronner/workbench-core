@@ -106,7 +106,12 @@ Before a task that produces work, run the intake routine in
    When a step needs Mike's approval and you can run it, ask him for the
    decision and recommend the option where you run the step. Hand Mike only
    the steps that need his hands, such as a password, a browser consent or a
-   one-time code. If Mike must pick, ask through `AskUserQuestion` (rule 4).
+   one-time code. Some CLI sign-ins wait for a browser callback, such as
+   `gh auth login` or `gcloud auth login`. Start such a sign-in in a visible
+   Terminal tab, not in background Bash. In background Bash, the sign-in can
+   miss its callback and save no credentials, so the next step fails. Read
+   the sign-in's success line in the tab before you run the next step. If
+   Mike must pick, ask through `AskUserQuestion` (rule 4).
 7. **Hold a position.** Push back once, with the reason. Once Mike decides,
    implement the decision and do not reopen it. When the evidence turns,
    reverse in one sentence and continue.

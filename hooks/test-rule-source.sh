@@ -104,6 +104,10 @@ has "rule 6 sends the pick to the tool"             'If Mike must pick, ask thro
 has "rule 6 favours correctness"                    'favours correctness over speed'
 has "rule 6 recommends running an approved step"    "When a step needs Mike's approval and you can run it, ask him for the decision and recommend the option where you run the step"
 has "rule 6 hands Mike only steps for his hands"    'Hand Mike only the steps that need his hands, such as a password, a browser consent or a one-time code'
+has "rule 6 names the callback sign-ins"            'Some CLI sign-ins wait for a browser callback, such as `gh auth login` or `gcloud auth login`'
+has "rule 6 starts a sign-in in a visible tab"      'Start such a sign-in in a visible Terminal tab, not in background Bash'
+has "rule 6 gives the reason for the visible tab"   'In background Bash, the sign-in can miss its callback and save no credentials, so the next step fails'
+has "rule 6 reads the sign-in success line"         "Read the sign-in's success line in the tab before you run the next step"
 has "rule 6 grades against the criteria"            'grade against every one of them'
 # The intake routine is a procedure, not a rule, so the style points at it and
 # carries no copy. hooks/test-intake.sh pins the routine and the absence of a copy.

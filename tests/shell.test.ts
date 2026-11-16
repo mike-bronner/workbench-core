@@ -552,6 +552,7 @@ describe('AC2, AC3, AC7: the shapes the first review found misread', () => {
     expect(shape('echo $(case x in x) zap now;; esac)')).toEqual([['case', ['x', 'in', 'x']], ['zap', ['now']], ['echo', ['$_']]])
     // A pattern after its opening ( is text, not a statement.
     expect(shape('echo $(case x in (x) zap;; esac; other)').map(([name]) => name)).toEqual(['case', 'zap', 'other', 'echo'])
+    expect(parseShell('echo $(case x in (x) zap;; esac; other)').unknowns).toEqual([])
     // A word that only looks like case opens nothing.
     expect(shape('echo $(echo case x) zap)')).toEqual([['echo', ['case', 'x']], ['echo', ['$_', 'zap']]])
   })
@@ -572,6 +573,14 @@ describe('AC2, AC3, AC7: the shapes the first review found misread', () => {
     ])
     expect(shape('echo "$( (case x in x) :;; esac ); zap)"').at(-2)).toEqual(['zap', []])
     expect(shape('echo "$(echo $(case x in x) :;; esac); zap)"').slice(-2)).toEqual([['zap', []], ['echo', ['$_']]])
+  })
+
+  test("a pattern's opening ( and closing ) leave the $( ) depth where the case opened it", () => {
+    expect(parseShell('echo $(case x in (x) zap;; esac)').unknowns).toEqual([])
+    expect(shape('echo $(case x in (x) zap;; esac)').slice(-2)).toEqual([['zap', []], ['echo', ['$_']]])
+    const line = 'echo $(case x in (esac) zap;; y) w;; esac; after)'
+    expect(parseShell(line).unknowns).toEqual([])
+    expect(shape(line).map(([name]) => name)).toEqual(['case', 'zap', 'w', 'after', 'echo'])
   })
 
   test('only an esac where a command starts closes the case, and a case after a pattern ) opens one', () => {
@@ -1534,9 +1543,15 @@ describe('a shell that reads stdin inside a compound is flagged when the line fe
     }
   })
 
-  test('each closer ends its compound, so a shell after it is outside', () => {
+  test('a feed on a closed compound still flags a shell after it that reads stdin', () => {
     for (const line of ['(:) <<<x; bash', '{ :; } <<<x; bash', 'if :; then :; fi <<<x; bash', 'for i in 1; do :; done <<<x; bash', 'while :; do :; done <<<x; bash', 'until :; do :; done <<<x; bash', 'select x in a; do :; done <<<x; bash', 'case a in a) :;; esac <<<x; bash', '(case a in a) :;; esac ) <<<x; bash', 'f() { :; }; printf x | cat; bash']) {
-      expect(unknowns(line)).toEqual([])
+      expect(unknowns(line)).toEqual(['stdin'])
+    }
+  })
+
+  test('a case, a subshell with a case, or an array before a group leaves the shell inside flagged', () => {
+    for (const line of ['case a in (a) bash;; esac <<<x', '( case x in a) bash;; esac ) | cat', 'x=(1 2); { bash; } | cat']) {
+      expect(unknowns(line)).toEqual(['stdin'])
     }
   })
 
@@ -1627,5 +1642,85 @@ describe('the ${…} end readers reach each branch, and each changes where a $( 
 
   test('a ) inside it in an array assignment leaves no unknown', () => {
     expect(parseShell('x=(${a/)/;})').unknowns).toEqual([])
+  })
+})
+
+describe('a shell that reads its script from stdin is flagged when anything on the line feeds stdin, at any depth', () => {
+  const unknowns = (line: string) => parseShell(line).unknowns
+  const names = (line: string) => statements(line).map(s => s.name)
+
+  test('a pipe into an outer shell whose -c script runs a shell feeds the inner shell', () => {
+    for (const line of ['echo zap | bash -c bash', 'bash -c bash <<<zap']) expect(unknowns(line)).toEqual(['stdin'])
+  })
+
+  test('an exec with an input redirect feeds a later shell', () => {
+    for (const line of ['exec <<<zap; bash', 'exec 3<<<zap; bash <&3', 'exec 3<f; bash', 'exec -a n cat 3<f; bash']) expect(unknowns(line)).toEqual(['stdin'])
+  })
+
+  test('a < from a process substitution feeds the shell or group it stands on', () => {
+    for (const line of ['bash < <(echo zap)', 'bash 0< <(echo zap)', '{ bash; } < <(echo zap)']) {
+      expect(unknowns(line)).toEqual(['stdin'])
+      expect(names(line)).toContain('bash')
+    }
+  })
+
+  test('a coproc feeds the shell it runs, and any shell after it', () => {
+    for (const line of ['coproc bash; echo zap >&"${COPROC[1]}"', 'coproc bash', 'coproc cat; bash', 'if coproc cat; then bash; fi']) {
+      expect(unknowns(line)).toContain('stdin')
+    }
+  })
+
+  test('a pipe on the line feeds a shell inside a $( )', () => {
+    expect(unknowns('printf zap | echo $(bash)')).toEqual(['stdin'])
+    expect(unknowns('echo $(printf zap | cat); bash')).toEqual(['stdin'])
+  })
+
+  test('each input redirect on fd 0 feeds a shell elsewhere on the line', () => {
+    for (const line of ['cat <<EOF\nx\nEOF\nbash', 'cat <<-EOF\nx\nEOF\nbash', 'cat <<<x; bash', 'cat < in.txt; bash', 'cat 0<in.txt; bash', 'cat <&3; bash', 'cat <> f; bash', 'cat <&-; bash', "bash -c 'cat <<<x'; bash", "bash -c 'cat <<<x; bash'"]) {
+      expect(unknowns(line)).toEqual(['stdin'])
+    }
+  })
+
+  test('an output redirect, an input redirect on another fd, or a shell with a script file feeds nothing', () => {
+    for (const line of ['cat > out; bash', 'cat 3<f; bash', 'cat 2>&1; bash', 'bash script.sh < in.txt', 'echo x | bash script.sh', 'cat <<<x; bash -c y', 'bash']) {
+      expect(unknowns(line)).toEqual([])
+    }
+  })
+
+  test('a shell with its own heredoc on fd 0 reads it, on a line that feeds stdin elsewhere too', () => {
+    for (const line of ['bash <<EOF\nzap\nEOF', 'bash 0<<-EOF\n\tzap\n\tEOF', 'printf x | cat; bash <<EOF\nzap\nEOF', 'cat <<<x; bash 0<<EOF\nzap\nEOF']) {
+      expect(unknowns(line)).toEqual([])
+      expect(names(line)).toContain('zap')
+    }
+  })
+
+  test('a here-string on the shell is no own heredoc, though a heredoc stands on the subshell around it', () => {
+    expect(unknowns('(bash 0<<<x) <<EOF\nzap\nEOF')).toContain('stdin')
+  })
+
+  test('the frozen compat reading is unchanged', () => {
+    for (const line of ['echo zap | bash -c bash', 'exec 3<<<zap; bash <&3', 'bash < <(echo zap)', 'coproc bash; echo zap >&"${COPROC[1]}"', 'printf zap | echo $(bash)']) {
+      expect(commandsOf(line, true)).toEqual(oracleCommandsOf(line))
+    }
+  })
+})
+
+describe('a ${…} that runs code held in its variable is the expansion unknown', () => {
+  test("bash's @P and zsh's (e) set the expansion unknown, quoted or not", () => {
+    for (const line of [': "${x@P}"', ': "${(e)x}"', ': ${x@P}', ': ${(e)x}', ': "${arr[@]@P}"', ': "${(Pe)x}"', ': ${y:-${x@P}}']) {
+      expect(parseShell(line).unknowns).toEqual(['expansion'])
+    }
+  })
+
+  test('an unquoted heredoc body with @P or (e) sets the expansion unknown, and a quoted one does not', () => {
+    expect(parseShell('cat <<EOF\n${x@P}\nEOF').unknowns).toEqual(['expansion'])
+    expect(parseShell('cat <<EOF\n${(e)x}\nEOF').unknowns).toEqual(['expansion'])
+    expect(parseShell("cat <<'EOF'\n${x@P}\nEOF").unknowns).toEqual([])
+  })
+
+  test('other operators, single quotes and a plain ${…} set no unknown', () => {
+    for (const line of [': "${x@Q}"', ': "${x@U}"', ": '${x@P}'", ': "${x}"', ': "${x}"@P}', ': "${e}"']) {
+      expect(parseShell(line).unknowns).toEqual([])
+    }
   })
 })

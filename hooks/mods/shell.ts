@@ -86,15 +86,6 @@ export const KEYWORDS: ReadonlySet<string> = new Set(['if', 'then', 'else', 'eli
 // redirect after one (`{ x; } >out`) is the group's.
 const CLOSERS: ReadonlySet<string> = new Set(['}', 'fi', 'done', 'esac'])
 
-const COMPOUNDS: ReadonlyMap<string, readonly string[]> = new Map<string, readonly string[]>([
-  ...['(', '{', 'if', 'for', 'while', 'until', 'select', 'case'].map((opener): [string, readonly string[]] => [opener, []]),
-  [')', ['(']],
-  ['}', ['{']],
-  ['fi', ['if']],
-  ['done', ['for', 'while', 'until', 'select']],
-  ['esac', ['case']],
-])
-
 // Reserved words after which a statement may not run.
 const BRANCHES: ReadonlySet<string> = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', 'case', 'for', 'select', 'function'])
 
@@ -210,7 +201,17 @@ export const isExpanded = (word: string): boolean => /[$`]/.test(word) && (word.
 // `takesInput` is true once the line takes in outside data: a command
 // substitution, read, mapfile, readarray or printf -v. `isArithmetic` is true
 // once it has an arithmetic context (arithmeticIn).
-type Reading = { heredocs: ShellHeredoc[]; unknowns: Set<ShellUnknown>; isCompat?: boolean; takesInput?: boolean; isArithmetic?: boolean }
+type Reading = {
+  heredocs: ShellHeredoc[]
+  unknowns: Set<ShellUnknown>
+  isCompat?: boolean
+  takesInput?: boolean
+  isArithmetic?: boolean
+  isFed?: boolean
+  readsStdin?: boolean
+}
+
+const runsValue = (text: string): boolean => /\$\{(\([^)]*e[^)]*\)|[^}]*@P\})/.test(text)
 
 const ANSI_CONTROLS: Record<string, string> = { a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v' }
 
@@ -528,7 +529,6 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; bodie
       else if (c === "'" || c === '"') stack.push(c)
       continue
     }
-    // Unquoted text: the line itself, a $( ), or a backtick.
     if (c === '#' && isWordStart(text, i)) {
       const end = text.indexOf('\n', i)
       const stop = end === -1 ? text.length : end
@@ -610,6 +610,7 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; bodie
         // $( ) through an array subscript, and `re\set` reaches the inner
         // shell as `reset`. The $( ) and backticks are still read above.
         if (doc.feedsShell && !doc.isQuoted && !reading.isCompat && /[$`\\]/.test(doc.body)) reading.unknowns.add('expansion')
+        if (!doc.isQuoted && !reading.isCompat && runsValue(doc.body)) reading.unknowns.add('expansion')
         const script = kept.map(row => `${row}\n`).join('')
         // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
         // The gate of 77bb2f3 read a kept body inline, as part of the line.
@@ -639,7 +640,6 @@ type Raw = {
   depth: number
   isCertain: boolean
   pipedFrom?: Raw
-  isInFedCompound?: boolean
   // The indices in `words` of each word that holds a `$` or backtick the
   // shell expands (unquoted or inside double quotes).
   expanding: number[]
@@ -752,18 +752,6 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
   // or escaped `case` is an ordinary command name, and opens no case.
   let caseAt = -1
   let braces = 0
-  const compounds: string[] = []
-  const inside: Raw[] = []
-  let isFed = false
-  const track = (word: string) => {
-    const opens = COMPOUNDS.get(word)
-    if (opens?.length === 0) compounds.push(word)
-    else if (opens?.includes(compounds.at(-1) ?? '')) compounds.pop()
-  }
-  const collect = (raws: Raw[]) => {
-    if (compounds.length > 0) inside.push(...raws)
-    commands.push(...raws)
-  }
   const endWord = () => {
     if (isPattern && hasWord && isBare && word === 'esac' && words.length === 0) {
       isPattern = false
@@ -779,7 +767,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       if (exact && isReserved && word === '[[') isTest = true
       else if (isTest && isBare && word === ']]') isTest = false
       isHead = isReserved && (KEYWORDS.has(word) || word === 'time' || (word === '-p' && words.at(-2) === 'time'))
-      if (isReserved) track(word)
+      if (isReserved && word === 'coproc') reading.isFed = true
     }
     if (hasWord && target !== undefined) {
       const plain = word.replaceAll(ESCAPED, '').replaceAll(UNQUOTED, '')
@@ -807,7 +795,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     target = undefined
     isTest = false
     isHead = true
-    if (redirects.some(r => r.isReal && r.op.startsWith('<<'))) isFed = true
+    if (redirects.some(r => r.isReal && r.op.startsWith('<') && (r.fd === '' || r.fd === '0'))) reading.isFed = true
     if (words.length > 0 || redirects.length > 0) {
       const head = nameOf(words.find(w => !ASSIGNMENT.test(w)) ?? '')
       const command: Raw = {
@@ -822,7 +810,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
         isTest: wasTest,
         ...(isPiped && last !== undefined ? { pipedFrom: last } : {}),
       }
-      collect([command])
+      commands.push(command)
       last = command
       if (BRANCHES.has(head)) isUncertain = true
       // `case x in` ended here, so its first pattern is still to come. A
@@ -848,7 +836,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     const moved = bodies.filter(b => b.at >= from && b.at <= from + inner.length)
     bodies.splice(0, bodies.length, ...bodies.filter(b => !moved.includes(b)))
     const shifted = moved.map(b => ({ at: b.at - from, script: b.script }))
-    collect(lex(inner, reading, nestedSource, depth + 1, !isUncertain, isBody, shifted))
+    commands.push(...lex(inner, reading, nestedSource, depth + 1, !isUncertain, isBody, shifted))
     word += SUBSTITUTED
     hasWord = true
     reading.takesInput = true
@@ -859,7 +847,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     reading.isArithmetic = true
     for (const inner of substitutionsOf(body)) {
       reading.takesInput = true
-      collect(lex(inner, reading, nestedSource, depth + 1, !isUncertain, isBody))
+      commands.push(...lex(inner, reading, nestedSource, depth + 1, !isUncertain, isBody))
     }
     redirects.push(...textual(body))
   }
@@ -868,7 +856,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
   const readBodies = (upTo: number) => {
     while (bodies.length > 0 && (bodies[0] as Body).at <= upTo) {
       endCommand()
-      collect(lex((bodies.shift() as Body).script, reading, 'heredoc', depth + 1, !isUncertain, true))
+      commands.push(...lex((bodies.shift() as Body).script, reading, 'heredoc', depth + 1, !isUncertain, true))
     }
   }
   for (let i = 0; i < line.length; i++) {
@@ -913,6 +901,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
           word += '$$'
           i++
         } else if (exact && d === '$' && line[i + 1] === '{') {
+          if (runsValue(line.slice(i, closingBrace(line, i + 2) + 1))) reading.unknowns.add('expansion')
           isExpanding = true
           word += '${'
           nest.push('{')
@@ -1008,6 +997,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       hasWord = true
       i++
     } else if (exact && c === '$' && next === '{') {
+      if (runsValue(line.slice(i, closingBrace(line, i + 2) + 1))) reading.unknowns.add('expansion')
       word += UNQUOTED + '${'
       hasWord = true
       braces++
@@ -1100,7 +1090,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       endCommand()
       isTest = keep
       isPiped = true
-      isFed = true
+      reading.isFed = true
       // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
       if (exact && next === '&') i++
     } else if ((c === '&' || c === '|') && next === c) {
@@ -1118,7 +1108,6 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       const keep: boolean = isTest && c !== ';' && c !== '&'
       endCommand()
       isTest = keep
-      if (c === '(' || c === ')') track(c)
     } else {
       word += exact && c === '$' ? UNQUOTED + c : c
       hasWord = true
@@ -1126,7 +1115,6 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
   }
   endCommand()
   readBodies(line.length)
-  if (isFed) for (const raw of inside) raw.isInFedCompound = true
   // An array or case still open where its script ends is a syntax error bash
   // runs nothing of, and the reader cannot tell where it was meant to end.
   if (isArray || cases > 0) reading.unknowns.add('compound')
@@ -1412,6 +1400,7 @@ function statementsOf(text: string, reading: Reading, source: ShellSource, depth
   for (const raw of lex(text, reading, source, depth, isCertain)) {
     const statement = statementOf(raw, reading)
     if (statement === undefined) continue
+    if ((statement.name === 'exec' || statement.wrappers.includes('exec')) && statement.redirects.some(r => r.isReal && r.op.startsWith('<'))) reading.isFed = true
     of.set(raw, statement)
     statements.push(statement)
     const run = scriptOf(statement)
@@ -1431,7 +1420,8 @@ function statementsOf(text: string, reading: Reading, source: ShellSource, depth
         nested(doc.body, statement, 'heredoc', statement.isCertain)
       }
       const hasOwnHeredoc = statement.redirects.some(r => r.isReal && (r.op === '<<' || r.op === '<<-') && (r.fd === '' || r.fd === '0'))
-      if (strings.length > 0 || raw.pipedFrom !== undefined || (raw.isInFedCompound === true && !hasOwnHeredoc)) reading.unknowns.add('stdin')
+      if (strings.length > 0 || raw.pipedFrom !== undefined) reading.unknowns.add('stdin')
+      else if (!hasOwnHeredoc) reading.readsStdin = true
     }
   }
   return statements
@@ -1448,5 +1438,6 @@ export function parseShell(text: string): ShellParse {
   // outside data and has any arithmetic context is refused. Plain arithmetic,
   // such as a counter, and a substitution with no arithmetic both pass.
   if (reading.takesInput && reading.isArithmetic) reading.unknowns.add('expansion')
+  if (reading.readsStdin && reading.isFed) reading.unknowns.add('stdin')
   return { statements, unknowns: [...reading.unknowns].sort() }
 }

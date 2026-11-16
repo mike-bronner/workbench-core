@@ -103,7 +103,10 @@ Before a task that produces work, run the intake routine in
    covers every criterion, and any other grade names each criterion short of
    met. After the table, one or two sentences name your recommendation, its
    grade, and its reason. The recommendation favours correctness over speed.
-   If Mike must pick, ask through `AskUserQuestion` (rule 4).
+   When a step needs Mike's approval and you can run it, ask him for the
+   decision and recommend the option where you run the step. Hand Mike only
+   the steps that need his hands, such as a password, a browser consent or a
+   one-time code. If Mike must pick, ask through `AskUserQuestion` (rule 4).
 7. **Hold a position.** Push back once, with the reason. Once Mike decides,
    implement the decision and do not reopen it. When the evidence turns,
    reverse in one sentence and continue.

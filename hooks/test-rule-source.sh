@@ -102,6 +102,8 @@ has "rule 6 keeps the table to 80 columns"          'the table fits 80 columns'
 has "rule 6 puts the recommendation after the table" 'After the table, one or two sentences name your recommendation'
 has "rule 6 sends the pick to the tool"             'If Mike must pick, ask through `AskUserQuestion`'
 has "rule 6 favours correctness"                    'favours correctness over speed'
+has "rule 6 recommends running an approved step"    "When a step needs Mike's approval and you can run it, ask him for the decision and recommend the option where you run the step"
+has "rule 6 hands Mike only steps for his hands"    'Hand Mike only the steps that need his hands, such as a password, a browser consent or a one-time code'
 has "rule 6 grades against the criteria"            'grade against every one of them'
 # The intake routine is a procedure, not a rule, so the style points at it and
 # carries no copy. hooks/test-intake.sh pins the routine and the absence of a copy.

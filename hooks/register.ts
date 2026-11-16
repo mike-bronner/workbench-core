@@ -270,7 +270,7 @@ import {
   toggleOf,
   withMode,
 } from './mods/orchestrator'
-import { denyOf as dispatchDenyOf, hintOf as dispatchHintOf } from './mods/dispatch'
+import { denyOf as dispatchDenyOf, hintOf as dispatchHintOf, unitHintOf } from './mods/dispatch'
 import { isInScope, isWorkType, outsideDenyOf, unreadableDenyOf, workdirPathsOf } from './mods/project-scope'
 import { REMIND_STORE_KEY, hasDotPart, isInRoots, isWholeFileWrite, reminderOf, remindedOf, splitTarget, targetOf } from './mods/delegation'
 import {
@@ -566,12 +566,11 @@ async function delegationReminder($: EngineInterface, e: { tool: string; agentId
   return reminderOf(await hasDevTeam($, home))
 }
 
-// The agent dispatch gate's verdict for one main-loop Agent call: a refusal, a
-// hint, or neither. The brief check is pure (checkBrief), so the only failures
-// are the reads around it, and any that rejects reaches the tool.call hook's
-// .catch, which refuses Agent because Agent is in GUARDED. The dev-team probe
-// only adds a line to a refusal, so a failed probe drops the line.
-async function dispatchVerdict($: EngineInterface, prompt: unknown): Promise<{ deny?: string; hint?: string }> {
+// The brief check is pure (checkBrief), so the only failures are the reads
+// around it, and any that rejects reaches the tool.call hook's .catch, which
+// refuses Agent because Agent is in GUARDED. The dev-team probe only adds a
+// line to a refusal, so a failed probe drops the line.
+async function dispatchVerdict($: EngineInterface, prompt: unknown, type: unknown): Promise<{ deny?: string; hints?: readonly string[] }> {
   // The mode is read from $.state and $.store (orchestratorOn), so a legacy
   // file that cannot be named (HOME unset, or a session id that cannot name a
   // file) never stands this gate down.
@@ -579,7 +578,7 @@ async function dispatchVerdict($: EngineInterface, prompt: unknown): Promise<{ d
   if ((await $.env.get('WORKBENCH_ORCHESTRATOR')) === '0' || !(await orchestratorOn($))) return {}
   const text = typeof prompt === 'string' ? prompt : ''
   const check = checkBrief(text)
-  if (check.isComplete) return check.shape === 'brief' ? { hint: dispatchHintOf(text) } : {}
+  if (check.isComplete) return check.shape === 'brief' ? { hints: [dispatchHintOf(text), unitHintOf(check, type)].filter(hint => hint !== undefined) } : {}
   const home = await $.env.get('HOME')
   const hasTeam = home ? await hasDevTeam($, home).catch(() => false) : false
   return { deny: dispatchDenyOf(check.missing, BRIEF_SLOTS, hasTeam) }
@@ -2177,7 +2176,7 @@ export const register: Register = on => {
       // read that rejects throws to this hook's .catch, which refuses Agent.
       // The hint is advice and never blocks.
       if (e.tool === 'Agent') {
-        const { deny, hint } = await dispatchVerdict($, (e as { prompt?: unknown }).prompt)
+        const { deny, hints = [] } = await dispatchVerdict($, (e as { prompt?: unknown }).prompt, (e as { subagent_type?: unknown }).subagent_type)
         if (deny !== undefined) return { deny }
         const outside = await projectScopeOf($, e as { prompt?: unknown; subagent_type?: unknown })
         if (outside !== undefined) return { deny: outside }
@@ -2189,7 +2188,7 @@ export const register: Register = on => {
         const isHandBack = output?.status === 'completed'
         if (isHandBack && agentResultForwards(output)) await update($, turnForwards, () => true)
         const feedback = result.isError === true ? undefined : await feedbackShown($, await recalled, `this ${String(type)} dispatch`).catch(() => undefined)
-        const added = [...(hint === undefined ? [] : [hint]), ...(feedback === undefined ? [] : [feedback]), ...(isHandBack && sessionAttended === true ? [HAND_BACK_REMINDER] : [])]
+        const added = [...hints, ...(feedback === undefined ? [] : [feedback]), ...(isHandBack && sessionAttended === true ? [HAND_BACK_REMINDER] : [])]
         return added.length === 0 ? result : { ...result, context: [...(result.context ?? []), ...added] }
       }
       // The delegation reminder is advice, never a guard: it gives no verdict,

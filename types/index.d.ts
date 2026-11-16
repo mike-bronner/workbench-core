@@ -40,6 +40,8 @@ export type WorkbenchBriefCheck = {
   isComplete: boolean
   missing: readonly string[]
   shape: WorkbenchBriefShape
+  criteria?: number
+  unit?: string
 }
 
 // Who makes a call. `main` is the main loop of a session a person may sit at.

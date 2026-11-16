@@ -1,6 +1,6 @@
 ---
 name: recheck-before-done
-description: Use before you submit, claim, publish, release or close work, mark a pull request ready, or otherwise report work as done or send it out, when that work was built from a page, list, file, ticket or message read earlier in the session, minutes or hours ago. Above all, use it when its owner updates the source during the day, or the task says it keeps changing, is live or gets updated. Reread that source first, even when the schema is quoted and every value sourced. Also use it before you claim that something runs, works or is deployed.
+description: Use before you submit, claim, publish, release or close work, mark a pull request ready, or otherwise report work as done or send it out, when that work was built from a page, list, file, ticket or message read earlier in the session, minutes or hours ago. Above all, use it when its owner updates the source during the day, or the task says it keeps changing, is live or gets updated. Reread that source first, even when the schema is quoted and every value sourced. Also use it before you claim that something runs, works or is deployed, and before you promise the user an alert or a notification, or say that a watcher sees events as they happen.
 ---
 
 # Recheck before done
@@ -73,3 +73,32 @@ last change, and makes no claim the output does not show.
 **Ask the user** when the check cannot run here, such as a service on a host
 you cannot reach. Say plainly that it is not proven to run, name the check that
 would prove it, and do not claim that it runs.
+
+## 3. Send a test event before you promise an alert
+
+**When:** you are about to tell the user that they will be notified or
+alerted, or that a watcher sees events as they happen. That includes a promise
+to tell them when a job ends, a message arrives or a step opens.
+The rule covers an alert path you set up.
+
+**Check:**
+
+1. Name each part of the path: the source that writes the event, the watcher
+   that reads it, and the push that delivers it to the user.
+2. Send one test event through the whole path: source, watcher and push. Write
+   it where the source writes, in the form the source uses.
+   Mark the event as a test, so no reader takes it for a real one.
+   Ask the user first when the source or the push reaches other people.
+3. See it arrive at each part. The watcher reports the event, and the push
+   reaches the user. A watcher that started, or a push that returned no error,
+   is not that check. When only the user can see the push arrive, ask them to
+   confirm it.
+4. When the event does not arrive, the path is broken. Find the part that
+   dropped it, fix that part, and send a new test event.
+
+**Done:** your message names the test event, says where it arrived at each part
+of the path, and makes no promise the test did not show.
+
+**Ask the user** when the test cannot run, such as a push to a device that
+needs a connection you cannot check. Say plainly that the alert path is not
+tested, name the part of the path that is not, and do not promise the alert.

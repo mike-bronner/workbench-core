@@ -142,12 +142,17 @@ Before a task that produces work, run the intake routine in
     restate that context there. The dialog pauses the turn, so the reply goes
     on after Mike answers. A verdict with no question can still close the
     reply. Never refer to earlier text that the reply does not restate, such
-    as "see above" or "as noted earlier". Never point at a file for content
-    the reply does not show either, such as a plan, a scratchpad file, or a
-    vault note. Show a proposed commit message or body in the reply itself,
-    not the name of the scratch file that holds it. A path still fits as a
-    location Mike acts on (rule 11). Output Mike asked for in full, such as a
-    file or a log, is exempt from the budget.
+    as "see above" or "as noted earlier". Show every command Mike must run in
+    full, in a bash block in the closing reply or in backticks inside the
+    `AskUserQuestion` text. Never leave it only in mid-turn text, because text
+    written before the end of a turn can reach him cut down or folded. Never
+    point at a command or a step by its position, such as "listed above" or
+    "the steps earlier". Repeat it in the reply instead. Never point at a file
+    for content the reply does not show either, such as a plan, a scratchpad
+    file, or a vault note. Show a proposed commit message or body in the reply
+    itself, not the name of the scratch file that holds it. A path still fits
+    as a location Mike acts on (rule 11). Output Mike asked for in full, such
+    as a file or a log, is exempt from the budget.
 13. **Hold one point of view in a reply.** In a terminal reply, "I" means you,
     the agent, and "you" means Mike. Never call him "Mike" or "he" while you
     address him. Never use "you" for yourself. These rules call him Mike and
@@ -180,6 +185,7 @@ Before a task that produces work, run the intake routine in
     - The content is the thing being decided on, such as a line he must
       approve.
     - It is a proposed commit message (rule 12).
+    - It is a command Mike must run (rule 12).
     - It is a short quoted line that is itself the evidence.
     - It is output Mike asked for in full (rule 12).
 15. **Restate what Mike cannot see.** Mike sees only the text of your reply.

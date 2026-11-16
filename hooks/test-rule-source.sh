@@ -145,6 +145,12 @@ has "rule 12 asks right after the context appears"  'Ask each question right aft
 has "rule 12 does not hold the question for the end" 'Do not hold it for the end of the reply and restate that context there'
 has "rule 12 lets a verdict still close the reply"  'A verdict with no question can still close the reply'
 has "rule 12 bans pointing at text not restated"    'Never refer to earlier text that the reply does not restate'
+# Text before the end of a turn can reach Mike cut down or folded, so a command
+# he must run that sits only there, or a "listed above" pointer at it, never
+# reaches him. Mike set this on 2026-11-16.
+has "rule 12 shows every command Mike must run"     'Show every command Mike must run in full, in a bash block in the closing reply or in backticks inside the `AskUserQuestion` text'
+has "rule 12 keeps a command out of mid-turn text"  'Never leave it only in mid-turn text, because text written before the end of a turn can reach him cut down or folded'
+has "rule 12 bans a positional pointer at a command" 'Never point at a command or a step by its position, such as "listed above" or "the steps earlier"\. Repeat it in the reply instead'
 has "rule 12 bans pointing at an unseen file"       'Never point at a file for content the reply does not show'
 has "rule 12 shows a proposed commit message"       'Show a proposed commit message or body in the reply itself, not the name of the scratch file that holds it'
 has "rule 12 keeps a path Mike acts on"             'A path still fits as a location Mike acts on'
@@ -173,6 +179,7 @@ has "rule 14 points at the folded output when it helps" 'When it helps, say in o
 has "rule 14 shows the work when Mike asks"           '- Mike asks to see it\.'
 has "rule 14 shows what is being decided on"          'The content is the thing being decided on'
 has "rule 14 keeps the proposed commit message"       'It is a proposed commit message \(rule 12\)'
+has "rule 14 shows a command Mike must run"           'It is a command Mike must run \(rule 12\)'
 has "rule 14 keeps a quoted line as evidence"         'a short quoted line that is itself the evidence'
 has "rule 14 keeps output asked for in full"          'It is output Mike asked for in full \(rule 12\)'
 has "rule 15 restates what Mike cannot see"           '15\. \*\*Restate what Mike cannot see'

@@ -88,6 +88,10 @@ describe('the warning text', () => {
     ['tail -F x | tee >(cut -c1-4)', 'cut', 'awk with fflush()'],
     ['tail -F x | tee >(grep y | sed s/a/b/) >/dev/null', 'sed', 'sed -u'],
     ['tail -F x | tee >(grep --line-buffered y | unbuffer cut -c1-4)', 'unbuffer', 'unbuffer -p'],
+    ['while read l; do echo "$l"; done < <(tail -F x | cut -c1-4)', 'cut', 'awk with fflush()'],
+    ['grep --line-buffered y <(tail -F x | cut -c1-4)', 'cut', 'awk with fflush()'],
+    ['grep --line-buffered y <(tail -F x | grep z | sed s/a/b/)', 'sed', 'sed -u'],
+    ['grep --line-buffered y <(tail -F x | unbuffer cut -c1-4)', 'unbuffer', 'unbuffer -p'],
     ['tail -F x | unbuffer cut -c1-4', 'unbuffer', 'unbuffer -p'],
     ['tail -F x | unbuffer python3 f.py', 'unbuffer', 'unbuffer -p'],
     ['tail -F x |& unbuffer cut -c1-4', 'unbuffer', 'unbuffer -p'],
@@ -197,6 +201,10 @@ describe('the warning text', () => {
     "tail -F x | grep --line-buffered '>(cut -c1-4)'",
     'tail -F x | grep --line-buffered "| unbuffer cut"',
     'tail -F x | tee >(grep --line-buffered y)',
+    'echo "$(cat <(tail -F x | cut -c1-4))"',
+    'echo `cat <(tail -F x | cut -c1-4)`',
+    "grep --line-buffered y '<(cut -c1-4)'",
+    'grep --line-buffered y <(tail -F x | grep --line-buffered z)',
   ]) {
     test(`${JSON.stringify(command)} draws no warning`, () => {
       expect(bufferWarningOf(command)).toBeUndefined()

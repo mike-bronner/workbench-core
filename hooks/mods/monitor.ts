@@ -137,27 +137,27 @@ function closerOf(text: string, at: number): number {
   return text.length
 }
 
-function regionsOf(text: string): { readers: string[]; written: string[] } {
+function regionsOf(text: string): { readers: string[]; processes: string[] } {
   const readers: string[] = []
-  const written: string[] = []
+  const processes: string[] = []
   for (let i = 0; i < text.length; i++) {
     const c = text[i] as string
     const next = text[i + 1]
     if (c === '\\') i++
     else if (`'"\``.includes(c)) i = closerOf(text, i)
     else if (c === '#' && (i === 0 || /\s/.test(text[i - 1] as string))) i = text.includes('\n', i) ? text.indexOf('\n', i) : text.length
-    else if (c === '>' && next === '(') {
+    else if ((c === '>' || c === '<') && next === '(') {
       const end = closerOf(text, i + 1)
-      written.push(text.slice(i + 2, end))
+      processes.push(text.slice(i + 2, end))
       i = end
-    } else if ((c === '$' || c === '<') && next === '(') i = closerOf(text, i + 1)
+    } else if (c === '$' && next === '(') i = closerOf(text, i + 1)
     else if (c === '|' && next === '|') i++
     else if (c === '|') {
       if (next === '&') i++
       readers.push(text.slice(i + 1))
     }
   }
-  return { readers, written }
+  return { readers, processes }
 }
 
 const UNBUFFER = `without -p, unbuffer does not read the pipe, so ${use('unbuffer -p')}`
@@ -165,8 +165,8 @@ const UNBUFFER = `without -p, unbuffer does not read the pipe, so ${use('unbuffe
 function advicesOf(command: string): [string, string][] | undefined {
   const parse = parseShell(command)
   if (parse.unknowns.length > 0) return undefined
-  const { readers, written } = regionsOf(command)
-  const nested = written.map(advicesOf)
+  const { readers, processes } = regionsOf(command)
+  const nested = processes.map(advicesOf)
   if (nested.some(advices => advices === undefined)) return undefined
   return [
     ...parse.statements.filter(statement => statement.source !== 'substitution').flatMap((statement): [string, string][] => {

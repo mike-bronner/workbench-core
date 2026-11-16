@@ -259,6 +259,7 @@ function closingParen(line: string, from: number, countsCases = true): number {
     else if (c === '$' && line[i + 1] === "'") i = closingAnsiQuote(line, i + 2)
     else if (countsCases && c === '$' && line[i + 1] === '{') i = closingBrace(line, i + 2)
     else if (c === "'") i = line.indexOf("'", i + 1) === -1 ? line.length : line.indexOf("'", i + 1)
+    else if (countsCases && c === '"') i = closingQuote(line, i + 1)
     else if (c === '"') {
       for (i++; i < line.length && line[i] !== '"'; i++) if (line[i] === '\\') i++
     } else if (c === '(') depth++
@@ -325,9 +326,6 @@ function substitutionsOf(text: string, isCompat = false): string[] {
   return inner
 }
 
-// What the heredoc scanner is inside: unquoted text (the line itself, a $( ),
-// or a backtick), a quoted string ('' or ""), or arithmetic, where << is a
-// shift. A $'…' string is skipped whole, through closingAnsiQuote.
 type Context = 'top' | '$(' | '`' | '(' | '{' | "'" | '"' | '((' | '${'
 
 // Whether a word starts at `i`: a `#` there opens a comment, and `((` there
@@ -383,11 +381,6 @@ function delimiterAt(text: string, from: number, isCompat = false): { delimiter:
 // The paths `source` and `.` read stdin through.
 const STDIN_PATHS: ReadonlySet<string> = new Set(['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0', '-'])
 
-// Whether a heredoc feeds a shell or eval, so its body is a script: a shell or
-// eval word in the text before its operator, back to the last ; & | or line
-// end. A substitution does not end that text, because `eval "$(cat <<EOF`
-// runs the body too. `source` or `.` with a path that reads stdin runs it as
-// well. Quotes and backslashes go before the compare, so `b\ash` is bash.
 function feedsShell(segment: string): boolean {
   const words = segment.replace(/["'\\]/g, '').split(/[ \t\n]+/)
   return words.some(

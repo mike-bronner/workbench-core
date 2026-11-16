@@ -1433,6 +1433,18 @@ describe('the ${…} end readers reach each branch, and each changes where a $( 
     }
   })
 
+  test('closingParen reads a ${…} inside a "…", so a ) in it does not end the $( )', () => {
+    const line = 'echo $(echo "${x:-")"}"); id'
+    expect(parseShell(line).unknowns).toEqual([])
+    expect(shape(line)).toEqual([['echo', ['${x:-)}']], ['echo', ['$_']], ['id', []]])
+  })
+
+  test("the frozen compat reading's $( ) end reads a ${…} inside a \"…\" as the gate of 77bb2f3 did", () => {
+    const line = 'echo $(echo "${x:-")"}"); id'
+    expect(commandsOf(line, true)).toEqual(oracleCommandsOf(line))
+    expect(commandsOf(line, true)).not.toEqual(commandsOf(line))
+  })
+
   test('a quote left open inside it runs to the end of the text, and is an unknown', () => {
     for (const line of ['echo $(a ${x:-"a} b) c', 'echo $(a ${x:-"a']) {
       expect(parseShell(line).unknowns).toEqual(['quote', 'substitution'])

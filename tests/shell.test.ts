@@ -1217,3 +1217,41 @@ describe('$$ is one pair, so a { after it opens no ${…}', () => {
     expect(commandsOf("echo $$'a;b'", true)).toEqual(commandsOf("echo $'a;b'", true).map(words => words.map(w => (w === 'echo' ? w : `$${w}`))))
   })
 })
+
+describe("a ' inside a double-quoted ${…} is an unknown, because bash and zsh read it differently", () => {
+  test('the line that zsh runs a hidden command in sets the quote unknown', () => {
+    expect(parseShell(`echo "\${x:-'}"; zap; echo "'}"`).unknowns).toEqual(['quote'])
+  })
+
+  test('inside $( ), the same shape sets the quote unknown', () => {
+    expect(parseShell(`echo $(echo "\${x:-'}"; zap; echo "'}")`).unknowns).toEqual(['quote'])
+    expect(parseShell(`echo "$(echo "\${x:-'}"; zap; echo "'}")"`).unknowns).toEqual(['quote'])
+  })
+
+  test('on a heredoc line, the same shape sets the quote unknown', () => {
+    const parse = parseShell(`cat <<E; echo "\${x:-'}"; zap; echo "'}"\nbody\nE`)
+    expect(parse.unknowns).toEqual(['quote'])
+    expect(parse.statements[0]?.heredocs.map(doc => [doc.delimiter, doc.body])).toEqual([['E', 'body']])
+  })
+
+  test('a nested ${…} in double quotes, or one reached through an unquoted ${…} in $( ), sets it too', () => {
+    expect(parseShell(`echo "\${y:-\${x:-'}}"; zap; echo "'}}"`).unknowns).toEqual(['quote'])
+    expect(parseShell(`echo "\${y:-"\${x:-'}"}"; zap; echo "'}"`).unknowns).toEqual(['quote'])
+    expect(parseShell(`echo $(echo \${y:-"\${x:-'}"}; zap; echo "'}"})`).unknowns).toEqual(['quote'])
+  })
+
+  test('a balanced pair sets it too, because zsh still reads the quotes as text', () => {
+    expect(parseShell(`echo "\${x:-'a'}" c`).unknowns).toEqual(['quote'])
+  })
+
+  test('a quote that bash and zsh both read the same way sets no unknown', () => {
+    for (const line of [`echo \${x:-'}"; zap; echo "'}`, `echo $(echo \${x:-'}'} c)`, `echo "\${x:-"'"}" c`, `echo "a'b" c`, `echo "$(echo \${x:-'a'})"`]) {
+      expect(parseShell(line).unknowns).toEqual([])
+    }
+    expect(statements(`echo \${x:-'}"; zap; echo "'}`).map(s => s.name)).toEqual(['echo'])
+  })
+
+  test('the frozen compat reading is unchanged', () => {
+    expect(commandsOf(`echo "\${x:-'}"; zap; echo "'}"`, true)).toEqual([['echo', "${x:-'}"], ['zap'], ['echo', "'}"]])
+  })
+})

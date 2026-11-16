@@ -877,6 +877,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
           if (nest.at(-1) === '{') nest.push('"')
           else nest.pop()
         } else if (d === "'" && nest.at(-1) === '{') {
+          reading.unknowns.add('quote')
           const end = line.indexOf("'", i + 1)
           const quoted = line.slice(i, end === -1 ? line.length : end + 1)
           word += quoted

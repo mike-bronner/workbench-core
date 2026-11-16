@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { COMMAND_POINTER_REMINDER, pointsAtUnshownCommand } from '../hooks/mods/command-pointer'
+import { ASKS_USER, REPROMPT_REASON } from '../hooks/mods/question-rule'
 import { prompt, start, stop, world } from './harness'
 
 const POINTER = 'Run the two commands listed above.'
@@ -22,11 +23,15 @@ describe('AC1: a reply that points at a command it does not show draws the remin
 
   test('each position word pairs with each command word', () => {
     for (const position of ['above', 'earlier', 'previous', 'listed'])
-      for (const command of ['command', 'commands', 'run', 'line']) expect(pointsAtUnshownCommand(`Use the ${command} ${position}.`)).toBe(true)
+      for (const command of ['command', 'commands', 'step', 'steps']) expect(pointsAtUnshownCommand(`Use the ${command} ${position}.`)).toBe(true)
   })
 
   test('"the commands earlier" is a pointer', () => {
     expect(pointsAtUnshownCommand('Paste the commands earlier into a terminal.')).toBe(true)
+  })
+
+  test('"Follow the steps earlier." is a pointer', () => {
+    expect(pointsAtUnshownCommand('Follow the steps earlier.')).toBe(true)
   })
 
   test('context from a hook beneath is kept beside the reminder', async ($, on) => {
@@ -35,6 +40,26 @@ describe('AC1: a reply that points at a command it does not show draws the remin
     await $.session.start(start(true))
     await $.prompt.submit(prompt('clean up'))
     expect((await $.classic.Stop(stop(POINTER))).additionalContext).toEqual(['BENEATH', COMMAND_POINTER_REMINDER])
+  })
+
+  test('a block from a hook beneath is kept beside the reminder', async ($, on) => {
+    const w = world(on, {})
+    w.stopBeneath = { block: 'another plugin' }
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('clean up'))
+    const result = await $.classic.Stop(stop(POINTER))
+    expect(result.block).toBe('another plugin')
+    expect(result.additionalContext).toEqual([COMMAND_POINTER_REMINDER])
+  })
+
+  test('a reply that asks and points is re-prompted and still reminded', async ($, on) => {
+    const w = world(on, {})
+    w.label = ASKS_USER
+    await $.session.start(start(true))
+    await $.prompt.submit(prompt('clean up'))
+    const result = await $.classic.Stop(stop('Should I push? Run the commands above.'))
+    expect(result.block).toBe(REPROMPT_REASON)
+    expect(result.additionalContext).toContain(COMMAND_POINTER_REMINDER)
   })
 })
 
@@ -51,11 +76,17 @@ describe('AC2: a reply that shows its command, or names no command, draws nothin
     expect(pointsAtUnshownCommand(`${POINTER}\n\n~~~\nrm -rf /tmp/a\n~~~`)).toBe(false)
   })
 
-  test('"above" with no command word is not reminded', async ($, on) => {
-    world(on, {})
-    await $.session.start(start(true))
-    await $.prompt.submit(prompt('fix the parser'))
-    expect((await $.classic.Stop(stop('The fix is described above.'))).additionalContext).toBeUndefined()
+  test('a fence indented four or more spaces counts as a code block', () => {
+    expect(pointsAtUnshownCommand(`${POINTER}\n\n1. Clean up:\n\n    \`\`\`bash\n    rm -rf /tmp/a\n    \`\`\``)).toBe(false)
+  })
+
+  test('"above" with no command word is not a pointer', () => {
+    expect(pointsAtUnshownCommand('The fix is described above.')).toBe(false)
+  })
+
+  test('"run" and "line" in their plain sense are not command words', () => {
+    for (const reply of ['The previous run passed.', 'The earlier failure was on line 12 of parser.ts.', 'The tests listed above all pass on a clean run.'])
+      expect(pointsAtUnshownCommand(reply)).toBe(false)
   })
 
   test('a command word with no position word is not a pointer', () => {

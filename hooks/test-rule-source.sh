@@ -102,6 +102,12 @@ has "rule 6 keeps the table to 80 columns"          'the table fits 80 columns'
 has "rule 6 puts the recommendation after the table" 'After the table, one or two sentences name your recommendation'
 has "rule 6 sends the pick to the tool"             'If Mike must pick, ask through `AskUserQuestion`'
 has "rule 6 favours correctness"                    'favours correctness over speed'
+has "rule 6 recommends running an approved step"    "When a step needs Mike's approval and you can run it, ask him for the decision and recommend the option where you run the step"
+has "rule 6 hands Mike only steps for his hands"    'Hand Mike only the steps that need his hands, such as a password, a browser consent or a one-time code'
+has "rule 6 names the callback sign-ins"            'Some CLI sign-ins wait for a browser callback, such as `gh auth login` or `gcloud auth login`'
+has "rule 6 starts a sign-in in a visible tab"      'Start such a sign-in in a visible Terminal tab, not in background Bash'
+has "rule 6 gives the reason for the visible tab"   'In background Bash, the sign-in can miss its callback and save no credentials, so the next step fails'
+has "rule 6 reads the sign-in success line"         "Read the sign-in's success line in the tab before you run the next step"
 has "rule 6 grades against the criteria"            'grade against every one of them'
 # The intake routine is a procedure, not a rule, so the style points at it and
 # carries no copy. hooks/test-intake.sh pins the routine and the absence of a copy.
@@ -139,6 +145,9 @@ has "rule 12 asks right after the context appears"  'Ask each question right aft
 has "rule 12 does not hold the question for the end" 'Do not hold it for the end of the reply and restate that context there'
 has "rule 12 lets a verdict still close the reply"  'A verdict with no question can still close the reply'
 has "rule 12 bans pointing at text not restated"    'Never refer to earlier text that the reply does not restate'
+has "rule 12 shows every command Mike must run"     'Show every command Mike must run in full, in a bash block in the closing reply or in backticks inside the `AskUserQuestion` text'
+has "rule 12 keeps a command out of mid-turn text"  'Never leave it only in mid-turn text, because text written before the end of a turn can reach him cut down or folded'
+has "rule 12 bans a positional pointer at a command" 'Never point at a command or a step by its position, such as "listed above" or "the steps earlier"\. Repeat it in the reply instead'
 has "rule 12 bans pointing at an unseen file"       'Never point at a file for content the reply does not show'
 has "rule 12 shows a proposed commit message"       'Show a proposed commit message or body in the reply itself, not the name of the scratch file that holds it'
 has "rule 12 keeps a path Mike acts on"             'A path still fits as a location Mike acts on'
@@ -167,6 +176,7 @@ has "rule 14 points at the folded output when it helps" 'When it helps, say in o
 has "rule 14 shows the work when Mike asks"           '- Mike asks to see it\.'
 has "rule 14 shows what is being decided on"          'The content is the thing being decided on'
 has "rule 14 keeps the proposed commit message"       'It is a proposed commit message \(rule 12\)'
+has "rule 14 shows a command Mike must run"           'It is a command Mike must run \(rule 12\)'
 has "rule 14 keeps a quoted line as evidence"         'a short quoted line that is itself the evidence'
 has "rule 14 keeps output asked for in full"          'It is output Mike asked for in full \(rule 12\)'
 has "rule 15 restates what Mike cannot see"           '15\. \*\*Restate what Mike cannot see'

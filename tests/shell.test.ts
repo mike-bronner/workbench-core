@@ -1694,6 +1694,18 @@ describe('a shell that reads its script from stdin is flagged when anything on t
     }
   })
 
+  test('a shell whose last fd-0 input is a < from a plain file reads that file, on a line that feeds stdin elsewhere too', () => {
+    for (const line of ['bash < run.sh', 'bash 0< run.sh', "bash < 'run.sh'", 'sh <scripts/run.sh', 'bash <&3 < run.sh', 'cat <<<x; bash < run.sh']) {
+      expect(unknowns(line)).toEqual([])
+    }
+  })
+
+  test('a < from a stdin path, a device, a substitution or a variable, or a later fd-0 input, still sets the stdin unknown', () => {
+    for (const line of ['bash < /dev/stdin', 'bash < /dev/fd/3', 'bash < /proc/self/fd/0', 'bash < <(echo zap)', 'bash < $(echo run.sh)', 'bash < "$F"', 'bash < `echo run.sh`', 'bash < run.sh <&3', 'bash < run.sh <> f', 'printf x | bash < run.sh', 'bash < run.sh <<<x', 'exec <<<x; bash', 'exec < run.sh; bash']) {
+      expect(unknowns(line)).toContain('stdin')
+    }
+  })
+
   test('a here-string on the shell is no own heredoc, though a heredoc stands on the subshell around it', () => {
     expect(unknowns('(bash 0<<<x) <<EOF\nzap\nEOF')).toContain('stdin')
   })

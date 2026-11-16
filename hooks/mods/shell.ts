@@ -392,6 +392,11 @@ function delimiterAt(text: string, from: number, isCompat = false): { delimiter:
 // The paths `source` and `.` read stdin through.
 const STDIN_PATHS: ReadonlySet<string> = new Set(['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0', '-'])
 
+const readsOwnFile = (statement: ShellStatement): boolean => {
+  const input = statement.redirects.findLast(r => r.isReal && r.op.startsWith('<') && (r.fd === '' || r.fd === '0'))
+  return input?.op === '<' && input.target !== '' && !/[$`]/.test(input.target) && !/^\/(dev|proc)\//.test(input.target)
+}
+
 const sourcesStdin = (statement: ShellStatement): boolean =>
   (statement.name === 'source' || statement.name === '.') && STDIN_PATHS.has(statement.args[statement.args[0] === '--' ? 1 : 0] ?? '')
 
@@ -1423,7 +1428,7 @@ function statementsOf(text: string, reading: Reading, source: ShellSource, depth
       }
       const hasOwnHeredoc = statement.redirects.some(r => r.isReal && (r.op === '<<' || r.op === '<<-') && (r.fd === '' || r.fd === '0'))
       if (strings.length > 0 || raw.pipedFrom !== undefined) reading.unknowns.add('stdin')
-      else if (!hasOwnHeredoc) reading.readsStdin = true
+      else if (!hasOwnHeredoc && !readsOwnFile(statement)) reading.readsStdin = true
     }
   }
   return statements

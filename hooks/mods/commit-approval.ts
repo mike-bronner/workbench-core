@@ -930,7 +930,7 @@ const MERGED_VALUES: Readonly<Record<'merge' | 'pull', { short: string; long: re
   },
 }
 const READ_REF = /^[A-Za-z0-9][A-Za-z0-9._/+-]*$/
-const UNREAD_REF = /^[0-9a-f]{4,40}$|^[a-z_]*head$/i
+const UNREAD_REF = /^[0-9a-f]{4,64}$|^[a-z_]*head$/i
 const REMOTE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 const REMOTE_CHANGES: ReadonlySet<string> = new Set(['set-url', 'add', 'rename'])
 
@@ -999,7 +999,7 @@ const isReadRef = (ref: string): boolean => {
 }
 
 const isCommitless = (options: readonly string[], sub: 'merge' | 'pull'): boolean => {
-  const lastOf = (modes: readonly string[]) => options.filter(arg => modes.includes(arg)).at(-1)
+  const lastOf = (modes: readonly string[]) => options.filter(arg => modes.some(full => isLongFor(arg, full))).at(-1)
   const isRebasing = sub === 'pull' && options.some(arg => arg.startsWith('--rebase') || isLongFor(arg, '--rebase') || /^-[^-sXjoS]*r/.test(arg))
   const commitMode = lastOf(['--commit', '--no-commit', '--squash', '--no-squash'])
   return !isRebasing && (lastOf(['--ff', '--no-ff', '--ff-only']) === '--ff-only' || commitMode === '--no-commit' || commitMode === '--squash')
@@ -1009,7 +1009,7 @@ const landingOf = (st: ShellStatement, sub: string | undefined, dir: string | nu
   const isAliased = sub !== (st.args[st.subcommandAt] ?? '').toLowerCase()
   const kind = sub === 'pull' ? 'pull' : 'merge'
   const { words, options } = mergedWordsOf(restOf(st), kind)
-  if (options.some(arg => isLongFor(arg, '--abort') || isLongFor(arg, '--quit'))) return undefined
+  if (kind === 'merge' && options.some(arg => isLongFor(arg, '--abort') || isLongFor(arg, '--quit'))) return undefined
   if (isAliased || options.some(arg => isLongFor(arg, '--continue'))) return { dir, refs: null }
   const mode = isCommitless(options, kind) ? { commitless: true as const } : {}
   const refs = sub === 'pull' ? words.slice(1).map(refspec => refspec.replace(/^\+/, '').replace(/:.*$/, '')) : words

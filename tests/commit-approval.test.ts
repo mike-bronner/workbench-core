@@ -1034,6 +1034,8 @@ describe('a local merge or pull that lands a ledger unit branch is gated as a co
       'git pull --refmap x . unit/a',
       'git pull --refm x . unit/a',
       'git pull --filter blob:none --negotiation-restrict main --negotiation-include main --negotiation-tip main origin unit/a',
+      'git pull --qui origin unit/a',
+      'git pull --qu origin unit/a',
     ]) {
       expect([line, refsOf(line)]).toEqual([line, [['unit/a']]])
     }
@@ -1047,6 +1049,7 @@ describe('a local merge or pull that lands a ledger unit branch is gated as a co
     expect(mergesOf('git pull file:///tmp/r unit/a:x').local).toEqual([null])
     expect(mergesOf('git pull --ff-only').landings).toEqual([{ dir: '', refs: [], upstream: true, commitless: true }])
     expect(refsOf('git pull origin main')).toEqual([['main']])
+    expect(refsOf('git merge aaaaaaaa0123456789abcdef0123456789abcdef0123456789abcdefbbbbbbbbc')).toEqual([['aaaaaaaa0123456789abcdef0123456789abcdef0123456789abcdefbbbbbbbbc']])
     for (const line of ['git merge --abo', 'git merge --quit']) {
       expect([line, refsOf(line)]).toEqual([line, []])
     }
@@ -1061,6 +1064,8 @@ describe('a local merge or pull that lands a ledger unit branch is gated as a co
       'git merge --no-ff --ff-only main',
       'git merge --commit --no-commit main',
       'git merge -m "Merge it." --ff-only main',
+      'git merge --comm --no-commit main',
+      'git merge --no-squ --squash main',
       'git pull --ff-only',
       'git pull --ff-only origin main',
       'git pull --squash origin main',
@@ -1077,6 +1082,11 @@ describe('a local merge or pull that lands a ledger unit branch is gated as a co
       'git merge --no-commit --commit main',
       'git merge --squash --no-squash main',
       'git merge --ff-o main',
+      'git merge --no-commit --comm main',
+      'git merge --squash --no-squ main',
+      'git merge --no-commit --no-squ main',
+      'git merge --ff-only --no-f main',
+      'git merge --ff-only --f main',
       'git merge -m --ff-only main',
       'git merge --continue',
       'git -c alias.m=merge m --ff-only main',
@@ -1100,6 +1110,7 @@ describe('a local merge or pull that lands a ledger unit branch is gated as a co
       'git merge 1a2b3c4',
       'git merge a1b2c3',
       'git merge a1b2',
+      'git merge aaaaaaaa0123456789abcdef0123456789abcdef0123456789abcdefbbbbbbbb',
       'git merge FETCH_HEAD',
       'git merge fetch_head',
       'git merge Orig_Head',
@@ -1127,6 +1138,8 @@ describe('a local merge or pull that lands a ledger unit branch is gated as a co
     'git -C /repo merge --no-ff Unit/A',
     'git pull --no-ff . unit/a',
     'git pull origin unit/a',
+    'git pull --qui origin unit/a',
+    'git pull --qu origin unit/a',
     'git remote add self .; git pull self unit/a',
     'git pull --refmap x . unit/a',
     'git pull unitdir HEAD',
@@ -1193,7 +1206,7 @@ describe('a local merge or pull that lands a ledger unit branch is gated as a co
     expect(await bash($, b, 'git pull origin')).toMatch(DECLINED.merge)
   })
 
-  for (const line of ['git merge "$B"', 'git merge 1a2b3c4', 'git merge --continue', 'git -c alias.m=merge m feat/y', 'git pull /tmp/tree HEAD', 'git merge a1b2c3', 'git merge fetch_head']) {
+  for (const line of ['git merge "$B"', 'git merge 1a2b3c4', 'git merge --continue', 'git -c alias.m=merge m feat/y', 'git pull /tmp/tree HEAD', 'git merge a1b2c3', 'git merge fetch_head', 'git merge aaaaaaaa0123456789abcdef0123456789abcdef0123456789abcdefbbbbbbbb']) {
     test(`a merge whose merged refs cannot be read asks as a commit: ${JSON.stringify(line)}`, async ($, on) => {
       const b = withLedger(on)
       await session($)
@@ -1318,7 +1331,7 @@ describe('a local merge or pull that lands a ledger unit branch is gated as a co
     const b = withLedger(on)
     await $.session.start(start())
     await $.prompt.submit(prompt('delegate it'))
-    for (const line of ['git merge --no-ff origin/main', 'git merge main', 'git merge origin/main', 'git pull', 'git pull origin main', 'git pull --rebase', 'git pull -r', 'git pull --rebase --ff-only', 'git merge --ff-only --no-ff main']) {
+    for (const line of ['git merge --no-ff origin/main', 'git merge main', 'git merge origin/main', 'git pull', 'git pull origin main', 'git pull --rebase', 'git pull -r', 'git pull --rebase --ff-only', 'git merge --ff-only --no-ff main', 'git pull --qui origin main', 'git pull --qu origin main', 'git merge --no-commit --comm main', 'git merge --squash --no-squ main']) {
       expect([line, await bash($, b, line, 'a1')]).toEqual([line, SUBAGENT_REFUSAL.deny])
     }
     for (const line of ['git merge --ff-only origin/main', 'git merge --squash main', 'git merge --no-commit main', 'git pull --ff-only', 'git pull --ff-only origin', 'git pull --ff-only origin main']) {

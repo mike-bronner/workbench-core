@@ -12,6 +12,7 @@ import { commandsOf as commitCommandsOf } from '../hooks/mods/commit-approval'
 import { WRAPPERS, commandsOf, decodedOf, expandingOf, parseShell, shellScriptOf } from '../hooks/mods/shell'
 import { bench, caller, start } from './bench'
 import { CAUGHT, LET_THROUGH, OVER_COUNTED } from './commit-corpus'
+import { commandsOf as oracleCommandsOf } from './oracle/commit-approval-77bb2f3'
 import { PARSER_CASES } from './shell-cases'
 
 // The stand-in dependent reads the line after `shell:` through the noun, and
@@ -1175,16 +1176,36 @@ describe('a ${…} parameter expansion is one part of its word', () => {
       expect(parseShell(line).unknowns).toContain('substitution')
     }
     expect(shape('echo ${x;zap')).toEqual([['echo', ['${x;zap']]])
-    for (const line of ['echo "${x', 'echo "${x:-"a}"', "echo ${x:-'a", "echo \"${x:-'a"]) {
-      expect(parseShell(line).unknowns).toContain('quote')
+    for (const [line, unknowns] of [
+      ['echo "${x', ['quote']],
+      ['echo "${x:-"a}"', ['quote']],
+      ["echo ${x:-'a", ['quote', 'substitution']],
+      ["echo \"${x:-'a", ['quote']],
+    ] as const) {
+      expect(parseShell(line).unknowns).toEqual(unknowns)
     }
     expect(() => commandsOf('echo ${x:-$(', true)).not.toThrow()
+  })
+
+  test('on a heredoc line, an unclosed ${ is an unknown beside the unclosed $( form', () => {
+    expect(parseShell('cat <<E $(x\nbody\nE').unknowns).toEqual(['substitution'])
+    const parse = parseShell('cat <<E ${x\nbody\nE')
+    expect(parse.unknowns).toEqual(['heredoc', 'substitution'])
+    expect(shape('cat <<E ${x\nbody\nE')).toEqual([['cat', ['${x\nbody\nE']]])
+    expect(parse.statements[0]?.heredocs.map(doc => [doc.delimiter, doc.isTerminated])).toEqual([['E', false]])
   })
 
   test('the frozen compat reading still reads it as the gate of 77bb2f3 did', () => {
     expect(commandsOf('echo ${x/;/ git push}', true)).toEqual([['echo', '${x/'], ['/', 'git', 'push}']])
     expect(commandsOf('echo ${x/;/ git push}')).toEqual([['echo', '${x/;/ git push}']])
     expect(commandsOf('echo $(a ${x/)/;} git push)', true).some(words => words.includes('git'))).toBe(true)
+  })
+
+  test("the frozen compat reading's heredoc scanner reads a << inside ${…} as the gate of 77bb2f3 did", () => {
+    for (const line of ['cat <<E ${x/<<F/}\nbody\nE', 'cat <<E ${x/<<F/}\nbody\nE\nzap\nF']) {
+      expect(commandsOf(line, true)).toEqual(oracleCommandsOf(line))
+    }
+    expect(commandsOf('cat <<E ${x/<<F/}\nbody\nE\nzap\nF', true)).toEqual([['cat', '${x/']])
   })
 
   test('the word keeps its expansion marks, so a ${…} command name stays unknown', () => {
@@ -1248,6 +1269,25 @@ describe('$$ is one pair, so a { after it opens no ${…}', () => {
   test('the frozen compat reading is unchanged', () => {
     expect(commandsOf('echo $$(zap)', true).some(words => words.includes('zap'))).toBe(true)
     expect(commandsOf("echo $$'a;b'", true)).toEqual(commandsOf("echo $'a;b'", true).map(words => words.map(w => (w === 'echo' ? w : `$${w}`))))
+  })
+
+  test("the frozen compat reading's heredoc scanner reads a $$ and a $${ as the gate of 77bb2f3 did", () => {
+    for (const line of ['echo $${x; cat <<E; echo }\nbody\nE', "echo $$'a\\' ; cat <<E\nbody\nE"]) {
+      expect(commandsOf(line, true)).toEqual(oracleCommandsOf(line))
+    }
+    expect(commandsOf('echo $${x; cat <<E; echo }\nbody\nE', true)).toEqual([['echo', '$${x'], ['cat'], ['echo', '}']])
+    expect(commandsOf("echo $$'a\\' ; cat <<E\nbody\nE", true)).toEqual([['echo', "$a' ; cat <<E\nbody\nE\uE000"]])
+  })
+
+  test("the frozen compat reading's $( ) end reads a $$ as the gate of 77bb2f3 did", () => {
+    for (const line of ['echo $(a $${x) ; zap; echo }', "echo $(a $$'\\')'; zap) c"]) {
+      expect(commandsOf(line, true)).toEqual(oracleCommandsOf(line))
+    }
+    expect(commandsOf("echo $(a $$'\\')'; zap) c", true)).toEqual([['a', "$')\uE000"], ['zap'], ['echo', '$_', 'c']])
+  })
+
+  test('an unquoted $$ word stays expanding', () => {
+    expect(expandingOf(only('echo $$ a'))).toEqual([1])
   })
 })
 
@@ -1384,7 +1424,7 @@ describe('the ${…} end readers reach each branch, and each changes where a $( 
   test('closingQuote steps past a backslash, a $$ and a nested ${…}, and ends at its own "', () => {
     for (const [line, expected] of [
       ['echo $(a ${x:-"\\"}"} b) c', [['a', ['${x:-"}}', 'b']], ['echo', ['$_', 'c']]]],
-      ['echo $(a ${x:-"$$"} b) c', [['a', ['${x:-$$}', 'b']], ['echo', ['$_', 'c']]]],
+      ['echo $(a ${x:-"$${"} b) c', [['a', ['${x:-$${}', 'b']], ['echo', ['$_', 'c']]]],
       ['echo $(a ${x:-"${y:-}}"} b) c', [['a', ['${x:-${y:-}}}', 'b']], ['echo', ['$_', 'c']]]],
       ['echo $(a ${x:-"${y:-"})"}"} b) c', [['a', ['${x:-${y:-})}}', 'b']], ['echo', ['$_', 'c']]]],
     ] as const) {

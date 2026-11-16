@@ -189,7 +189,7 @@ moments() {
     show-every-cut) printf '%s\n' 'shorten' 'summarize' 'condense' 'trim' 'paraphrase' 'rewrite' 'text a person gave' 'notes, a document, a post, a quote' 'character or word limit' 'word for word' ;;
     check-a-live-source) printf '%s\n' 'name or rely on' 'into code, a config, a commit or a reply' 'goes stale' 'from training' 'newest or latest model' 'model ID' 'library or tool version' 'price' 'limit or quota' 'release date' "product's current docs" ;;
     use-the-owners-logic) printf '%s\n' 'compute' 'count' 'classify' 'add a file' "someone else's project" 'export or artifact' 'dependencies alone' 'ships its own logic, views or build' 'a script, a component, a query, a report generator, a test suite' 'already computes' "owner's table, page or report" 'SQL view' 'dashboard' 'work out by hand' ;;
-    recheck-before-done) printf '%s\n' 'submit, claim, publish, release or close' 'mark a pull request ready' 'report work as done' 'send it out' 'read earlier in the session' 'keeps changing' 'is live' 'gets updated' 'minutes or hours ago' 'its owner updates' 'Reread that source' 'runs, works or is deployed' ;;
+    recheck-before-done) printf '%s\n' 'submit, claim, publish, release or close' 'mark a pull request ready' 'report work as done' 'send it out' 'read earlier in the session' 'keeps changing' 'is live' 'gets updated' 'minutes or hours ago' 'its owner updates' 'Reread that source' 'runs, works or is deployed' 'an alert or a notification' 'a watcher sees events' ;;
   esac
 }
 for s in $SKILLS; do
@@ -219,6 +219,14 @@ has "use-the-owners-logic builds with the owner's code" use-the-owners-logic "bu
 has "recheck-before-done runs the check that connects before it claims a run" recheck-before-done "Run that check now, after the last change"
 has "recheck-before-done quotes what the check printed" recheck-before-done "Quote what the check printed"
 has "recheck-before-done says plainly when the check cannot run" recheck-before-done "Say plainly that it is not proven to run"
+has "recheck-before-done sends a test event through the whole path before it promises an alert" recheck-before-done "Send one test event through the whole path: source, watcher and push."
+has "recheck-before-done sees the test event arrive at each part" recheck-before-done "See it arrive at each part."
+has "recheck-before-done says plainly when the alert path is not tested" recheck-before-done "Say plainly that the alert path is not"
+has "recheck-before-done does not promise an untested alert" recheck-before-done "tested, name the part of the path that is not, and do not promise the alert."
+has "recheck-before-done makes no promise past what the test showed" recheck-before-done "of the path, and makes no promise the test did not show."
+has "recheck-before-done covers an alert path the agent set up" recheck-before-done "The rule covers an alert path you set up."
+has "recheck-before-done marks the test event as a test" recheck-before-done "Mark the event as a test, so no reader takes it for a real one."
+has "recheck-before-done asks first when the test event reaches other people" recheck-before-done "Ask the user first when the source or the push reaches other people."
 RULE='Never offer the user a choice between guessed values for a field an outside'
 count="$(grep -rF -- "$RULE" "$ROOT/skills" | wc -l | tr -d ' ')"
 if [ "$count" -eq 1 ] && grep -qF -- "$RULE" "$ROOT/skills/intake/SKILL.md"; then

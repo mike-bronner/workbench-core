@@ -1785,6 +1785,21 @@ describe('a ${…} that runs code held in its variable is the expansion unknown'
     expect(parseShell("cat <<'EOF'\n${x@P}\nEOF").unknowns).toEqual([])
   })
 
+  test('an @P past a } held in quotes or after a backslash sets the expansion unknown', () => {
+    expect(parseShell(`: "\${a['}']@P}"`).unknowns).toEqual(['expansion', 'quote'])
+    for (const line of [': ${a[\\}]@P}', `cat <<EOF\n\${a['}']@P}\nEOF`, 'cat <<EOF\n${a[\\}]@P}\nEOF']) {
+      expect(parseShell(line).unknowns).toEqual(['expansion'])
+      expect(parseShell(line.replace('@P', '')).unknowns).toEqual([])
+    }
+  })
+
+  test('an @P or (e) inside arithmetic sets the expansion unknown, and a plain ${…} there does not', () => {
+    for (const form of ['echo $(( X ))', '(( X ))', 'echo $[ X ]', 'echo "$(( X ))"']) {
+      for (const runs of ['${x@P}', '${(e)x}']) expect(parseShell(form.replace('X', runs)).unknowns).toEqual(['expansion'])
+      expect(parseShell(form.replace('X', '${x}')).unknowns).toEqual([])
+    }
+  })
+
   test('other operators, single quotes and a plain ${…} set no unknown', () => {
     for (const line of [': "${x@Q}"', ': "${x@U}"', ": '${x@P}'", ': "${x}"', ': "${x}"@P}', ': "${e}"']) {
       expect(parseShell(line).unknowns).toEqual([])

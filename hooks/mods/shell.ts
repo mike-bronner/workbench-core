@@ -211,7 +211,8 @@ type Reading = {
   readsStdin?: boolean
 }
 
-const runsValue = (text: string): boolean => /\$\{(\([^)]*e[^)]*\)|[^}]*@P\})/.test(text)
+const runsValue = (text: string): boolean =>
+  [...text.matchAll(/\$\{/g)].some(m => /^\$\{\([^)]*e[^)]*\)|@P\}$/.test(text.slice(m.index, closingBrace(text, m.index + 2) + 1)))
 
 const ANSI_CONTROLS: Record<string, string> = { a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v' }
 
@@ -853,6 +854,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
   // run.
   const arithmetic = (body: string) => {
     reading.isArithmetic = true
+    if (exact && runsValue(body)) reading.unknowns.add('expansion')
     for (const inner of substitutionsOf(body)) {
       reading.takesInput = true
       commands.push(...lex(inner, reading, nestedSource, depth + 1, !isUncertain, isBody))

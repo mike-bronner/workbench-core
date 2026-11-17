@@ -74,9 +74,6 @@ export type WorkbenchCallerLaneArgs = {
 //                 takes in outside data (a substitution, read, mapfile,
 //                 select, printf -v) and has arithmetic or uses a value as
 //                 a variable name (`read X; ((X))`, `read X; unset "$X"`)
-//   stdin         a shell with no script reads one from a pipe or a
-//                 here-string (`echo x | sh`, `cat <<EOF | bash`). A heredoc
-//                 piped in, or the here-string, is still read as a script.
 //   depth         scripts nested past four levels, which are not read
 //   compound      an array assignment `x=(` or a `case … in` still open
 //                 where its script ends

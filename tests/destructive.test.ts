@@ -338,6 +338,15 @@ describe('the database and vault-git guards', () => {
     expect(checkSql('DELETE FROM users WHERE id = 1')).toBeUndefined()
   })
 
+  test('a < into a SQL client on fd 0 written with leading zeros reads its file as a plain < does', async ($, on) => {
+    const b = await session($, on)
+    const fds = ['', '0', '00', '000']
+    const refused = fds.map(fd => `psql ${fd}< /db/reset.sql`)
+    const ran = fds.map(fd => `psql ${fd}< /db/seed.sql`)
+    expect(await decisions($, b, refused)).toEqual(all(refused, 'deny'))
+    expect(await decisions($, b, ran)).toEqual(all(ran, 'beneath'))
+  })
+
   test('a git write in the vault is refused, and read-only git there runs', async ($, on) => {
     const b = await session($, on)
     const refused = ['git -C /vault rm insights/a.md', 'cd /vault && git add .', 'git --git-dir=/vault/.git commit -m x', 'git -C /VAULT stash', 'git -C /vault branch -D x']

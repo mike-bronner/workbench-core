@@ -34,7 +34,7 @@
 import type { WorkbenchShellHeredoc as ShellHeredoc, WorkbenchShellParse as ShellParse, WorkbenchShellStatement as Statement } from '../../types'
 import type { FactGetter } from './destructive-scope.ts'
 import { cwdsAfter, isLinearLine } from './destructive-scope.ts'
-import { SHELLS, nameOf, parseShell } from './shell.ts'
+import { SHELLS, isFdZero, nameOf, parseShell } from './shell.ts'
 
 export const MAX_INPUT = 200_000
 const MAX_DEPTH = 4
@@ -273,7 +273,7 @@ function sqlPayloads(words: readonly string[], s: Statement | undefined): string
 function sqlFiles(words: readonly string[], s: Statement | undefined): string[] {
   const head = nameOf(words[0] ?? '')
   const paths: string[] = []
-  if (s !== undefined) for (const r of s.redirects) if (r.isReal && r.op === '<' && (r.fd === '' || r.fd === '0')) paths.push(r.target)
+  if (s !== undefined) for (const r of s.redirects) if (r.isReal && r.op === '<' && isFdZero(r.fd)) paths.push(r.target)
   for (let i = 1; i < words.length; i++) {
     const w = words[i] as string
     if (SQL_FILE_CLIENTS.has(head)) {

@@ -1681,6 +1681,30 @@ describe('a shell that reads its script from stdin is flagged when anything on t
     }
   })
 
+  test('an input redirect on fd 0 written with leading zeros feeds the shell or group it stands on', () => {
+    for (const fd of ['00', '000']) {
+      for (const line of [`{ bash; } ${fd}<<<'zap'`, `( bash ) ${fd}< <(printf zap)`, `cat ${fd}<in.txt; bash`]) {
+        expect(unknowns(line)).toEqual(['stdin'])
+        expect(names(line)).toContain('bash')
+      }
+    }
+  })
+
+  test('a shell whose own fd-0 heredoc or plain-file < is written with leading zeros reads it', () => {
+    for (const fd of ['00', '000']) {
+      expect(unknowns(`cat <<<x; bash ${fd}<<EOF\nzap\nEOF`)).toEqual([])
+      expect(names(`cat <<<x; bash ${fd}<<EOF\nzap\nEOF`)).toContain('zap')
+      expect(unknowns(`cat <<<x; bash ${fd}< run.sh`)).toEqual([])
+      expect(unknowns(`cat <<<x; bash < run.sh ${fd}< /dev/stdin`)).toEqual(['stdin'])
+    }
+  })
+
+  test('an input redirect on an fd that holds a zero but is not 0 feeds nothing', () => {
+    for (const line of ["{ bash; } 01<<<'zap'", "{ bash; } 10<<<'zap'", 'cat 100<in.txt; bash']) {
+      expect(unknowns(line)).toEqual([])
+    }
+  })
+
   test('an output redirect, an input redirect on another fd, or a shell with a script file feeds nothing', () => {
     for (const line of ['cat > out; bash', 'cat 3<f; bash', 'cat 2>&1; bash', 'exec >out; bash', 'exec 2>&1; bash', 'bash script.sh < in.txt', 'echo x | bash script.sh', 'cat <<<x; bash -c y', 'bash']) {
       expect(unknowns(line)).toEqual([])
@@ -1729,7 +1753,7 @@ describe('a shell that reads its script from stdin is flagged when anything on t
   })
 
   test('a < from a path the reader cannot pin to a plain file sets the stdin unknown', () => {
-    for (const target of ['/dev/s*', '/dev/stdi?', '~/run.sh', '~', '../run.sh', 'a/../../dev/stdin', '/x/link/../run.sh', '/..']) {
+    for (const target of ['/dev/s*', '/dev/stdi?', '/{dev,x}/stdin', '~/run.sh', '~', '../run.sh', 'a/../../dev/stdin', '/x/link/../run.sh', '/..']) {
       expect(unknowns(`cat <<<x; bash < ${target}`)).toEqual(['stdin'])
     }
   })
@@ -1745,7 +1769,7 @@ describe('a shell that reads its script from stdin is flagged when anything on t
   })
 
   test('the frozen compat reading is unchanged', () => {
-    for (const line of ['echo zap | bash -c bash', 'exec 3<<<zap; bash <&3', 'bash < <(echo zap)', 'coproc bash; echo zap >&"${COPROC[1]}"', 'printf zap | echo $(bash)']) {
+    for (const line of ['echo zap | bash -c bash', 'exec 3<<<zap; bash <&3', 'bash < <(echo zap)', 'coproc bash; echo zap >&"${COPROC[1]}"', 'printf zap | echo $(bash)', "{ bash; } 00<<<'zap'", '( bash ) 000< <(printf zap)', 'cat <<<x; bash < /{dev,x}/stdin']) {
       expect(commandsOf(line, true)).toEqual(oracleCommandsOf(line))
     }
   })
@@ -1755,7 +1779,7 @@ describe('a shell, source or . whose script operand names stdin reads its script
   const unknowns = (line: string) => parseShell(line).unknowns
   const names = (line: string) => statements(line).map(s => s.name)
   const paths = ['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0']
-  const spellings = ['//dev/stdin', '/./dev/stdin', '/tmp/../dev/stdin', '/d[e]v/stdin', '/dev//fd/0', '/proc/thread-self/fd/0']
+  const spellings = ['//dev/stdin', '/./dev/stdin', '/tmp/../dev/stdin', '/d[e]v/stdin', '/dev//fd/0', '/proc/thread-self/fd/0', '/{dev,x}/stdin']
   const fed = [
     "printf 'zap' | bash /dev/stdin",
     "bash /dev/fd/0 <<<'zap'",
@@ -1813,6 +1837,11 @@ describe('a shell, source or . whose script operand names stdin reads its script
     expect(names("source /tmp/dev/stdin <<'EOF'\nrm -rf /x\nEOF")).not.toContain('rm')
   })
 
+  test('a pipe into a shell whose script operand is a brace expansion sets the stdin unknown', () => {
+    expect(unknowns('printf x | bash /{dev,x}/stdin')).toEqual(['stdin'])
+    expect(unknowns('printf x | bash /tmp/{a,b}.sh')).toEqual(['stdin'])
+  })
+
   test('source - still reads stdin', () => {
     expect(unknowns('printf x | source -')).toEqual(['stdin'])
     expect(names("source - <<'EOF'\nrm -rf /x\nEOF")).toContain('rm')
@@ -1827,7 +1856,7 @@ describe('a shell, source or . whose script operand names stdin reads its script
   })
 
   test('the frozen compat reading is unchanged', () => {
-    for (const line of [...fed, 'source ./env.sh', '. ./env.sh', 'bash script.sh < in.txt', "source /./dev/stdin <<'EOF'\nrm -rf /x\nEOF", 'printf x | { :; bash //dev/stdin; }']) {
+    for (const line of [...fed, 'source ./env.sh', '. ./env.sh', 'bash script.sh < in.txt', "source /./dev/stdin <<'EOF'\nrm -rf /x\nEOF", 'printf x | { :; bash //dev/stdin; }', 'printf x | bash /{dev,x}/stdin']) {
       expect(commandsOf(line, true)).toEqual(oracleCommandsOf(line))
     }
   })

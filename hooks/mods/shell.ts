@@ -392,9 +392,11 @@ function delimiterAt(text: string, from: number, isCompat = false): { delimiter:
 
 const COMPAT_STDIN_PATHS: ReadonlySet<string> = new Set(['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0', '-'])
 
+const isFdZero = (fd: string): boolean => /^0*$/.test(fd)
+
 const isPlainFile = (path: string): boolean => {
   const parts = path.split('/')
-  if (/[*?[~]/.test(path) || parts.includes('..')) return false
+  if (/[*?[{~]/.test(path) || parts.includes('..')) return false
   const first = parts.find(part => part !== '' && part !== '.')
   return !(path.startsWith('/') && (first === 'dev' || first === 'proc'))
 }
@@ -402,7 +404,7 @@ const isPlainFile = (path: string): boolean => {
 const namesStdin = (path: string): boolean => path === '-' || (path !== '' && !isPlainFile(path))
 
 const readsOwnFile = (statement: ShellStatement): boolean => {
-  const input = statement.redirects.findLast(r => r.isReal && r.op.startsWith('<') && (r.fd === '' || r.fd === '0'))
+  const input = statement.redirects.findLast(r => r.isReal && r.op.startsWith('<') && isFdZero(r.fd))
   return input?.op === '<' && input.target !== '' && !/[$`]/.test(input.target) && isPlainFile(input.target)
 }
 
@@ -812,7 +814,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     target = undefined
     isTest = false
     isHead = true
-    if (redirects.some(r => r.isReal && r.op.startsWith('<') && (r.fd === '' || r.fd === '0'))) reading.isFed = true
+    if (redirects.some(r => r.isReal && r.op.startsWith('<') && isFdZero(r.fd))) reading.isFed = true
     if (words.length > 0 || redirects.length > 0) {
       const head = nameOf(words.find(w => !ASSIGNMENT.test(w)) ?? '')
       const command: Raw = {
@@ -1433,7 +1435,7 @@ function statementsOf(text: string, reading: Reading, source: ShellSource, depth
         doc.feedsShell = true
         nested(doc.body, statement, 'heredoc', statement.isCertain)
       }
-      const hasOwnHeredoc = statement.redirects.some(r => r.isReal && (r.op === '<<' || r.op === '<<-') && (r.fd === '' || r.fd === '0'))
+      const hasOwnHeredoc = statement.redirects.some(r => r.isReal && (r.op === '<<' || r.op === '<<-') && isFdZero(r.fd))
       if (strings.length > 0 || raw.pipedFrom !== undefined) reading.unknowns.add('stdin')
       else if (!hasOwnHeredoc && !readsOwnFile(statement)) reading.readsStdin = true
     }

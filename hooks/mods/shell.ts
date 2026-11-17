@@ -390,24 +390,32 @@ function delimiterAt(text: string, from: number, isCompat = false): { delimiter:
   return { delimiter, isQuoted, end: i }
 }
 
-// The paths `source` and `.` read stdin through.
-const STDIN_PATHS: ReadonlySet<string> = new Set(['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0', '-'])
+const COMPAT_STDIN_PATHS: ReadonlySet<string> = new Set(['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0', '-'])
+
+const isPlainFile = (path: string): boolean => {
+  const parts = path.split('/')
+  if (/[*?[~]/.test(path) || parts.includes('..')) return false
+  const first = parts.find(part => part !== '' && part !== '.')
+  return !(path.startsWith('/') && (first === 'dev' || first === 'proc'))
+}
+
+const namesStdin = (path: string): boolean => path === '-' || (path !== '' && !isPlainFile(path))
 
 const readsOwnFile = (statement: ShellStatement): boolean => {
   const input = statement.redirects.findLast(r => r.isReal && r.op.startsWith('<') && (r.fd === '' || r.fd === '0'))
-  return input?.op === '<' && input.target !== '' && !/[$`]/.test(input.target) && !/^\/(dev|proc)\//.test(input.target)
+  return input?.op === '<' && input.target !== '' && !/[$`]/.test(input.target) && isPlainFile(input.target)
 }
 
 const sourcesStdin = (statement: ShellStatement): boolean =>
-  (statement.name === 'source' || statement.name === '.') && STDIN_PATHS.has(statement.args[statement.args[0] === '--' ? 1 : 0] ?? '')
+  (statement.name === 'source' || statement.name === '.') && namesStdin(statement.args[statement.args[0] === '--' ? 1 : 0] ?? '')
 
-function feedsShell(segment: string): boolean {
+function feedsShell(segment: string, isCompat = false): boolean {
   const words = segment.replace(/["'\\]/g, '').split(/[ \t\n]+/)
   return words.some(
     (word, k) =>
       SHELLS.has(nameOf(word)) ||
       nameOf(word) === 'eval' ||
-      ((word === 'source' || word === '.') && STDIN_PATHS.has(words[k + 1] ?? '')),
+      ((word === 'source' || word === '.') && (isCompat ? COMPAT_STDIN_PATHS.has(words[k + 1] ?? '') : namesStdin(words[k + 1] ?? ''))),
   )
 }
 
@@ -579,7 +587,7 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; bodie
         out += '<<'
         i++
       } else {
-        const doc: ShellHeredoc = { delimiter, body: '', isQuoted, stripsTabs, feedsShell: feedsShell(reading.isCompat ? (out.split(/;|&|\||\n/).pop() ?? '') : segment()), isTerminated: false }
+        const doc: ShellHeredoc = { delimiter, body: '', isQuoted, stripsTabs, feedsShell: reading.isCompat ? feedsShell(out.split(/;|&|\||\n/).pop() ?? '', true) : feedsShell(segment()), isTerminated: false }
         reading.heredocs.push(doc)
         pending.push(doc)
         out += `<${HEREDOC}${reading.heredocs.length - 1}`
@@ -1325,7 +1333,7 @@ function shellScriptAt(args: readonly string[]): { at?: number; readsStdin: bool
     } else if (!arg.startsWith('--')) break
   }
   if (hasScript) return { at: i, readsStdin: false }
-  return { readsStdin: readsStdin || i >= args.length || STDIN_PATHS.has(args[i] as string) }
+  return { readsStdin: readsStdin || i >= args.length || namesStdin(args[i] as string) }
 }
 
 // The script a statement runs, and whether it surely runs with the statement:

@@ -1708,6 +1708,32 @@ describe('a shell that reads its script from stdin is flagged when anything on t
     }
   })
 
+  test('a < from a plain file spelled with // or /./, or under a folder that only starts like dev or proc, reads that file', () => {
+    for (const line of ['bash < ./run.sh', 'cat <<<x; bash < /tmp/run.sh', 'cat <<<x; bash < //tmp/./run.sh', 'cat <<<x; bash < /devices/run.sh', 'cat <<<x; bash < /tmp/dev/stdin', 'cat <<<x; bash < /procs/0']) {
+      expect(unknowns(line)).toEqual([])
+    }
+  })
+
+  test('a < from any other spelling of a stdin path sets the stdin unknown', () => {
+    for (const line of [
+      "{ bash < /./dev/stdin; } <<<'x'",
+      'printf x | { :; bash < //dev/stdin; }',
+      'cat <<<x; bash < /tmp/../dev/stdin',
+      'cat <<<x; bash < /d[e]v/stdin',
+      'cat <<<x; bash < /proc/thread-self/fd/0',
+      'cat <<<x; bash < /dev//stdin',
+      'cat <<<x; bash < ///proc/self/fd/0',
+    ]) {
+      expect(unknowns(line)).toEqual(['stdin'])
+    }
+  })
+
+  test('a < from a path the reader cannot pin to a plain file sets the stdin unknown', () => {
+    for (const target of ['/dev/s*', '/dev/stdi?', '~/run.sh', '~', '../run.sh', 'a/../../dev/stdin', '/x/link/../run.sh', '/..']) {
+      expect(unknowns(`cat <<<x; bash < ${target}`)).toEqual(['stdin'])
+    }
+  })
+
   test('a < from a stdin path, a device, a substitution or a variable, or a later fd-0 input, still sets the stdin unknown', () => {
     for (const line of ['bash < /dev/stdin', 'bash < /dev/fd/3', 'bash < /proc/self/fd/0', 'bash < <(echo zap)', 'bash < $(echo run.sh)', 'bash < "$F"', 'bash < `echo run.sh`', 'bash < run.sh <&3', 'bash < run.sh <> f', 'printf x | bash < run.sh', 'bash < run.sh <<<x', 'exec <<<x; bash', 'exec < run.sh; bash']) {
       expect(unknowns(line)).toContain('stdin')
@@ -1729,6 +1755,7 @@ describe('a shell, source or . whose script operand names stdin reads its script
   const unknowns = (line: string) => parseShell(line).unknowns
   const names = (line: string) => statements(line).map(s => s.name)
   const paths = ['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0']
+  const spellings = ['//dev/stdin', '/./dev/stdin', '/tmp/../dev/stdin', '/d[e]v/stdin', '/dev//fd/0', '/proc/thread-self/fd/0']
   const fed = [
     "printf 'zap' | bash /dev/stdin",
     "bash /dev/fd/0 <<<'zap'",
@@ -1765,8 +1792,34 @@ describe('a shell, source or . whose script operand names stdin reads its script
     for (const line of ['bash /dev/stdin', 'source /dev/stdin', '. /proc/self/fd/0']) expect(unknowns(line)).toEqual([])
   })
 
+  test('a pipe into each shell, source or . given any other spelling of a stdin path sets the stdin unknown', () => {
+    for (const name of ['bash', 'sh -x', 'source', 'source --', '.']) {
+      for (const path of spellings) expect(unknowns(`printf x | { :; ${name} ${path}; }`)).toEqual(['stdin'])
+    }
+  })
+
+  test('a shell given any other spelling of a stdin path, or a path the reader cannot pin to a plain file, reads stdin', () => {
+    for (const path of [...spellings, '/dev/s*', '/dev/stdi?', '~/run.sh', '../run.sh', '/x/link/../run.sh']) {
+      expect(shellScriptOf([path])).toEqual({ readsStdin: true })
+      expect(shellScriptOf(['-x', '--', path, 'arg'])).toEqual({ readsStdin: true })
+    }
+  })
+
+  test('a heredoc into a source or a shell given another spelling of a stdin path is read as its script', () => {
+    for (const path of spellings) {
+      expect(names(`source ${path} <<'EOF'\nrm -rf /x\nEOF`)).toContain('rm')
+      expect(names(`cat <<'EOF' | sh ${path}\nzap\nEOF`)).toContain('zap')
+    }
+    expect(names("source /tmp/dev/stdin <<'EOF'\nrm -rf /x\nEOF")).not.toContain('rm')
+  })
+
+  test('source - still reads stdin', () => {
+    expect(unknowns('printf x | source -')).toEqual(['stdin'])
+    expect(names("source - <<'EOF'\nrm -rf /x\nEOF")).toContain('rm')
+  })
+
   test('a script file or a sourced file that is no stdin path keeps its reading', () => {
-    for (const line of ['bash script.sh < in.txt', 'source ./env.sh', '. ./env.sh', 'printf x | source ./env.sh', 'printf x | bash ./dev/stdin']) {
+    for (const line of ['bash script.sh < in.txt', 'source ./env.sh', '. ./env.sh', 'printf x | source ./env.sh', 'printf x | bash ./dev/stdin', 'printf x | bash //tmp/./run.sh', 'printf x | source /devices/env.sh', 'printf x | . /tmp/dev/stdin']) {
       expect(unknowns(line)).toEqual([])
     }
     expect(names('source ./env.sh')).toEqual(['source'])
@@ -1774,7 +1827,7 @@ describe('a shell, source or . whose script operand names stdin reads its script
   })
 
   test('the frozen compat reading is unchanged', () => {
-    for (const line of [...fed, 'source ./env.sh', '. ./env.sh', 'bash script.sh < in.txt']) {
+    for (const line of [...fed, 'source ./env.sh', '. ./env.sh', 'bash script.sh < in.txt', "source /./dev/stdin <<'EOF'\nrm -rf /x\nEOF", 'printf x | { :; bash //dev/stdin; }']) {
       expect(commandsOf(line, true)).toEqual(oracleCommandsOf(line))
     }
   })

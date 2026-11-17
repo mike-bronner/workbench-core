@@ -212,7 +212,7 @@ type Reading = {
 }
 
 const runsValue = (text: string): boolean =>
-  [...text.matchAll(/\$\{/g)].some(m => /^\$\{\([^)]*e[^)]*\)|@P\}$/.test(text.slice(m.index, closingBrace(text, m.index + 2) + 1)))
+  [...text.matchAll(/\$\{/g)].some(m => /^\$\{\([^)]*[e%][^)]*\)|@P\}$/.test(text.slice(m.index, closingBrace(text, m.index + 2) + 1)))
 
 const ANSI_CONTROLS: Record<string, string> = { a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v' }
 
@@ -392,7 +392,7 @@ function delimiterAt(text: string, from: number, isCompat = false): { delimiter:
 
 const COMPAT_STDIN_PATHS: ReadonlySet<string> = new Set(['/dev/stdin', '/dev/fd/0', '/proc/self/fd/0', '-'])
 
-const isFdZero = (fd: string): boolean => /^0*$/.test(fd)
+export const isFdZero = (fd: string): boolean => /^0*$/.test(fd)
 
 const isPlainFile = (path: string): boolean => {
   const parts = path.split('/')

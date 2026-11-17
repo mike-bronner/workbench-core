@@ -1764,6 +1764,16 @@ describe('a shell that reads its script from stdin is flagged when anything on t
     }
   })
 
+  test('a < with an empty target sets the stdin unknown and does not throw', () => {
+    expect(() => parseShell('cat <<<x; bash <')).not.toThrow()
+    expect(unknowns('cat <<<x; bash <')).toEqual(['stdin'])
+  })
+
+  test('a < on another fd neither replaces the fd-0 file as the script nor stands in for one', () => {
+    expect(unknowns('cat <<<x; bash < run.sh 3<f')).toEqual([])
+    expect(unknowns('cat <<<x; bash 3< run.sh')).toEqual(['stdin'])
+  })
+
   test('a here-string on the shell is no own heredoc, though a heredoc stands on the subshell around it', () => {
     expect(unknowns('(bash 0<<<x) <<EOF\nzap\nEOF')).toContain('stdin')
   })
@@ -1843,7 +1853,7 @@ describe('a shell, source or . whose script operand names stdin reads its script
   })
 
   test('source - still reads stdin', () => {
-    expect(unknowns('printf x | source -')).toEqual(['stdin'])
+    for (const line of ['printf x | source -', 'printf x | . -', 'printf x | source -- -', 'cat <<<x; bash -- -']) expect(unknowns(line)).toEqual(['stdin'])
     expect(names("source - <<'EOF'\nrm -rf /x\nEOF")).toContain('rm')
   })
 
@@ -1863,15 +1873,18 @@ describe('a shell, source or . whose script operand names stdin reads its script
 })
 
 describe('a ${…} that runs code held in its variable is the expansion unknown', () => {
-  test("bash's @P and zsh's (e) set the expansion unknown, quoted or not", () => {
-    for (const line of [': "${x@P}"', ': "${(e)x}"', ': ${x@P}', ': ${(e)x}', ': "${arr[@]@P}"', ': "${(Pe)x}"', ': ${y:-${x@P}}']) {
+  test("bash's @P and zsh's (e), (%) and (%%) set the expansion unknown, quoted or not", () => {
+    for (const line of [': "${x@P}"', ': "${(e)x}"', ': ${x@P}', ': ${(e)x}', ': "${arr[@]@P}"', ': "${(Pe)x}"', ': ${y:-${x@P}}', ': ${(%%)x}', ': "${(%)x}"', ': ${(%)x}', ': "${(%%)x}"', ': "${(U%)x}"']) {
       expect(parseShell(line).unknowns).toEqual(['expansion'])
     }
   })
 
-  test('an unquoted heredoc body with @P or (e) sets the expansion unknown, and a quoted one does not', () => {
+  test('an unquoted heredoc body with @P, (e) or (%) sets the expansion unknown, and a quoted one does not', () => {
     expect(parseShell('cat <<EOF\n${x@P}\nEOF').unknowns).toEqual(['expansion'])
     expect(parseShell('cat <<EOF\n${(e)x}\nEOF').unknowns).toEqual(['expansion'])
+    expect(parseShell('cat <<EOF\n${(%%)x}\nEOF').unknowns).toEqual(['expansion'])
+    expect(parseShell('cat <<EOF\n${(%)x}\nEOF').unknowns).toEqual(['expansion'])
+    expect(parseShell("cat <<'EOF'\n${(%%)x}\nEOF").unknowns).toEqual([])
     expect(parseShell("cat <<'EOF'\n${x@P}\nEOF").unknowns).toEqual([])
   })
 
@@ -1883,15 +1896,15 @@ describe('a ${…} that runs code held in its variable is the expansion unknown'
     }
   })
 
-  test('an @P or (e) inside arithmetic sets the expansion unknown, and a plain ${…} there does not', () => {
+  test('an @P, (e) or (%) inside arithmetic sets the expansion unknown, and a plain ${…} there does not', () => {
     for (const form of ['echo $(( X ))', '(( X ))', 'echo $[ X ]', 'echo "$(( X ))"']) {
-      for (const runs of ['${x@P}', '${(e)x}']) expect(parseShell(form.replace('X', runs)).unknowns).toEqual(['expansion'])
+      for (const runs of ['${x@P}', '${(e)x}', '${(%%)x}', '${(%)x}']) expect(parseShell(form.replace('X', runs)).unknowns).toEqual(['expansion'])
       expect(parseShell(form.replace('X', '${x}')).unknowns).toEqual([])
     }
   })
 
   test('other operators, single quotes and a plain ${…} set no unknown', () => {
-    for (const line of [': "${x@Q}"', ': "${x@U}"', ": '${x@P}'", ': "${x}"', ': "${x}"@P}', ': "${e}"']) {
+    for (const line of [': "${x@Q}"', ': "${x@U}"', ": '${x@P}'", ': "${x}"', ': "${x}"@P}', ': "${e}"', ': ${(U)x}', ': "${(U)x}"', ": '${(%%)x}'", ': ${x%%y}', ': "${x%y}"', 'cat <<EOF\n${(U)x}\nEOF', 'echo $(( ${(U)x} ))']) {
       expect(parseShell(line).unknowns).toEqual([])
     }
   })

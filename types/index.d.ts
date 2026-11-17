@@ -79,6 +79,19 @@ export type WorkbenchCallerLaneArgs = {
 //                 where its script ends
 export type WorkbenchShellUnknown = 'quote' | 'substitution' | 'heredoc' | 'escape' | 'wrapper' | 'expansion' | 'stdin' | 'depth' | 'compound'
 
+export type WorkbenchShellUnplain =
+  | 'case'
+  | 'code-builtin'
+  | 'code-expansion'
+  | 'fed-shell'
+  | 'name'
+  | 'parameter'
+  | 'runner-shell'
+  | 'startup'
+  | 'unread'
+
+export type WorkbenchShellFeed = 'coproc' | 'pipe' | 'process'
+
 // One redirect of a statement. A real one is an operator bash reads: `op` is
 // the operator as written (`>`, `>>`, `<`, `<>`, `>|`, `&>`, `&>>`, `>&`,
 // `<&`, `<<<`, `<<`, `<<-`), `fd` the file descriptor written before it, and
@@ -182,6 +195,9 @@ export type WorkbenchShellParse = {
   // What could not be read, sorted, each once. Empty when the reading is
   // whole.
   unknowns: readonly WorkbenchShellUnknown[]
+  unplain: readonly WorkbenchShellUnplain[]
+  feeds: readonly WorkbenchShellFeed[]
+  hasSubshell: boolean
 }
 
 export type Workbench = {

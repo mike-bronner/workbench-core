@@ -1,0 +1,203 @@
+import { describe, expect, test } from 'claude-code/testing'
+
+import { parseShell } from '../hooks/mods/shell'
+
+const unplain = (line: string) => parseShell(line).unplain
+const feeds = (line: string) => parseShell(line).feeds
+const hasSubshell = (line: string) => parseShell(line).hasSubshell
+
+const PLACES: readonly ((parameter: string) => string)[] = [
+  p => `echo ${p}`,
+  p => `echo "${p}"`,
+  p => `echo "a ${p} b" c`,
+  p => `echo $(( ${p} + 1 ))`,
+  p => `(( ${p} ))`,
+  p => `echo $[ ${p} ]`,
+  p => `echo "$(( ${p} ))"`,
+  p => `cat <<E\n${p}\nE`,
+  p => `cat <<-E\n\t${p}\nE`,
+  p => `echo $(echo ${p})`,
+  p => `bash -c 'echo ${p}'`,
+]
+
+describe('AC1: a ${…} beyond the parameter grammar is the parameter reason, wherever it expands', () => {
+  test('a quote or a brace inside ${…} splits it, in bash and zsh alike', () => {
+    for (const line of [
+      `echo \${x:-'}'}`,
+      `echo "\${x:-'}'}"`,
+      `echo "\${x:-'a'}" c`,
+      `echo "\${x:-"}"}"`,
+      `echo "\${x:-"'"}" c`,
+      'echo ${x:-{a,b}}',
+      'echo "${x:-{a}"',
+      'echo ${x:-\\}}',
+      `echo "\${x:-'}"; zap; echo "'}"`,
+      `echo \${x:-'}"; zap; echo "'}`,
+      `echo $(echo \${x:-'}'} c)`,
+    ]) {
+      expect([line, unplain(line)]).toEqual([line, ['parameter']])
+    }
+  })
+
+  test('each place a ${…} expands reads its content against the grammar', () => {
+    for (const place of PLACES) {
+      expect([place('${a b}'), unplain(place('${a b}'))]).toEqual([place('${a b}'), ['parameter']])
+      expect([place('${x}'), unplain(place('${x}'))]).toEqual([place('${x}'), []])
+    }
+  })
+
+  test('a ${…} with no } is the parameter reason', () => {
+    expect(unplain('echo ${x')).toEqual(['parameter'])
+    expect(unplain('echo "${x"')).toEqual(['parameter'])
+    expect(unplain('cat <<E\n${x\nE')).toEqual(['parameter'])
+  })
+
+  test('a word holding anything the grammar refuses is the parameter reason', () => {
+    for (const word of ['$1', '$$', '$(id)', '`id`', '${y}', '$y[0]', '$y{', '\\x', "'a'", '"a"', '(a)', '<a', '>a', 'a;b', 'a|b', '{a', 'a\nb']) {
+      const line = `echo "\${x:-${word}}"`
+      expect([line, unplain(line).includes('parameter')]).toEqual([line, true])
+    }
+  })
+
+  test('a name the grammar does not know, or a subscript it does not know, is the parameter reason', () => {
+    for (const parameter of ['${-}', '${x y}', '${1[0]}', '${x[i]}', '${x[$i]}', '${x[1]:a}', '${#x:-a}', '${x:1:2:3}', '${x:a}', '${x@Q}']) {
+      expect([parameter, unplain(`echo ${parameter}`).includes('parameter')]).toEqual([parameter, true])
+    }
+  })
+})
+
+describe('AC1: a raw text that can run code from a value is the code-expansion reason, quoted or not', () => {
+  test("bash's @ operators and zsh's (e) and (%) flags, in every place, the arithmetic places included", () => {
+    for (const place of PLACES) {
+      for (const runs of ['${x@P}', '${arr[@]@P}', '${#x@Q}', '${(e)x}', '${(%)x}', '${(%%)x}', '${#(e)x}']) {
+        const line = place(runs)
+        expect([line, unplain(line).includes('code-expansion')]).toEqual([line, true])
+      }
+    }
+  })
+
+  test('${!, $${ and $$( are the code-expansion reason', () => {
+    for (const line of ['echo ${!x}', 'echo ${!x[@]}', 'echo $${x}', 'echo $$(id)', 'echo "$${x}"']) {
+      expect([line, unplain(line).includes('code-expansion')]).toEqual([line, true])
+    }
+  })
+
+  test('quoted text is scanned too: single quotes, a quoted heredoc body and $\'…\'', () => {
+    for (const line of [": '${x@P}'", "cat <<'E'\n${x@P}\nE", "echo $'${(e)x}'", "echo '$${x}'"]) {
+      expect([line, unplain(line)]).toEqual([line, ['code-expansion']])
+    }
+  })
+
+  test('a backslash-newline is removed before the scan, and a $ before one is the reason itself', () => {
+    expect(unplain('echo ${x\\\n@P}')).toContain('code-expansion')
+    expect(unplain("echo '$\\\n{(e)x}'")).toEqual(['code-expansion'])
+    expect(unplain('echo $\\\nx')).toEqual(['code-expansion'])
+  })
+
+  test('a script the reader decodes is scanned as it decodes', () => {
+    expect(unplain("bash -c $'echo \\x24{x@P}'")).toContain('code-expansion')
+  })
+})
+
+describe('AC1: the word esac anywhere is the case reason', () => {
+  test('a case statement, and esac quoted, escaped, joined by a backslash-newline or in a body', () => {
+    for (const line of ['case x in a) zap;; esac', 'echo esac', "echo 'esac'", 'echo "a esac b"', 'echo es\\\nac', 'cat <<E\nesac\nE', 'echo $(case x in x) :;; esac)']) {
+      expect([line, unplain(line)]).toEqual([line, ['case']])
+    }
+  })
+
+  test('esac inside a longer word is not the word', () => {
+    for (const line of ['echo esacs', 'echo xesac', 'echo esac_x']) expect([line, unplain(line)]).toEqual([line, []])
+  })
+})
+
+describe('AC2: the must-pass lines get no lexer-level reason', () => {
+  test('plain parameters, operators and words', () => {
+    for (const line of [
+      'echo ${x//&/and}',
+      'cd "${XDG:-$HOME/.config}"',
+      'printf "%s\\n" "${arr[@]}"',
+      'echo $$',
+      'echo "$$"',
+      'echo ${x} ${#x} ${#arr[@]} ${arr[*]} ${arr[0]} ${1} ${10} ${#} ${?} ${$} ${##}',
+      'echo ${x:-a} ${x-a} ${x:=a} ${x=a} ${x:+a} ${x+a} ${x:?a} ${x?a}',
+      'echo ${x#a} ${x##*/} ${x%.*} ${x%%.*} ${x/a/b} ${x//a/b} ${x/#a/b} ${x/%a/b}',
+      'echo ${x^} ${x^^} ${x,} ${x,,} ${arr[@]:-a}',
+      'echo ${x:1} ${x:1:2} ${x: -1} ${x:-1} ${x:0:-1}',
+      'echo "${HOME}/x" "${x:-a b}" "${x:-$HOME}" "${x:-$y.z}"',
+      'mkdir -p "${TMPDIR:-/tmp}/x" && ls "$HOME"',
+      'git log --oneline -20',
+      'echo "$(git rev-parse HEAD)"',
+      'echo $(( x + 1 )) $(( ${#x} * 2 ))',
+      'cat <<E\nhello ${USER:-me}\nE',
+      "cat <<'E'\n${not plain}\nE",
+      "echo '${a b}' \"\\${a b}\"",
+    ]) {
+      expect([line, unplain(line)]).toEqual([line, []])
+    }
+  })
+})
+
+describe('the feed facts and the subshell fact, for the statement rules', () => {
+  test('a | or |& is the pipe feed, and || is none', () => {
+    expect(feeds('a | b')).toEqual(['pipe'])
+    expect(feeds('a |& b')).toEqual(['pipe'])
+    expect(feeds('a || b')).toEqual([])
+    expect(feeds('a && b; c')).toEqual([])
+  })
+
+  test('a pipe into a subshell is still the pipe feed', () => {
+    const parse = parseShell('echo x | (bash)')
+    expect(parse.feeds).toEqual(['pipe'])
+    expect(parse.hasSubshell).toBe(true)
+  })
+
+  test('a | inside a case pattern or ${…} is no pipe', () => {
+    expect(feeds('echo ${x:-a|b}')).toEqual([])
+    expect(feeds('case x in\na|b) :;;\nesac')).toEqual([])
+  })
+
+  test('<( and >( are the process feed, in a test too, and $( is none', () => {
+    expect(feeds('diff <(a) <(b)')).toEqual(['process'])
+    expect(feeds('tee >(a)')).toEqual(['process'])
+    expect(feeds('[[ -n <(a) ]]')).toEqual(['process'])
+    expect(feeds('echo $(a)')).toEqual([])
+    expect(feeds('echo "<(a)"')).toEqual([])
+  })
+
+  test('a reserved coproc is the coproc feed, and a quoted one is not', () => {
+    expect(feeds('coproc cat')).toEqual(['coproc'])
+    expect(feeds('coproc N { cat; }')).toEqual(['coproc'])
+    expect(feeds('echo coproc')).toEqual([])
+    expect(feeds("'coproc' cat")).toEqual([])
+  })
+
+  test('the feeds are read at any depth, sorted, each once', () => {
+    expect(feeds("bash -c 'a | b'")).toEqual(['pipe'])
+    expect(feeds('echo $(coproc a; b <(c) | d | e)')).toEqual(['coproc', 'pipe', 'process'])
+    expect(feeds('bash <<E\na | b\nE')).toEqual(['pipe'])
+    expect(feeds('cat <<E\na | b\nE')).toEqual([])
+  })
+
+  test('a ( that opens a subshell sets hasSubshell, at any depth', () => {
+    for (const line of ['(cd x && y)', 'a; (b)', 'echo $( (a) )', "bash -c '(a)'", 'f() (a)']) {
+      expect([line, hasSubshell(line)]).toEqual([line, true])
+    }
+  })
+
+  test('a substitution, arithmetic, an array, a case pattern and a function name hold no subshell', () => {
+    for (const line of ['echo $(a)', 'echo <(a)', '(( x + 1 ))', 'echo $(( 1 ))', 'x=(a b)', 'case x in\n(a) :;;\nesac', 'f() { a; }', 'echo "(a)"', 'echo \\(a\\)']) {
+      expect([line, hasSubshell(line)]).toEqual([line, false])
+    }
+  })
+})
+
+describe('the unplain list', () => {
+  test('is sorted and names each reason once', () => {
+    expect(unplain('echo ${x@P} ${y@P} esac ${a b}')).toEqual(['case', 'code-expansion', 'parameter'])
+  })
+
+  test('is empty on a plain line, and parseShell answers it beside the statements and unknowns', () => {
+    expect(parseShell('git status')).toMatchObject({ unknowns: [], unplain: [], feeds: [], hasSubshell: false })
+  })
+})

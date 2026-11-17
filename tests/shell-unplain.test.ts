@@ -53,14 +53,14 @@ describe('AC1: a ${…} beyond the parameter grammar is the parameter reason, wh
   })
 
   test('a word holding anything the grammar refuses is the parameter reason', () => {
-    for (const word of ['$1', '$$', '$(id)', '`id`', '${y}', '$y[0]', '$y{', '\\x', "'a'", '"a"', '(a)', '<a', '>a', 'a;b', 'a|b', '{a', 'a\nb']) {
+    for (const word of ['$1[0]', '$1{', '$@[0]', '$*{', '$#[0]', '$?{', '$$[0]', '$${y}', '$$(id)', '$(id)', '`id`', '${y}', '$y[0]', '$y{', '\\x', "'a'", '"a"', '(a)', '<a', '>a', 'a;b', 'a|b', '{a', 'a\nb']) {
       const line = `echo "\${x:-${word}}"`
       expect([line, unplain(line).includes('parameter')]).toEqual([line, true])
     }
   })
 
   test('a name the grammar does not know, or a subscript it does not know, is the parameter reason', () => {
-    for (const parameter of ['${-}', '${x y}', '${1[0]}', '${x[i]}', '${x[$i]}', '${x[1]:a}', '${#x:-a}', '${x:1:2:3}', '${x:a}', '${x@Q}']) {
+    for (const parameter of ['${!}', '${x y}', '${1[0]}', '${x[i]}', '${x[$i]}', '${x[1]:a}', '${#x:-a}', '${x:1:2:3}', '${x:a}', '${x@Q}']) {
       expect([parameter, unplain(`echo ${parameter}`).includes('parameter')]).toEqual([parameter, true])
     }
   })
@@ -134,6 +134,43 @@ describe('AC2: the must-pass lines get no lexer-level reason', () => {
       "echo '${a b}' \"\\${a b}\"",
     ]) {
       expect([line, unplain(line)]).toEqual([line, []])
+    }
+  })
+})
+
+describe('the special parameters and the positional words are plain, and every hole stays refused', () => {
+  test('$@, $* and $- as the name, with # for length and with an operator, get no reason in any place', () => {
+    for (const place of PLACES) {
+      for (const parameter of ['${@}', '${*}', '${-}', '${#@}', '${#*}', '${#-}', '${@:2}', '${*:-a}', '${@:1:2}', '${-#*i}']) {
+        const line = place(parameter)
+        expect([line, unplain(line)]).toEqual([line, []])
+      }
+    }
+  })
+
+  test('a word may hold $1 to $9, $@, $*, $#, $? and $$', () => {
+    for (const line of ['echo "${@}"', 'echo "${*}"', 'echo ${-}', 'echo ${#@}', 'echo ${x:-$1}', 'echo ${x:-$@}', 'echo ${x:-$?}', 'echo "${x:-$9/$*}"', 'echo ${x:-$#.$$}']) {
+      expect([line, unplain(line)]).toEqual([line, []])
+    }
+  })
+
+  test('a transform needs a name or a subscript before its @, so the raw scan passes ${@} and ${#@} and refuses the rest', () => {
+    for (const text of ['${@}', '${*}', '${#@}', '${#*}', '${@:2}', '${x-@}', '${x:-a@b}', '${x@}']) {
+      const line = `: '${text}'`
+      expect([line, unplain(line)]).toEqual([line, []])
+    }
+    for (const text of ['${x@P}', '${a[0]@P}', "${a['}']@P}", '${@@P}', '${*@P}', '${#@P}', '${-@P}', '${[0]@P}', '${!x}', '${(e)x}', '$${x}', '$$(x)']) {
+      const line = `: '${text}'`
+      expect([line, unplain(line)]).toEqual([line, ['code-expansion']])
+    }
+  })
+
+  test('the holes keep their reasons where they expand', () => {
+    for (const line of ['echo ${x@P}', 'echo ${a[0]@P}', 'echo ${!x}', 'echo ${(e)x}', 'echo $${x}', 'echo $$(x)', 'echo "${@@P}"']) {
+      expect([line, unplain(line).includes('code-expansion')]).toEqual([line, true])
+    }
+    for (const line of ['echo ${x:-${y}}', 'echo ${x:-$1[0]}', 'echo "${x:-$@{y}}"']) {
+      expect([line, unplain(line)]).toEqual([line, ['parameter']])
     }
   })
 })

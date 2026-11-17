@@ -322,9 +322,9 @@ function closingTick(line: string, from: number): number {
 // ` \ or $ is removed first, so ``echo `echo \`cmd\``` runs cmd.
 const backtickText = (raw: string): string => raw.replace(/\\([\\`$])/g, '$1')
 
-const PARAMETER_NAME = String.raw`(?:[A-Za-z_]\w*|\d+|[#?$])`
-const PARAMETER_SUBSCRIPTED = String.raw`(?:[A-Za-z_]\w*(?:\[(?:[@*]|\d+)\])?|\d+|[#?$])`
-const PARAMETER_WORD = String.raw`(?:[^$\`\\'"{}()<>;|\n]|\$[A-Za-z_]\w*(?![\w[{]))*`
+const PARAMETER_NAME = String.raw`(?:[A-Za-z_]\w*|\d+|[#?$@*-])`
+const PARAMETER_SUBSCRIPTED = String.raw`(?:[A-Za-z_]\w*(?:\[(?:[@*]|\d+)\])?|\d+|[#?$@*-])`
+const PARAMETER_WORD = String.raw`(?:[^$\`\\'"{}()<>;|\n]|\$(?:[A-Za-z_]\w*|[1-9@*#?$])(?![\w[{]))*`
 const PARAMETER_OPERATOR = String.raw`(?::[-=+?]|##|%%|\/\/|\/#|\/%|\^\^|,,|[-=+?#%/^,])`
 const PARAMETER = new RegExp(
   `^(?:#?${PARAMETER_SUBSCRIPTED}|${PARAMETER_SUBSCRIPTED}${PARAMETER_OPERATOR}${PARAMETER_WORD}|${PARAMETER_NAME}: ?-?\\d+(?::-?\\d+)?)$`,
@@ -345,7 +345,7 @@ function parametersArePlain(text: string): boolean {
   return true
 }
 
-const CODE_EXPANSION = /\$\{#?\(|\$\{[#!]?\w*(?:\[[^\]]*\])?@|\$\{!|\$\$[{(]|\$\\\n/
+const CODE_EXPANSION = /\$\{#?\(|\$\{[#!]?(?:(?:\w+|[@*#?$-])(?:\[[^\]]*\])?|\[[^\]]*\])@(?!\})|\$\{!|\$\$[{(]|\$\\\n/
 
 function scanRaw(text: string, reading: Reading): void {
   for (const form of [text, text.replaceAll('\\\n', '')]) {

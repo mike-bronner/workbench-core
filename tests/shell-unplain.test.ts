@@ -165,6 +165,23 @@ describe('the special parameters and the positional words are plain, and every h
     }
   })
 
+  test('a subscript that holds a quote, a $, a backtick, a backslash, a { or a [ is the code-expansion reason, because the scan cannot find its ]', () => {
+    for (const text of ['${a["]"]@P}', "${a[']']@P}", '${a[${b}]@P}', '${a[$(b)]@P}', '${a[`b`]@P}', '${a[\\]]@P}', '${a[b[0]]@P}', '${a[{]@P}', '${#a["]"]@Q}', '${["]"]@P}', '${a["x"]}']) {
+      const line = `: '${text}'`
+      expect([line, unplain(line)]).toEqual([line, ['code-expansion']])
+    }
+  })
+
+  test('a subscript of plain characters is no code-expansion reason', () => {
+    for (const line of ['echo "${arr[@]}"', 'echo "${arr[*]}"', 'echo ${arr[0]}', 'echo "${@}"', 'echo ${#@}', 'echo ${#arr[@]} "${arr[@]:-a}"']) {
+      expect([line, unplain(line)]).toEqual([line, []])
+    }
+    for (const text of ['${arr[@]}', '${arr[*]}', '${arr[0]}', '${a[i+1]}', '${a[0]@}']) {
+      const line = `: '${text}'`
+      expect([line, unplain(line)]).toEqual([line, []])
+    }
+  })
+
   test('the holes keep their reasons where they expand', () => {
     for (const line of ['echo ${x@P}', 'echo ${a[0]@P}', 'echo ${!x}', 'echo ${(e)x}', 'echo $${x}', 'echo $$(x)', 'echo "${@@P}"']) {
       expect([line, unplain(line).includes('code-expansion')]).toEqual([line, true])

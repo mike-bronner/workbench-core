@@ -345,7 +345,7 @@ function parametersArePlain(text: string): boolean {
   return true
 }
 
-const CODE_EXPANSION = /\$\{#?\(|\$\{[#!]?(?:(?:\w+|[@*#?$-])(?:\[[^\]]*\])?|\[[^\]]*\])@(?!\})|\$\{!|\$\$[{(]|\$\\\n/
+const CODE_EXPANSION = /\$\{#?\(|\$\{[#!]?(?:(?:\w+|[@*#?$-])(?:\[[^\]]*\])?|\[[^\]]*\])@(?!\})|\$\{[#!]?(?:\w+|[@*#?$-])?\[[^\]]*['"$`\\{[]|\$\{!|\$\$[{(]|\$\\\n/
 
 function scanRaw(text: string, reading: Reading): void {
   for (const form of [text, text.replaceAll('\\\n', '')]) {

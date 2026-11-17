@@ -1682,9 +1682,17 @@ describe('a shell that reads its script from stdin is flagged when anything on t
   })
 
   test('an output redirect, an input redirect on another fd, or a shell with a script file feeds nothing', () => {
-    for (const line of ['cat > out; bash', 'cat 3<f; bash', 'cat 2>&1; bash', 'bash script.sh < in.txt', 'echo x | bash script.sh', 'cat <<<x; bash -c y', 'bash']) {
+    for (const line of ['cat > out; bash', 'cat 3<f; bash', 'cat 2>&1; bash', 'exec >out; bash', 'exec 2>&1; bash', 'bash script.sh < in.txt', 'echo x | bash script.sh', 'cat <<<x; bash -c y', 'bash']) {
       expect(unknowns(line)).toEqual([])
     }
+  })
+
+  test('a < that bash reads as text inside a ${…} feeds nothing', () => {
+    const textual = { op: '<', fd: '', target: '', isReal: false }
+    expect(statements('echo ${x/</}; bash').flatMap(s => s.redirects)).toContainEqual(textual)
+    expect(unknowns('echo ${x/</}; bash')).toEqual([])
+    expect(statements(`echo "\${x:-'<f'}"; bash`).flatMap(s => s.redirects)).toContainEqual(textual)
+    expect(unknowns(`echo "\${x:-'<f'}"; bash`)).toEqual(['quote'])
   })
 
   test('a shell with its own heredoc on fd 0 reads it, on a line that feeds stdin elsewhere too', () => {

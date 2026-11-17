@@ -1418,9 +1418,6 @@ function statementsOf(text: string, reading: Reading, source: ShellSource, depth
     if (run !== undefined && expandsScript(raw, statement)) reading.unknowns.add('expansion')
     if (run !== undefined) nested(run.script, statement, 'script', run.isCertain)
     else if ((SHELLS.has(statement.name) && shellScriptOf(statement.args).readsStdin) || sourcesStdin(statement)) {
-      // A shell reading its script from stdin: a pipe or a here-string. A
-      // heredoc of the command piped in feeds the shell, and is read as one.
-      // What else a pipe carries is not seen, so it is unknown.
       const strings = statement.redirects.filter(r => r.isReal && r.op === '<<<')
       for (const string of strings) nested(string.target, statement, 'script', statement.isCertain)
       const feeder = raw.pipedFrom === undefined ? undefined : of.get(raw.pipedFrom)

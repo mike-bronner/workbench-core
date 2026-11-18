@@ -3497,6 +3497,7 @@ export const SNAPSHOT: readonly (readonly [string, string])[] = [
   ["echo repos/o/r/merges | xargs gh api -f base=main -f head=feat", 'a8emityeas'],
   ["echo repos/o/r/pulls/5/merge | xargs gh api -X PUT", '22vm8cet0d3'],
   ["echo --repo=o/x | xargs gh pr merge 5", '1mysulg4quj'],
+  ["echo 5 | xargs gh pr view", '12i12waa2yv'],
 ]
 
 export const RANDOM_SNAPSHOT: readonly string[] = [

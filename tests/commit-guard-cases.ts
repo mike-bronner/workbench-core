@@ -87,6 +87,7 @@ export const FED_GH: readonly string[] = [
   'echo repos/o/r/merges | xargs gh api -f base=main -f head=feat',
   'echo repos/o/r/pulls/5/merge | xargs gh api -X PUT',
   'echo --repo=o/x | xargs gh pr merge 5',
+  'echo 5 | xargs gh pr view',
 ]
 
 export const SEARCH_BESIDE_RUNNER: readonly string[] = [

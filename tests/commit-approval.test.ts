@@ -686,6 +686,16 @@ describe('AC3: a commit approval approves no push and no merge, and each gets it
     expect(await bash($, b, 'gh api repos/o/r/merges -f base=main -f head=feat')).toBe(MERGE_TARGET_REFUSAL)
   })
 
+  test('a git merge behind xargs takes refs from its input, so a pick that names its branch does not match it', async ($, on) => {
+    const line = 'echo main | xargs git merge feature'
+    const b = bench(on)
+    await session($)
+    expect(mergesOf(line).targets).toEqual([{ refs: [] }])
+    await pick($, b, 'Merge it', [question('Merge branch feature into main?', ['Merge it', 'Open a PR'])])
+    expect(await bash($, b, line)).toBe(MERGE_TARGET_REFUSAL)
+    expect(await bash($, b, 'git merge feature')).toBeUndefined()
+  })
+
   test('two merges on one line are refused under one merge pick', async ($, on) => {
     const b = bench(on)
     await session($)

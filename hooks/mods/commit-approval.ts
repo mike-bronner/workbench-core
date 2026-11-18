@@ -963,6 +963,7 @@ const prTargetOf = (st: ShellStatement): MergeTarget | undefined => {
 }
 
 const localTargetOf = (st: ShellStatement, sub: string | undefined, isRemoteChanged: boolean): MergeTarget => {
+  if (st.wrappers.includes('xargs')) return { refs: [] }
   const found = positionalsOf(restOf(st), GIT_MERGE_VALUES)
   if (sub !== 'pull') return { refs: sub === SHELL_ALIAS ? [] : found }
   const [remote] = found

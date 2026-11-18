@@ -197,7 +197,7 @@ import { bufferWarningOf } from './mods/monitor'
 import { parseShell } from './mods/shell'
 import { callerKeyOf, freshnessOf, isFinalDescription, isMcpTool, isOutwardTool, isRepeated, isSubmitLine, readSourceOf, readsAfter, refusalTextOf, refusalsAfter, repeatReminderOf, sourcesRefusalOf } from './mods/outward'
 import type { FolderChange } from './mods/listings'
-import { changeOf, changeReportOf, globFoldersOf, listingWith, listingsAfter, lsFoldersOf, namesOf } from './mods/listings'
+import { changeOf, changeReportOf, globFoldersOf, listingWith, listingsAfter, listingsAfterOwn, lsFoldersOf, namesOf } from './mods/listings'
 import {
   AGENT_WORKTREE_REFUSAL,
   ENTER_WORKTREE_REFUSAL,
@@ -1324,6 +1324,22 @@ async function folderChangesOf($: EngineInterface, caller: string): Promise<{ ch
   return changes
 }
 
+async function folderSnapshotOf($: EngineInterface, caller: string): Promise<Map<string, string[]>> {
+  const snapshot = new Map<string, string[]>()
+  for (const folder of Object.keys((await read($, folderListings))[caller] ?? {})) {
+    const names = await folderNamesOf($, folder)
+    if (names !== undefined) snapshot.set(folder, names)
+  }
+  return snapshot
+}
+
+async function takeOwnChanges($: EngineInterface, caller: string, before: ReadonlyMap<string, string[]>): Promise<void> {
+  for (const [folder, names] of before) {
+    const after = await folderNamesOf($, folder)
+    if (after !== undefined && changeOf(folder, names, after) !== undefined) await update($, folderListings, listings => listingsAfterOwn(listings, caller, folder, names, after))
+  }
+}
+
 async function markReported($: EngineInterface, caller: string, changes: readonly { change: FolderChange; names: string[] }[]): Promise<void> {
   const now = await $.clock.now()
   for (const { change, names } of changes) await update($, folderListings, listings => listingsAfter(listings, caller, change.folder, names, now))
@@ -1333,8 +1349,8 @@ async function recordListings($: EngineInterface, e: { tool: string; agentId?: s
   const caller = e.agentId ?? 'main'
   const cwd = await $.session.cwd()
   const home = await $.env.get('HOME')
-  if (e.tool === 'Write' || e.tool === 'NotebookEdit') {
-    const written = e.tool === 'Write' ? e.file_path : e.notebook_path
+  if (e.tool === 'Write' || e.tool === 'Edit' || e.tool === 'NotebookEdit') {
+    const written = e.tool === 'NotebookEdit' ? e.notebook_path : e.file_path
     const path = typeof written === 'string' ? resolvePath(written, cwd, home) : undefined
     if (path !== undefined) await update($, folderListings, listings => listingWith(listings, caller, path))
     return
@@ -2300,7 +2316,7 @@ export const register: Register = on => {
     return e.tool !== 'Bash' || command === undefined ? next(e) : ledgerCall($, e, command, next as (e: never) => Promise<ToolCallResult>)
   }).catch(($, e, next) => (next.called || e.tool !== 'Bash' || ledgerCommandOf(parseShell(e.command)) === undefined ? next(e) : { deny: GUARD_FAILED }))
 
-  on('tool.call', { tool: /^(mcp__.+|Bash|Read|WebFetch|Glob|Write|NotebookEdit)$/ }, async ($, e, next) => {
+  on('tool.call', { tool: /^(mcp__.+|Bash|Read|WebFetch|Glob|Write|Edit|NotebookEdit)$/ }, async ($, e, next) => {
     const key = callerKeyOf(e.agentId, e.tool)
     const caller = e.agentId ?? 'main'
     const isOutward = isOutwardTool(e.tool) || (isMcpTool(e.tool) && isFinalDescription(await toolDescriptionOf($, e.tool)))
@@ -2315,8 +2331,10 @@ export const register: Register = on => {
       return { deny: [...(isFirst ? [sourcesRefusalOf(e.tool)] : []), ...(report === undefined ? [] : [report])].join('\n\n') }
     }
     const isRepeat = isMcpTool(e.tool) && isRepeated(await read($, mcpRefusals), key)
+    const before = e.tool === 'Bash' ? await folderSnapshotOf($, caller) : undefined
     const result = await next(e)
     if (result.deny !== undefined) return result
+    if (before !== undefined) await takeOwnChanges($, caller, before)
     const now = await $.clock.now()
     if (isMcpTool(e.tool)) await update($, mcpRefusals, refusals => refusalsAfter(refusals, key, refusalTextOf(result)))
     const source = result.isError === true ? undefined : readSourceOf(e.tool, e as Record<string, unknown>, isOutward)

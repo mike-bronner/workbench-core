@@ -53,6 +53,17 @@ export function listingWith(listings: Listings, caller: string, path: string): L
   return { ...listings, [caller]: Object.fromEntries(updated) }
 }
 
+export function listingsAfterOwn(listings: Listings, caller: string, folder: string, before: readonly string[], after: readonly string[]): Listings {
+  const listing = listings[caller]?.[folder]
+  if (listing === undefined) return listings
+  const had = new Set(before)
+  const has = new Set(after)
+  const bound = listing.names.length >= KEPT_NAMES ? listing.names.at(-1) : undefined
+  const beyond = bound === undefined ? [] : before.filter(name => name > bound)
+  const names = [...new Set([...listing.names, ...beyond, ...after.filter(name => !had.has(name))])].filter(name => has.has(name) || !had.has(name)).sort()
+  return { ...listings, [caller]: { ...listings[caller], [folder]: { ...listing, names: names.slice(0, KEPT_NAMES) } } }
+}
+
 export function changeOf(folder: string, before: readonly string[], after: readonly string[]): FolderChange | undefined {
   const bound = before.length >= KEPT_NAMES ? before.at(-1) : undefined
   const had = new Set(before)

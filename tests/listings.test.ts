@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { KEPT_FOLDERS, KEPT_NAMES, LISTED_NAMES, changeOf, changeReportOf, globFoldersOf, listingWith, listingsAfter, lsFoldersOf } from '../hooks/mods/listings'
+import { KEPT_FOLDERS, KEPT_NAMES, LISTED_NAMES, changeOf, changeReportOf, globFoldersOf, listingWith, listingsAfter, listingsAfterOwn, lsFoldersOf } from '../hooks/mods/listings'
 import { parseShell } from '../hooks/mods/shell'
 import { sourcesRefusalOf } from '../hooks/mods/outward'
 import type { Bench } from './bench'
@@ -73,6 +73,86 @@ describe('a listed folder that changed blocks once before an outward call', () =
     expect(folderNote(first.context)).toContain('added: c.md')
     expect(folderNote(first.context)).not.toContain('Call it again')
     expect(folderNote((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).context)).toBeUndefined()
+  })
+})
+
+describe("the session's own change to a listed folder is no change", () => {
+  test('an entry its own Bash call removes does not block the outward call', async ($, on) => {
+    const b = await session($, on)
+    await call($, { tool: 'Bash', command: `ls ${BOX}` })
+    b.onBash = command => void (command.startsWith('rm ') && b.files.delete(`${BOX}/a.md`))
+    expect((await call($, { tool: 'Bash', command: `rm ${BOX}/a.md` })).deny).toBeUndefined()
+    expect((await call($, { tool: CLAIM })).deny).not.toContain('Workbench folder check')
+    expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
+  })
+
+  test('entries its own Bash call adds, unnamed on the line, do not block', async ($, on) => {
+    const b = await session($, on)
+    await call($, { tool: 'Glob', pattern: '*.md', path: BOX })
+    b.onBash = command => {
+      if (command === 'tar -xf drafts.tar') for (const name of ['c.md', 'd.md']) b.files.set(`${BOX}/${name}`, 'x')
+    }
+    expect((await call($, { tool: 'Bash', command: 'tar -xf drafts.tar' })).deny).toBeUndefined()
+    expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
+    expect((await $.classic.Stop(stop('Done.'))).block).toBeUndefined()
+  })
+
+  test('a Bash call that fails after it changed the folder still counts as its own', async ($, on) => {
+    const b = await session($, on)
+    await call($, { tool: 'Bash', command: `ls ${BOX}` })
+    b.onBash = () => {
+      b.files.delete(`${BOX}/b.md`)
+      return { isError: true }
+    }
+    expect((await call($, { tool: 'Bash', command: `rm ${BOX}/b.md && false` })).isError).toBe(true)
+    b.onBash = undefined
+    expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
+  })
+
+  test('a file its own Edit call creates is no change', async ($, on) => {
+    const b = await session($, on)
+    await call($, { tool: 'Bash', command: `ls ${BOX}` })
+    expect((await call($, { tool: 'Edit', file_path: `${BOX}/new.md`, old_string: '', new_string: 'x' })).deny).toBeUndefined()
+    b.files.set(`${BOX}/new.md`, 'x')
+    expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
+  })
+
+  test('an outside change made before an unrelated Bash call still blocks once', async ($, on) => {
+    const b = await session($, on)
+    await call($, { tool: 'Bash', command: `ls ${BOX}` })
+    b.files.set(`${BOX}/c.md`, 'x')
+    b.files.delete(`${BOX}/a.md`)
+    await call($, { tool: 'Bash', command: 'echo hi' })
+    const first = await call($, { tool: 'Bash', command: 'gh pr ready 4' })
+    expect(first.deny).toContain(`- ${BOX}\n  added: c.md\n  removed: a.md`)
+    expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
+  })
+
+  test('an own change and an outside change in one folder: the block names only the outside entries', async ($, on) => {
+    const b = await session($, on)
+    await call($, { tool: 'Bash', command: `ls ${BOX}` })
+    b.files.set(`${BOX}/outside.md`, 'x')
+    b.files.delete(`${BOX}/b.md`)
+    b.onBash = command => {
+      if (command !== 'make tidy') return
+      b.files.delete(`${BOX}/a.md`)
+      b.files.set(`${BOX}/own.md`, 'x')
+    }
+    expect((await call($, { tool: 'Bash', command: 'make tidy' })).deny).toBeUndefined()
+    await call($, { tool: 'Write', file_path: `${BOX}/written.md`, content: 'x' })
+    b.files.set(`${BOX}/written.md`, 'x')
+    const first = await call($, { tool: 'Bash', command: 'gh pr ready 4' })
+    expect(first.deny).toContain(`- ${BOX}\n  added: outside.md\n  removed: b.md\n`)
+    for (const own of ['a.md', 'own.md', 'written.md']) expect(first.deny).not.toContain(own)
+    expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
+  })
+
+  test("a sub-agent's Bash change still blocks the main loop's outward call", async ($, on) => {
+    const b = await session($, on)
+    await call($, { tool: 'Bash', command: `ls ${BOX}` })
+    b.onBash = command => void (command.startsWith('rm ') && b.files.delete(`${BOX}/a.md`))
+    expect((await call($, { tool: 'Bash', command: `rm ${BOX}/a.md`, agentId: AGENT })).deny).toBeUndefined()
+    expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toContain('  removed: a.md')
   })
 })
 
@@ -250,6 +330,21 @@ describe('what a listing records', () => {
     expect(listingWith(listingsAfter({}, 'main', '/', ['etc'], 0), 'main', '/tmp/x').main?.['/']?.names).toEqual(['etc', 'tmp'])
     expect(listingWith(listingsAfter({}, 'main', '/f', ['a'], 0), 'main', '/fx/b').main?.['/f']?.names).toEqual(['a'])
     expect(listingWith({}, 'main', '/f/b')).toEqual({})
+  })
+
+  test("an own change applies only its own difference, and refills a full record", () => {
+    const listings = listingsAfter({}, 'main', '/f', ['a', 'b', 'gone'], 0)
+    const own = listingsAfterOwn(listings, 'main', '/f', ['a', 'b', 'outside'], ['b', 'mine', 'outside'])
+    expect(own.main?.['/f']?.names).toEqual(['b', 'gone', 'mine'])
+    expect(changeOf('/f', own.main?.['/f']?.names ?? [], ['b', 'mine', 'outside'])).toEqual({ folder: '/f', added: ['outside'], removed: ['gone'] })
+    expect(listingsAfterOwn(listings, 'main', '/other', ['a'], [])).toBe(listings)
+    expect(listingsAfterOwn(listings, AGENT, '/f', ['a'], [])).toBe(listings)
+    const full = Array.from({ length: KEPT_NAMES + 3 }, (_, i) => `n${String(i).padStart(5, '0')}`)
+    const record = listingsAfter({}, 'main', '/f', full, 0)
+    const after = full.slice(1)
+    const refilled = listingsAfterOwn(record, 'main', '/f', full, after)
+    expect(refilled.main?.['/f']?.names).toEqual(after.slice(0, KEPT_NAMES))
+    expect(changeOf('/f', refilled.main?.['/f']?.names ?? [], after)).toBeUndefined()
   })
 
   test('the report cleans each name and counts the rest past the cap', () => {

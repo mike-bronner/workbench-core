@@ -1117,6 +1117,12 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       if (end === line.length) reading.unknowns.add('substitution')
       substitute(line.slice(i + 2, end), i + 2)
       i = end
+    } else if (exact && c === '=' && next === '(' && (!hasWord || (braces > 0 && !/[\w:]$/.test(word)) || (isArray && /[ \t\n(]$/.test(word)) || (!isTest && /^[A-Za-z_][A-Za-z0-9_]*\+?=$/.test(word)))) {
+      reading.feeds?.add('process')
+      const end = closingParen(line, i + 2, exact)
+      if (end === line.length) reading.unknowns.add('substitution')
+      substitute(line.slice(i + 2, end), i + 2)
+      i = end
     } else if (c === '`') {
       const end = closingTick(line, i + 1)
       if (end === line.length) reading.unknowns.add('substitution')

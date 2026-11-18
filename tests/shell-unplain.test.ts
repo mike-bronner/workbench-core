@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { parseShell } from '../hooks/mods/shell'
+import { commandsOf, parseShell } from '../hooks/mods/shell'
 
 const unplain = (line: string) => parseShell(line).unplain
 const feeds = (line: string) => parseShell(line).feeds
@@ -262,6 +262,77 @@ describe('the feed facts and the subshell fact, for the statement rules', () => 
     expect(feeds('[[ -n <(a) ]]')).toEqual(['process'])
     expect(feeds('echo $(a)')).toEqual([])
     expect(feeds('echo "<(a)"')).toEqual([])
+  })
+
+  test("zsh's =( at the start of a word is the process feed, and its command is read", () => {
+    const parse = parseShell('bash =(echo git push)')
+    expect(parse.feeds).toEqual(['process'])
+    expect(parse.hasSubshell).toBe(false)
+    expect(parse.unknowns).not.toContain('expansion')
+    expect(commandsOf('bash =(echo git push)')).toContainEqual(['echo', 'git', 'push'])
+  })
+
+  test('=( is the process feed in command position, as an argument or redirect target, after an operator, in an assignment, array, ${…} value or case pattern, and in a test', () => {
+    const lines = [
+      '=(a)',
+      'cat =(a)',
+      'cat =( a )',
+      'cat x =(a)y',
+      'cat <=(a)',
+      'echo >=(a)',
+      'echo 2>=(a)',
+      'b; =(a)',
+      'b && =(a)',
+      'b || =(a)',
+      '(=(a))',
+      '{ =(a) }',
+      'x==(a)',
+      'x+==(a)',
+      'y=b x==(a)',
+      'export x==(a)',
+      'local x==(a)',
+      'x=(1 =(a))',
+      'x=(=(a))',
+      'echo ${x:-=(a)}',
+      'echo ${x-=(a)}',
+      'echo ${x:+=(a)}',
+      'echo ${x==(a)}',
+      'echo ${x:==(a)}',
+      'echo ${x/b/=(a)}',
+      'echo ${x:-${y:-=(a)}}',
+      'case =(a) in *) :;; esac',
+      'case x in =(a)) :;; esac',
+      'for f in =(a); do :; done',
+      'echo $(cat =(a))',
+      "bash -c 'cat =(a)'",
+      '[[ x == =(a) ]]',
+    ]
+    for (const line of lines) expect([line, feeds(line)]).toEqual([line, ['process']])
+  })
+
+  test('a quoted or escaped =(, a =( later in a word, an array, the := operator and the == of a test are no process feed', () => {
+    const lines = [
+      'x=(1 2)',
+      'x+=(1 2)',
+      'echo "=("',
+      "echo '=('",
+      'echo "=(a)"',
+      "echo '=(a)'",
+      'echo \\=(a)',
+      'echo ""=(a)',
+      'echo "${x:-=(a)}"',
+      '[[ x==(y) ]]',
+      '[[ x == (a) ]]',
+      'echo --f==(a)',
+      'echo ${x:=(a)}',
+      'echo ${x:-y=(a)}',
+      'cat <<E\n=(a)\nE',
+    ]
+    for (const line of lines) expect([line, feeds(line)]).toEqual([line, []])
+  })
+
+  test('the frozen compat reading of =( is unchanged', () => {
+    expect(commandsOf('bash =(echo git push)', true)).toEqual([['bash', '='], ['echo', 'git', 'push']])
   })
 
   test('a reserved coproc is the coproc feed, and a quoted one is not', () => {

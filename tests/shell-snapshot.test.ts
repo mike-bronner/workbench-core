@@ -19,8 +19,8 @@ const bashCommandsOf = (cases: readonly { payload: string }[]): string[] =>
     return call.tool_name === 'Bash' && typeof call.tool_input?.command === 'string' ? [call.tool_input.command] : []
   })
 
-const changed = (pairs: readonly (readonly [string, string])[], isEqualsTakenOut = false): string[] =>
-  pairs.filter(([line, hash]) => hashOf(readingOf(shell, line, isEqualsTakenOut)) !== hash).map(([line]) => line)
+const changed = (pairs: readonly (readonly [string, string])[], takenOut?: string): string[] =>
+  pairs.filter(([line, hash]) => hashOf(readingOf(shell, line, takenOut)) !== hash).map(([line]) => line)
 
 const EQUALS_LINES: readonly string[] = ['=git push', '=rm README.md', '=~']
 const EQUALS_RANDOM_LINES: readonly string[] = [
@@ -32,6 +32,9 @@ const EQUALS_RANDOM_LINES: readonly string[] = [
   '{ =eval',
 ]
 const isEqualsLine = ([line]: readonly [string, string]): boolean => EQUALS_LINES.includes(line) || EQUALS_RANDOM_LINES.includes(line)
+const COMMENT_RANDOM_LINES: readonly string[] = ['<(\n= "esac" # $HOME<<<\ngit push function)\n${x@P}']
+const isCommentLine = ([line]: readonly [string, string]): boolean => COMMENT_RANDOM_LINES.includes(line)
+const isNamed = (pair: readonly [string, string]): boolean => isEqualsLine(pair) || isCommentLine(pair)
 
 const randomPairs = (): (readonly [string, string])[] =>
   randomLines(RANDOM_SEED, RANDOM_COUNT).map((line, k) => [line, RANDOM_SNAPSHOT[k] as string])
@@ -73,13 +76,22 @@ describe('AC3: every line reads as the reader of 23ff5c3 read it', () => {
 
   test('statements, unknowns, expanding and decoded words, commandsOf and the compat reading are unchanged on every snapshot line but the named = lines', () => {
     expect(SNAPSHOT.length).toBeGreaterThan(3400)
-    expect(changed(SNAPSHOT.filter(pair => !isEqualsLine(pair)))).toEqual([])
+    expect(changed(SNAPSHOT.filter(pair => !isNamed(pair)))).toEqual([])
   })
 
-  test('they are unchanged on 4,000 seeded random lines but the named = lines', () => {
+  test('they are unchanged on 4,000 seeded random lines but the named = and comment lines', () => {
     expect(RANDOM_COUNT).toBe(4000)
     expect(RANDOM_SNAPSHOT).toHaveLength(RANDOM_COUNT)
-    expect(changed(randomPairs().filter(pair => !isEqualsLine(pair)))).toEqual([])
+    expect(changed(randomPairs().filter(pair => !isNamed(pair)))).toEqual([])
+  })
+
+  test('each named comment line holds a # comment inside a <( ), so it now reads the substitution unknown, and reads as 23ff5c3 read it with that unknown taken out', () => {
+    expect(SNAPSHOT.filter(isCommentLine)).toEqual([])
+    const random = randomPairs().filter(isCommentLine)
+    expect(random.map(([line]) => line)).toEqual([...COMMENT_RANDOM_LINES])
+    for (const [line] of random) expect([line, parseShell(line).unknowns.includes('substitution')]).toEqual([line, true])
+    expect(changed(random)).toEqual([...COMMENT_RANDOM_LINES])
+    expect(changed(random, 'substitution')).toEqual([])
   })
 
   test('each named = line now reads the expansion unknown, and reads as 23ff5c3 read it with that unknown taken out', () => {
@@ -89,7 +101,7 @@ describe('AC3: every line reads as the reader of 23ff5c3 read it', () => {
     expect(random.map(([line]) => line)).toEqual([...EQUALS_RANDOM_LINES])
     for (const [line] of [...snapshot, ...random]) expect([line, parseShell(line).unknowns.includes('expansion')]).toEqual([line, true])
     expect(changed([...snapshot, ...random])).toEqual([...EQUALS_LINES, ...EQUALS_RANDOM_LINES])
-    expect(changed([...snapshot, ...random], true)).toEqual([])
+    expect(changed([...snapshot, ...random], 'expansion')).toEqual([])
   })
 
   test('control: a snapshot hash tells two readings apart', () => {

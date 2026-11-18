@@ -375,6 +375,23 @@ function substitutionsOf(text: string, isCompat = false): string[] {
   return inner
 }
 
+function holdsComment(text: string): boolean {
+  let isStart = true
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i] as string
+    if (c === '#' && isStart) return true
+    if (c === '\\') i++
+    else if (c === "'") i = text.indexOf("'", i + 1) === -1 ? text.length : text.indexOf("'", i + 1)
+    else if (c === '"') i = closingQuote(text, i + 1)
+    else if (c === '$' && text[i + 1] === "'") i = closingAnsiQuote(text, i + 2)
+    else if (c === '$' && text[i + 1] === '{') i = closingBrace(text, i + 2)
+    else if (c === '$' && text[i + 1] === '(') i = closingParen(text, i + 2)
+    else if (c === '`') i = closingTick(text, i + 1)
+    isStart = /[ \t\n;&|()<>]/.test(c)
+  }
+  return false
+}
+
 type Context = 'top' | '$(' | '`' | '(' | '{' | "'" | '"' | '((' | '${'
 
 // Whether a word starts at `i`: a `#` there opens a comment, and `((` there
@@ -652,6 +669,7 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; bodie
         doc.body = body.join('\n')
         // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
         const expanded = doc.isQuoted ? [] : substitutionsOf(doc.body, reading.isCompat)
+        if (!reading.isCompat && expanded.some(holdsComment)) reading.unknowns.add('substitution')
         // The outer shell runs the $( ) and backticks of an unquoted body it
         // feeds a shell before the inner shell reads it, inside '…' too, so
         // the exact reading keeps them beside the body.
@@ -900,6 +918,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     const moved = bodies.filter(b => b.at >= from && b.at <= from + inner.length)
     bodies.splice(0, bodies.length, ...bodies.filter(b => !moved.includes(b)))
     const shifted = moved.map(b => ({ at: b.at - from, script: b.script }))
+    if (exact && holdsComment(inner)) reading.unknowns.add('substitution')
     commands.push(...lex(inner, reading, nestedSource, depth + 1, !isUncertain, isBody, shifted))
     word += SUBSTITUTED
     hasWord = true
@@ -912,6 +931,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     if (exact && runsValue(body)) reading.unknowns.add('expansion')
     if (exact && !parametersArePlain(body)) reading.unplain?.add('parameter')
     for (const inner of substitutionsOf(body)) {
+      if (exact && holdsComment(inner)) reading.unknowns.add('substitution')
       reading.takesInput = true
       commands.push(...lex(inner, reading, nestedSource, depth + 1, !isUncertain, isBody))
     }

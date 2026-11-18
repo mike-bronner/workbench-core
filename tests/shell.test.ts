@@ -1935,3 +1935,51 @@ describe('a word that starts with an unquoted = is the expansion unknown, becaus
     }
   })
 })
+
+describe('a # comment inside a $( ) or a backtick leaves the line with the substitution unknown, because bash and zsh read on past a ) in the comment', () => {
+  const SHAPES: readonly ((hidden: string) => string)[] = [
+    hidden => `cat <<E\n$(echo # )\n${hidden}\n)\nE`,
+    hidden => `cat <<-E\n\t$(echo # )\n\t${hidden}\n\t)\n\tE`,
+    hidden => `echo "$(echo # )\n${hidden})"`,
+    hidden => `echo $(echo # )\n${hidden})`,
+    hidden => `echo $[ $(echo # )\n${hidden}) ]`,
+  ]
+
+  test('each confirmed shape, with zap and with git push hidden after the comment', () => {
+    for (const shape of SHAPES) {
+      for (const hidden of ['zap', 'git push']) {
+        const line = shape(hidden)
+        expect([line, parseShell(line).unknowns]).toEqual([line, ['substitution']])
+      }
+    }
+  })
+
+  test('control: in the heredoc shapes the reader names no hidden command, so the unknown is all that refuses them', () => {
+    for (const shape of SHAPES.slice(0, 2)) expect(commandsOf(shape('git push'))).toEqual([['cat'], ['echo']])
+  })
+
+  test('a comment at the start, after an operator or a redirect, in a backtick, a <( ) or a ${…} default, and in a backtick heredoc body', () => {
+    for (const line of ['echo $(#)', 'echo $(echo ;#)', 'echo $(cat >#)\nzap)', 'echo `echo # `', 'echo <(echo # )\nzap)', 'echo ${x:-$(echo # )\nzap)}', 'cat <<E\n`echo # `\nE']) {
+      expect([line, parseShell(line).unknowns]).toEqual([line, ['substitution']])
+    }
+  })
+
+  test('the shapes caught before stay caught, and now carry the substitution unknown too', () => {
+    for (const line of ['echo $(( $(echo # )\n) + 1 ))', '(( $(echo # )\n) ))', 'echo "$(( $(echo # )\n) ))"', 'bash <<E\n$(echo # )\nzap\n)\nE']) {
+      expect([line, parseShell(line).unknowns]).toEqual([line, ['expansion', 'substitution']])
+    }
+  })
+
+  test('a # that starts no comment leaves the unknowns as they were', () => {
+    const lines: readonly (readonly [string, string[]])[] = [
+      ['echo $(echo ${#x} $# a#b "#" \'#\' " # " $\'#\' \\#)', []],
+      ['echo `echo ${#x} $# a#b "#" \'#\' " # "`', []],
+      ['cat <<E\n$(echo "#" ${#x} $# a#b)\nE', []],
+      ['echo $(echo $(date)#x) $(echo "$(date)"#y)', []],
+      ['echo $(( $(echo $# ${#x}) + 1 ))', ['expansion']],
+      ["gh pr create --body \"$(cat <<'EOF'\n## Summary\n- x)\nEOF\n)\"", []],
+      ['echo hi # $(\ngit log', []],
+    ]
+    for (const [line, unknowns] of lines) expect([line, parseShell(line).unknowns]).toEqual([line, unknowns])
+  })
+})

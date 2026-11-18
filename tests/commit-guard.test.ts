@@ -228,6 +228,22 @@ describe('the commit guard: a read-only grep, rg or sed -n line passes in every 
   }
 })
 
+describe('the commit guard: a push after a # comment inside a $( ), which bash and zsh run, is refused in every lane', () => {
+  for (const line of [
+    'cat <<E\n$(echo # )\ngit push\n)\nE',
+    'cat <<-E\n\t$(echo # )\n\tgit push\n\t)\n\tE',
+    'echo "$(echo # )\ngit push)"',
+    'echo $(echo # )\ngit push)',
+    'echo $[ $(echo # )\ngit push) ]',
+  ]) {
+    test(JSON.stringify(line), () => {
+      expect(verdictOf(line, CALLERS.main)).toEqual(PLAIN_REFUSAL)
+      expect(verdictOf(line, CALLERS['sub-agent'])).toEqual(SUBAGENT_REFUSAL)
+      expect(verdictOf(line, CALLERS.pipeline)).toEqual(PLAIN_REFUSAL)
+    })
+  }
+})
+
 async function refusalOf($: Engine, b: Bench, command: string, agentId?: string): Promise<string | undefined> {
   const before = b.calls.length
   const result = await $.tool.call({ tool: 'Bash', command, ...(agentId === undefined ? {} : { agentId }) } as never)

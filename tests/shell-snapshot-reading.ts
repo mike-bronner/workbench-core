@@ -24,12 +24,12 @@ export function hashOf(text: string): string {
   return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36)
 }
 
-export function readingOf(reader: Reader, line: string, isEqualsTakenOut = false): string {
+export function readingOf(reader: Reader, line: string, takenOut?: string): string {
   try {
     const parse = reader.parseShell(line)
     return JSON.stringify({
       statements: parse.statements,
-      unknowns: isEqualsTakenOut ? parse.unknowns.filter(unknown => unknown !== 'expansion') : parse.unknowns,
+      unknowns: parse.unknowns.filter(unknown => unknown !== takenOut),
       expanding: parse.statements.map(reader.expandingOf),
       decoded: parse.statements.map(reader.decodedOf),
       exact: reader.commandsOf(line),

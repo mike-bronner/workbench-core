@@ -461,6 +461,42 @@ describe('a final run\'s exemption ends when its Holmes stops', () => {
     expect(await stop($, 'holmes')).toBeUndefined()
     expect(await refusal($, 'vendor/bin/pest', 'holmes')).toContain(HEAD)
   })
+
+  test('a stop naming an agent that is no recorded root leaves a final run exempt, and that agent refused', async ($, on) => {
+    await attended($, on)
+    await spawn($, 'holmes', 'workbench-dev-team:holmes', FINAL)
+    await spawn($, 'lens', 'workbench-dev-team:holmes-lens', brief('Run the suite.'), 'holmes')
+    await spawn($, 'stranger', 'workbench-dev-team:watson', brief('Fix the bug.'))
+    expect(await stop($, 'stranger')).toBeUndefined()
+    expect(await stop($, 'unseen')).toBeUndefined()
+    for (const id of ['holmes', 'lens']) expect([id, await refusal($, 'vendor/bin/pest', id)]).toEqual([id, undefined])
+    for (const id of ['stranger', 'unseen']) expect([id, await refusal($, 'vendor/bin/pest', id)]).toEqual([id, expect.stringContaining(HEAD)])
+  })
+})
+
+describe('a record an older build wrote, a bare agent id, fails closed', () => {
+  test('that agent and a child spawned under it are refused, and a stop naming it ends a later final run\'s exemption as before', async ($, on) => {
+    const records: unknown[] = []
+    on('state.get', async (_$, e, next) => {
+      const held = await next(e)
+      if (e.plugin !== 'workbench-core' || e.key !== 'suiteRunners' || held.value === undefined) return held
+      const value = held.value.value ?? ['agentX']
+      records.push(value)
+      return { value: { version: held.value.version, value } }
+    })
+    await attended($, on)
+    await spawn($, 'child', 'workbench-dev-team:holmes-lens', brief('Run the suite.'), 'agentX')
+    for (const id of ['agentX', 'child']) expect([id, await refusal($, 'vendor/bin/pest', id)]).toEqual([id, expect.stringContaining(HEAD)])
+    expect(records.at(-1)).toEqual(['agentX'])
+    await spawn($, 'holmes', 'workbench-dev-team:holmes', FINAL)
+    expect(await stop($, 'agentX')).toBeUndefined()
+    expect(await refusal($, 'vendor/bin/pest', 'holmes')).toBeUndefined()
+    expect(records.at(-1)).toEqual(['agentX', { id: 'holmes', root: 'holmes' }])
+    expect(await stop($, 'holmes')).toBeUndefined()
+    expect(await refusal($, 'vendor/bin/pest', 'holmes')).toContain(HEAD)
+    expect(records.at(-1)).toEqual(['agentX'])
+    for (const id of ['agentX', 'child']) expect([id, await refusal($, 'vendor/bin/pest', id)]).toEqual([id, expect.stringContaining(HEAD)])
+  })
 })
 
 describe('the full-suite gate reads a script under the plugin root', () => {

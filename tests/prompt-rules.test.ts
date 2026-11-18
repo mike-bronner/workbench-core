@@ -536,7 +536,7 @@ describe('the working rule on one project per session', () => {
     const row = RULES.split('\n').find(line => line.startsWith('| Full-suite gate |')) ?? ''
     expect(row).toContain('The main agent and its sub-agents do not run a project\'s full test suite, directly or through a script, or a script it cannot read.')
     expect(row).toContain('the orchestrator asks Mike whether he runs it himself or Holmes runs it in a `Final suite run:` dispatch.')
-    expect(row).toContain('Only that Holmes and the helpers it dispatches run it. A sub-agent the gate refuses stops and hands back.')
+    expect(row).toContain('Only that Holmes and the helpers it dispatches run it. The exemption ends when that Holmes stops, so a Holmes resumed after its stop is refused, and so are the helpers it then dispatches. A sub-agent the gate refuses stops and hands back.')
     expect(row).toContain('One test file, a filter or one case still runs.')
     expect(row).toContain('In a session no one sits at, such as the pipeline or a `-p` run, sub-agents run anything.')
     expect(row).not.toContain('Sub-agents run anything.')

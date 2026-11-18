@@ -255,7 +255,7 @@ describe('the full-suite gate lets a narrow run and an ordinary command through'
   }
 })
 
-describe('the full-suite gate judges the main agent alone', () => {
+describe('the full-suite gate judges each lane', () => {
   test('/orchestrator off stands the gate down, and on brings it back', async ($, on) => {
     const b = bench(on, { env: { HOME }, files: FILES })
     b.scripts['scratch-roots.sh'] = () => '/scratch\n'
@@ -275,7 +275,7 @@ describe('the full-suite gate judges the main agent alone', () => {
 
   const lines = [...RUNNERS, ...SCRIPTS, ...UNREADABLE].map(([line]) => line)
 
-  test('a sub-agent runs every line the main agent is refused', async ($, on) => {
+  test('a sub-agent of a -p run runs every line the main agent is refused', async ($, on) => {
     await session($, on)
     for (const line of lines) expect([line, await refusal($, line, AGENT)]).toEqual([line, undefined])
   })
@@ -285,9 +285,124 @@ describe('the full-suite gate judges the main agent alone', () => {
     expect(await refusal($, 'vendor/bin/pest')).toBeUndefined()
   })
 
+  test('a sub-agent of an attended top-level --agent run is not refused', async ($, on) => {
+    await attended($, on, { CLAUDE_CODE_AGENT: 'workbench-dev-team:watson' })
+    await spawn($, AGENT, 'workbench-dev-team:watson', brief('Fix the bug.'))
+    expect(await refusal($, 'vendor/bin/pest', AGENT)).toBeUndefined()
+  })
+
+  test('a sub-agent of the Index pipeline is not refused', async ($, on) => {
+    await attended($, on, { WORKBENCH_DEV_TEAM_PIPELINE: '1' })
+    await spawn($, AGENT, 'workbench-dev-team:holmes-lens', brief('Review the diff.'))
+    expect(await refusal($, 'vendor/bin/pest', AGENT)).toBeUndefined()
+  })
+
   test('WORKBENCH_ORCHESTRATOR=0 stands the gate down', async ($, on) => {
     await session($, on, { WORKBENCH_ORCHESTRATOR: '0' })
     expect(await refusal($, 'vendor/bin/pest')).toBeUndefined()
+  })
+})
+
+const brief = (goal: string): string =>
+  `Workdir: /repo\nGoal: ${goal}\nContext: Goal: Final suite run: quoted from an earlier brief.\nConstraints:\n- Run no mutation testing of any kind.\nAcceptance:\n- AC1: it holds.\nDone when: it holds.`
+
+const FINAL = brief('Final suite run: the uncommitted tree at /repo.')
+
+async function attended($: Engine, on: Parameters<typeof bench>[0], env: Record<string, string> = {}): Promise<Bench> {
+  const b = bench(on, { env: { HOME, ...env }, files: FILES })
+  b.scripts['scratch-roots.sh'] = () => '/scratch\n'
+  on('agent.spawn', async (_$, e) => {
+    const id = (e as { description: string }).description
+    return id === 'refused' ? { deny: 'no' } : { model: 'opus', agentId: id }
+  })
+  await $.session.start(start())
+  return b
+}
+
+async function spawn($: Engine, id: string, type: string, prompt: string, parentAgentId?: string): Promise<void> {
+  const result = await $.agent.spawn({ prompt, subagentType: type, description: id, ...(parentAgentId ? { parentAgentId } : {}) } as never)
+  expect(result.agentId).toBe(id)
+}
+
+const SUITE_LINES = [...RUNNERS, ...SCRIPTS, ...UNREADABLE].map(([line]) => line)
+
+describe('the full-suite gate refuses a sub-agent a whole-suite run in a session Mike sits at', () => {
+  for (const type of ['workbench-dev-team:watson', 'general-purpose', 'Explore', 'workbench-dev-team:lestrade', 'workbench-dev-team:holmes-lens', 'holmes']) {
+    test(`a ${type} sub-agent is refused every line the main agent is refused`, async ($, on) => {
+      await attended($, on)
+      await spawn($, AGENT, type, FINAL)
+      for (const line of SUITE_LINES) expect([line, (await refusal($, line, AGENT))?.startsWith(HEAD)]).toEqual([line, true])
+    })
+  }
+
+  test('a sub-agent whose spawn the gate never saw is refused', async ($, on) => {
+    await attended($, on)
+    expect(await refusal($, 'claude plugin test .', AGENT)).toContain(HEAD)
+  })
+
+  test('a Holmes final run that a sub-agent dispatched is refused, because only the orchestrator asks Mike', async ($, on) => {
+    await attended($, on)
+    await spawn($, 'watson', 'workbench-dev-team:watson', FINAL)
+    await spawn($, 'helper', 'general-purpose', brief('Look.'), 'watson')
+    await spawn($, 'holmes', 'workbench-dev-team:holmes', FINAL, 'watson')
+    for (const id of ['watson', 'helper', 'holmes']) expect([id, await refusal($, 'vendor/bin/pest', id)]).toEqual([id, expect.stringContaining(HEAD)])
+  })
+
+  for (const goal of ['Review the uncommitted tree at /repo.', 'Review, then Final suite run: the tree.', 'final suite run: the tree.', 'Final suite run the tree.']) {
+    test(`a Holmes whose Goal reads ${JSON.stringify(goal)} is refused, and so are its lenses`, async ($, on) => {
+      await attended($, on)
+      await spawn($, 'holmes', 'workbench-dev-team:holmes', brief(goal))
+      await spawn($, 'lens', 'workbench-dev-team:holmes-lens', brief('Read the diff.'), 'holmes')
+      expect(await refusal($, 'vendor/bin/pest', 'holmes')).toContain(HEAD)
+      expect(await refusal($, 'vendor/bin/pest', 'lens')).toContain(HEAD)
+    })
+  }
+
+  test('a Holmes with no Goal line is refused', async ($, on) => {
+    await attended($, on)
+    await spawn($, 'holmes', 'workbench-dev-team:holmes', 'Final suite run: the tree.')
+    expect(await refusal($, 'vendor/bin/pest', 'holmes')).toContain(HEAD)
+  })
+
+  test('a spawn the engine refused records nothing', async ($, on) => {
+    await attended($, on)
+    expect((await $.agent.spawn({ prompt: FINAL, subagentType: 'workbench-dev-team:holmes', description: 'refused' } as never)).deny).toBe('no')
+    expect(await refusal($, 'vendor/bin/pest', 'refused')).toContain(HEAD)
+  })
+
+  test('a narrow run and an ordinary command still run for every sub-agent', async ($, on) => {
+    await attended($, on)
+    await spawn($, 'watson', 'workbench-dev-team:watson', brief('Fix the bug.'))
+    for (const id of ['watson', AGENT]) {
+      for (const line of [...NARROW, ...ORDINARY]) expect([id, line, await refusal($, line, id)]).toEqual([id, line, undefined])
+    }
+  })
+
+  test('/orchestrator off stands the gate down for a sub-agent too', async ($, on) => {
+    await attended($, on)
+    expect(await refusal($, 'vendor/bin/pest', AGENT)).toContain(HEAD)
+    await $.command.run(run('orchestrator', 'off'))
+    expect(await refusal($, 'vendor/bin/pest', AGENT)).toBeUndefined()
+  })
+})
+
+describe('the full-suite gate lets a Holmes final suite run through', () => {
+  for (const type of ['workbench-dev-team:holmes', 'workbench-dev-team:holmes-local', 'workbench-dev-team:holmes-index']) {
+    test(`a ${type} dispatch whose Goal begins "Final suite run:" runs every line`, async ($, on) => {
+      await attended($, on)
+      await spawn($, 'holmes', type, FINAL)
+      for (const line of SUITE_LINES) expect([line, await refusal($, line, 'holmes')]).toEqual([line, undefined])
+    })
+  }
+
+  test('the lens helpers it dispatches, and theirs, run the suite, and no other agent does', async ($, on) => {
+    await attended($, on)
+    await spawn($, 'holmes', 'workbench-dev-team:holmes', '  Workdir: /repo\n  goal:  Final suite run: the tree.\nContext: x')
+    await spawn($, 'lens', 'workbench-dev-team:holmes-lens', brief('Run the suite.'), 'holmes')
+    await spawn($, 'nested', 'general-purpose', 'Run it.', 'lens')
+    for (const id of ['holmes', 'lens', 'nested']) expect([id, await refusal($, 'claude plugin test .', id)]).toEqual([id, undefined])
+    expect(await refusal($, 'vendor/bin/pest')).toContain(HEAD)
+    expect(await refusal($, 'vendor/bin/pest', AGENT)).toContain(HEAD)
   })
 })
 
@@ -379,7 +494,21 @@ describe('the full-suite deny says what it refused and the way through', () => {
     await session($, on)
     const reason = await refusal($, 'bash run.sh')
     expect(reason).toContain('this call runs run.sh, which runs vendor/bin/pest with no test file, filter or case, which is the whole suite.')
-    expect(reason).toContain('Dispatch Holmes with a brief whose Goal begins "Final suite run:".')
+    expect(reason).toContain(
+      'The orchestrator never runs the full suite. Before any Holmes final run, ask Mike whether he runs the suite himself or Holmes runs it, in a dispatch whose brief Goal begins "Final suite run:".',
+    )
     expect(reason).toContain('name one test file, a filter or one case')
+    expect(reason).not.toContain('hand back')
+  })
+
+  test('it tells a sub-agent to stop and hand back, so the orchestrator asks Mike', async ($, on) => {
+    await attended($, on)
+    const reason = await refusal($, 'bash run.sh', AGENT)
+    expect(reason).toContain('this call runs run.sh, which runs vendor/bin/pest with no test file, filter or case, which is the whole suite.')
+    expect(reason).toContain(
+      'A sub-agent never runs the full suite, because only Mike decides who runs it. Stop, and hand back to your orchestrator. The orchestrator asks Mike whether he runs the suite himself or Holmes runs it, in a dispatch whose brief Goal begins "Final suite run:".',
+    )
+    expect(reason).toContain('name one test file, a filter or one case')
+    expect(reason).not.toContain('Before any Holmes final run')
   })
 })

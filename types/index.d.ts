@@ -338,6 +338,7 @@ declare module 'claude-code' {
       // origin, or the `<scheduled-task ` wrapper. The commit rule skips it.
       turnScheduled: boolean
       turnForwards: boolean
+      suiteRunners: readonly string[]
       statusLine: string | null
       // When this session first started, in ms. A reload keeps it.
       startedAt: number

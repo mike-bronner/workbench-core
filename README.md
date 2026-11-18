@@ -491,7 +491,7 @@ Tests: `tests/project-scope.test.ts` (each work type refused outside the project
 
 ### Full-suite gate
 
-**The main agent never runs a project's full test suite.** The workbench-dev-team orchestrate skill says the full suite runs once, last, in a Holmes dispatch whose brief has a Goal that begins "Final suite run:". That rule was prose only, and an orchestrator session broke it three times, the last time through a script that hid the runner. This gate enforces it (`hooks/mods/full-suite.ts`, judged in the `tool.call` hook of `hooks/register.ts` on a main-loop `Bash` call, after the commit guard).
+**Neither the main agent nor a sub-agent runs a project's full test suite on its own.** The workbench-dev-team orchestrate skill says the full suite runs once, last, in a Holmes dispatch whose brief has a Goal that begins "Final suite run:". That rule was prose only, and an orchestrator session broke it three times, the last time through a script that hid the runner. A Watson broke the matching prose rule for sub-agents, and ran all 4,668 plugin tests. Mike's rule since 2026-11-18: before a full run, the orchestrator asks him whether he runs the suite himself or Holmes runs it. This gate enforces both (`hooks/mods/full-suite.ts`, judged in the `tool.call` hook of `hooks/register.ts` on a `Bash` call, after the commit guard).
 
 **What counts as the full suite.** A test runner with no test file, filter or one case:
 
@@ -509,9 +509,13 @@ A file is a test file by its name: `*Test.php`, `*.test.ts`, `*.spec.js`, `test_
 
 **One test file stays open.** A script named as a test file is one test file. The gate still reads it and refuses a runner or a test loop in it, but a helper in it that the gate cannot read does not refuse the run.
 
-**What it leaves alone.** Every call from a sub-agent and from a top-level `--agent` run, so Watson and Holmes run tests as before. `WORKBENCH_ORCHESTRATOR=0` and `/orchestrator off` stand it down, as they do the agent dispatch gate. A lane the gate cannot read counts as the main agent's.
+**Who it judges.** The main agent, and every sub-agent of a session a person sits at: Watson, a general-purpose agent, Explore, and a Holmes review alike. A sub-agent cannot ask Mike, so its only correct move is to stop and hand back.
 
-**The refusal names the way through.** It names the run it refused and why, and tells the orchestrator to dispatch Holmes with a brief whose Goal begins "Final suite run:", or to name one test file, a filter or one case.
+**The Holmes final run passes.** A Holmes dispatch (`workbench-dev-team:holmes`, `holmes-local` or `holmes-index`) whose brief's first `Goal:` line begins "Final suite run:" runs the suite, and so does every agent it dispatches, such as its lens helpers, at any depth. The `agent.spawn` hook records each such agent's id as it starts. Only a dispatch from the main loop counts, because only the orchestrator asks Mike first: a Holmes that a Watson dispatches is refused, whatever its Goal says. An agent whose spawn the hook never saw is refused.
+
+**What it leaves alone.** A top-level `--agent` run, and every sub-agent of a session no one sits at: the Index pipeline, a `-p` run and an `--agent` run. CI is their final run. A `-p` run's main loop is judged as the main agent's, as before. `WORKBENCH_ORCHESTRATOR=0` and `/orchestrator off` stand it down, as they do the agent dispatch gate. A lane the gate cannot read counts as the main agent's.
+
+**The refusal names the way through.** It names the run it refused and why, and that one test file, a filter or one case still runs. The main agent's tells the orchestrator to ask Mike, before any Holmes final run, whether he runs the suite himself or Holmes runs it. A sub-agent's tells it to stop and hand back, so that the orchestrator asks Mike the same question.
 
 **It fails closed.** A script it cannot read refuses the call as above. Any other read that fails, such as the working directory or the orchestrator mode, refuses it with the guards' failure text.
 
@@ -524,7 +528,7 @@ A file is a test file by its name: `*Test.php`, `*.test.ts`, `*.spec.js`, `test_
 - `make test FILE=x` is refused, because the gate does not know which make variables narrow a run;
 - `sh -c "$(cat x.sh)"` takes its script from a substitution this gate does not follow. On the line itself the shared rule for a command the reader cannot name refuses it, but inside a script the gate reads it runs.
 
-Tests: `tests/full-suite.test.ts` (each runner and loop refused, each script shape refused, each unreadable script refused, the skills' plugin-root lines read and allowed, a missing or suite-running plugin-root script refused, a script found in another installed plugin from a fixture registry, each narrow run and ordinary command allowed, a sub-agent and a top-level run never refused, a lane it cannot read counted as the main agent's, `WORKBENCH_ORCHESTRATOR=0`, `/orchestrator off` and back on, and the deny text), and `tests/prompt-rules.test.ts` for its row in the gates table.
+Tests: `tests/full-suite.test.ts` (each runner and loop refused, each script shape refused, each unreadable script refused, the skills' plugin-root lines read and allowed, a missing or suite-running plugin-root script refused, a script found in another installed plugin from a fixture registry, each narrow run and ordinary command allowed, a top-level run and the sub-agents of an unattended session never refused, a lane it cannot read counted as the main agent's, each non-Holmes sub-agent and a Holmes review refused, a Holmes final run and its helpers allowed, a final run that a sub-agent dispatched refused, a narrow run open to every sub-agent, `WORKBENCH_ORCHESTRATOR=0`, `/orchestrator off` and back on, and both deny texts), and `tests/prompt-rules.test.ts` for its row in the gates table.
 
 ### Task intake
 
@@ -534,7 +538,7 @@ Tests: `tests/full-suite.test.ts` (each runner and loop refused, each script sha
 
 **The skill decides when intake applies, and no hook does.** Trivial asks and pure questions skip it. Sub-agents take their brief as the intake, and the Index pipeline and scheduled ticks never interview. The [agent dispatch gate](#agent-dispatch-gate) carries the criteria across a handoff in its `Acceptance:` slot.
 
-**No criterion demands a full test-suite run.** A full serial run takes many minutes, and a criterion such as "the full suite passes" travels into a brief and puts that run into the developer's work. The full suite runs once, at the end. For local, uncommitted work, Holmes runs it as his last step. For an Index-mode pull request, CI on the pull request is that one run, and Holmes adds no run of his own. A criterion about tests names the change's own tests, or the existing tests that cover the changed files. The rule lives in the skill that writes the criteria, because a feedback note that told the orchestrator not to add full-suite runs to briefs did not hold.
+**No criterion demands a full test-suite run.** A full serial run takes many minutes, and a criterion such as "the full suite passes" travels into a brief and puts that run into the developer's work. The full suite runs once, at the end. For local, uncommitted work, Mike picks who runs it: he runs it himself, or Holmes runs it as his last step. For an Index-mode pull request, CI on the pull request is that one run, and Holmes adds no run of his own. A criterion about tests names the change's own tests, or the existing tests that cover the changed files. The rule lives in the skill that writes the criteria, because a feedback note that told the orchestrator not to add full-suite runs to briefs did not hold.
 
 **The intake nudge is a reminder, and it never denies.** The [hooks module](#the-hooks-module) carries it (`hooks/mods/intake.ts`). On the first `Edit` of a task in the main loop, it looks for a Markdown heading naming "Intake" in the assistant's text. If there is none, one line rides the Edit's result, pointing at the skill, and the edit goes ahead untouched. A deny here would be a judgement-call deny, which is what f18a2f9 removed because it breeds workarounds. It replaced `hooks/intake-nudge.sh`, which read the transcript file and kept a state file per session.
 
@@ -1232,7 +1236,7 @@ The [project scope guard](#project-scope-guard) runs in the same hook, on a main
 
 The [vault git guard](#vault-git-guard) runs in the same hook, after the database guard, with its logic in `hooks/mods/vault-git.ts`. It was a bash hook until batch C2, and that hook is now retired the same way.
 
-The [full-suite gate](#full-suite-gate) runs in the same hook, on a main-loop Bash call after the commit guard, with its logic in `hooks/mods/full-suite.ts`. It is new, and replaced no bash hook.
+The [full-suite gate](#full-suite-gate) runs in the same hook, on a Bash call after the commit guard, with its logic in `hooks/mods/full-suite.ts`. It is new, and replaced no bash hook.
 
 The [false-bare guard](#false-bare-guard) runs in the same hook, on Bash after the provisioning guard, with its logic in `hooks/mods/false-bare.ts`. Its repair half also runs at `session.start`. It is new, and replaced no bash hook.
 

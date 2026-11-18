@@ -93,8 +93,9 @@ criterion names a result, never a method.
 A criterion never demands a run of the full test suite, such as "the full suite
 passes" or "all tests are green". A brief copies the criteria, so such a
 criterion puts a slow full run into the developer's work. The full suite runs
-once, at the end, in one of two places. For local, uncommitted work, Holmes runs
-it as his last step, after every other review finding is fixed. For an
+once, at the end, in one of two places. For local, uncommitted work, it runs
+after every other review finding is fixed, and Mike picks who runs it: he runs
+it himself, or Holmes runs it as his last step. For an
 Index-mode pull request, CI on the pull request is that one run, and Holmes
 adds no run of his own. A criterion about tests names the tests the change
 touches instead. For example, the change's own tests pass, or the existing tests

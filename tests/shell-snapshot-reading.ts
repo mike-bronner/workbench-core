@@ -1,6 +1,18 @@
 import type { commandsOf, decodedOf, expandingOf, parseShell } from '../hooks/mods/shell.ts'
 import { CAUGHT, LET_THROUGH, OVER_COUNTED } from './commit-corpus.ts'
-import { COMMIT_MAIN_PASSES, COMMIT_PASSES, COMMIT_REFUSALS, GREP_READS, GREP_WRITES } from './commit-guard-cases.ts'
+import {
+  COMMIT_MAIN_PASSES,
+  COMMIT_PASSES,
+  COMMIT_REFUSALS,
+  FED_GH,
+  FED_PRINTERS,
+  GREP_READS,
+  GREP_WRITES,
+  RELEASE_SEARCHES,
+  REPORTED_SEARCH,
+  SEARCH_BESIDE_RUNNER,
+  SEARCH_THEN_ACTION,
+} from './commit-guard-cases.ts'
 import { COMMIT_SUITE, HOSTILE } from './commit-guard-corpus.ts'
 import { CORE_REFUSES, DEV_TEAM_VERDICTS, INTENDED_DIFFERENCES } from './commit-guard-parity.ts'
 import { DENIED } from './guard-corpus/guard-cases.ts'
@@ -96,6 +108,12 @@ export const COMMIT_CORPORA: readonly string[] = [
 export const GUARD_CORPORA: readonly string[] = [
   ...COMMIT_PASSES,
   ...GREP_READS,
+  ...RELEASE_SEARCHES,
+  ...FED_GH,
+  ...FED_PRINTERS,
+  ...SEARCH_BESIDE_RUNNER,
+  REPORTED_SEARCH,
+  ...SEARCH_THEN_ACTION.map(([line]) => line),
   ...GREP_WRITES,
   ...COMMIT_MAIN_PASSES,
   ...COMMIT_REFUSALS.map(([line]) => line),

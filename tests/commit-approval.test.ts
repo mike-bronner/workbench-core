@@ -32,6 +32,7 @@ import { ASKS as DECLINED, HOME, PERSON, bench, exactly, start } from './bench'
 import { hiddenCommandRefusal } from '../hooks/mods/guards'
 import { parseShell } from '../hooks/mods/shell'
 import { CAUGHT, LET_THROUGH } from './commit-corpus'
+import { FED_GH } from './commit-guard-cases'
 
 const prompt = (text: string, origin: PromptOrigin = PERSON) => ({ text, wait: false, origin })
 
@@ -578,6 +579,16 @@ describe('AC3: a commit approval approves no push and no merge, and each gets it
     })
   }
 
+  for (const line of FED_GH) {
+    test(`a gh behind xargs counts as a merge, and is refused in Mike's session: ${JSON.stringify(line)}`, async ($, on) => {
+      const b = bench(on)
+      b.repos['/repo'] = { head: 'c1', pushed: 'c1' }
+      await session($)
+      expect(await bash($, b, line)).toBe(PLAIN_REFUSAL.deny)
+      expect(mergesOf(line)).toEqual({ local: [], landings: [], pr: 1, targets: [{ refs: [] }] })
+    })
+  }
+
   for (const line of [
     "gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'",
     "gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {pullRequestId: \"x\"}) { clientMutationId } }'",
@@ -673,6 +684,16 @@ describe('AC3: a commit approval approves no push and no merge, and each gets it
     expect(await bash($, b, 'gh api repos/o/r/merges -f base=main -f head=fix/x')).toBeUndefined()
     await pick($, b, 'Merge it', [named])
     expect(await bash($, b, 'gh api repos/o/r/merges -f base=main -f head=feat')).toBe(MERGE_TARGET_REFUSAL)
+  })
+
+  test('a git merge behind xargs takes refs from its input, so a pick that names its branch does not match it', async ($, on) => {
+    const line = 'echo main | xargs git merge feature'
+    const b = bench(on)
+    await session($)
+    expect(mergesOf(line).targets).toEqual([{ refs: [] }])
+    await pick($, b, 'Merge it', [question('Merge branch feature into main?', ['Merge it', 'Open a PR'])])
+    expect(await bash($, b, line)).toBe(MERGE_TARGET_REFUSAL)
+    expect(await bash($, b, 'git merge feature')).toBeUndefined()
   })
 
   test('two merges on one line are refused under one merge pick', async ($, on) => {
@@ -1123,6 +1144,9 @@ describe('a local merge or pull that lands a ledger unit branch is gated as a co
       'git -c alias.m=merge m unit/a',
       'git -c alias.m=merge m',
       'git pull . "$B"',
+      'echo main | xargs git merge feature',
+      'echo unit/a | xargs git merge',
+      'echo unit/a | xargs git pull origin',
     ]) {
       expect([line, mergesOf(line).landings.map(({ refs }) => refs)]).toEqual([line, [null]])
     }
@@ -1145,6 +1169,8 @@ describe('a local merge or pull that lands a ledger unit branch is gated as a co
     'git pull unitdir HEAD',
     'git merge a1b2c3',
     'git merge fetch_head',
+    'echo unit/a | xargs git merge feat/y',
+    'echo unit/a | xargs git pull origin main',
   ]) {
     test(`with no approval, a unit landing asks Mike as a commit and names its line: ${JSON.stringify(line)}`, async ($, on) => {
       const b = withLedger(on)

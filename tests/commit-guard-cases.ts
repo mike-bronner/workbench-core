@@ -52,6 +52,69 @@ export const GREP_READS: readonly string[] = [
   'rg -n "git push" tests | awk \'{print $1}\' | sort | uniq -c',
   'rg -n "git push" tests | sort -k1,1 -t: | uniq -c | sed -n 1,5p',
   'grep -c "git push" t.ts | sort -rn | head -5 | tr -d x | sed -n 1p',
+  "cd /repo; grep -n 'gh pr merge' a.md; sed -n 1,12p b.md",
+  "cd /repo; grep -n 'git push\\|git commit' a.md; sed -n 1,12p b.md",
+  "cd /repo; rg -n 'gh release create\\|gh pr merge' docs; sed -n 1p b.md",
+  "cd /repo; rg -n 'git commit' . | awk '{print $1}'",
+  "git status; grep -n -- 'git push' f | sed -n 1,5p",
+  "echo ---; grep -n 'git commit' a.md; sed -n 1p b.md",
+  "cd /repo; git grep -n 'git commit\\|gh pr merge' -- hooks; sed -n 1,5p x",
+]
+
+export const RELEASE_SEARCHES: readonly string[] = [
+  "ls; grep -rn 'gh release create' .; awk '{print $2}' f",
+  "cd /repo; rg -n 'gh release create v1' docs; sed -n 1p b.md",
+]
+
+export const FED_PRINTERS: readonly string[] = [
+  "grep -n x f; echo 'gh pr merge 5' | xargs sed -n 1p",
+  "grep -n x f; printf 'gh pr merge 5' | xargs awk '{print $1}'",
+  "grep -n x f; echo 'gh pr merge 5' | xargs -I{} sed -n 1p {}",
+  "grep -n x f; echo 'gh pr merge 5' | xargs -I{} awk -F{} '{print $1}'",
+  "echo 'gh pr merge 5' | xargs grep -n x f",
+  "echo 'gh pr merge 5' | xargs -I{} rg -n {} f",
+  "grep -n x f; X='gh pr merge 5' sed -n 1p f",
+  "grep -n x f; X='gh pr merge 5' awk '{print $1}'",
+  "grep -n x f; sed -n 1p <<EOF\ngh pr merge 5\nEOF",
+  "grep -n x f; awk '{print $1}' <<EOF\ngh pr merge 5\nEOF",
+  "grep -n 'gh pr merge 5' f; timeout 5 sed -n 1p g",
+]
+
+export const FED_GH: readonly string[] = [
+  "echo 'pr merge 5' | xargs gh",
+  "echo 'pr merge 5 --squash' | xargs gh",
+  'echo merge 5 | xargs gh pr',
+  'echo repos/o/r/merges | xargs gh api -f base=main -f head=feat',
+  'echo repos/o/r/pulls/5/merge | xargs gh api -X PUT',
+  'echo --repo=o/x | xargs gh pr merge 5',
+  'echo 5 | xargs gh pr view',
+]
+
+export const SEARCH_BESIDE_RUNNER: readonly string[] = [
+  "grep -n 'gh pr merge 5' f; sed -n -i 1p g",
+  "grep -n 'gh pr merge 5' f; sed -ni 1p g",
+  "grep -n 'gh pr merge 5' f; sed -n -f s.sed g",
+  "grep -n 'gh pr merge 5' f; sed -n '1w out' g",
+  "grep -n 'gh pr merge 5' f; sed -n '1W out' g",
+  "grep -n 'gh pr merge 5' f; sed -n '1e' g",
+  "grep -n 'gh pr merge 5' f; sed -n 's/x/y/e' g",
+  "grep -n 'gh pr merge 5' f; awk '{system($0)}' g",
+  "grep -n 'gh pr merge 5' f; awk '{print > \"o\"}' g",
+  "grep -n 'gh pr merge 5' f; awk '{print | \"sh\"}' g",
+  "grep -n 'gh pr merge 5' f; awk '{\"date\" | getline d}' g",
+  "grep -n 'gh pr merge 5' f; awk -f prog.awk g",
+]
+
+export const REPORTED_SEARCH =
+  "cd /Users/mike/Developer/workbench-dev-team; grep -n 'close_as_duplicate\\|gh issue close\\|gh pr merge' agents/lestrade-item.md; grep -n -- '--check' bin/test-compose-agents.sh | head -5; sed -n 1,12p agents/lestrade.md"
+
+export const SEARCH_THEN_ACTION: readonly (readonly [string, 'merge' | 'push'])[] = [
+  [`${REPORTED_SEARCH}; gh pr merge 5`, 'merge'],
+  ["cd /repo; grep -n 'gh pr merge' a.md; sed -n 1p b.md && gh pr merge 5 --squash", 'merge'],
+  ["git grep -n 'gh pr merge\\|git push' -- hooks; gh pr merge 5", 'merge'],
+  [`${REPORTED_SEARCH}; git push`, 'push'],
+  ["cd /repo; rg -n 'git push\\|git commit' . | sed -n 1p; git push origin main", 'push'],
+  ["grep -n 'gh release create' a.md && git push", 'push'],
 ]
 
 export const GREP_WRITES: readonly string[] = [

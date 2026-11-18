@@ -938,7 +938,9 @@ const fieldOf = (words: readonly string[], name: string): string | undefined =>
   [...words].reverse().map(word => new RegExp(`^(?:-[fF]|--(?:raw-)?field=)?${name}=(.+)$`).exec(word)?.[1]).find(value => value !== undefined)
 
 const prTargetOf = (st: ShellStatement): MergeTarget | undefined => {
-  if (st.name !== 'gh' || st.subcommandAt < 0) return undefined
+  if (st.name !== 'gh') return undefined
+  if (st.wrappers.includes('xargs')) return { refs: [] }
+  if (st.subcommandAt < 0) return undefined
   const sub = (st.args[st.subcommandAt] ?? '').toLowerCase()
   const rest = restOf(st)
   if (sub === 'pr') {
@@ -961,6 +963,7 @@ const prTargetOf = (st: ShellStatement): MergeTarget | undefined => {
 }
 
 const localTargetOf = (st: ShellStatement, sub: string | undefined, isRemoteChanged: boolean): MergeTarget => {
+  if (st.wrappers.includes('xargs')) return { refs: [] }
   const found = positionalsOf(restOf(st), GIT_MERGE_VALUES)
   if (sub !== 'pull') return { refs: sub === SHELL_ALIAS ? [] : found }
   const [remote] = found
@@ -1010,7 +1013,7 @@ const landingOf = (st: ShellStatement, sub: string | undefined, dir: string | nu
   const kind = sub === 'pull' ? 'pull' : 'merge'
   const { words, options } = mergedWordsOf(restOf(st), kind)
   if (kind === 'merge' && options.some(arg => isLongFor(arg, '--abort') || isLongFor(arg, '--quit'))) return undefined
-  if (isAliased || options.some(arg => isLongFor(arg, '--continue'))) return { dir, refs: null }
+  if (isAliased || st.wrappers.includes('xargs') || options.some(arg => isLongFor(arg, '--continue'))) return { dir, refs: null }
   const mode = isCommitless(options, kind) ? { commitless: true as const } : {}
   const refs = sub === 'pull' ? words.slice(1).map(refspec => refspec.replace(/^\+/, '').replace(/:.*$/, '')) : words
   if (refs.length === 0) return { dir, refs: [], upstream: true, ...(words.length > 0 ? { source: words[0] } : {}), ...mode }

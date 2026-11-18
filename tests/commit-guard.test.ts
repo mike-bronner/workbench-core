@@ -12,7 +12,7 @@ import { HOME, PERSON, bench, start } from './bench'
 import { COMMIT_MAIN_PASSES, COMMIT_PASSES, COMMIT_REFUSALS, GREP_READS, GREP_WRITES } from './commit-guard-cases'
 import type { CommitLane } from './commit-guard-cases'
 import type { Kind } from './commit-guard-parity'
-import { DEV_TEAM_VERDICTS, INTENDED_DIFFERENCES, SOURCE } from './commit-guard-parity'
+import { CORE_REFUSES, DEV_TEAM_VERDICTS, INTENDED_DIFFERENCES, SOURCE } from './commit-guard-parity'
 
 const CALLERS: Readonly<Record<CommitLane, Caller>> = {
   main: { lane: 'main', isUnattended: false },
@@ -82,7 +82,14 @@ describe('the commit guard gives workbench-dev-team 0.55.0\'s verdict on its cor
   for (const [line, ...kinds] of DEV_TEAM_VERDICTS) {
     test(JSON.stringify(line), () => {
       expect(INTENDED_DIFFERENCES.some(([named]) => named === line)).toBe(false)
-      expect(FOUR.map(caller => kindOf(line, caller))).toEqual(kinds)
+      const core = CORE_REFUSES.find(([named]) => named === line)
+      expect(FOUR.map(caller => kindOf(line, caller))).toEqual(core === undefined ? kinds : core.slice(1))
+    })
+  }
+  for (const [line, ...kinds] of CORE_REFUSES) {
+    test(`a word with an unquoted leading =, which zsh reads as a command's path, that dev-team passes and core refuses: ${JSON.stringify(line)}`, () => {
+      expect(DEV_TEAM_VERDICTS.find(([named]) => named === line)?.slice(1)).toEqual(['pass', 'pass', 'pass', 'pass'])
+      expect(kinds.some(kind => kind !== 'pass')).toBe(true)
     })
   }
   for (const [line, ...kinds] of INTENDED_DIFFERENCES) {

@@ -467,6 +467,13 @@ describe('the scope judge, read directly', () => {
     expect(judge('echo "unclosed', {})).toEqual({ value: { kind: 'none' } })
   })
 
+  test('a word that starts with an unquoted =, which zsh reads as a command\'s path, is refused as a line the reader cannot read whole', () => {
+    expect(parseShell('rm -f =git').unknowns).toEqual(['expansion'])
+    expect(judge('rm -f =git', {})).toMatchObject({ value: { kind: 'deny', reason: expect.stringContaining('could not read all of this command') } })
+    expect(parseShell("rm -f '=git'").unknowns).toEqual([])
+    expect(judge("rm -f '=git'", {})).toEqual({ need: 'dir\t/repo' })
+  })
+
   test('a command word that is a glob or an expansion is refused on a line that names a destructive verb', () => {
     // `*` runs the first file in the folder, which may be rm.
     expect(judge('* rmdir clean -n', {})).toMatchObject({ value: { kind: 'deny', reason: expect.stringContaining('the command name "*"') } })

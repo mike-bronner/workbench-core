@@ -350,7 +350,7 @@ const CODE_EXPANSION = /\$\{#?\(|\$\{[#!]?(?:(?:\w+|[@*#?$-])(?:\[[^\]]*\])?|\[[
 function scanRaw(text: string, reading: Reading): void {
   for (const form of [text, text.replaceAll('\\\n', '')]) {
     if (CODE_EXPANSION.test(form)) reading.unplain?.add('code-expansion')
-    if (/\besac\b/.test(form)) reading.unplain?.add('case')
+    if (/\b(?:case|esac)\b/.test(form)) reading.unplain?.add('case')
   }
 }
 
@@ -810,7 +810,9 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
   // or escaped `case` is an ordinary command name, and opens no case.
   let caseAt = -1
   let braces = 0
+  let isEquals = false
   const endWord = () => {
+    if (isEquals && word !== '=' && !(isTest && (word === '==' || word === '=~'))) reading.unknowns.add('expansion')
     if (isPattern && hasWord && isBare && word === 'esac' && words.length === 0) {
       isPattern = false
       cases--
@@ -848,6 +850,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     isBare = true
     isExpanding = false
     isDecoded = false
+    isEquals = false
   }
   const endCommand = () => {
     endWord()
@@ -1179,6 +1182,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       endCommand()
       isTest = keep
     } else {
+      if (exact && c === '=' && word === '') isEquals = true
       word += exact && c === '$' ? UNQUOTED + c : c
       hasWord = true
     }

@@ -467,3 +467,7 @@ export const INTENDED_DIFFERENCES: readonly (readonly [string, Kind, Kind, Kind,
   ["rg -n 'git push' f | sed -n '/commit/p'","pass","subagent","pass","subagent"],
   ["grep -rn 'git push' . | sed -n '1,/x/p'","pass","subagent","pass","subagent"],
 ]
+
+export const CORE_REFUSES: readonly (readonly [string, Kind, Kind, Kind, Kind])[] = [
+  ["=rm README.md","pass","built","built","built"],
+]

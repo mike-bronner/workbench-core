@@ -21,12 +21,12 @@ function hashOf(text: string): string {
   return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36)
 }
 
-function readingOf(line: string): string {
+function readingOf(line: string, isEqualsTakenOut = false): string {
   try {
     const parse = parseShell(line)
     return JSON.stringify({
       statements: parse.statements,
-      unknowns: parse.unknowns,
+      unknowns: isEqualsTakenOut ? parse.unknowns.filter(unknown => unknown !== 'expansion') : parse.unknowns,
       expanding: parse.statements.map(expandingOf),
       decoded: parse.statements.map(decodedOf),
       exact: commandsOf(line),
@@ -70,8 +70,22 @@ function randomLines(seed: number, count: number): string[] {
   return lines
 }
 
-const changed = (pairs: readonly (readonly [string, string])[]): string[] =>
-  pairs.filter(([line, hash]) => hashOf(readingOf(line)) !== hash).map(([line]) => line)
+const changed = (pairs: readonly (readonly [string, string])[], isEqualsTakenOut = false): string[] =>
+  pairs.filter(([line, hash]) => hashOf(readingOf(line, isEqualsTakenOut)) !== hash).map(([line]) => line)
+
+const EQUALS_LINES: readonly string[] = ['=git push', '=rm README.md', '=~']
+const EQUALS_RANDOM_LINES: readonly string[] = [
+  '}} =@P $$ $ esac {$${$',
+  '/ ="esac"<<<',
+  '="esac" $HOME\n(( > <<<;:-',
+  '/\n=# :- |&\n]] ||',
+  ':-[[ ]] =}}',
+  '{ =eval',
+]
+const isEqualsLine = ([line]: readonly [string, string]): boolean => EQUALS_LINES.includes(line) || EQUALS_RANDOM_LINES.includes(line)
+
+const randomPairs = (): (readonly [string, string])[] =>
+  randomLines(17, RANDOM_SNAPSHOT.length).map((line, k) => [line, RANDOM_SNAPSHOT[k] as string])
 
 describe('AC3: every line reads as the reader of 23ff5c3 read it', () => {
   test('the snapshot holds every line of the corpora', () => {
@@ -86,15 +100,24 @@ describe('AC3: every line reads as the reader of 23ff5c3 read it', () => {
     expect(corpora.filter(line => !held.has(line))).toEqual([])
   })
 
-  test('statements, unknowns, expanding and decoded words, commandsOf and the compat reading are unchanged on every snapshot line', () => {
+  test('statements, unknowns, expanding and decoded words, commandsOf and the compat reading are unchanged on every snapshot line but the named = lines', () => {
     expect(SNAPSHOT.length).toBeGreaterThan(1900)
-    expect(changed(SNAPSHOT)).toEqual([])
+    expect(changed(SNAPSHOT.filter(pair => !isEqualsLine(pair)))).toEqual([])
   })
 
-  test('they are unchanged on 4,000 seeded random lines', () => {
-    const lines = randomLines(17, RANDOM_SNAPSHOT.length)
+  test('they are unchanged on 4,000 seeded random lines but the named = lines', () => {
     expect(RANDOM_SNAPSHOT).toHaveLength(4000)
-    expect(changed(lines.map((line, k) => [line, RANDOM_SNAPSHOT[k] as string]))).toEqual([])
+    expect(changed(randomPairs().filter(pair => !isEqualsLine(pair)))).toEqual([])
+  })
+
+  test('each named = line now reads the expansion unknown, and reads as 23ff5c3 read it with that unknown taken out', () => {
+    const snapshot = SNAPSHOT.filter(isEqualsLine)
+    const random = randomPairs().filter(isEqualsLine)
+    expect(snapshot.map(([line]) => line)).toEqual([...EQUALS_LINES])
+    expect(random.map(([line]) => line)).toEqual([...EQUALS_RANDOM_LINES])
+    for (const [line] of [...snapshot, ...random]) expect([line, parseShell(line).unknowns.includes('expansion')]).toEqual([line, true])
+    expect(changed([...snapshot, ...random])).toEqual([...EQUALS_LINES, ...EQUALS_RANDOM_LINES])
+    expect(changed([...snapshot, ...random], true)).toEqual([])
   })
 
   test('control: a snapshot hash tells two readings apart', () => {

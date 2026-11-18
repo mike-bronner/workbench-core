@@ -1909,3 +1909,29 @@ describe('a ${…} that runs code held in its variable is the expansion unknown'
     }
   })
 })
+
+describe('a word that starts with an unquoted = is the expansion unknown, because zsh reads =tool as the path of the command tool', () => {
+  test('a leading = word anywhere in the line, a redirect target and a substitution included', () => {
+    for (const line of ['rm -f =git', 'cat =ls', 'echo x =y', '=git push', 'echo ""=ls', "echo ''=ls", 'echo =""ls', 'echo ="ls"', 'echo =\\ls', 'echo \\\n=ls', 'echo x >=ls', 'echo $(rm -f =git)', '[[ /bin/ls == =ls ]]', '[ a == b ]', 'echo ==ls', 'echo =~']) {
+      expect([line, parseShell(line).unknowns]).toEqual([line, ['expansion']])
+    }
+  })
+
+  test('a quoted, escaped or later =, an assignment, a lone = and the = operators of a [[ ]] test read as before', () => {
+    const words: readonly (readonly [string, string[]])[] = [
+      ["echo '=x'", ['echo', '=x']],
+      ['echo "=x"', ['echo', '=x']],
+      ['echo \\=x', ['echo', '=x']],
+      ['echo a=b', ['echo', 'a=b']],
+      ['cmd --opt=x', ['cmd', '--opt=x']],
+      ['X=1 cmd', ['X=1', 'cmd']],
+      ['[ a = b ]', ['[', 'a', '=', 'b', ']']],
+      ['[[ a = b ]]', ['[[', 'a', '=', 'b', ']]']],
+      ['[[ a == b ]]', ['[[', 'a', '==', 'b', ']]']],
+      ['[[ a =~ b ]]', ['[[', 'a', '=~', 'b', ']]']],
+    ]
+    for (const [line, command] of words) {
+      expect([line, parseShell(line).unknowns, commandsOf(line)]).toEqual([line, [], [command]])
+    }
+  })
+})

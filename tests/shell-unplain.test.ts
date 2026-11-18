@@ -99,15 +99,23 @@ describe('AC1: a raw text that can run code from a value is the code-expansion r
   })
 })
 
-describe('AC1: the word esac anywhere is the case reason', () => {
+describe('AC1: the word esac or case anywhere is the case reason', () => {
   test('a case statement, and esac quoted, escaped, joined by a backslash-newline or in a body', () => {
     for (const line of ['case x in a) zap;; esac', 'echo esac', "echo 'esac'", 'echo "a esac b"', 'echo es\\\nac', 'cat <<E\nesac\nE', 'echo $(case x in x) :;; esac)']) {
       expect([line, unplain(line)]).toEqual([line, ['case']])
     }
   })
 
-  test('esac inside a longer word is not the word', () => {
-    for (const line of ['echo esacs', 'echo xesac', 'echo esac_x']) expect([line, unplain(line)]).toEqual([line, []])
+  test('zsh\'s brace form of case, which has no esac, and the word case quoted, escaped, joined by a backslash-newline or in a body', () => {
+    for (const line of ['case a { a) zap;; }', 'case a in a) zap;; }', 'echo case', "echo 'case'", 'echo "a case b"', 'echo \\case', 'echo ca\\\nse', 'cat <<E\ncase\nE', 'echo $(case a { a) :;; })']) {
+      expect([line, unplain(line)]).toEqual([line, ['case']])
+    }
+  })
+
+  test('esac or case inside a longer word is not the word, and a line with neither has no case reason', () => {
+    for (const line of ['echo esacs', 'echo xesac', 'echo esac_x', 'echo cases', 'echo showcase', 'echo case_x', 'echo a b', 'ls -la', 'echo "{ a) b;; }"']) {
+      expect([line, unplain(line)]).toEqual([line, []])
+    }
   })
 })
 

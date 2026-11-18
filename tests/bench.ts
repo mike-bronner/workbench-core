@@ -79,7 +79,7 @@ export type Bench = {
   root: string
   // A file system and a git the test models (tests/world.ts), asked before
   // the bench's own: undefined passes the call on to the bench.
-  run?: (argv: readonly string[]) => { exitCode: number; stdout: string } | undefined
+  run?: (argv: readonly string[]) => { exitCode: number; stdout: string; stderr?: string } | undefined
   stat?: (path: string) => { kind: 'file' | 'dir' | 'other'; isLink: boolean; realPath?: string } | null | undefined
   // What the engine's own permission decision answers to tool.check, beneath
   // the module (default ask, as for a Bash call no rule allows).
@@ -101,6 +101,8 @@ export type BenchOptions = {
   // Makes $.store.set reject for these keys, as a store that cannot be written.
   storeSetFails?: readonly string[]
 }
+
+const NOT_A_REPO = 'fatal: not a git repository (or any of the parent directories): .git\n'
 
 const ran = (stdout: string) => ({ exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
 
@@ -205,7 +207,7 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
   on('process.run', ($, e) => {
     b.runs.push(e.argv)
     const modeled = b.run?.(e.argv)
-    if (modeled !== undefined) return { value: { ...ran(modeled.stdout), exitCode: modeled.exitCode } }
+    if (modeled !== undefined) return { value: { ...ran(modeled.stdout), exitCode: modeled.exitCode, stderr: modeled.stderr ?? '' } }
     if (e.argv[0] === 'git' && e.argv[1] === '-C' && e.argv[3] === 'status') {
       const tree = b.trees[e.argv[2] ?? '']
       return { value: tree === null ? { ...ran(''), exitCode: 128 } : ran(tree ?? '') }
@@ -241,7 +243,7 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
       const blocks = Object.entries(b.repos).map(([dir, repo]) => [`worktree ${dir}`, `HEAD ${repo.head ?? '0'}`, branchRef(repo) === undefined ? 'detached' : `branch ${branchRef(repo)}`].join('\n'))
       return answer(blocks.join('\n\n'))
     }
-    if (e.argv[0] === 'git' && !(e.argv[1] === '-C' && e.argv[3] === 'rev-parse' && ['HEAD', '@{push}'].includes(e.argv.at(-1) ?? ''))) return { value: { ...ran(''), exitCode: 128 } }
+    if (e.argv[0] === 'git' && !(e.argv[1] === '-C' && e.argv[3] === 'rev-parse' && ['HEAD', '@{push}'].includes(e.argv.at(-1) ?? ''))) return { value: { ...ran(''), exitCode: 128, stderr: NOT_A_REPO } }
     if (e.argv[0] === 'rm') {
       b.files.delete(e.argv[e.argv.length - 1] ?? '')
       b.links.delete(e.argv[e.argv.length - 1] ?? '')

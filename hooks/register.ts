@@ -1856,16 +1856,19 @@ async function templatesAt($: EngineInterface, top: string): Promise<Template[] 
 
 async function prTemplateOf($: EngineInterface, parse: WorkbenchShellParse, home: string | undefined): Promise<string | undefined> {
   const reading = prCallsOf(parse)
-  if ('unread' in reading) return reading.unread
+  if ('refusal' in reading) return reading.refusal
+  if (reading.calls.length === 0) return undefined
   const cwd = await $.session.cwd()
+  const git = await $.process.run(['git', '-C', cwd, 'rev-parse', '--show-toplevel'], { env: { LC_ALL: 'C' }, timeoutMs: 10_000 }).catch(() => undefined)
+  const top = git?.exitCode === 0 ? git.stdout.trim() : ''
+  const isOutside = git !== undefined && git.exitCode !== 0 && /not a git repository/i.test(git.stderr)
   for (const call of reading.calls) {
-    const dir = call.dir === undefined ? cwd : call.dir === null ? undefined : resolvePath(call.dir, cwd, home)
-    if (dir === undefined) return UNPLACED_TEMPLATE
     const named = call.repo ?? ((await $.env.get('GH_REPO')) || undefined)
-    const git = await $.process.run(['git', '-C', dir, 'rev-parse', '--show-toplevel'], { timeoutMs: 10_000 }).catch(() => undefined)
-    const top = git?.exitCode === 0 ? git.stdout.trim() : ''
-    if (git?.exitCode === 128 && named === undefined) continue
-    if (top === '') return named === undefined ? UNPLACED_TEMPLATE : OTHER_REPO_TEMPLATE
+    if (isOutside) {
+      if (named === undefined) continue
+      return OTHER_REPO_TEMPLATE
+    }
+    if (top === '') return UNPLACED_TEMPLATE
     if (named !== undefined) {
       const slug = repoSlugOf(named)
       const remotes = await remotesOf($, top)
@@ -1875,13 +1878,9 @@ async function prTemplateOf($: EngineInterface, parse: WorkbenchShellParse, home
     const templates = await templatesAt($, top)
     if (templates === undefined) return UNPLACED_TEMPLATE
     if (templates.length === 0) continue
-    const texts: string[] = []
-    for (const part of call.parts) {
-      const text = await bodyText($, part, home)
-      if (text === undefined) return UNREAD_BODY
-      texts.push(text)
-    }
-    const refusal = templateRefusal(templates, texts.join('\n\n'))
+    const text = call.body === undefined ? '' : await bodyText($, call.body, home)
+    if (text === undefined) return UNREAD_BODY
+    const refusal = templateRefusal(templates, text)
     if (refusal !== undefined) return refusal
   }
   return undefined

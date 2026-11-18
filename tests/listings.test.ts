@@ -221,6 +221,64 @@ describe("the session's own change to a listed folder is no change", () => {
     expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toContain(`- ${BOX}\n  added: new.md\n`)
   })
 
+  test('an own Write to Foo.md beside a listed foo.md takes nothing in, and does not block', async ($, on) => {
+    const b = await session($, on)
+    b.files.set(`${BOX}/foo.md`, 'x')
+    await call($, { tool: 'Bash', command: `ls ${BOX}` })
+    expect((await call($, { tool: 'Write', file_path: `${BOX}/Foo.md`, content: 'y' })).deny).toBeUndefined()
+    expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
+  })
+
+  test('an own Write to Foo.md beside an outside foo.md the record lacks still blocks once', async ($, on) => {
+    const b = await session($, on)
+    await call($, { tool: 'Bash', command: `ls ${BOX}` })
+    b.files.set(`${BOX}/foo.md`, 'x')
+    expect((await call($, { tool: 'Write', file_path: `${BOX}/Foo.md`, content: 'y' })).deny).toBeUndefined()
+    const first = await call($, { tool: 'Bash', command: 'gh pr ready 4' })
+    expect(first.deny).toContain(`- ${BOX}\n  added: foo.md\n`)
+    expect(first.deny).not.toContain('Foo.md')
+    expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
+  })
+
+  test('a Write that returns an error takes nothing in, so a file made outside afterwards blocks once', async ($, on) => {
+    const b = await session($, on)
+    await call($, { tool: 'Bash', command: `ls ${BOX}` })
+    b.errorBeneath = tool => tool === 'Write'
+    const written = await call($, { tool: 'Write', file_path: `${BOX}/c.md`, content: 'x' })
+    expect(written.deny).toBeUndefined()
+    expect(written.isError).toBe(true)
+    b.errorBeneath = undefined
+    b.files.set(`${BOX}/c.md`, 'x')
+    const first = await call($, { tool: 'Bash', command: 'gh pr ready 4' })
+    expect(first.deny).toContain(`- ${BOX}\n  added: c.md\n`)
+    expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
+  })
+
+  test('a hook failure after the tool ran leaves the tool run once', async ($, on) => {
+    let isCorrupt = false
+    on('state.get', async (_$, e, next) => {
+      const held = await next(e)
+      if (!isCorrupt || e.plugin !== 'workbench-core' || e.key !== 'folderListings' || held.value === undefined) return held
+      const listings = held.value.value as Record<string, Record<string, object>>
+      return { value: { version: held.value.version, value: { ...listings, main: { ...listings.main, [BOX]: { at: 0 } } } as never } }
+    })
+    const b = await session($, on)
+    await call($, { tool: 'Bash', command: `ls ${BOX}` })
+    isCorrupt = true
+    let runs = 0
+    b.onBash = command => {
+      if (command !== 'touch own.md') return
+      runs += 1
+      b.files.set(`${BOX}/own.md`, 'x')
+    }
+    const result = await call($, { tool: 'Bash', command: 'touch own.md' })
+    expect(result.deny).toBeUndefined()
+    expect(runs).toBe(1)
+    expect(b.calls.filter(({ tool }) => tool === 'Bash').length).toBe(2)
+    isCorrupt = false
+    expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toContain(`- ${BOX}\n  added: own.md`)
+  })
+
   for (const tool of ['Write', 'Edit']) {
     test(`a refused ${tool} takes nothing in, so a file made outside afterwards blocks once`, async ($, on) => {
       const b = await session($, on)
@@ -294,6 +352,24 @@ describe('a full folder record compares up to the bound its listing set', () => 
     expect(first.deny).not.toContain('a1')
   })
 
+  test('an own Bash call that adds 50 names to a record of 999 cuts it at its bound, so an add past it does not block', async ($, on) => {
+    const b = await session($, on)
+    for (const name of FULL.slice(0, -1)) b.files.set(`/repo/full/${name}`, 'x')
+    await call($, { tool: 'Bash', command: 'ls /repo/full' })
+    b.onBash = command => {
+      if (command === 'make many') for (let i = 0; i < 50; i++) b.files.set(`/repo/full/p${String(i).padStart(4, '0')}`, 'x')
+    }
+    expect((await call($, { tool: 'Bash', command: 'make many' })).deny).toBeUndefined()
+    b.onBash = undefined
+    expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
+    b.files.set('/repo/full/zz-late', 'x')
+    expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
+    b.files.set('/repo/full/n0998a', 'x')
+    const first = await call($, { tool: 'Bash', command: 'gh pr ready 4' })
+    expect(first.deny).toContain('- /repo/full\n  added: n0998a\n')
+    expect(first.deny).not.toContain('zz-late')
+  })
+
   test('own adds that grow a record of 999 names to 1,000 keep its null bound, so an add past the last name blocks', async ($, on) => {
     const b = await session($, on)
     for (const name of FULL.slice(0, -1)) b.files.set(`/repo/full/${name}`, 'x')
@@ -309,6 +385,37 @@ describe('a full folder record compares up to the bound its listing set', () => 
 })
 
 describe('in the quiet lane, the note keeps the submit line\'s own change out', () => {
+  const owns: [string, Call][] = [
+    ['Edit', { tool: 'Edit', file_path: `${BOX}/own.md`, old_string: '', new_string: 'x' }],
+    ['Write', { tool: 'Write', file_path: `${BOX}/own.md`, content: 'x' }],
+    ['Bash', { tool: 'Bash', command: 'make own' }],
+  ]
+  for (const [tool, input] of owns) {
+    test(`an own ${tool} add carries no note`, async ($, on) => {
+      const b = await session($, on, false)
+      await call($, { tool: 'Bash', command: `ls ${BOX}` })
+      b.onBash = command => void (command === 'make own' && b.files.set(`${BOX}/own.md`, 'x'))
+      expect((await call($, input)).deny).toBeUndefined()
+      b.files.set(`${BOX}/own.md`, 'x')
+      b.onBash = undefined
+      const submit = await call($, { tool: 'Bash', command: 'gh pr ready 4' })
+      expect(submit.deny).toBeUndefined()
+      expect(folderNote(submit.context)).toBeUndefined()
+    })
+  }
+
+  test('an own add beside an outside add: the note names only the outside entry', async ($, on) => {
+    const b = await session($, on, false)
+    await call($, { tool: 'Bash', command: `ls ${BOX}` })
+    b.files.set(`${BOX}/outside.md`, 'x')
+    b.onBash = command => void (command === 'make own' && b.files.set(`${BOX}/own.md`, 'x'))
+    expect((await call($, { tool: 'Bash', command: 'make own' })).deny).toBeUndefined()
+    b.onBash = undefined
+    const note = folderNote((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).context)
+    expect(note).toContain(`- ${BOX}\n  added: outside.md\n`)
+    expect(note).not.toContain('own.md')
+  })
+
   test('a submit line that changes a listed folder leaves the next note naming only the outside entries', async ($, on) => {
     const b = await session($, on, false)
     await call($, { tool: 'Bash', command: `ls ${BOX}` })
@@ -541,6 +648,24 @@ describe('what a listing records', () => {
     expect(trimmed?.names).toEqual(full.slice(1, KEPT_NAMES))
     expect(trimmed?.bound).toBe(full[KEPT_NAMES - 1])
     expect(changeOf('/f', trimmed ?? { names: [] }, after)).toBeUndefined()
+  })
+
+  test('own changes that grow a record with no bound past 1,000 names cut it to 1,000, bound by its last kept name', () => {
+    const full = Array.from({ length: KEPT_NAMES }, (_, i) => `n${String(i).padStart(4, '0')}`)
+    const many = Array.from({ length: 50 }, (_, i) => `p${String(i).padStart(4, '0')}`)
+    const record = listingsAfter({}, 'main', '/f', full.slice(0, -1), 0)
+    const grown = listingsAfterOwn(record, 'main', '/f', full.slice(0, -1), [...full.slice(0, -1), ...many]).main?.['/f']
+    expect(grown).toEqual({ names: [...full.slice(0, -1), 'p0000'], at: 0, bound: 'p0000' })
+    expect(changeOf('/f', grown ?? { names: [] }, [...full.slice(0, -1), ...many, 'zz-late'])).toBeUndefined()
+    const early = Array.from({ length: 50 }, (_, i) => `a${String(i).padStart(4, '0')}`)
+    const before = listingsAfterOwn(record, 'main', '/f', full.slice(0, -1), [...early, ...full.slice(0, -1)]).main?.['/f']
+    expect(before?.names).toEqual([...early, ...full.slice(0, KEPT_NAMES - 50)])
+    expect(before?.bound).toBe(full[KEPT_NAMES - 51])
+    const atFull = listingWith(record, 'main', '/f/n0999')
+    expect(atFull.main?.['/f']).toEqual({ names: full, at: 0, bound: null })
+    expect(listingWith(atFull, 'main', '/f/p0000').main?.['/f']).toEqual({ names: full, at: 0, bound: 'n0999' })
+    const bounded = listingsAfter({}, 'main', '/f', full, 0)
+    expect(listingsAfterOwn(bounded, 'main', '/f', full, ['a1', ...full]).main?.['/f']).toEqual({ names: ['a1', ...full], at: 0, bound: 'n0999' })
   })
 
   test('an own merge into a full record never lowers its bound', () => {

@@ -47,6 +47,9 @@ export const boundOf = (listing: Pick<Listing, 'names' | 'bound'>): string | nul
 
 const isWithin = (name: string, bound: string | null): boolean => bound === null || name <= bound
 
+const keptOf = (names: string[], bound: string | null): Pick<Listing, 'names' | 'bound'> =>
+  bound === null && names.length > KEPT_NAMES ? { names: names.slice(0, KEPT_NAMES), bound: names[KEPT_NAMES - 1] ?? null } : { names, bound }
+
 const nameBelow = (folder: string, path: string): string | undefined => {
   const below = folder === '/' ? path.slice(1) : path.startsWith(`${folder}/`) ? path.slice(folder.length + 1) : undefined
   const name = below?.split('/')[0]
@@ -65,7 +68,7 @@ export function listingWith(listings: Listings, caller: string, path: string, he
   const taken = new Map(takenBy(listings, caller, path).filter(([folder]) => !held.has(folder)))
   const updated = Object.entries(own).map(([folder, listing]): [string, Listing] => {
     const name = taken.get(folder)
-    return name === undefined ? [folder, listing] : [folder, { ...listing, names: [...listing.names, name].sort(), bound: boundOf(listing) }]
+    return name === undefined ? [folder, listing] : [folder, { ...listing, ...keptOf([...listing.names, name].sort(), boundOf(listing)) }]
   })
   return { ...listings, [caller]: Object.fromEntries(updated) }
 }
@@ -78,7 +81,7 @@ export function listingsAfterOwn(listings: Listings, caller: string, folder: str
   const has = new Set(after)
   const added = after.filter(name => !had.has(name) && isWithin(name, bound))
   const names = [...new Set([...listing.names, ...added])].filter(name => has.has(name) || !had.has(name)).sort()
-  return { ...listings, [caller]: { ...listings[caller], [folder]: { ...listing, names, bound } } }
+  return { ...listings, [caller]: { ...listings[caller], [folder]: { ...listing, ...keptOf(names, bound) } } }
 }
 
 export function changeOf(folder: string, listing: Pick<Listing, 'names' | 'bound'>, after: readonly string[]): FolderChange | undefined {

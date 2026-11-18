@@ -1355,7 +1355,7 @@ async function heldFoldersOf($: EngineInterface, caller: string, path: string): 
   const held = new Set<string>()
   for (const [folder, name] of takenBy(await read($, folderListings), caller, path)) {
     const names = await folderNamesOf($, folder)
-    if (names === undefined || names.includes(name)) held.add(folder)
+    if (names === undefined || names.some(listed => listed.toLowerCase() === name.toLowerCase())) held.add(folder)
   }
   return held
 }

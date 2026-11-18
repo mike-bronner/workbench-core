@@ -3491,6 +3491,12 @@ export const SNAPSHOT: readonly (readonly [string, string])[] = [
   ["cd /Users/mike/Developer/workbench-dev-team; grep -n 'close_as_duplicate\\|gh issue close\\|gh pr merge' agents/lestrade-item.md; grep -n -- '--check' bin/test-compose-agents.sh | head -5; sed -n 1,12p agents/lestrade.md; git push", '23pbm9f8bmx'],
   ["cd /repo; rg -n 'git push\\|git commit' . | sed -n 1p; git push origin main", '1welhvh0drt'],
   ["grep -n 'gh release create' a.md && git push", '1q7349dfh6u'],
+  ["echo 'pr merge 5' | xargs gh", '1gmrwm1ivt8'],
+  ["echo 'pr merge 5 --squash' | xargs gh", 'udbxh44buq'],
+  ["echo merge 5 | xargs gh pr", 'kpx6kgqk5p'],
+  ["echo repos/o/r/merges | xargs gh api -f base=main -f head=feat", 'a8emityeas'],
+  ["echo repos/o/r/pulls/5/merge | xargs gh api -X PUT", '22vm8cet0d3'],
+  ["echo --repo=o/x | xargs gh pr merge 5", '1mysulg4quj'],
 ]
 
 export const RANDOM_SNAPSHOT: readonly string[] = [

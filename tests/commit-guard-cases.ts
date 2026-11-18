@@ -80,6 +80,15 @@ export const FED_PRINTERS: readonly string[] = [
   "grep -n 'gh pr merge 5' f; timeout 5 sed -n 1p g",
 ]
 
+export const FED_GH: readonly string[] = [
+  "echo 'pr merge 5' | xargs gh",
+  "echo 'pr merge 5 --squash' | xargs gh",
+  'echo merge 5 | xargs gh pr',
+  'echo repos/o/r/merges | xargs gh api -f base=main -f head=feat',
+  'echo repos/o/r/pulls/5/merge | xargs gh api -X PUT',
+  'echo --repo=o/x | xargs gh pr merge 5',
+]
+
 export const SEARCH_BESIDE_RUNNER: readonly string[] = [
   "grep -n 'gh pr merge 5' f; sed -n -i 1p g",
   "grep -n 'gh pr merge 5' f; sed -ni 1p g",

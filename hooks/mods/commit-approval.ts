@@ -938,7 +938,9 @@ const fieldOf = (words: readonly string[], name: string): string | undefined =>
   [...words].reverse().map(word => new RegExp(`^(?:-[fF]|--(?:raw-)?field=)?${name}=(.+)$`).exec(word)?.[1]).find(value => value !== undefined)
 
 const prTargetOf = (st: ShellStatement): MergeTarget | undefined => {
-  if (st.name !== 'gh' || st.subcommandAt < 0) return undefined
+  if (st.name !== 'gh') return undefined
+  if (st.wrappers.includes('xargs')) return { refs: [] }
+  if (st.subcommandAt < 0) return undefined
   const sub = (st.args[st.subcommandAt] ?? '').toLowerCase()
   const rest = restOf(st)
   if (sub === 'pr') {

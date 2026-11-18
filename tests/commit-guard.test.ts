@@ -13,6 +13,7 @@ import {
   COMMIT_MAIN_PASSES,
   COMMIT_PASSES,
   COMMIT_REFUSALS,
+  FED_GH,
   FED_PRINTERS,
   GREP_READS,
   GREP_WRITES,
@@ -142,6 +143,22 @@ describe('the commit guard: a printing sed or awk is a reader only as a plain wo
   test('control: the same text fed to a search with no xargs passes', () => {
     expect(verdictOf("echo 'gh pr merge 5' | grep -n x", CALLERS['sub-agent'])).toBeUndefined()
     expect(verdictOf("grep -n 'gh pr merge 5' f; sed -n 1p g", CALLERS['sub-agent'])).toBeUndefined()
+  })
+})
+
+describe('the commit guard: a gh behind xargs takes words from its input, so it is read as unknown', () => {
+  for (const line of FED_GH) {
+    test(`refused for a sub-agent and the pipeline: ${JSON.stringify(line)}`, () => {
+      expect(verdictOf(line, CALLERS['sub-agent'])).toEqual(MERGE_REFUSAL)
+      expect(verdictOf(line, CALLERS.pipeline)).toEqual(MERGE_REFUSAL)
+      expect(verdictOf(line, CALLERS.main)).toEqual(PLAIN_REFUSAL)
+    })
+  }
+
+  test('control: a git behind xargs keeps its verdict, and a gh with no xargs reads as before', () => {
+    expect(verdictOf('echo push | xargs git', CALLERS['sub-agent'])).toEqual(MERGE_REFUSAL)
+    expect(verdictOf('echo push | xargs git', CALLERS.main)).toEqual(PLAIN_REFUSAL)
+    expect(verdictOf('echo 5 | grep 5; gh pr view 5', CALLERS['sub-agent'])).toBeUndefined()
   })
 })
 

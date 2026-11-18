@@ -32,6 +32,7 @@ import { ASKS as DECLINED, HOME, PERSON, bench, exactly, start } from './bench'
 import { hiddenCommandRefusal } from '../hooks/mods/guards'
 import { parseShell } from '../hooks/mods/shell'
 import { CAUGHT, LET_THROUGH } from './commit-corpus'
+import { FED_GH } from './commit-guard-cases'
 
 const prompt = (text: string, origin: PromptOrigin = PERSON) => ({ text, wait: false, origin })
 
@@ -575,6 +576,16 @@ describe('AC3: a commit approval approves no push and no merge, and each gets it
       b.repos['/repo'] = { head: 'c1', pushed: 'c1' }
       await session($)
       expect(await bash($, b, line)).toMatch(DECLINED.merge)
+    })
+  }
+
+  for (const line of FED_GH) {
+    test(`a gh behind xargs counts as a merge, and is refused in Mike's session: ${JSON.stringify(line)}`, async ($, on) => {
+      const b = bench(on)
+      b.repos['/repo'] = { head: 'c1', pushed: 'c1' }
+      await session($)
+      expect(await bash($, b, line)).toBe(PLAIN_REFUSAL.deny)
+      expect(mergesOf(line)).toEqual({ local: [], landings: [], pr: 1, targets: [{ refs: [] }] })
     })
   }
 

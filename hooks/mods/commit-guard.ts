@@ -334,7 +334,7 @@ function readGit(s: Statement): Read {
 function readGh(s: Statement): Read {
   const read: Read = { ops: [], isForce: false, isHidden: false, code: [], isUnread: false }
   const at = s.subcommandAt
-  if (decidesBuilt(s)) read.isUnread = true
+  if (decidesBuilt(s) || s.wrappers.includes('xargs')) read.isUnread = true
   if (at < 0) return read
   const sub = (s.args[at] ?? '').toLowerCase()
   const rest = s.args.slice(at + 1)

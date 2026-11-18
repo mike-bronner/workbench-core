@@ -331,6 +331,26 @@ describe('the feed facts and the subshell fact, for the statement rules', () => 
     for (const line of lines) expect([line, feeds(line)]).toEqual([line, []])
   })
 
+  test('an =( whose paren never closes is the process feed with the substitution unknown, and a closed one has no unknown', () => {
+    for (const line of ['cat =(echo', 'x==(echo', 'echo ${x:-=(a']) {
+      const parse = parseShell(line)
+      expect([line, parse.feeds, parse.unknowns]).toEqual([line, ['process'], ['substitution']])
+    }
+    const closed = parseShell('cat =(echo)')
+    expect([closed.feeds, closed.unknowns]).toEqual([['process'], []])
+  })
+
+  test('zsh runs the =( in a subscripted assignment, so it is the process feed and its command a substitution, read as a[1]=<( ) is', () => {
+    expect([feeds('a[1]=<(echo)'), parseShell('a[1]=<(echo)').unknowns]).toEqual([['process'], ['expansion']])
+    for (const line of ['a[1]==(echo)', 'h[k]==(echo)', 'a[1]+==(echo)', 'a[b[i]]==(echo)']) {
+      const parse = parseShell(line)
+      expect([line, parse.feeds, parse.hasSubshell, parse.unknowns]).toEqual([line, ['process'], false, ['expansion']])
+      expect([line, parse.statements.find(s => s.name === 'echo')?.source]).toEqual([line, 'substitution'])
+    }
+    expect(feeds('a[1]=(echo)')).toEqual([])
+    expect(feeds('[[ a[1]==(echo) ]]')).toEqual([])
+  })
+
   test('the frozen compat reading of =( is unchanged', () => {
     expect(commandsOf('bash =(echo git push)', true)).toEqual([['bash', '='], ['echo', 'git', 'push']])
   })

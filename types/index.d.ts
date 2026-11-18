@@ -61,8 +61,7 @@ export type WorkbenchCallerLaneArgs = {
 // wrongly. A caller that must not let an unread command through refuses a
 // line with any unknown.
 //   quote         a quote with no closing quote
-//   substitution  a $( ), backtick, <( ), $(( )), $[ ] or (( )) with no close,
-//                 or a # comment inside a $( ), backtick or <( )
+//   substitution  a $( ), backtick, <( ), $(( )), $[ ] or (( )) with no close
 //   heredoc       a heredoc with no terminator line: bash reads the rest of
 //                 the text as its body, and so does the reader
 //   escape        a $'…' escape the reader does not decode (\u, \U, \c, ...)

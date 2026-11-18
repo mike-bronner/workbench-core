@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { AGENT_MERGE_REFUSAL, mergesOf } from '../hooks/mods/commit-approval'
+import { AGENT_MERGE_REFUSAL, AGENT_RELEASE_REFUSAL, mergesOf } from '../hooks/mods/commit-approval'
 import type { Caller } from '../hooks/mods/commit-guard'
 import { BUILT_REFUSAL, FAILED_REFUSAL, FORCE_REFUSAL, MERGE_REFUSAL, PLAIN_REFUSAL, SUBAGENT_REFUSAL, commitVerdict, isReadOnlyPipeline } from '../hooks/mods/commit-guard'
 import { subjectVerdict } from '../hooks/mods/commit-subject'
@@ -9,7 +9,18 @@ import { parseShell } from '../hooks/mods/shell'
 import type { WorkbenchShellParse } from '../types'
 import type { Bench } from './bench'
 import { HOME, PERSON, bench, start } from './bench'
-import { COMMIT_MAIN_PASSES, COMMIT_PASSES, COMMIT_REFUSALS, GREP_READS, GREP_WRITES, REPORTED_SEARCH, SEARCH_THEN_ACTION } from './commit-guard-cases'
+import {
+  COMMIT_MAIN_PASSES,
+  COMMIT_PASSES,
+  COMMIT_REFUSALS,
+  FED_PRINTERS,
+  GREP_READS,
+  GREP_WRITES,
+  RELEASE_SEARCHES,
+  REPORTED_SEARCH,
+  SEARCH_BESIDE_RUNNER,
+  SEARCH_THEN_ACTION,
+} from './commit-guard-cases'
 import type { CommitLane } from './commit-guard-cases'
 import type { Kind } from './commit-guard-parity'
 import { CORE_REFUSES, DEV_TEAM_VERDICTS, INTENDED_DIFFERENCES, SOURCE } from './commit-guard-parity'
@@ -76,21 +87,23 @@ describe('the commit guard: a search beside cd and a printing sed reads its patt
     for (const lane of LANES) expect([lane, verdictOf(REPORTED_SEARCH, CALLERS[lane])]).toEqual([lane, undefined])
   })
 
-  test('the line runs in the hooks module in the main loop and for a sub-agent', async ($, on) => {
+  test('the line and a search for a release run in the hooks module, which holds the release gate, in the main loop and for a sub-agent', async ($, on) => {
     const b = bench(on)
     await $.session.start(start())
     await $.prompt.submit({ text: 'look around', wait: false, origin: PERSON })
     expect(await refusalOf($, b, REPORTED_SEARCH)).toBeUndefined()
     expect(await refusalOf($, b, REPORTED_SEARCH, 'a1')).toBeUndefined()
-    for (const line of GREP_READS) expect(await refusalOf($, b, line, 'a1')).toBeUndefined()
+    for (const line of [...GREP_READS, ...RELEASE_SEARCHES]) expect(await refusalOf($, b, line, 'a1')).toBeUndefined()
+    expect(await refusalOf($, b, `${RELEASE_SEARCHES[1]}; gh release create v1`, 'a1')).toBe(AGENT_RELEASE_REFUSAL)
   })
 
-  test('the line runs in the hooks module for the pipeline', async ($, on) => {
+  test('the line and a search for a release run in the hooks module, which holds the release gate, for the pipeline', async ($, on) => {
     const b = bench(on, { env: { HOME, WORKBENCH_DEV_TEAM_PIPELINE: '1', CLAUDE_CODE_AGENT: 'watson' } })
     await $.session.start(start(false))
     await $.prompt.submit({ text: 'Item ID: 12', wait: false, origin: { kind: 'sdk' } })
     expect(await refusalOf($, b, REPORTED_SEARCH)).toBeUndefined()
-    for (const line of GREP_READS) expect(await refusalOf($, b, line)).toBeUndefined()
+    for (const line of [...GREP_READS, ...RELEASE_SEARCHES]) expect(await refusalOf($, b, line)).toBeUndefined()
+    expect(await refusalOf($, b, `${RELEASE_SEARCHES[1]}; gh release create v1`)).toBe(AGENT_RELEASE_REFUSAL)
   })
 
   for (const [line, action] of SEARCH_THEN_ACTION) {
@@ -115,6 +128,31 @@ describe('the commit guard: a search beside cd and a printing sed reads its patt
     expect(verdictOf("rg --search-zip 'gh pr merge' f", CALLERS['sub-agent'])).toEqual(MERGE_REFUSAL)
     expect(verdictOf("rg -n 'gh pr merge' f", CALLERS['sub-agent'])).toBeUndefined()
   })
+})
+
+describe('the commit guard: a printing sed or awk is a reader only as a plain word, and nothing behind xargs is', () => {
+  for (const line of FED_PRINTERS) {
+    test(`refused for a sub-agent and the pipeline: ${JSON.stringify(line)}`, () => {
+      expect(verdictOf(line, CALLERS['sub-agent'])).toEqual(MERGE_REFUSAL)
+      expect(verdictOf(line, CALLERS.pipeline)).toEqual(MERGE_REFUSAL)
+      expect(verdictOf(line.replaceAll('gh pr merge 5', 'git push'), CALLERS['sub-agent'])).toEqual(SUBAGENT_REFUSAL)
+    })
+  }
+
+  test('control: the same text fed to a search with no xargs passes', () => {
+    expect(verdictOf("echo 'gh pr merge 5' | grep -n x", CALLERS['sub-agent'])).toBeUndefined()
+    expect(verdictOf("grep -n 'gh pr merge 5' f; sed -n 1p g", CALLERS['sub-agent'])).toBeUndefined()
+  })
+})
+
+describe('the commit guard: a search beside a sed or awk that runs or writes reads its pattern as code', () => {
+  for (const line of SEARCH_BESIDE_RUNNER) {
+    test(`refused for a sub-agent and the pipeline: ${JSON.stringify(line)}`, () => {
+      expect(verdictOf(line, CALLERS['sub-agent'])).toEqual(MERGE_REFUSAL)
+      expect(verdictOf(line, CALLERS.pipeline)).toEqual(MERGE_REFUSAL)
+      expect(verdictOf(line.replaceAll('gh pr merge 5', 'git push'), CALLERS['sub-agent'])).toEqual(SUBAGENT_REFUSAL)
+    })
+  }
 })
 
 describe('the commit guard gives workbench-dev-team 0.55.0\'s verdict on its corpus and core\'s, in four lanes', () => {

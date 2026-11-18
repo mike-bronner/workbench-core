@@ -59,7 +59,40 @@ export const GREP_READS: readonly string[] = [
   "git status; grep -n -- 'git push' f | sed -n 1,5p",
   "echo ---; grep -n 'git commit' a.md; sed -n 1p b.md",
   "cd /repo; git grep -n 'git commit\\|gh pr merge' -- hooks; sed -n 1,5p x",
+]
+
+export const RELEASE_SEARCHES: readonly string[] = [
   "ls; grep -rn 'gh release create' .; awk '{print $2}' f",
+  "cd /repo; rg -n 'gh release create v1' docs; sed -n 1p b.md",
+]
+
+export const FED_PRINTERS: readonly string[] = [
+  "grep -n x f; echo 'gh pr merge 5' | xargs sed -n 1p",
+  "grep -n x f; printf 'gh pr merge 5' | xargs awk '{print $1}'",
+  "grep -n x f; echo 'gh pr merge 5' | xargs -I{} sed -n 1p {}",
+  "grep -n x f; echo 'gh pr merge 5' | xargs -I{} awk -F{} '{print $1}'",
+  "echo 'gh pr merge 5' | xargs grep -n x f",
+  "echo 'gh pr merge 5' | xargs -I{} rg -n {} f",
+  "grep -n x f; X='gh pr merge 5' sed -n 1p f",
+  "grep -n x f; X='gh pr merge 5' awk '{print $1}'",
+  "grep -n x f; sed -n 1p <<EOF\ngh pr merge 5\nEOF",
+  "grep -n x f; awk '{print $1}' <<EOF\ngh pr merge 5\nEOF",
+  "grep -n 'gh pr merge 5' f; timeout 5 sed -n 1p g",
+]
+
+export const SEARCH_BESIDE_RUNNER: readonly string[] = [
+  "grep -n 'gh pr merge 5' f; sed -n -i 1p g",
+  "grep -n 'gh pr merge 5' f; sed -ni 1p g",
+  "grep -n 'gh pr merge 5' f; sed -n -f s.sed g",
+  "grep -n 'gh pr merge 5' f; sed -n '1w out' g",
+  "grep -n 'gh pr merge 5' f; sed -n '1W out' g",
+  "grep -n 'gh pr merge 5' f; sed -n '1e' g",
+  "grep -n 'gh pr merge 5' f; sed -n 's/x/y/e' g",
+  "grep -n 'gh pr merge 5' f; awk '{system($0)}' g",
+  "grep -n 'gh pr merge 5' f; awk '{print > \"o\"}' g",
+  "grep -n 'gh pr merge 5' f; awk '{print | \"sh\"}' g",
+  "grep -n 'gh pr merge 5' f; awk '{\"date\" | getline d}' g",
+  "grep -n 'gh pr merge 5' f; awk -f prog.awk g",
 ]
 
 export const REPORTED_SEARCH =

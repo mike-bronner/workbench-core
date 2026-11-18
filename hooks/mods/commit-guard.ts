@@ -88,8 +88,14 @@ const isLoopHead = (s: Statement): boolean =>
 
 const isPrintingAwk = (s: Statement): boolean => s.name === 'awk' && AWK_PRINT.test(awkProgramOf(s.args) ?? '')
 
-const isReader = (s: Statement): boolean =>
-  (READERS.has(s.name) && !runsOrWrites(s)) || isEditOnly(s) || isLoopHead(s) || isPrintingSed(s) || isPrintingAwk(s)
+const isPlainPrinter = (s: Statement): boolean =>
+  s.nameAt >= 0 && s.wrappers.length === 0 && s.assignments.length === 0 && s.heredocs.length === 0 && s.isPlaced &&
+  (isPrintingSed(s) || isPrintingAwk(s))
+
+const readsOnly = (s: Statement): boolean =>
+  (READERS.has(s.name) && !runsOrWrites(s)) || isEditOnly(s) || isLoopHead(s) || isPlainPrinter(s)
+
+const isReader = (s: Statement): boolean => readsOnly(s) && !s.wrappers.includes('xargs')
 
 const PLAIN_TOOLS: ReadonlySet<string> = new Set(['grep', 'egrep', 'fgrep', 'column', 'head', 'tail', 'wc', 'cut', 'nl', 'tr', 'cat'])
 const UNIQ_READ_ARG = /^(?:-[cdDiuz]+|-[fsw]\d+)$/
@@ -405,6 +411,9 @@ export function findOps(parse: ShellParse, line: string): Found {
       continue
     }
     if (isReader(s)) {
+      readerText.push(...s.args, ...s.assignments, ...heredocs)
+    } else if (isPrintingSed(s) || readsOnly(s)) {
+      hasRunner = true
       readerText.push(...s.args, ...s.assignments, ...heredocs)
     } else {
       hasRunner = true

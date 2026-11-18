@@ -71,7 +71,7 @@ const excerpt = (text: string, width = 90): string => {
   return [...flat].length <= width ? flat : `${[...flat].slice(0, width - 1).join('')}…`
 }
 
-const unseen = (text: string): string => text.replace(BOT_REGION, '').replace(FENCED, '').replace(HTML_COMMENT, '')
+export const unseen = (text: string): string => text.replace(BOT_REGION, '').replace(FENCED, '').replace(HTML_COMMENT, '')
 
 function charFindings(text: string): string[] {
   const lines = unseen(text).replace(INLINE_CODE, 'code').replace(MD_LINK, '$1').split('\n').filter(l => !CHECKLIST.test(l))
@@ -235,10 +235,10 @@ const BODY_EXPANDS = /[$`]/
 // The standard input a statement reads from its own text, and what in it the
 // shell expands: a here-string is a word, an unquoted heredoc a raw body, and
 // a quoted heredoc is free text.
-type Stdin = { text: string; expands?: RegExp }
+export type Stdin = { text: string; expands?: RegExp }
 
 // The last heredoc or here-string, as in bash. Undefined when it reads none.
-function stdinOf(st: Statement): Stdin | undefined {
+export function stdinOf(st: Statement): Stdin | undefined {
   let stdin: Stdin | undefined
   let heredoc = 0
   for (const r of st.redirects) {
@@ -265,7 +265,7 @@ const fromStdin = (stdin: Stdin | undefined): BodyPart | string =>
 // The prose command the words after `gh` name (`pr create`), or `api`, read
 // two ways: past the global options as the reader places them, and as the
 // first two words that are not options, which is how the bash guard read them.
-function proseCommandOf(args: readonly string[], subAt: number): string | undefined {
+export function proseCommandOf(args: readonly string[], subAt: number): string | undefined {
   const crude = args.filter(a => !a.startsWith('-')).slice(0, 2)
   const placed = subAt >= 0 ? [args[subAt] ?? '', args.slice(subAt + 1).find(a => !a.startsWith('-')) ?? ''] : []
   for (const verbs of [placed, crude]) {
@@ -389,11 +389,15 @@ function ghParts(args: readonly string[], subAt: number, stdin: Stdin | undefine
       return UNREAD_BODY
     }
   }
-  const parts: BodyPart[] = []
   const extra = COMMAND_FLAGS[kind] ?? []
   const bare = NO_VALUE_FLAGS[kind] ?? []
   const inline: ReadonlySet<string> = new Set([...INLINE_FLAGS, ...extra].filter(flag => !bare.includes(flag)))
   const shortInline = [...SHORT_INLINE, ...extra.filter(flag => !flag.startsWith('--'))].filter(flag => !bare.includes(flag))
+  return flagParts(args, inline, shortInline, stdin)
+}
+
+export function flagParts(args: readonly string[], inline: ReadonlySet<string>, shortInline: readonly string[], stdin: Stdin | undefined): BodyPart[] | string {
+  const parts: BodyPart[] = []
   const fileOrStdin = (val: string): BodyPart | string => (val === '-' ? fromStdin(stdin) : fromWord({ file: val, isJson: false }))
   for (let i = 0; i < args.length; i++) {
     const token = args[i] as string

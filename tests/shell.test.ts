@@ -1970,6 +1970,40 @@ describe('a # comment inside a $( ) or a backtick leaves the line with the subst
     }
   })
 
+  test('a # after a backslash-newline starts a word, because bash and zsh delete the backslash-newline before they read', () => {
+    for (const hidden of ['zap', 'git push']) {
+      for (const line of [
+        `cat <<E\n$(echo \\\n# )\n${hidden}\n)\nE`,
+        `echo "$(echo \\\n# )\n${hidden})"`,
+        `echo $(\\\n# )\n${hidden})`,
+        `echo $(echo ;\\\n# )\n${hidden})`,
+        `echo \`echo \\\n# \``,
+        `cat <<E\n\`echo \\\n# \`\nE`,
+        `echo <(echo \\\n# )\n${hidden})`,
+        `echo $[ $(echo \\\n# )\n${hidden}) ]`,
+      ]) {
+        expect([line, parseShell(line).unknowns]).toEqual([line, ['substitution']])
+      }
+    }
+  })
+
+  test('control: in the backslash-newline heredoc and double-quote lines the reader names no hidden git push, so the unknown is all that refuses them', () => {
+    expect(commandsOf('cat <<E\n$(echo \\\n# )\ngit push\n)\nE')).toEqual([['cat'], ['echo']])
+    expect(commandsOf('echo "$(echo \\\n# )\ngit push)"').some(words => words[0] === 'git')).toBe(false)
+  })
+
+  test('a # after a backslash-newline inside a word, or after an escaped character, starts no comment and leaves the unknowns as they were', () => {
+    const lines: readonly (readonly [string, string[]])[] = [
+      ['echo $(echo a\\\n#b)', []],
+      ['echo $(echo a\\#b)', []],
+      ['echo $(echo x\\ #y)', []],
+      ['echo $(echo \\;#y)', []],
+      ['echo `echo a\\\n#b`', []],
+      ['cat <<E\n$(echo a\\\n#b)\nE', []],
+    ]
+    for (const [line, unknowns] of lines) expect([line, parseShell(line).unknowns]).toEqual([line, unknowns])
+  })
+
   test('a # that starts no comment leaves the unknowns as they were', () => {
     const lines: readonly (readonly [string, string[]])[] = [
       ['echo $(echo ${#x} $# a#b "#" \'#\' " # " $\'#\' \\#)', []],

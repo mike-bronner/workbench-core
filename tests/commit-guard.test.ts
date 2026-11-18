@@ -235,6 +235,9 @@ describe('the commit guard: a push after a # comment inside a $( ), which bash a
     'echo "$(echo # )\ngit push)"',
     'echo $(echo # )\ngit push)',
     'echo $[ $(echo # )\ngit push) ]',
+    'cat <<E\n$(echo \\\n# )\ngit push\n)\nE',
+    'echo "$(echo \\\n# )\ngit push)"',
+    'echo $(\\\n# )\ngit push)',
   ]) {
     test(JSON.stringify(line), () => {
       expect(verdictOf(line, CALLERS.main)).toEqual(PLAIN_REFUSAL)

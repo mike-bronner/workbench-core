@@ -380,6 +380,10 @@ function holdsComment(text: string): boolean {
   for (let i = 0; i < text.length; i++) {
     const c = text[i] as string
     if (c === '#' && isStart) return true
+    if (c === '\\' && text[i + 1] === '\n') {
+      i++
+      continue
+    }
     if (c === '\\') i++
     else if (c === "'") i = text.indexOf("'", i + 1) === -1 ? text.length : text.indexOf("'", i + 1)
     else if (c === '"') i = closingQuote(text, i + 1)

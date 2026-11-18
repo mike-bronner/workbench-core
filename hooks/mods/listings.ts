@@ -41,6 +41,12 @@ export function listingsAfter(listings: Listings, caller: string, folder: string
   return { ...listings, [caller]: Object.fromEntries(kept) }
 }
 
+function keptOf(names: readonly string[], top: string | undefined): string[] {
+  if (top === undefined) return names.slice(0, KEPT_NAMES)
+  const covering = names.findIndex(name => name >= top)
+  return names.slice(0, Math.max(KEPT_NAMES, covering === -1 ? names.length : covering + 1))
+}
+
 export function listingWith(listings: Listings, caller: string, path: string): Listings {
   const own = listings[caller]
   if (own === undefined) return listings
@@ -48,7 +54,7 @@ export function listingWith(listings: Listings, caller: string, path: string): L
     const below = folder === '/' ? path.slice(1) : path.startsWith(`${folder}/`) ? path.slice(folder.length + 1) : undefined
     const name = below?.split('/')[0]
     if (name === undefined || name === '' || listing.names.includes(name)) return [folder, listing]
-    return [folder, { ...listing, names: [...listing.names, name].sort().slice(0, KEPT_NAMES) }]
+    return [folder, { ...listing, names: keptOf([...listing.names, name].sort(), listing.names.at(-1)) }]
   })
   return { ...listings, [caller]: Object.fromEntries(updated) }
 }
@@ -61,7 +67,9 @@ export function listingsAfterOwn(listings: Listings, caller: string, folder: str
   const bound = listing.names.length >= KEPT_NAMES ? listing.names.at(-1) : undefined
   const beyond = bound === undefined ? [] : before.filter(name => name > bound)
   const names = [...new Set([...listing.names, ...beyond, ...after.filter(name => !had.has(name))])].filter(name => has.has(name) || !had.has(name)).sort()
-  return { ...listings, [caller]: { ...listings[caller], [folder]: { ...listing, names: names.slice(0, KEPT_NAMES) } } }
+  const merged = new Set(names)
+  const differs = [...names.filter(name => !has.has(name)), ...after.filter(name => !merged.has(name) && (bound === undefined || name <= bound))]
+  return { ...listings, [caller]: { ...listings[caller], [folder]: { ...listing, names: keptOf(names, differs.sort().at(-1)) } } }
 }
 
 export function changeOf(folder: string, before: readonly string[], after: readonly string[]): FolderChange | undefined {

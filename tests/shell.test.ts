@@ -1909,3 +1909,111 @@ describe('a ${…} that runs code held in its variable is the expansion unknown'
     }
   })
 })
+
+describe('a word that starts with an unquoted = is the expansion unknown, because zsh reads =tool as the path of the command tool', () => {
+  test('a leading = word anywhere in the line, a redirect target and a substitution included', () => {
+    for (const line of ['rm -f =git', 'cat =ls', 'echo x =y', '=git push', 'echo ""=ls', "echo ''=ls", 'echo =""ls', 'echo ="ls"', 'echo =\\ls', 'echo \\\n=ls', 'echo x >=ls', 'echo $(rm -f =git)', '[[ /bin/ls == =ls ]]', '[ a == b ]', 'echo ==ls', 'echo =~']) {
+      expect([line, parseShell(line).unknowns]).toEqual([line, ['expansion']])
+    }
+  })
+
+  test('a quoted, escaped or later =, an assignment, a lone = and the = operators of a [[ ]] test read as before', () => {
+    const words: readonly (readonly [string, string[]])[] = [
+      ["echo '=x'", ['echo', '=x']],
+      ['echo "=x"', ['echo', '=x']],
+      ['echo \\=x', ['echo', '=x']],
+      ['echo a=b', ['echo', 'a=b']],
+      ['cmd --opt=x', ['cmd', '--opt=x']],
+      ['X=1 cmd', ['X=1', 'cmd']],
+      ['[ a = b ]', ['[', 'a', '=', 'b', ']']],
+      ['[[ a = b ]]', ['[[', 'a', '=', 'b', ']]']],
+      ['[[ a == b ]]', ['[[', 'a', '==', 'b', ']]']],
+      ['[[ a =~ b ]]', ['[[', 'a', '=~', 'b', ']]']],
+    ]
+    for (const [line, command] of words) {
+      expect([line, parseShell(line).unknowns, commandsOf(line)]).toEqual([line, [], [command]])
+    }
+  })
+})
+
+describe('a # comment inside a $( ) or a backtick leaves the line with the substitution unknown, because bash and zsh read on past a ) in the comment', () => {
+  const SHAPES: readonly ((hidden: string) => string)[] = [
+    hidden => `cat <<E\n$(echo # )\n${hidden}\n)\nE`,
+    hidden => `cat <<-E\n\t$(echo # )\n\t${hidden}\n\t)\n\tE`,
+    hidden => `echo "$(echo # )\n${hidden})"`,
+    hidden => `echo $(echo # )\n${hidden})`,
+    hidden => `echo $[ $(echo # )\n${hidden}) ]`,
+  ]
+
+  test('each confirmed shape, with zap and with git push hidden after the comment', () => {
+    for (const shape of SHAPES) {
+      for (const hidden of ['zap', 'git push']) {
+        const line = shape(hidden)
+        expect([line, parseShell(line).unknowns]).toEqual([line, ['substitution']])
+      }
+    }
+  })
+
+  test('control: in the heredoc shapes the reader names no hidden command, so the unknown is all that refuses them', () => {
+    for (const shape of SHAPES.slice(0, 2)) expect(commandsOf(shape('git push'))).toEqual([['cat'], ['echo']])
+  })
+
+  test('a comment at the start, after an operator or a redirect, in a backtick, a <( ) or a ${…} default, and in a backtick heredoc body', () => {
+    for (const line of ['echo $(#)', 'echo $(echo ;#)', 'echo $(cat >#)\nzap)', 'echo `echo # `', 'echo <(echo # )\nzap)', 'echo ${x:-$(echo # )\nzap)}', 'cat <<E\n`echo # `\nE']) {
+      expect([line, parseShell(line).unknowns]).toEqual([line, ['substitution']])
+    }
+  })
+
+  test('the shapes caught before stay caught, and now carry the substitution unknown too', () => {
+    for (const line of ['echo $(( $(echo # )\n) + 1 ))', '(( $(echo # )\n) ))', 'echo "$(( $(echo # )\n) ))"', 'bash <<E\n$(echo # )\nzap\n)\nE']) {
+      expect([line, parseShell(line).unknowns]).toEqual([line, ['expansion', 'substitution']])
+    }
+  })
+
+  test('a # after a backslash-newline starts a word, because bash and zsh delete the backslash-newline before they read', () => {
+    for (const hidden of ['zap', 'git push']) {
+      for (const line of [
+        `cat <<E\n$(echo \\\n# )\n${hidden}\n)\nE`,
+        `echo "$(echo \\\n# )\n${hidden})"`,
+        `echo $(\\\n# )\n${hidden})`,
+        `echo $(echo ;\\\n# )\n${hidden})`,
+        `echo \`echo \\\n# \``,
+        `cat <<E\n\`echo \\\n# \`\nE`,
+        `echo <(echo \\\n# )\n${hidden})`,
+        `echo $[ $(echo \\\n# )\n${hidden}) ]`,
+      ]) {
+        expect([line, parseShell(line).unknowns]).toEqual([line, ['substitution']])
+      }
+    }
+  })
+
+  test('control: in the backslash-newline heredoc and double-quote lines the reader names no hidden git push, so the unknown is all that refuses them', () => {
+    expect(commandsOf('cat <<E\n$(echo \\\n# )\ngit push\n)\nE')).toEqual([['cat'], ['echo']])
+    expect(commandsOf('echo "$(echo \\\n# )\ngit push)"').some(words => words[0] === 'git')).toBe(false)
+  })
+
+  test('a # after a backslash-newline inside a word, or after an escaped character, starts no comment and leaves the unknowns as they were', () => {
+    const lines: readonly (readonly [string, string[]])[] = [
+      ['echo $(echo a\\\n#b)', []],
+      ['echo $(echo a\\#b)', []],
+      ['echo $(echo x\\ #y)', []],
+      ['echo $(echo \\;#y)', []],
+      ['echo `echo a\\\n#b`', []],
+      ['cat <<E\n$(echo a\\\n#b)\nE', []],
+    ]
+    for (const [line, unknowns] of lines) expect([line, parseShell(line).unknowns]).toEqual([line, unknowns])
+  })
+
+  test('a # that starts no comment leaves the unknowns as they were', () => {
+    const lines: readonly (readonly [string, string[]])[] = [
+      ['echo $(echo ${#x} $# a#b "#" \'#\' " # " $\'#\' \\#)', []],
+      ['echo `echo ${#x} $# a#b "#" \'#\' " # "`', []],
+      ['cat <<E\n$(echo "#" ${#x} $# a#b)\nE', []],
+      ['echo $(echo $(date)#x) $(echo "$(date)"#y)', []],
+      ['echo $(( $(echo $# ${#x}) + 1 ))', ['expansion']],
+      ["gh pr create --body \"$(cat <<'EOF'\n## Summary\n- x)\nEOF\n)\"", []],
+      ['echo hi # $(\ngit log', []],
+    ]
+    for (const [line, unknowns] of lines) expect([line, parseShell(line).unknowns]).toEqual([line, unknowns])
+  })
+})

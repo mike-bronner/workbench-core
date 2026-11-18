@@ -12,7 +12,7 @@ import { HOME, PERSON, bench, start } from './bench'
 import { COMMIT_MAIN_PASSES, COMMIT_PASSES, COMMIT_REFUSALS, GREP_READS, GREP_WRITES } from './commit-guard-cases'
 import type { CommitLane } from './commit-guard-cases'
 import type { Kind } from './commit-guard-parity'
-import { DEV_TEAM_VERDICTS, INTENDED_DIFFERENCES, SOURCE } from './commit-guard-parity'
+import { CORE_REFUSES, DEV_TEAM_VERDICTS, INTENDED_DIFFERENCES, SOURCE } from './commit-guard-parity'
 
 const CALLERS: Readonly<Record<CommitLane, Caller>> = {
   main: { lane: 'main', isUnattended: false },
@@ -82,7 +82,14 @@ describe('the commit guard gives workbench-dev-team 0.55.0\'s verdict on its cor
   for (const [line, ...kinds] of DEV_TEAM_VERDICTS) {
     test(JSON.stringify(line), () => {
       expect(INTENDED_DIFFERENCES.some(([named]) => named === line)).toBe(false)
-      expect(FOUR.map(caller => kindOf(line, caller))).toEqual(kinds)
+      const core = CORE_REFUSES.find(([named]) => named === line)
+      expect(FOUR.map(caller => kindOf(line, caller))).toEqual(core === undefined ? kinds : core.slice(1))
+    })
+  }
+  for (const [line, ...kinds] of CORE_REFUSES) {
+    test(`a word with an unquoted leading =, which zsh reads as a command's path, that dev-team passes and core refuses: ${JSON.stringify(line)}`, () => {
+      expect(DEV_TEAM_VERDICTS.find(([named]) => named === line)?.slice(1)).toEqual(['pass', 'pass', 'pass', 'pass'])
+      expect(kinds.some(kind => kind !== 'pass')).toBe(true)
     })
   }
   for (const [line, ...kinds] of INTENDED_DIFFERENCES) {
@@ -217,6 +224,25 @@ describe('the commit guard: a read-only grep, rg or sed -n line passes in every 
   for (const line of ["bash -c 'git push'", 'eval "git commit -m x"', 'env git push', 'echo "$(git push)"', 'HUSKY=0 git commit -m x']) {
     test(`a hidden commit or push stays refused in the main loop: ${JSON.stringify(line)}`, () => {
       expect(verdictOf(line, CALLERS.main)).toEqual(PLAIN_REFUSAL)
+    })
+  }
+})
+
+describe('the commit guard: a push after a # comment inside a $( ), which bash and zsh run, is refused in every lane', () => {
+  for (const line of [
+    'cat <<E\n$(echo # )\ngit push\n)\nE',
+    'cat <<-E\n\t$(echo # )\n\tgit push\n\t)\n\tE',
+    'echo "$(echo # )\ngit push)"',
+    'echo $(echo # )\ngit push)',
+    'echo $[ $(echo # )\ngit push) ]',
+    'cat <<E\n$(echo \\\n# )\ngit push\n)\nE',
+    'echo "$(echo \\\n# )\ngit push)"',
+    'echo $(\\\n# )\ngit push)',
+  ]) {
+    test(JSON.stringify(line), () => {
+      expect(verdictOf(line, CALLERS.main)).toEqual(PLAIN_REFUSAL)
+      expect(verdictOf(line, CALLERS['sub-agent'])).toEqual(SUBAGENT_REFUSAL)
+      expect(verdictOf(line, CALLERS.pipeline)).toEqual(PLAIN_REFUSAL)
     })
   }
 })

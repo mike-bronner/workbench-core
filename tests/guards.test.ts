@@ -619,11 +619,12 @@ describe('AC5: the whole-disk search guard', () => {
     'mdfind -onlyin /repo x',
     'echo find /',
   ]
+  const READER_REFUSED = ['mdfind kMDItemDisplayName == x']
   for (const line of REFUSED) {
     test(`refuses ${JSON.stringify(line)}`, async ($, on) => {
       const b = await session($, on)
       const reason = await refusal($, b, bash(line))
-      expect(reason).toContain('Whole-disk search guard (workbench-core)')
+      expect(reason).toContain(READER_REFUSED.includes(line) ? 'Workbench guards (workbench-core): the shell reader cannot tell which command this line runs' : 'Whole-disk search guard (workbench-core)')
       expect(reason).toContain('stop and ask Mike')
     })
   }

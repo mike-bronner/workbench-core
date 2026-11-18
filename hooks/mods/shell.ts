@@ -50,12 +50,14 @@
 // Pure functions only: the engine follows `$` into no imported function.
 
 import type {
+  WorkbenchShellFeed as ShellFeed,
   WorkbenchShellHeredoc as ShellHeredoc,
   WorkbenchShellParse as ShellParse,
   WorkbenchShellRedirect as ShellRedirect,
   WorkbenchShellSource as ShellSource,
   WorkbenchShellStatement as ShellStatement,
   WorkbenchShellUnknown as ShellUnknown,
+  WorkbenchShellUnplain as ShellUnplain,
 } from '../../types'
 
 // The mark a word carries when a $'…' string in it held any backslash escape.
@@ -209,6 +211,9 @@ type Reading = {
   isArithmetic?: boolean
   isFed?: boolean
   readsStdin?: boolean
+  unplain?: Set<ShellUnplain>
+  feeds?: Set<ShellFeed>
+  hasSubshell?: boolean
 }
 
 const runsValue = (text: string): boolean =>
@@ -317,6 +322,38 @@ function closingTick(line: string, from: number): number {
 // ` \ or $ is removed first, so ``echo `echo \`cmd\``` runs cmd.
 const backtickText = (raw: string): string => raw.replace(/\\([\\`$])/g, '$1')
 
+const PARAMETER_NAME = String.raw`(?:[A-Za-z_]\w*|\d+|[#?$@*-])`
+const PARAMETER_SUBSCRIPTED = String.raw`(?:[A-Za-z_]\w*(?:\[(?:[@*]|\d+)\])?|\d+|[#?$@*-])`
+const PARAMETER_WORD = String.raw`(?:[^$\`\\'"{}()<>;|\n]|\$(?:[A-Za-z_]\w*|[1-9@*#?$])(?![\w[{]))*`
+const PARAMETER_OPERATOR = String.raw`(?::[-=+?]|##|%%|\/\/|\/#|\/%|\^\^|,,|[-=+?#%/^,])`
+const PARAMETER = new RegExp(
+  `^(?:#?${PARAMETER_SUBSCRIPTED}|${PARAMETER_SUBSCRIPTED}${PARAMETER_OPERATOR}${PARAMETER_WORD}|${PARAMETER_NAME}: ?-?\\d+(?::-?\\d+)?)$`,
+)
+
+const isPlainParameter = (text: string, from: number): boolean => {
+  const end = text.indexOf('}', from)
+  return end !== -1 && PARAMETER.test(text.slice(from, end))
+}
+
+function parametersArePlain(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '\\' || (text[i] === '$' && text[i + 1] === '$')) i++
+    else if (text[i] === '$' && text[i + 1] === '(') i = closingParen(text, i + 2)
+    else if (text[i] === '`') i = closingTick(text, i + 1)
+    else if (text[i] === '$' && text[i + 1] === '{' && !isPlainParameter(text, i + 2)) return false
+  }
+  return true
+}
+
+const CODE_EXPANSION = /\$\{#?\(|\$\{[#!]?(?:(?:\w+|[@*#?$-])(?:\[[^\]]*\])?|\[[^\]]*\])@(?!\})|\$\{[#!]?(?:\w+|[@*#?$-])?\[[^\]]*['"$`\\{[]|\$\{!|\$\$[{(]|\$\\\n/
+
+function scanRaw(text: string, reading: Reading): void {
+  for (const form of [text, text.replaceAll('\\\n', '')]) {
+    if (CODE_EXPANSION.test(form)) reading.unplain?.add('code-expansion')
+    if (/\b(?:case|esac)\b/.test(form)) reading.unplain?.add('case')
+  }
+}
+
 // The commands of every $( ) and backtick in `text`, as lines of their own.
 // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
 function substitutionsOf(text: string, isCompat = false): string[] {
@@ -336,6 +373,27 @@ function substitutionsOf(text: string, isCompat = false): string[] {
     }
   }
   return inner
+}
+
+function holdsComment(text: string): boolean {
+  let isStart = true
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i] as string
+    if (c === '#' && isStart) return true
+    if (c === '\\' && text[i + 1] === '\n') {
+      i++
+      continue
+    }
+    if (c === '\\') i++
+    else if (c === "'") i = text.indexOf("'", i + 1) === -1 ? text.length : text.indexOf("'", i + 1)
+    else if (c === '"') i = closingQuote(text, i + 1)
+    else if (c === '$' && text[i + 1] === "'") i = closingAnsiQuote(text, i + 2)
+    else if (c === '$' && text[i + 1] === '{') i = closingBrace(text, i + 2)
+    else if (c === '$' && text[i + 1] === '(') i = closingParen(text, i + 2)
+    else if (c === '`') i = closingTick(text, i + 1)
+    isStart = /[ \t\n;&|()<>]/.test(c)
+  }
+  return false
 }
 
 type Context = 'top' | '$(' | '`' | '(' | '{' | "'" | '"' | '((' | '${'
@@ -615,6 +673,7 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; bodie
         doc.body = body.join('\n')
         // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
         const expanded = doc.isQuoted ? [] : substitutionsOf(doc.body, reading.isCompat)
+        if (!reading.isCompat && expanded.some(holdsComment)) reading.unknowns.add('substitution')
         // The outer shell runs the $( ) and backticks of an unquoted body it
         // feeds a shell before the inner shell reads it, inside '…' too, so
         // the exact reading keeps them beside the body.
@@ -630,6 +689,7 @@ function heredocBodiesOut(text: string, reading: Reading): { line: string; bodie
         // shell as `reset`. The $( ) and backticks are still read above.
         if (doc.feedsShell && !doc.isQuoted && !reading.isCompat && /[$`\\]/.test(doc.body)) reading.unknowns.add('expansion')
         if (!doc.isQuoted && !reading.isCompat && runsValue(doc.body)) reading.unknowns.add('expansion')
+        if (!doc.isQuoted && !reading.isCompat && !parametersArePlain(doc.body)) reading.unplain?.add('parameter')
         const script = kept.map(row => `${row}\n`).join('')
         // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
         // The gate of 77bb2f3 read a kept body inline, as part of the line.
@@ -723,6 +783,7 @@ const textual = (text: string): ShellRedirect[] => [...text.matchAll(/[<>]/g)].m
 // `isBody` is true for the text of a heredoc body, so a substitution read in
 // it keeps the `heredoc` source.
 function lex(text: string, reading: Reading, source: ShellSource, depth: number, isCertain: boolean, isBody = false, carried: Body[] = []): Raw[] {
+  if (!reading.isCompat) scanRaw(text, reading)
   const own = heredocBodiesOut(text, reading)
   // The bodies still to read, in the order they stood.
   const bodies = [...own.bodies, ...carried].sort((a, b) => a.at - b.at)
@@ -771,7 +832,9 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
   // or escaped `case` is an ordinary command name, and opens no case.
   let caseAt = -1
   let braces = 0
+  let isEquals = false
   const endWord = () => {
+    if (isEquals && word !== '=' && !(isTest && (word === '==' || word === '=~'))) reading.unknowns.add('expansion')
     if (isPattern && hasWord && isBare && word === 'esac' && words.length === 0) {
       isPattern = false
       cases--
@@ -786,7 +849,10 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       if (exact && isReserved && word === '[[') isTest = true
       else if (isTest && isBare && word === ']]') isTest = false
       isHead = isReserved && (KEYWORDS.has(word) || word === 'time' || (word === '-p' && words.at(-2) === 'time'))
-      if (isReserved && word === 'coproc') reading.isFed = true
+      if (isReserved && word === 'coproc') {
+        reading.isFed = true
+        reading.feeds?.add('coproc')
+      }
     }
     if (hasWord && target !== undefined) {
       const plain = word.replaceAll(ESCAPED, '').replaceAll(UNQUOTED, '')
@@ -806,6 +872,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     isBare = true
     isExpanding = false
     isDecoded = false
+    isEquals = false
   }
   const endCommand = () => {
     endWord()
@@ -855,6 +922,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     const moved = bodies.filter(b => b.at >= from && b.at <= from + inner.length)
     bodies.splice(0, bodies.length, ...bodies.filter(b => !moved.includes(b)))
     const shifted = moved.map(b => ({ at: b.at - from, script: b.script }))
+    if (exact && holdsComment(inner)) reading.unknowns.add('substitution')
     commands.push(...lex(inner, reading, nestedSource, depth + 1, !isUncertain, isBody, shifted))
     word += SUBSTITUTED
     hasWord = true
@@ -865,7 +933,9 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
   const arithmetic = (body: string) => {
     reading.isArithmetic = true
     if (exact && runsValue(body)) reading.unknowns.add('expansion')
+    if (exact && !parametersArePlain(body)) reading.unplain?.add('parameter')
     for (const inner of substitutionsOf(body)) {
+      if (exact && holdsComment(inner)) reading.unknowns.add('substitution')
       reading.takesInput = true
       commands.push(...lex(inner, reading, nestedSource, depth + 1, !isUncertain, isBody))
     }
@@ -922,6 +992,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
           i++
         } else if (exact && d === '$' && line[i + 1] === '{') {
           if (runsValue(line.slice(i, closingBrace(line, i + 2) + 1))) reading.unknowns.add('expansion')
+          if (!isPlainParameter(line, i + 2)) reading.unplain?.add('parameter')
           isExpanding = true
           word += '${'
           nest.push('{')
@@ -1018,6 +1089,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       i++
     } else if (exact && c === '$' && next === '{') {
       if (runsValue(line.slice(i, closingBrace(line, i + 2) + 1))) reading.unknowns.add('expansion')
+      if (!isPlainParameter(line, i + 2)) reading.unplain?.add('parameter')
       word += UNQUOTED + '${'
       hasWord = true
       braces++
@@ -1034,11 +1106,19 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     } else if (braces === 0 && isTest && (c === '<' || c === '>') && !(hasWord && isBare && word === ']]')) {
       // A < or > in a test compares strings. A ]] right before it ends the
       // test, so then it is a redirect.
+      if (next === '(') reading.feeds?.add('process')
       endWord()
       words.push(c)
       redirects.push(...textual(c))
     } else if ((c === '$' || c === '<' || c === '>') && next === '(') {
+      if (c !== '$') reading.feeds?.add('process')
       // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
+      const end = closingParen(line, i + 2, exact)
+      if (end === line.length) reading.unknowns.add('substitution')
+      substitute(line.slice(i + 2, end), i + 2)
+      i = end
+    } else if (exact && c === '=' && next === '(' && (!hasWord || (braces > 0 && !/[\w:]$/.test(word)) || (isArray && /[ \t\n(]$/.test(word)) || (!isTest && /^[A-Za-z_][A-Za-z0-9_]*(\[.*\])?\+?=$/s.test(word)))) {
+      reading.feeds?.add('process')
       const end = closingParen(line, i + 2, exact)
       if (end === line.length) reading.unknowns.add('substitution')
       substitute(line.slice(i + 2, end), i + 2)
@@ -1111,6 +1191,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       isTest = keep
       isPiped = true
       reading.isFed = true
+      reading.feeds?.add('pipe')
       // FROZEN compat branch: delete only, once the bash/zsh check retires compat.
       if (exact && next === '&') i++
     } else if ((c === '&' || c === '|') && next === c) {
@@ -1122,13 +1203,16 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
       i++
     } else if (';&|()'.includes(c)) {
       // `name()` defines a function, whose body may never run.
-      if (c === '(' && words.length + (hasWord ? 1 : 0) === 1 && /^[ \t\n]*\)/.test(line.slice(i + 1))) isUncertain = true
+      const isEmptyParens = c === '(' && /^[ \t\n]*\)/.test(line.slice(i + 1))
+      if (isEmptyParens && words.length + (hasWord ? 1 : 0) === 1) isUncertain = true
+      if (c === '(' && !isEmptyParens) reading.hasSubshell = true
       // A | ( ) in a test splits the statement, and the test goes on.
       endWord()
       const keep: boolean = isTest && c !== ';' && c !== '&'
       endCommand()
       isTest = keep
     } else {
+      if (exact && c === '=' && word === '') isEquals = true
       word += exact && c === '$' ? UNQUOTED + c : c
       hasWord = true
     }
@@ -1446,7 +1530,9 @@ function statementsOf(text: string, reading: Reading, source: ShellSource, depth
 // The reading of a Bash command line: its statements, and what could not be
 // read.
 export function parseShell(text: string): ShellParse {
-  const reading: Reading = { heredocs: [], unknowns: new Set() }
+  const unplain = new Set<ShellUnplain>()
+  const feeds = new Set<ShellFeed>()
+  const reading: Reading = { heredocs: [], unknowns: new Set(), unplain, feeds }
   const statements = statementsOf(text, reading, 'line', 0, true)
   // Arithmetic evaluates a variable's value as an expression, and a subscript
   // in it runs its substitutions: with X='a[$(cmd)]', $((X)) runs cmd. Which
@@ -1455,5 +1541,11 @@ export function parseShell(text: string): ShellParse {
   // such as a counter, and a substitution with no arithmetic both pass.
   if (reading.takesInput && reading.isArithmetic) reading.unknowns.add('expansion')
   if (reading.readsStdin && reading.isFed) reading.unknowns.add('stdin')
-  return { statements, unknowns: [...reading.unknowns].sort() }
+  return {
+    statements,
+    unknowns: [...reading.unknowns].sort(),
+    unplain: [...unplain].sort(),
+    feeds: [...feeds].sort(),
+    hasSubshell: reading.hasSubshell === true,
+  }
 }

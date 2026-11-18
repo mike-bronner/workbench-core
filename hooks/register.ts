@@ -197,7 +197,7 @@ import { bufferWarningOf } from './mods/monitor'
 import { parseShell } from './mods/shell'
 import { callerKeyOf, freshnessOf, isFinalDescription, isMcpTool, isOutwardTool, isRepeated, isSubmitLine, readSourceOf, readsAfter, refusalTextOf, refusalsAfter, repeatReminderOf, sourcesRefusalOf } from './mods/outward'
 import type { FolderChange } from './mods/listings'
-import { changeOf, changeReportOf, globFoldersOf, listingWith, listingsAfter, listingsAfterOwn, lsFoldersOf, namesOf } from './mods/listings'
+import { changeOf, changeReportOf, globFoldersOf, listingWith, listingsAfter, listingsAfterOwn, lsFoldersOf, namesOf, takenBy } from './mods/listings'
 import {
   AGENT_WORKTREE_REFUSAL,
   ENTER_WORKTREE_REFUSAL,
@@ -1345,14 +1345,27 @@ async function markReported($: EngineInterface, caller: string, changes: readonl
   for (const { change, names } of changes) await update($, folderListings, listings => listingsAfter(listings, caller, change.folder, names, now))
 }
 
-async function recordListings($: EngineInterface, e: { tool: string; agentId?: string } & Record<string, unknown>): Promise<void> {
+async function writtenPathOf($: EngineInterface, e: { tool: string } & Record<string, unknown>): Promise<string | undefined> {
+  if (e.tool !== 'Write' && e.tool !== 'Edit' && e.tool !== 'NotebookEdit') return undefined
+  const written = e.tool === 'NotebookEdit' ? e.notebook_path : e.file_path
+  return typeof written === 'string' ? resolvePath(written, await $.session.cwd(), await $.env.get('HOME')) : undefined
+}
+
+async function heldFoldersOf($: EngineInterface, caller: string, path: string): Promise<Set<string>> {
+  const held = new Set<string>()
+  for (const [folder, name] of takenBy(await read($, folderListings), caller, path)) {
+    const names = await folderNamesOf($, folder)
+    if (names === undefined || names.includes(name)) held.add(folder)
+  }
+  return held
+}
+
+async function recordListings($: EngineInterface, e: { tool: string; agentId?: string } & Record<string, unknown>, written?: { path: string; held: ReadonlySet<string> }): Promise<void> {
   const caller = e.agentId ?? 'main'
   const cwd = await $.session.cwd()
   const home = await $.env.get('HOME')
-  if (e.tool === 'Write' || e.tool === 'Edit' || e.tool === 'NotebookEdit') {
-    const written = e.tool === 'NotebookEdit' ? e.notebook_path : e.file_path
-    const path = typeof written === 'string' ? resolvePath(written, cwd, home) : undefined
-    if (path !== undefined) await update($, folderListings, listings => listingWith(listings, caller, path))
+  if (written !== undefined) {
+    await update($, folderListings, listings => listingWith(listings, caller, written.path, written.held))
     return
   }
   const folders =
@@ -2332,6 +2345,8 @@ export const register: Register = on => {
     }
     const isRepeat = isMcpTool(e.tool) && isRepeated(await read($, mcpRefusals), key)
     const before = e.tool === 'Bash' ? await folderSnapshotOf($, caller) : undefined
+    const path = await writtenPathOf($, e as { tool: string } & Record<string, unknown>)
+    const written = path === undefined ? undefined : { path, held: await heldFoldersOf($, caller, path) }
     const result = await next(e)
     if (result.deny !== undefined) return result
     if (report !== undefined) await markReported($, caller, folders)
@@ -2341,7 +2356,7 @@ export const register: Register = on => {
     const source = result.isError === true ? undefined : readSourceOf(e.tool, e as Record<string, unknown>, isOutward)
     const fresh = isSubmit ? freshnessOf(await read($, sourceReads), now) : undefined
     if (source !== undefined) await update($, sourceReads, reads => readsAfter(reads, source, now))
-    if (result.isError !== true) await recordListings($, e as { tool: string; agentId?: string } & Record<string, unknown>)
+    if (result.isError !== true) await recordListings($, e as { tool: string; agentId?: string } & Record<string, unknown>, written)
     const added = [...(isRepeat ? [repeatReminderOf(e.tool)] : []), ...(fresh === undefined ? [] : [fresh]), ...(report === undefined ? [] : [report])]
     return added.length === 0 ? result : { ...result, context: [...(result.context ?? []), ...added] }
   }).catch(($, e, next) => next(e))

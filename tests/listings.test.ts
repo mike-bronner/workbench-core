@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { KEPT_FOLDERS, KEPT_NAMES, LISTED_NAMES, changeOf, changeReportOf, globFoldersOf, listingWith, listingsAfter, listingsAfterOwn, lsFoldersOf } from '../hooks/mods/listings'
+import { KEPT_FOLDERS, KEPT_NAMES, LISTED_NAMES, changeOf, changeReportOf, globFoldersOf, listingWith, listingsAfter, listingsAfterOwn, lsFoldersOf, takenBy } from '../hooks/mods/listings'
 import { parseShell } from '../hooks/mods/shell'
 import { sourcesRefusalOf } from '../hooks/mods/outward'
 import type { Bench } from './bench'
@@ -183,6 +183,58 @@ describe("the session's own change to a listed folder is no change", () => {
     expect(first.deny).not.toContain('a1')
     expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
   })
+
+  const edits: Call[] = [
+    { tool: 'Edit', file_path: `${BOX}/f.md`, old_string: 'x', new_string: 'y' },
+    { tool: 'Write', file_path: `${BOX}/f.md`, content: 'y' },
+    { tool: 'NotebookEdit', notebook_path: `${BOX}/f.md`, new_source: 'y' },
+  ]
+  for (const edit of edits) {
+    test(`${edit.tool} of an entry made outside the session takes nothing in, and blocks once`, async ($, on) => {
+      const b = await session($, on)
+      await call($, { tool: 'Bash', command: `ls ${BOX}` })
+      b.files.set(`${BOX}/f.md`, 'x')
+      expect((await call($, edit)).deny).toBeUndefined()
+      const first = await call($, { tool: 'Bash', command: 'gh pr ready 4' })
+      expect(first.deny).toContain(`- ${BOX}\n  added: f.md\n`)
+      expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
+    })
+  }
+
+  test('a Write into a subfolder made outside the session takes nothing in, and blocks once', async ($, on) => {
+    const b = await session($, on)
+    await call($, { tool: 'Bash', command: `ls ${BOX}` })
+    b.dirs.add(`${BOX}/drafts`)
+    expect((await call($, { tool: 'Write', file_path: `${BOX}/drafts/one.md`, content: 'x' })).deny).toBeUndefined()
+    b.files.set(`${BOX}/drafts/one.md`, 'x')
+    expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toContain(`- ${BOX}\n  added: drafts\n`)
+  })
+
+  test('a Write into a folder that cannot be listed before the call takes nothing in', async ($, on) => {
+    const b = await session($, on)
+    await call($, { tool: 'Bash', command: `ls ${BOX}` })
+    b.unlistable.add(BOX)
+    b.denyBeneath = () => void b.unlistable.delete(BOX)
+    expect((await call($, { tool: 'Write', file_path: `${BOX}/new.md`, content: 'x' })).deny).toBeUndefined()
+    b.denyBeneath = undefined
+    b.files.set(`${BOX}/new.md`, 'x')
+    expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toContain(`- ${BOX}\n  added: new.md\n`)
+  })
+
+  for (const tool of ['Write', 'Edit']) {
+    test(`a refused ${tool} takes nothing in, so a file made outside afterwards blocks once`, async ($, on) => {
+      const b = await session($, on)
+      await call($, { tool: 'Bash', command: `ls ${BOX}` })
+      b.denyBeneath = denied => (denied === tool ? 'denied by the person' : undefined)
+      const input: Call = tool === 'Write' ? { tool, file_path: `${BOX}/c.md`, content: 'x' } : { tool, file_path: `${BOX}/c.md`, old_string: '', new_string: 'x' }
+      expect((await call($, input)).deny).toBe('denied by the person')
+      b.denyBeneath = undefined
+      b.files.set(`${BOX}/c.md`, 'x')
+      const first = await call($, { tool: 'Bash', command: 'gh pr ready 4' })
+      expect(first.deny).toContain(`- ${BOX}\n  added: c.md\n`)
+      expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
+    })
+  }
 })
 
 describe('a full folder record compares up to the bound its listing set', () => {
@@ -240,6 +292,19 @@ describe('a full folder record compares up to the bound its listing set', () => 
     const first = await call($, { tool: 'Bash', command: 'gh pr ready 4' })
     expect(first.deny).toContain('- /repo/full\n  added: n0998a\n  removed: n0999\n')
     expect(first.deny).not.toContain('a1')
+  })
+
+  test('own adds that grow a record of 999 names to 1,000 keep its null bound, so an add past the last name blocks', async ($, on) => {
+    const b = await session($, on)
+    for (const name of FULL.slice(0, -1)) b.files.set(`/repo/full/${name}`, 'x')
+    await call($, { tool: 'Bash', command: 'ls /repo/full' })
+    expect((await call($, { tool: 'Write', file_path: '/repo/full/n0999', content: 'x' })).deny).toBeUndefined()
+    b.files.set('/repo/full/n0999', 'x')
+    expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
+    b.files.set('/repo/full/zz-late', 'x')
+    const first = await call($, { tool: 'Bash', command: 'gh pr ready 4' })
+    expect(first.deny).toContain('- /repo/full\n  added: zz-late\n')
+    expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
   })
 })
 
@@ -422,6 +487,9 @@ describe('what a listing records', () => {
     expect(listingsAfter({}, 'main', '/f', full, 0).main?.['/f']?.bound).toBe('n0999')
     expect(listingsAfter({}, 'main', '/f', [...full, 'z'], 0).main?.['/f']?.bound).toBe('n0999')
     expect(listingsAfter({}, 'main', '/f', full.slice(1), 0).main?.['/f']?.bound).toBe(null)
+    expect(changeOf('/f', { names: full, bound: null }, [...full, 'z-late'])).toEqual({ folder: '/f', added: ['z-late'], removed: [] })
+    const grown = listingWith(listingsAfter({}, 'main', '/f', full.slice(0, -1), 0), 'main', '/f/n0999').main?.['/f']
+    expect(grown).toEqual({ names: full, at: 0, bound: null })
   })
 
   test('a record an older build saved with no bound is bound by its last name when it holds 1,000 names or more', () => {
@@ -452,6 +520,11 @@ describe('what a listing records', () => {
     expect(listingWith(listingsAfter({}, 'main', '/', ['etc'], 0), 'main', '/tmp/x').main?.['/']?.names).toEqual(['etc', 'tmp'])
     expect(listingWith(listingsAfter({}, 'main', '/f', ['a'], 0), 'main', '/fx/b').main?.['/f']?.names).toEqual(['a'])
     expect(listingWith({}, 'main', '/f/b')).toEqual({})
+    const two = listingsAfter(listingsAfter({}, 'main', '/f', ['a'], 0), 'main', '/f/sub', [], 1)
+    expect(takenBy(two, 'main', '/f/sub/n.md')).toEqual([['/f/sub', 'n.md'], ['/f', 'sub']])
+    const held = listingWith(two, 'main', '/f/sub/n.md', new Set(['/f']))
+    expect(held.main?.['/f']?.names).toEqual(['a'])
+    expect(held.main?.['/f/sub']?.names).toEqual(['n.md'])
   })
 
   test('an own change applies only its own difference, and keeps the bound of a full record', () => {

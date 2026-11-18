@@ -47,15 +47,25 @@ export const boundOf = (listing: Pick<Listing, 'names' | 'bound'>): string | nul
 
 const isWithin = (name: string, bound: string | null): boolean => bound === null || name <= bound
 
-export function listingWith(listings: Listings, caller: string, path: string): Listings {
+const nameBelow = (folder: string, path: string): string | undefined => {
+  const below = folder === '/' ? path.slice(1) : path.startsWith(`${folder}/`) ? path.slice(folder.length + 1) : undefined
+  const name = below?.split('/')[0]
+  return name === '' ? undefined : name
+}
+
+export const takenBy = (listings: Listings, caller: string, path: string): [string, string][] =>
+  Object.entries(listings[caller] ?? {}).flatMap(([folder, listing]): [string, string][] => {
+    const name = nameBelow(folder, path)
+    return name === undefined || listing.names.includes(name) || !isWithin(name, boundOf(listing)) ? [] : [[folder, name]]
+  })
+
+export function listingWith(listings: Listings, caller: string, path: string, held: ReadonlySet<string> = new Set()): Listings {
   const own = listings[caller]
   if (own === undefined) return listings
+  const taken = new Map(takenBy(listings, caller, path).filter(([folder]) => !held.has(folder)))
   const updated = Object.entries(own).map(([folder, listing]): [string, Listing] => {
-    const below = folder === '/' ? path.slice(1) : path.startsWith(`${folder}/`) ? path.slice(folder.length + 1) : undefined
-    const name = below?.split('/')[0]
-    const bound = boundOf(listing)
-    if (name === undefined || name === '' || listing.names.includes(name) || !isWithin(name, bound)) return [folder, listing]
-    return [folder, { ...listing, names: [...listing.names, name].sort(), bound }]
+    const name = taken.get(folder)
+    return name === undefined ? [folder, listing] : [folder, { ...listing, names: [...listing.names, name].sort(), bound: boundOf(listing) }]
   })
   return { ...listings, [caller]: Object.fromEntries(updated) }
 }

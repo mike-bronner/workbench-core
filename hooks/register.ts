@@ -197,7 +197,7 @@ import { bufferWarningOf } from './mods/monitor'
 import { parseShell } from './mods/shell'
 import { callerKeyOf, freshnessOf, isFinalDescription, isMcpTool, isOutwardTool, isRepeated, isSubmitLine, readSourceOf, readsAfter, refusalTextOf, refusalsAfter, repeatReminderOf, sourcesRefusalOf } from './mods/outward'
 import type { FolderChange } from './mods/listings'
-import { changeOf, changeReportOf, globFoldersOf, listingWith, listingsAfter, lsFoldersOf, namesOf } from './mods/listings'
+import { changeOf, changeReportOf, globFoldersOf, isOwnAdd, listingWith, listingsAfter, listingsAfterOwn, lsFoldersOf, namesOf, takenBy } from './mods/listings'
 import {
   AGENT_WORKTREE_REFUSAL,
   ENTER_WORKTREE_REFUSAL,
@@ -1318,10 +1318,26 @@ async function folderChangesOf($: EngineInterface, caller: string): Promise<{ ch
   const changes: { change: FolderChange; names: string[] }[] = []
   for (const [folder, listing] of Object.entries((await read($, folderListings))[caller] ?? {})) {
     const names = await folderNamesOf($, folder)
-    const change = names === undefined ? undefined : changeOf(folder, listing.names, names)
+    const change = names === undefined ? undefined : changeOf(folder, listing, names)
     if (change !== undefined && names !== undefined) changes.push({ change, names })
   }
   return changes
+}
+
+async function folderSnapshotOf($: EngineInterface, caller: string): Promise<Map<string, string[]>> {
+  const snapshot = new Map<string, string[]>()
+  for (const folder of Object.keys((await read($, folderListings))[caller] ?? {})) {
+    const names = await folderNamesOf($, folder)
+    if (names !== undefined) snapshot.set(folder, names)
+  }
+  return snapshot
+}
+
+async function takeOwnChanges($: EngineInterface, caller: string, before: ReadonlyMap<string, string[]>): Promise<void> {
+  for (const [folder, names] of before) {
+    const after = await folderNamesOf($, folder)
+    if (after !== undefined && changeOf(folder, { names, bound: null }, after) !== undefined) await update($, folderListings, listings => listingsAfterOwn(listings, caller, folder, names, after))
+  }
 }
 
 async function markReported($: EngineInterface, caller: string, changes: readonly { change: FolderChange; names: string[] }[]): Promise<void> {
@@ -1329,14 +1345,32 @@ async function markReported($: EngineInterface, caller: string, changes: readonl
   for (const { change, names } of changes) await update($, folderListings, listings => listingsAfter(listings, caller, change.folder, names, now))
 }
 
-async function recordListings($: EngineInterface, e: { tool: string; agentId?: string } & Record<string, unknown>): Promise<void> {
+async function writtenPathOf($: EngineInterface, e: { tool: string } & Record<string, unknown>): Promise<string | undefined> {
+  if (e.tool !== 'Write' && e.tool !== 'Edit' && e.tool !== 'NotebookEdit') return undefined
+  const written = e.tool === 'NotebookEdit' ? e.notebook_path : e.file_path
+  return typeof written === 'string' ? resolvePath(written, await $.session.cwd(), await $.env.get('HOME')) : undefined
+}
+
+type WrittenFolder = { folder: string; name: string; before?: string[] }
+
+async function writtenFoldersOf($: EngineInterface, caller: string, path: string): Promise<WrittenFolder[]> {
+  const folders: WrittenFolder[] = []
+  for (const [folder, name] of takenBy(await read($, folderListings), caller, path)) folders.push({ folder, name, before: await folderNamesOf($, folder) })
+  return folders
+}
+
+async function heldFoldersOf($: EngineInterface, folders: readonly WrittenFolder[]): Promise<Set<string>> {
+  const held = new Set<string>()
+  for (const { folder, name, before } of folders) if (!isOwnAdd(name, before, await folderNamesOf($, folder))) held.add(folder)
+  return held
+}
+
+async function recordListings($: EngineInterface, e: { tool: string; agentId?: string } & Record<string, unknown>, written?: { path: string; held: ReadonlySet<string> }): Promise<void> {
   const caller = e.agentId ?? 'main'
   const cwd = await $.session.cwd()
   const home = await $.env.get('HOME')
-  if (e.tool === 'Write' || e.tool === 'NotebookEdit') {
-    const written = e.tool === 'Write' ? e.file_path : e.notebook_path
-    const path = typeof written === 'string' ? resolvePath(written, cwd, home) : undefined
-    if (path !== undefined) await update($, folderListings, listings => listingWith(listings, caller, path))
+  if (written !== undefined) {
+    await update($, folderListings, listings => listingWith(listings, caller, written.path, written.held))
     return
   }
   const folders =
@@ -2300,7 +2334,7 @@ export const register: Register = on => {
     return e.tool !== 'Bash' || command === undefined ? next(e) : ledgerCall($, e, command, next as (e: never) => Promise<ToolCallResult>)
   }).catch(($, e, next) => (next.called || e.tool !== 'Bash' || ledgerCommandOf(parseShell(e.command)) === undefined ? next(e) : { deny: GUARD_FAILED }))
 
-  on('tool.call', { tool: /^(mcp__.+|Bash|Read|WebFetch|Glob|Write|NotebookEdit)$/ }, async ($, e, next) => {
+  on('tool.call', { tool: /^(mcp__.+|Bash|Read|WebFetch|Glob|Write|Edit|NotebookEdit)$/ }, async ($, e, next) => {
     const key = callerKeyOf(e.agentId, e.tool)
     const caller = e.agentId ?? 'main'
     const isOutward = isOutwardTool(e.tool) || (isMcpTool(e.tool) && isFinalDescription(await toolDescriptionOf($, e.tool)))
@@ -2315,15 +2349,19 @@ export const register: Register = on => {
       return { deny: [...(isFirst ? [sourcesRefusalOf(e.tool)] : []), ...(report === undefined ? [] : [report])].join('\n\n') }
     }
     const isRepeat = isMcpTool(e.tool) && isRepeated(await read($, mcpRefusals), key)
+    const before = e.tool === 'Bash' ? await folderSnapshotOf($, caller) : undefined
+    const path = await writtenPathOf($, e as { tool: string } & Record<string, unknown>)
+    const written = path === undefined ? undefined : { path, folders: await writtenFoldersOf($, caller, path) }
     const result = await next(e)
     if (result.deny !== undefined) return result
+    if (report !== undefined) await markReported($, caller, folders)
+    if (before !== undefined) await takeOwnChanges($, caller, before)
     const now = await $.clock.now()
     if (isMcpTool(e.tool)) await update($, mcpRefusals, refusals => refusalsAfter(refusals, key, refusalTextOf(result)))
     const source = result.isError === true ? undefined : readSourceOf(e.tool, e as Record<string, unknown>, isOutward)
     const fresh = isSubmit ? freshnessOf(await read($, sourceReads), now) : undefined
     if (source !== undefined) await update($, sourceReads, reads => readsAfter(reads, source, now))
-    if (result.isError !== true) await recordListings($, e as { tool: string; agentId?: string } & Record<string, unknown>)
-    if (report !== undefined) await markReported($, caller, folders)
+    if (result.isError !== true) await recordListings($, e as { tool: string; agentId?: string } & Record<string, unknown>, written && { path: written.path, held: await heldFoldersOf($, written.folders) })
     const added = [...(isRepeat ? [repeatReminderOf(e.tool)] : []), ...(fresh === undefined ? [] : [fresh]), ...(report === undefined ? [] : [report])]
     return added.length === 0 ? result : { ...result, context: [...(result.context ?? []), ...added] }
   }).catch(($, e, next) => next(e))

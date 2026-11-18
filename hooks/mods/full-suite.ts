@@ -7,9 +7,18 @@ export type ScriptReader = (path: string) => Promise<Script | undefined>
 type Scope = { cwd: string | undefined; home: string | undefined; pluginRoots: readonly string[]; read: ScriptReader; depth: number; isStrict: boolean; isRunnerOnly: boolean; scriptDir?: string; namesTests?: boolean }
 
 export const HEAD = 'Full-suite gate (workbench-core): '
-const ADVICE =
-  'The orchestrator never runs the full suite. It runs once, last, in Holmes\'s final run. Dispatch Holmes with a brief whose Goal begins "Final suite run:". ' +
-  'A narrow run stays open to you: name one test file, a filter or one case, or write a script\'s path out in full so this gate can read it.'
+const ASK = 'whether he runs the suite himself or Holmes runs it, in a dispatch whose brief Goal begins "Final suite run:"'
+const NARROW = 'A narrow run stays open to you: name one test file, a filter or one case, or write a script\'s path out in full so this gate can read it.'
+const MAIN_ADVICE = `The orchestrator never runs the full suite. Before any Holmes final run, ask Mike ${ASK}. ${NARROW}`
+const SUB_AGENT_ADVICE = `A sub-agent never runs the full suite, because only Mike decides who runs it. Stop, and hand back to your orchestrator. The orchestrator asks Mike ${ASK}. ${NARROW}`
+const FINAL_RUN_TYPE = /^workbench-dev-team:holmes(?:-(?:local|index))?$/
+const GOAL = /^[ \t]*Goal:[ \t]*/i
+
+export function isFinalRunDispatch(type: unknown, prompt: unknown): boolean {
+  if (typeof type !== 'string' || !FINAL_RUN_TYPE.test(type) || typeof prompt !== 'string') return false
+  const goal = prompt.split('\n').find(line => GOAL.test(line))
+  return goal?.replace(GOAL, '').startsWith('Final suite run:') ?? false
+}
 
 const MAX_DEPTH = 4
 const DIRECT: ReadonlySet<string> = new Set(['pest', 'phpunit', 'paratest', 'pytest', 'py.test', 'vitest', 'jest', 'mocha', 'ava', 'phpspec'])
@@ -334,7 +343,7 @@ async function lineFinding(line: string, scope: Scope): Promise<string | undefin
     : undefined
 }
 
-export async function suiteRefusal(line: string, cwd: string, home: string | undefined, pluginRoots: readonly string[], read: ScriptReader): Promise<string | undefined> {
+export async function suiteRefusal(line: string, cwd: string, home: string | undefined, pluginRoots: readonly string[], read: ScriptReader, isSubAgent = false): Promise<string | undefined> {
   const found = await lineFinding(line, { cwd, home, pluginRoots, read, depth: 0, isStrict: true, isRunnerOnly: false })
-  return found === undefined ? undefined : `${HEAD}this call ${found}. ${ADVICE}`
+  return found === undefined ? undefined : `${HEAD}this call ${found}. ${isSubAgent ? SUB_AGENT_ADVICE : MAIN_ADVICE}`
 }

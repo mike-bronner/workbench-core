@@ -619,6 +619,29 @@ The guard holds three checks from the shipped output style:
 
 **Terminal replies are out of scope,** and cannot usefully be brought in. A `Stop` hook fires after the reply has already been displayed, so blocking there appends a correction instead of preventing the text. Replies are governed by the behavioral overrides, which sit at system-prompt tier.
 
+### Pull request template guard
+
+A main session opened a pull request with a free-form body and skipped the repository's `.github/PULL_REQUEST_TEMPLATE.md`, and it was not the first time. The rule to use the template lived only in a dev-team reference that the session opening the pull request never loads. The outbound prose guard checks writing style only.
+
+The pull request template guard sits beside the outbound prose guard. It runs in the hooks module (`hooks/mods/pr-template.ts`, judged in `hooks/register.ts`'s `tool.call` hook), on Bash right after the prose guard, so a body that breaks the prose rules gets the prose refusal first. Its tests are in `tests/pr-template.test.ts`. Its rules:
+
+- **What it judges.** `gh pr create`, always, and `gh pr edit` when it sets the body with `--body`, `-b`, `--body-file` or `-F`. An edit that sets only a title, a label or anything else runs unjudged. A create with no body, such as `--fill`, has an empty body and is judged like any other.
+- **Where it looks.** At the top level of the session's working tree, as `git rev-parse --show-toplevel` names it for the session's folder: `.github/PULL_REQUEST_TEMPLATE.md`, `PULL_REQUEST_TEMPLATE.md` at the root and `docs/PULL_REQUEST_TEMPLATE.md`, with the file name matched in any letter case, and every `.md` file in a `.github/PULL_REQUEST_TEMPLATE/` folder, also in any letter case.
+- **When a body passes.** When it holds every heading of a template, or of any one template it found. A heading counts at any level and in any letter case. Headings in fenced code or HTML comments do not count, in the template or the body. Carriage returns are dropped first, so a template or a body with CRLF line ends is read like one with LF.
+- **What the refusal says.** Each template's path and each heading the body lacks, and to fill every section honestly and leave unticked any checkbox that attests to something not done or not verified.
+- **With no template, the call runs.** Outside a git repository, a call that names no repository runs too, because gh cannot open a pull request there. The guard counts the folder as outside a repository only when git says "not a git repository".
+- **The body by every route.** An inline body, a body file and standard input from a heredoc or a here-string, read the same way the prose guard reads them. When the call repeats a body flag, only the last body is judged, because gh posts only that one.
+
+**It does not follow a change of directory.** A `gh pr create`, or a `gh pr edit` that sets the body, is refused when anything on the same line changes directory before it: `cd`, `pushd`, `popd` or `chdir`, also inside a subshell, and `env -C`, `env --chdir` or `sudo -D` in front of the call. This holds whether or not the session's tree has a template, because the guard cannot know the template of the folder the call moves to. The refusal says to run the call from the repository's own folder.
+
+**It fails closed where it cannot place the call.** A call that names a repository with `-R`, `--repo` or `GH_REPO` is judged against the working tree when one of the tree's GitHub remotes points at that repository. That covers a fork whose `upstream` remote is the target. A `GH_REPO` that the line sets, exports or declares anywhere counts as a named repository too. Any other named repository is refused, because the guard reads templates from the working tree only: run the call from a working tree of that repository. So is a call where git cannot name the top level and does not say "not a git repository", such as a missing folder or one git refuses for its owner, and a template folder or file the guard cannot list or read.
+
+**Out of scope.** Mike's decision named `gh pr create` and `gh pr edit`. These routes are not judged:
+
+- `gh api` to the pulls endpoint, such as a `POST` to `repos/{owner}/{repo}/pulls` with a `body` field, or a `PATCH` to `repos/{owner}/{repo}/pulls/{number}`.
+- `gh pr new`, the alias gh runs as `gh pr create`, and any user alias that runs `gh pr create`.
+- The GitHub MCP pull request tools.
+
 ### Destructive database guard
 
 On 2026-09-04, in an unrelated Laravel repo, Claude ran `php artisan db:wipe --database=pgsql --force`, believing `pgsql` named the testing database. It does not. `phpunit.xml` only overrides `DB_DATABASE=testing` inside a test run, so an Artisan command typed at the shell resolves `pgsql` against `.env` — the development database. Every table was dropped and several hours of imported data went with them. No permission rule matched, so nothing prompted: the rails guarded disks, git history, and `rm`, and said nothing at all about databases.
@@ -1250,6 +1273,8 @@ The [full-suite gate](#full-suite-gate) runs in the same hook, on a Bash call af
 The [false-bare guard](#false-bare-guard) runs in the same hook, on Bash after the provisioning guard, with its logic in `hooks/mods/false-bare.ts`. Its repair half also runs at `session.start`. It is new, and replaced no bash hook.
 
 The [outbound prose guard](#outbound-prose-guard) runs in the same hook, on Bash after the vault git guard and on the board and GitHub MCP prose tools, with its logic in `hooks/mods/outbound-prose.ts`. It was a bash hook until batch C3a. Its tests are the recorded cases in `tests/guard-corpus/guard-cases.ts`: each body the bash hook refused, with the body files of the sandbox it ran in, written as `/sandbox`. `tests/guard-corpus.test.ts` replays each one with its files in place, and the port must refuse it.
+
+The [pull request template guard](#pull-request-template-guard) runs in the same hook, on Bash right after the outbound prose guard, with its logic in `hooks/mods/pr-template.ts`. It is new, and replaced no bash hook.
 
 **A guard reads a command only through `parseShell`.** It reads each statement's words, its redirect targets and its heredoc bodies, never the raw text.
 

@@ -263,6 +263,8 @@ import { answerFact as answerFactOf, scopeOf as scopeOfHost, scopeRootsOf as sco
 import { needsVaultGit, vaultGitRefusal } from './mods/vault-git'
 import type { BodyPart } from './mods/outbound-prose'
 import { PROSE_TOOL_SUFFIXES, UNREAD_BODY, bashBodies, isProseTool, mcpBody, proseFindings, proseOfJson, proseRefusal } from './mods/outbound-prose'
+import type { Template } from './mods/pr-template'
+import { OTHER_REPO_TEMPLATE, TEMPLATE_FOLDER, TEMPLATE_NAME, TEMPLATE_PLACES, UNPLACED_TEMPLATE, prCallsOf, templateRefusal } from './mods/pr-template'
 import {
   REFUSAL,
   STORE_KEY,
@@ -1812,6 +1814,78 @@ async function outboundRefusal($: EngineInterface, parts: readonly BodyPart[], h
   return findings.length === 0 ? undefined : proseRefusal(findings)
 }
 
+const kindOf = ($: EngineInterface, entry: FsEntry, path: string): Promise<string | undefined> =>
+  entry.kind !== 'other'
+    ? Promise.resolve(entry.kind)
+    : $.fs.stat(path, { resolve: true }).then(
+        stat => stat.kind,
+        () => undefined,
+      )
+
+async function templatesAt($: EngineInterface, top: string): Promise<Template[] | undefined> {
+  const templates: Template[] = []
+  const root = await $.fs.list(top).catch(() => undefined)
+  if (root === undefined) return undefined
+  for (const place of TEMPLATE_PLACES) {
+    const dir = place === '' ? top : `${top}/${place}`
+    const folder = root.find(e => e.name === place)
+    if (place !== '' && (folder === undefined || (await kindOf($, folder, dir)) !== 'dir')) continue
+    const entries = place === '' ? root : await $.fs.list(dir).catch(() => undefined)
+    if (entries === undefined) return undefined
+    for (const entry of entries) {
+      const name = entry.name.toLowerCase()
+      const path = `${dir}/${entry.name}`
+      const kind = await kindOf($, entry, path)
+      const isFolder = place === '.github' && name === TEMPLATE_FOLDER && kind === 'dir'
+      const found = name === TEMPLATE_NAME && kind === 'file' ? [{ path, at: entry.name }] : []
+      if (isFolder) {
+        const listed = await $.fs.list(path).catch(() => undefined)
+        if (listed === undefined) return undefined
+        for (const e of listed)
+          if (e.name.toLowerCase().endsWith('.md') && (await kindOf($, e, `${path}/${e.name}`)) === 'file') found.push({ path: `${path}/${e.name}`, at: `${entry.name}/${e.name}` })
+      }
+      for (const file of found) {
+        const text = await $.fs.read(file.path).catch(() => undefined)
+        if (text === undefined) return undefined
+        templates.push({ path: place === '' ? file.at : `${place}/${file.at}`, text })
+      }
+    }
+  }
+  return templates
+}
+
+async function prTemplateOf($: EngineInterface, parse: WorkbenchShellParse, home: string | undefined): Promise<string | undefined> {
+  const reading = prCallsOf(parse)
+  if ('refusal' in reading) return reading.refusal
+  if (reading.calls.length === 0) return undefined
+  const cwd = await $.session.cwd()
+  const git = await $.process.run(['git', '-C', cwd, 'rev-parse', '--show-toplevel'], { env: { LC_ALL: 'C' }, timeoutMs: 10_000 }).catch(() => undefined)
+  const top = git?.exitCode === 0 ? git.stdout.trim() : ''
+  const isOutside = git !== undefined && git.exitCode !== 0 && /not a git repository/i.test(git.stderr)
+  for (const call of reading.calls) {
+    const named = call.repo ?? ((await $.env.get('GH_REPO')) || undefined)
+    if (isOutside) {
+      if (named === undefined) continue
+      return OTHER_REPO_TEMPLATE
+    }
+    if (top === '') return UNPLACED_TEMPLATE
+    if (named !== undefined) {
+      const slug = repoSlugOf(named)
+      const remotes = await remotesOf($, top)
+      if (remotes === undefined) return UNPLACED_TEMPLATE
+      if (slug === undefined || !remotes.some(r => originRepoOf(r.url) === slug)) return OTHER_REPO_TEMPLATE
+    }
+    const templates = await templatesAt($, top)
+    if (templates === undefined) return UNPLACED_TEMPLATE
+    if (templates.length === 0) continue
+    const text = call.body === undefined ? '' : await bodyText($, call.body, home)
+    if (text === undefined) return UNREAD_BODY
+    const refusal = templateRefusal(templates, text)
+    if (refusal !== undefined) return refusal
+  }
+  return undefined
+}
+
 // The guards' verdict on one tool call (hooks/mods/guards.ts): a refusal, an
 // advisory to add to the result, or nothing. The facts each guard needs are
 // read only when the call reaches it. `isAttended` says whether a person can
@@ -1874,7 +1948,8 @@ async function guardVerdict($: EngineInterface, e: Guarded, isAttended: boolean)
         ((await $.env.get('WORKBENCH_MEETING_WRITER')) === '1' ? meetingWriterRefusal(parse) : undefined) ??
         (isLedgerLine ? undefined : await databaseOf($, line, parse, home)) ??
         (await vaultGitOf($, line, parse, home)) ??
-        (await bashProseOf($, line, parse, home))
+        (await bashProseOf($, line, parse, home)) ??
+        (await prTemplateOf($, parse, home))
       if (refusal !== undefined) return { deny: refusal }
       // A target nobody can read is refused here. One read and outside every
       // root is put to Mike by the tool.check hook, where a person can answer.

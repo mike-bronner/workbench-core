@@ -878,7 +878,7 @@ export const isOtherRepo = (repo: string | null | undefined, origin: string | un
 
 export type RemoteTarget = { repo: string; branch?: string }
 
-const ghRepoOf = (st: ShellStatement): string | undefined => {
+export const ghRepoOf = (st: ShellStatement): string | undefined => {
   const assigned = st.assignments.map(word => /^GH_REPO=(.+)$/.exec(word)?.[1]).find(value => value !== undefined)
   for (let i = 0; i < st.args.length; i++) {
     const arg = st.args[i] as string

@@ -9,7 +9,7 @@ import { parseShell } from '../hooks/mods/shell'
 import type { WorkbenchShellParse } from '../types'
 import type { Bench } from './bench'
 import { HOME, PERSON, bench, start } from './bench'
-import { COMMIT_MAIN_PASSES, COMMIT_PASSES, COMMIT_REFUSALS, GREP_READS, GREP_WRITES } from './commit-guard-cases'
+import { COMMIT_MAIN_PASSES, COMMIT_PASSES, COMMIT_REFUSALS, GREP_READS, GREP_WRITES, REPORTED_SEARCH, SEARCH_THEN_ACTION } from './commit-guard-cases'
 import type { CommitLane } from './commit-guard-cases'
 import type { Kind } from './commit-guard-parity'
 import { CORE_REFUSES, DEV_TEAM_VERDICTS, INTENDED_DIFFERENCES, SOURCE } from './commit-guard-parity'
@@ -69,6 +69,52 @@ describe('the commit guard: the false positives pass', () => {
       expect(verdictOf(line, CALLERS['sub-agent'])).toBeDefined()
     })
   }
+})
+
+describe('the commit guard: a search beside cd and a printing sed reads its pattern as data', () => {
+  test('the line a sub-agent was refused on 2026-11-18 passes in every lane', () => {
+    for (const lane of LANES) expect([lane, verdictOf(REPORTED_SEARCH, CALLERS[lane])]).toEqual([lane, undefined])
+  })
+
+  test('the line runs in the hooks module in the main loop and for a sub-agent', async ($, on) => {
+    const b = bench(on)
+    await $.session.start(start())
+    await $.prompt.submit({ text: 'look around', wait: false, origin: PERSON })
+    expect(await refusalOf($, b, REPORTED_SEARCH)).toBeUndefined()
+    expect(await refusalOf($, b, REPORTED_SEARCH, 'a1')).toBeUndefined()
+    for (const line of GREP_READS) expect(await refusalOf($, b, line, 'a1')).toBeUndefined()
+  })
+
+  test('the line runs in the hooks module for the pipeline', async ($, on) => {
+    const b = bench(on, { env: { HOME, WORKBENCH_DEV_TEAM_PIPELINE: '1', CLAUDE_CODE_AGENT: 'watson' } })
+    await $.session.start(start(false))
+    await $.prompt.submit({ text: 'Item ID: 12', wait: false, origin: { kind: 'sdk' } })
+    expect(await refusalOf($, b, REPORTED_SEARCH)).toBeUndefined()
+    for (const line of GREP_READS) expect(await refusalOf($, b, line)).toBeUndefined()
+  })
+
+  for (const [line, action] of SEARCH_THEN_ACTION) {
+    test(`a real ${action} after the search stays refused: ${JSON.stringify(line)}`, () => {
+      expect(verdictOf(line, CALLERS['sub-agent'])).toEqual(action === 'merge' ? MERGE_REFUSAL : SUBAGENT_REFUSAL)
+      if (action === 'merge') expect(verdictOf(line, CALLERS.pipeline)).toEqual(MERGE_REFUSAL)
+    })
+  }
+
+  test('a real merge or push after the search is refused in the hooks module when nobody asked for it', async ($, on) => {
+    const b = bench(on)
+    await $.session.start(start())
+    await $.prompt.submit({ text: 'look around', wait: false, origin: PERSON })
+    for (const [line] of SEARCH_THEN_ACTION) {
+      expect(await refusalOf($, b, line)).toBeDefined()
+      expect(await refusalOf($, b, line, 'a1')).toBeDefined()
+    }
+  })
+
+  test('rg with a zip search runs programs, so its pattern is read as code', () => {
+    expect(verdictOf("rg -nz 'git push' f | sed -n 1p", CALLERS['sub-agent'])).toEqual(SUBAGENT_REFUSAL)
+    expect(verdictOf("rg --search-zip 'gh pr merge' f", CALLERS['sub-agent'])).toEqual(MERGE_REFUSAL)
+    expect(verdictOf("rg -n 'gh pr merge' f", CALLERS['sub-agent'])).toBeUndefined()
+  })
 })
 
 describe('the commit guard gives workbench-dev-team 0.55.0\'s verdict on its corpus and core\'s, in four lanes', () => {

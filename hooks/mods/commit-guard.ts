@@ -37,16 +37,8 @@ const ASK_STRIPPED: ReadonlySet<string> = new Set(['timeout', 'time', 'nice', 'n
 const BUILT_NAME = /[{}*?[\]]|^=/
 
 const SEARCHERS: ReadonlySet<string> = new Set(['grep', 'egrep', 'fgrep', 'rg'])
-const TEXT_TOOLS: ReadonlySet<string> = new Set(['grep', 'egrep', 'fgrep', 'cut', 'head', 'tail', 'wc', 'tr', 'cat'])
 const SORT_ARG = /^(?:[^-].*|-|--|-[bcCdfghiMnrRsuVz]*(?:[kt].+)?)$/
-const UNIQ_ARG = /^-[cdDiuz]+$/
-const RG_ARG = /^(?:[^-].*|-|--|-[nioFwcHlLsSvxINU]+)$/
-
-const isQuietTool = (s: Statement): boolean =>
-  TEXT_TOOLS.has(s.name) ||
-  (s.name === 'sort' && s.args.every(arg => SORT_ARG.test(arg))) ||
-  (s.name === 'uniq' && s.args.every(arg => UNIQ_ARG.test(arg))) ||
-  (s.name === 'rg' && s.args.every(arg => RG_ARG.test(arg)))
+const RG_ZIP = /^--search-zip|^-[A-Za-z]*z/
 
 const SED_ADDRESS = String.raw`(?:\d+(?:~\d+)?|\$|/(?:[^/\\\n]|\\.)*/[IM]*)`
 const SED_PRINTS = new RegExp(String.raw`^(?:\s*(?:${SED_ADDRESS}(?:\s*,\s*(?:${SED_ADDRESS}|[+~]\d+))?)?\s*!?\s*[p=l]\s*(?:;|\n|$))+\s*$`)
@@ -86,7 +78,7 @@ const awkProgramOf = (args: readonly string[]): string | undefined => {
 }
 
 const runsOrWrites = (s: Statement): boolean =>
-  (s.name === 'rg' && s.args.some(arg => arg.startsWith('--pre') || arg.startsWith('--hostname-bin'))) ||
+  (s.name === 'rg' && s.args.some(arg => arg.startsWith('--pre') || arg.startsWith('--hostname-bin') || RG_ZIP.test(arg))) ||
   (s.name === 'sort' && !s.args.every(arg => SORT_ARG.test(arg))) ||
   (s.name === 'uniq' && s.args.filter(arg => !/^-./.test(arg)).length > 1)
 
@@ -94,14 +86,10 @@ const isLoopHead = (s: Statement): boolean =>
   s.name === 'for' && s.words[s.nameAt] === 'for' && s.assignments.length === 0 && s.wrappers.length === 0 &&
   /^[A-Za-z_]\w*$/.test(s.args[0] ?? '') && (s.args.length === 1 || s.args[1] === 'in')
 
-const isReader = (s: Statement): boolean => (READERS.has(s.name) && !runsOrWrites(s)) || isEditOnly(s) || isLoopHead(s)
+const isPrintingAwk = (s: Statement): boolean => s.name === 'awk' && AWK_PRINT.test(awkProgramOf(s.args) ?? '')
 
-const runsNothing = (s: Statement): boolean =>
-  s.nameAt >= 0 &&
-  s.wrappers.length === 0 &&
-  s.assignments.length === 0 &&
-  s.isPlaced &&
-  ((isQuietTool(s) && isReader(s)) || isPrintingSed(s) || (s.name === 'awk' && AWK_PRINT.test(awkProgramOf(s.args) ?? '')))
+const isReader = (s: Statement): boolean =>
+  (READERS.has(s.name) && !runsOrWrites(s)) || isEditOnly(s) || isLoopHead(s) || isPrintingSed(s) || isPrintingAwk(s)
 
 const PLAIN_TOOLS: ReadonlySet<string> = new Set(['grep', 'egrep', 'fgrep', 'column', 'head', 'tail', 'wc', 'cut', 'nl', 'tr', 'cat'])
 const UNIQ_READ_ARG = /^(?:-[cdDiuz]+|-[fsw]\d+)$/
@@ -112,11 +100,10 @@ function isReadOnlyStage(s: Statement): boolean {
   if (s.nameAt < 0 || s.wrappers.length > 0 || s.assignments.length > 0 || !s.isPlaced || s.heredocs.length > 0 || s.escaped.length > 0) return false
   if (s.words[s.nameAt] !== s.name || !isQuietRedirect(s)) return false
   if (PLAIN_TOOLS.has(s.name)) return true
-  if (s.name === 'rg') return !runsOrWrites(s) && !s.args.some(arg => /^--search-zip|^-[A-Za-z]*z/.test(arg))
+  if (s.name === 'rg') return !runsOrWrites(s)
   if (s.name === 'sort') return s.args.every(arg => SORT_ARG.test(arg))
   if (s.name === 'uniq') return s.args.every(arg => UNIQ_READ_ARG.test(arg) || !arg.startsWith('-')) && s.args.filter(arg => !arg.startsWith('-')).length <= 1
-  if (s.name === 'awk') return AWK_PRINT.test(awkProgramOf(s.args) ?? '')
-  return isPrintingSed(s)
+  return isPrintingAwk(s) || isPrintingSed(s)
 }
 
 export const isReadOnlyPipeline = (parse: ShellParse): boolean =>
@@ -388,7 +375,6 @@ export function findOps(parse: ShellParse, line: string): Found {
 
   const readerText: string[] = []
   let hasRunner = false
-  const isSearchOnly = parse.statements.every(runsNothing)
   for (const s of parse.statements) {
     const heredocs = s.heredocs.filter(h => !h.feedsShell).map(h => h.body)
     const code = (texts: readonly string[]) => {
@@ -419,10 +405,7 @@ export function findOps(parse: ShellParse, line: string): Found {
       continue
     }
     if (isReader(s)) {
-      readerText.push(...(SEARCHERS.has(s.name) && isSearchOnly ? [] : s.args), ...s.assignments, ...heredocs)
-    } else if (isPrintingSed(s)) {
-      hasRunner = true
-      readerText.push(...(isSearchOnly ? [] : s.args), ...s.assignments, ...heredocs)
+      readerText.push(...s.args, ...s.assignments, ...heredocs)
     } else {
       hasRunner = true
       code([...s.args, ...heredocs])

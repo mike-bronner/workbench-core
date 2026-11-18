@@ -52,6 +52,26 @@ export const GREP_READS: readonly string[] = [
   'rg -n "git push" tests | awk \'{print $1}\' | sort | uniq -c',
   'rg -n "git push" tests | sort -k1,1 -t: | uniq -c | sed -n 1,5p',
   'grep -c "git push" t.ts | sort -rn | head -5 | tr -d x | sed -n 1p',
+  "cd /repo; grep -n 'gh pr merge' a.md; sed -n 1,12p b.md",
+  "cd /repo; grep -n 'git push\\|git commit' a.md; sed -n 1,12p b.md",
+  "cd /repo; rg -n 'gh release create\\|gh pr merge' docs; sed -n 1p b.md",
+  "cd /repo; rg -n 'git commit' . | awk '{print $1}'",
+  "git status; grep -n -- 'git push' f | sed -n 1,5p",
+  "echo ---; grep -n 'git commit' a.md; sed -n 1p b.md",
+  "cd /repo; git grep -n 'git commit\\|gh pr merge' -- hooks; sed -n 1,5p x",
+  "ls; grep -rn 'gh release create' .; awk '{print $2}' f",
+]
+
+export const REPORTED_SEARCH =
+  "cd /Users/mike/Developer/workbench-dev-team; grep -n 'close_as_duplicate\\|gh issue close\\|gh pr merge' agents/lestrade-item.md; grep -n -- '--check' bin/test-compose-agents.sh | head -5; sed -n 1,12p agents/lestrade.md"
+
+export const SEARCH_THEN_ACTION: readonly (readonly [string, 'merge' | 'push'])[] = [
+  [`${REPORTED_SEARCH}; gh pr merge 5`, 'merge'],
+  ["cd /repo; grep -n 'gh pr merge' a.md; sed -n 1p b.md && gh pr merge 5 --squash", 'merge'],
+  ["git grep -n 'gh pr merge\\|git push' -- hooks; gh pr merge 5", 'merge'],
+  [`${REPORTED_SEARCH}; git push`, 'push'],
+  ["cd /repo; rg -n 'git push\\|git commit' . | sed -n 1p; git push origin main", 'push'],
+  ["grep -n 'gh release create' a.md && git push", 'push'],
 ]
 
 export const GREP_WRITES: readonly string[] = [

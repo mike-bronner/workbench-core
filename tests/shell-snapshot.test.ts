@@ -2,7 +2,18 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import * as shell from '../hooks/mods/shell'
 import { CAUGHT, LET_THROUGH, OVER_COUNTED } from './commit-corpus'
-import { COMMIT_MAIN_PASSES, COMMIT_PASSES, COMMIT_REFUSALS, GREP_READS, GREP_WRITES } from './commit-guard-cases'
+import {
+  COMMIT_MAIN_PASSES,
+  COMMIT_PASSES,
+  COMMIT_REFUSALS,
+  FED_PRINTERS,
+  GREP_READS,
+  GREP_WRITES,
+  RELEASE_SEARCHES,
+  REPORTED_SEARCH,
+  SEARCH_BESIDE_RUNNER,
+  SEARCH_THEN_ACTION,
+} from './commit-guard-cases'
 import { COMMIT_SUITE, HOSTILE } from './commit-guard-corpus'
 import { CORE_REFUSES, DEV_TEAM_VERDICTS, INTENDED_DIFFERENCES } from './commit-guard-parity'
 import { DENIED } from './guard-corpus/guard-cases'
@@ -59,6 +70,11 @@ describe('AC3: every line reads as the reader of 23ff5c3 read it', () => {
     const corpora = [
       ...COMMIT_PASSES,
       ...GREP_READS,
+      ...RELEASE_SEARCHES,
+      ...FED_PRINTERS,
+      ...SEARCH_BESIDE_RUNNER,
+      REPORTED_SEARCH,
+      ...SEARCH_THEN_ACTION.map(([line]) => line),
       ...GREP_WRITES,
       ...COMMIT_MAIN_PASSES,
       ...COMMIT_REFUSALS.map(([line]) => line),

@@ -197,7 +197,7 @@ import { bufferWarningOf } from './mods/monitor'
 import { parseShell } from './mods/shell'
 import { callerKeyOf, freshnessOf, isFinalDescription, isMcpTool, isOutwardTool, isRepeated, isSubmitLine, readSourceOf, readsAfter, refusalTextOf, refusalsAfter, repeatReminderOf, sourcesRefusalOf } from './mods/outward'
 import type { FolderChange } from './mods/listings'
-import { changeOf, changeReportOf, globFoldersOf, listingWith, listingsAfter, listingsAfterOwn, lsFoldersOf, namesOf, takenBy } from './mods/listings'
+import { changeOf, changeReportOf, globFoldersOf, isOwnAdd, listingWith, listingsAfter, listingsAfterOwn, lsFoldersOf, namesOf, takenBy } from './mods/listings'
 import {
   AGENT_WORKTREE_REFUSAL,
   ENTER_WORKTREE_REFUSAL,
@@ -1351,12 +1351,17 @@ async function writtenPathOf($: EngineInterface, e: { tool: string } & Record<st
   return typeof written === 'string' ? resolvePath(written, await $.session.cwd(), await $.env.get('HOME')) : undefined
 }
 
-async function heldFoldersOf($: EngineInterface, caller: string, path: string): Promise<Set<string>> {
+type WrittenFolder = { folder: string; name: string; before?: string[] }
+
+async function writtenFoldersOf($: EngineInterface, caller: string, path: string): Promise<WrittenFolder[]> {
+  const folders: WrittenFolder[] = []
+  for (const [folder, name] of takenBy(await read($, folderListings), caller, path)) folders.push({ folder, name, before: await folderNamesOf($, folder) })
+  return folders
+}
+
+async function heldFoldersOf($: EngineInterface, folders: readonly WrittenFolder[]): Promise<Set<string>> {
   const held = new Set<string>()
-  for (const [folder, name] of takenBy(await read($, folderListings), caller, path)) {
-    const names = await folderNamesOf($, folder)
-    if (names === undefined || names.some(listed => listed.toLowerCase() === name.toLowerCase())) held.add(folder)
-  }
+  for (const { folder, name, before } of folders) if (!isOwnAdd(name, before, await folderNamesOf($, folder))) held.add(folder)
   return held
 }
 
@@ -2346,7 +2351,7 @@ export const register: Register = on => {
     const isRepeat = isMcpTool(e.tool) && isRepeated(await read($, mcpRefusals), key)
     const before = e.tool === 'Bash' ? await folderSnapshotOf($, caller) : undefined
     const path = await writtenPathOf($, e as { tool: string } & Record<string, unknown>)
-    const written = path === undefined ? undefined : { path, held: await heldFoldersOf($, caller, path) }
+    const written = path === undefined ? undefined : { path, folders: await writtenFoldersOf($, caller, path) }
     const result = await next(e)
     if (result.deny !== undefined) return result
     if (report !== undefined) await markReported($, caller, folders)
@@ -2356,7 +2361,7 @@ export const register: Register = on => {
     const source = result.isError === true ? undefined : readSourceOf(e.tool, e as Record<string, unknown>, isOutward)
     const fresh = isSubmit ? freshnessOf(await read($, sourceReads), now) : undefined
     if (source !== undefined) await update($, sourceReads, reads => readsAfter(reads, source, now))
-    if (result.isError !== true) await recordListings($, e as { tool: string; agentId?: string } & Record<string, unknown>, written)
+    if (result.isError !== true) await recordListings($, e as { tool: string; agentId?: string } & Record<string, unknown>, written && { path: written.path, held: await heldFoldersOf($, written.folders) })
     const added = [...(isRepeat ? [repeatReminderOf(e.tool)] : []), ...(fresh === undefined ? [] : [fresh]), ...(report === undefined ? [] : [report])]
     return added.length === 0 ? result : { ...result, context: [...(result.context ?? []), ...added] }
   }).catch(($, e, next) => next(e))

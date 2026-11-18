@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { KEPT_FOLDERS, KEPT_NAMES, LISTED_NAMES, changeOf, changeReportOf, globFoldersOf, listingWith, listingsAfter, listingsAfterOwn, lsFoldersOf, takenBy } from '../hooks/mods/listings'
+import { KEPT_FOLDERS, KEPT_NAMES, LISTED_NAMES, changeOf, changeReportOf, globFoldersOf, isOwnAdd, listingWith, listingsAfter, listingsAfterOwn, lsFoldersOf, takenBy } from '../hooks/mods/listings'
 import { parseShell } from '../hooks/mods/shell'
 import { sourcesRefusalOf } from '../hooks/mods/outward'
 import type { Bench } from './bench'
@@ -18,11 +18,19 @@ type Call = Record<string, unknown> & { tool: string }
 
 type Stand = Bench & { stopBeneath: { block?: string } }
 
+const writerOf = (b: Bench, isCaseFolding = false) => (input: Call) => {
+  const path = input.tool === 'NotebookEdit' ? input.notebook_path : input.file_path
+  if (typeof path !== 'string' || !['Write', 'Edit', 'NotebookEdit'].includes(input.tool)) return
+  b.files.set((isCaseFolding ? [...b.files.keys()].find(file => file.toLowerCase() === path.toLowerCase()) : undefined) ?? path, 'y')
+  for (let dir = path.slice(0, path.lastIndexOf('/')); dir.startsWith(`${BOX}/`); dir = dir.slice(0, dir.lastIndexOf('/'))) b.dirs.add(dir)
+}
+
 async function session($: Engine, on: Parameters<typeof bench>[0], isAttended = true): Promise<Stand> {
   const b = Object.assign(bench(on, { env: { HOME }, files: { [`${BOX}/a.md`]: 'x', [`${BOX}/b.md`]: 'x' } }), { stopBeneath: {} as { block?: string } })
   on('classic.Stop', () => (b.stopBeneath.block === undefined ? {} : { block: b.stopBeneath.block }))
   on('classic.SubagentStop', () => ({}))
   b.scripts['scratch-roots.sh'] = () => '/scratch\n'
+  b.onTool = writerOf(b)
   await $.session.start(start(isAttended))
   if (isAttended) await $.prompt.submit({ text: 'sort the inbox', wait: false, origin: { kind: 'composer' } })
   return b
@@ -113,7 +121,6 @@ describe("the session's own change to a listed folder is no change", () => {
     const b = await session($, on)
     await call($, { tool: 'Bash', command: `ls ${BOX}` })
     expect((await call($, { tool: 'Edit', file_path: `${BOX}/new.md`, old_string: '', new_string: 'x' })).deny).toBeUndefined()
-    b.files.set(`${BOX}/new.md`, 'x')
     expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
   })
 
@@ -140,7 +147,6 @@ describe("the session's own change to a listed folder is no change", () => {
     }
     expect((await call($, { tool: 'Bash', command: 'make tidy' })).deny).toBeUndefined()
     await call($, { tool: 'Write', file_path: `${BOX}/written.md`, content: 'x' })
-    b.files.set(`${BOX}/written.md`, 'x')
     const first = await call($, { tool: 'Bash', command: 'gh pr ready 4' })
     expect(first.deny).toContain(`- ${BOX}\n  added: outside.md\n  removed: b.md\n`)
     for (const own of ['a.md', 'own.md', 'written.md']) expect(first.deny).not.toContain(own)
@@ -206,7 +212,6 @@ describe("the session's own change to a listed folder is no change", () => {
     await call($, { tool: 'Bash', command: `ls ${BOX}` })
     b.dirs.add(`${BOX}/drafts`)
     expect((await call($, { tool: 'Write', file_path: `${BOX}/drafts/one.md`, content: 'x' })).deny).toBeUndefined()
-    b.files.set(`${BOX}/drafts/one.md`, 'x')
     expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toContain(`- ${BOX}\n  added: drafts\n`)
   })
 
@@ -217,42 +222,65 @@ describe("the session's own change to a listed folder is no change", () => {
     b.denyBeneath = () => void b.unlistable.delete(BOX)
     expect((await call($, { tool: 'Write', file_path: `${BOX}/new.md`, content: 'x' })).deny).toBeUndefined()
     b.denyBeneath = undefined
-    b.files.set(`${BOX}/new.md`, 'x')
     expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toContain(`- ${BOX}\n  added: new.md\n`)
   })
 
-  test('an own Write to Foo.md beside a listed foo.md takes nothing in, and does not block', async ($, on) => {
-    const b = await session($, on)
-    b.files.set(`${BOX}/foo.md`, 'x')
-    await call($, { tool: 'Bash', command: `ls ${BOX}` })
-    expect((await call($, { tool: 'Write', file_path: `${BOX}/Foo.md`, content: 'y' })).deny).toBeUndefined()
-    expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
-  })
+  for (const disk of [{ shape: 'a disk that folds letter case', isCaseFolding: true }, { shape: 'a disk that tells letter case apart', isCaseFolding: false }]) {
+    test(`on ${disk.shape}, an own Write to Foo.md beside a listed foo.md does not block, and names nothing removed`, async ($, on) => {
+      const b = await session($, on)
+      b.onTool = writerOf(b, disk.isCaseFolding)
+      b.files.set(`${BOX}/foo.md`, 'x')
+      await call($, { tool: 'Bash', command: `ls ${BOX}` })
+      expect((await call($, { tool: 'Write', file_path: `${BOX}/Foo.md`, content: 'y' })).deny).toBeUndefined()
+      expect(b.files.has(`${BOX}/Foo.md`)).toBe(!disk.isCaseFolding)
+      expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
+      expect((await $.classic.Stop(stop('Done.'))).block).toBeUndefined()
+    })
 
-  test('an own Write to Foo.md beside an outside foo.md the record lacks still blocks once', async ($, on) => {
+    test(`on ${disk.shape}, an own Write to Foo.md beside an outside foo.md the record lacks still blocks once`, async ($, on) => {
+      const b = await session($, on)
+      b.onTool = writerOf(b, disk.isCaseFolding)
+      await call($, { tool: 'Bash', command: `ls ${BOX}` })
+      b.files.set(`${BOX}/foo.md`, 'x')
+      expect((await call($, { tool: 'Write', file_path: `${BOX}/Foo.md`, content: 'y' })).deny).toBeUndefined()
+      const first = await call($, { tool: 'Bash', command: 'gh pr ready 4' })
+      expect(first.deny).toContain(`- ${BOX}\n  added: foo.md\n`)
+      expect(first.deny).not.toContain('Foo.md')
+      expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
+    })
+  }
+
+  test('an own Write that renames an outside foo.md to Foo.md takes nothing in, and blocks once', async ($, on) => {
     const b = await session($, on)
+    b.onTool = () => {
+      b.files.delete(`${BOX}/foo.md`)
+      b.files.set(`${BOX}/Foo.md`, 'y')
+    }
     await call($, { tool: 'Bash', command: `ls ${BOX}` })
     b.files.set(`${BOX}/foo.md`, 'x')
     expect((await call($, { tool: 'Write', file_path: `${BOX}/Foo.md`, content: 'y' })).deny).toBeUndefined()
     const first = await call($, { tool: 'Bash', command: 'gh pr ready 4' })
-    expect(first.deny).toContain(`- ${BOX}\n  added: foo.md\n`)
-    expect(first.deny).not.toContain('Foo.md')
+    expect(first.deny).toContain(`- ${BOX}\n  added: Foo.md\n`)
     expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
   })
 
-  test('a Write that returns an error takes nothing in, so a file made outside afterwards blocks once', async ($, on) => {
-    const b = await session($, on)
-    await call($, { tool: 'Bash', command: `ls ${BOX}` })
-    b.errorBeneath = tool => tool === 'Write'
-    const written = await call($, { tool: 'Write', file_path: `${BOX}/c.md`, content: 'x' })
-    expect(written.deny).toBeUndefined()
-    expect(written.isError).toBe(true)
-    b.errorBeneath = undefined
-    b.files.set(`${BOX}/c.md`, 'x')
-    const first = await call($, { tool: 'Bash', command: 'gh pr ready 4' })
-    expect(first.deny).toContain(`- ${BOX}\n  added: c.md\n`)
-    expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
-  })
+  for (const tool of ['Write', 'Edit']) {
+    test(`${tool} that returns an error takes nothing in, so a file made outside afterwards blocks once`, async ($, on) => {
+      const b = await session($, on)
+      await call($, { tool: 'Bash', command: `ls ${BOX}` })
+      b.errorBeneath = failed => failed === tool
+      const input: Call = tool === 'Write' ? { tool, file_path: `${BOX}/c.md`, content: 'x' } : { tool, file_path: `${BOX}/c.md`, old_string: '', new_string: 'x' }
+      const written = await call($, input)
+      expect(written.deny).toBeUndefined()
+      expect(written.isError).toBe(true)
+      expect(b.files.has(`${BOX}/c.md`)).toBe(false)
+      b.errorBeneath = undefined
+      b.files.set(`${BOX}/c.md`, 'x')
+      const first = await call($, { tool: 'Bash', command: 'gh pr ready 4' })
+      expect(first.deny).toContain(`- ${BOX}\n  added: c.md\n`)
+      expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
+    })
+  }
 
   test('a hook failure after the tool ran leaves the tool run once', async ($, on) => {
     let isCorrupt = false
@@ -474,7 +502,6 @@ describe('a listed folder that changed blocks the stop once', () => {
     const b = await session($, on)
     await call($, { tool: 'Bash', command: `ls ${BOX}` })
     const written = await call($, { tool: 'Write', file_path: `${BOX}/notes.md`, content: 'x' })
-    b.files.set(`${BOX}/notes.md`, 'x')
     expect(written.deny).toBeUndefined()
     expect((await $.classic.Stop(stop('Done.'))).block).toBeUndefined()
   })
@@ -533,8 +560,6 @@ describe('a listed folder that changed blocks the stop once', () => {
     const b = await session($, on)
     await call($, { tool: 'Bash', command: `ls ${BOX}` })
     expect((await call($, { tool: 'Write', file_path: `${BOX}/drafts/one.md`, content: 'x' })).deny).toBeUndefined()
-    b.files.set(`${BOX}/drafts/one.md`, 'x')
-    b.dirs.add(`${BOX}/drafts`)
     expect((await $.classic.Stop(stop('Done.'))).block).toBeUndefined()
   })
 
@@ -542,7 +567,6 @@ describe('a listed folder that changed blocks the stop once', () => {
     const b = await session($, on)
     await call($, { tool: 'Bash', command: `ls ${BOX}` })
     expect((await call($, { tool: 'NotebookEdit', notebook_path: `${BOX}/n.ipynb`, new_source: 'x' })).deny).toBeUndefined()
-    b.files.set(`${BOX}/n.ipynb`, '{}')
     expect((await $.classic.Stop(stop('Done.'))).block).toBeUndefined()
   })
 
@@ -632,6 +656,17 @@ describe('what a listing records', () => {
     const held = listingWith(two, 'main', '/f/sub/n.md', new Set(['/f']))
     expect(held.main?.['/f']?.names).toEqual(['a'])
     expect(held.main?.['/f/sub']?.names).toEqual(['n.md'])
+  })
+
+  test('a written name is an own add only when the call made it under that exact name and moved no other letter case', () => {
+    expect(isOwnAdd('Foo.md', ['foo.md'], ['Foo.md', 'foo.md'])).toBe(true)
+    expect(isOwnAdd('new.md', ['a.md'], ['a.md', 'new.md'])).toBe(true)
+    expect(isOwnAdd('Foo.md', ['foo.md'], ['foo.md'])).toBe(false)
+    expect(isOwnAdd('Foo.md', ['foo.md'], ['Foo.md'])).toBe(false)
+    expect(isOwnAdd('f.md', ['f.md'], ['f.md'])).toBe(false)
+    expect(isOwnAdd('new.md', ['a.md'], ['a.md'])).toBe(false)
+    expect(isOwnAdd('new.md', undefined, ['new.md'])).toBe(false)
+    expect(isOwnAdd('new.md', ['a.md'], undefined)).toBe(false)
   })
 
   test('an own change applies only its own difference, and keeps the bound of a full record', () => {

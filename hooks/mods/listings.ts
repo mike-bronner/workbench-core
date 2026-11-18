@@ -62,6 +62,9 @@ export const takenBy = (listings: Listings, caller: string, path: string): [stri
     return name === undefined || listing.names.includes(name) || !isWithin(name, boundOf(listing)) ? [] : [[folder, name]]
   })
 
+export const isOwnAdd = (name: string, before: readonly string[] | undefined, after: readonly string[] | undefined): boolean =>
+  before !== undefined && after !== undefined && !before.includes(name) && after.includes(name) && before.every(listed => listed.toLowerCase() !== name.toLowerCase() || after.includes(listed))
+
 export function listingWith(listings: Listings, caller: string, path: string, held: ReadonlySet<string> = new Set()): Listings {
   const own = listings[caller]
   if (own === undefined) return listings

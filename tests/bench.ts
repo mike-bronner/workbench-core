@@ -71,6 +71,7 @@ export type Bench = {
   // the reason for a call this refuses, else undefined.
   denyBeneath?: (tool: string) => string | undefined
   errorBeneath?: (tool: string) => boolean
+  onTool?: (input: { tool: string } & Record<string, unknown>) => void
   refusalBeneath?: (tool: string) => string | undefined
   replyBeneath?: (tool: string) => string | undefined
   // What $.session.cwd and $.session.root answer (default /repo).
@@ -288,6 +289,7 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     if (b.errorBeneath?.(e.tool)) return { isError: true, result: 'failed', text: 'failed' }
     const refused = b.refusalBeneath?.(e.tool)
     if (refused !== undefined) return { isError: true, result: refused, text: refused }
+    if (e.tool !== 'Bash') b.onTool?.(e as { tool: string } & Record<string, unknown>)
     const reply = b.replyBeneath?.(e.tool)
     if (reply !== undefined) return { result: reply as never, text: reply }
     return { result: {} as never }

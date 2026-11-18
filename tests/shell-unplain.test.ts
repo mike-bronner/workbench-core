@@ -66,6 +66,43 @@ describe('AC1: a ${…} beyond the parameter grammar is the parameter reason, wh
   })
 })
 
+describe('the parameter check skips a $( ), a backtick and a backslash in a heredoc body and in arithmetic', () => {
+  const SKIPPED = ["$(echo '${')", "`echo '${'`", '\\${a b}']
+  const BODIES: readonly ((text: string) => string)[] = [t => `cat <<E\n${t}\nE`, t => `cat <<-E\n\t${t}\nE`]
+  const ARITHMETIC: readonly ((text: string) => string)[] = [
+    t => `echo $(( ${t} + 1 ))`,
+    t => `(( ${t} + 1 ))`,
+    t => `echo $[ ${t} + 1 ]`,
+    t => `echo "$(( ${t} + 1 ))"`,
+  ]
+
+  test('control: a quoted ${ in a heredoc body is no quote there, so it is the parameter reason', () => {
+    for (const place of BODIES) expect([place("'${'"), unplain(place("'${'"))]).toEqual([place("'${'"), ['parameter']])
+  })
+
+  test('a ${ the skipped text holds is no parameter reason, in each body and each arithmetic place', () => {
+    for (const place of [...BODIES, ...ARITHMETIC]) {
+      for (const text of SKIPPED) expect([place(text), unplain(place(text))]).toEqual([place(text), []])
+    }
+  })
+
+  test('the check goes on after the skipped text, so a ${…} beyond the grammar there is still the parameter reason', () => {
+    for (const place of [...BODIES, ...ARITHMETIC]) {
+      for (const text of SKIPPED) {
+        const line = place(`${text} \${a b}`)
+        expect([line, unplain(line)]).toEqual([line, ['parameter']])
+      }
+    }
+  })
+
+  test('a # comment that holds a ) inside a $( ) in arithmetic, or in a body fed to a shell, leaves the line with an unknown', () => {
+    for (const line of ['echo $(( $(echo # )\n) + 1 ))', '(( $(echo # )\n) ))', 'echo "$(( $(echo # )\n) ))"', 'bash <<E\n$(echo # )\nzap\n)\nE']) {
+      const parse = parseShell(line)
+      expect([line, parse.unplain.length + parse.unknowns.length > 0]).toEqual([line, true])
+    }
+  })
+})
+
 describe('AC1: a raw text that can run code from a value is the code-expansion reason, quoted or not', () => {
   test("bash's @ operators and zsh's (e) and (%) flags, in every place, the arithmetic places included", () => {
     for (const place of PLACES) {

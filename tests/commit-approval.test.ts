@@ -1144,6 +1144,9 @@ describe('a local merge or pull that lands a ledger unit branch is gated as a co
       'git -c alias.m=merge m unit/a',
       'git -c alias.m=merge m',
       'git pull . "$B"',
+      'echo main | xargs git merge feature',
+      'echo unit/a | xargs git merge',
+      'echo unit/a | xargs git pull origin',
     ]) {
       expect([line, mergesOf(line).landings.map(({ refs }) => refs)]).toEqual([line, [null]])
     }
@@ -1166,6 +1169,8 @@ describe('a local merge or pull that lands a ledger unit branch is gated as a co
     'git pull unitdir HEAD',
     'git merge a1b2c3',
     'git merge fetch_head',
+    'echo unit/a | xargs git merge feat/y',
+    'echo unit/a | xargs git pull origin main',
   ]) {
     test(`with no approval, a unit landing asks Mike as a commit and names its line: ${JSON.stringify(line)}`, async ($, on) => {
       const b = withLedger(on)

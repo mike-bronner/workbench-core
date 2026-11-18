@@ -1013,7 +1013,7 @@ const landingOf = (st: ShellStatement, sub: string | undefined, dir: string | nu
   const kind = sub === 'pull' ? 'pull' : 'merge'
   const { words, options } = mergedWordsOf(restOf(st), kind)
   if (kind === 'merge' && options.some(arg => isLongFor(arg, '--abort') || isLongFor(arg, '--quit'))) return undefined
-  if (isAliased || options.some(arg => isLongFor(arg, '--continue'))) return { dir, refs: null }
+  if (isAliased || st.wrappers.includes('xargs') || options.some(arg => isLongFor(arg, '--continue'))) return { dir, refs: null }
   const mode = isCommitless(options, kind) ? { commitless: true as const } : {}
   const refs = sub === 'pull' ? words.slice(1).map(refspec => refspec.replace(/^\+/, '').replace(/:.*$/, '')) : words
   if (refs.length === 0) return { dir, refs: [], upstream: true, ...(words.length > 0 ? { source: words[0] } : {}), ...mode }

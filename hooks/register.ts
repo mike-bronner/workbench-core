@@ -1318,7 +1318,7 @@ async function folderChangesOf($: EngineInterface, caller: string): Promise<{ ch
   const changes: { change: FolderChange; names: string[] }[] = []
   for (const [folder, listing] of Object.entries((await read($, folderListings))[caller] ?? {})) {
     const names = await folderNamesOf($, folder)
-    const change = names === undefined ? undefined : changeOf(folder, listing.names, names)
+    const change = names === undefined ? undefined : changeOf(folder, listing, names)
     if (change !== undefined && names !== undefined) changes.push({ change, names })
   }
   return changes
@@ -1336,7 +1336,7 @@ async function folderSnapshotOf($: EngineInterface, caller: string): Promise<Map
 async function takeOwnChanges($: EngineInterface, caller: string, before: ReadonlyMap<string, string[]>): Promise<void> {
   for (const [folder, names] of before) {
     const after = await folderNamesOf($, folder)
-    if (after !== undefined && changeOf(folder, names, after) !== undefined) await update($, folderListings, listings => listingsAfterOwn(listings, caller, folder, names, after))
+    if (after !== undefined && changeOf(folder, { names, bound: null }, after) !== undefined) await update($, folderListings, listings => listingsAfterOwn(listings, caller, folder, names, after))
   }
 }
 
@@ -2334,6 +2334,7 @@ export const register: Register = on => {
     const before = e.tool === 'Bash' ? await folderSnapshotOf($, caller) : undefined
     const result = await next(e)
     if (result.deny !== undefined) return result
+    if (report !== undefined) await markReported($, caller, folders)
     if (before !== undefined) await takeOwnChanges($, caller, before)
     const now = await $.clock.now()
     if (isMcpTool(e.tool)) await update($, mcpRefusals, refusals => refusalsAfter(refusals, key, refusalTextOf(result)))
@@ -2341,7 +2342,6 @@ export const register: Register = on => {
     const fresh = isSubmit ? freshnessOf(await read($, sourceReads), now) : undefined
     if (source !== undefined) await update($, sourceReads, reads => readsAfter(reads, source, now))
     if (result.isError !== true) await recordListings($, e as { tool: string; agentId?: string } & Record<string, unknown>)
-    if (report !== undefined) await markReported($, caller, folders)
     const added = [...(isRepeat ? [repeatReminderOf(e.tool)] : []), ...(fresh === undefined ? [] : [fresh]), ...(report === undefined ? [] : [report])]
     return added.length === 0 ? result : { ...result, context: [...(result.context ?? []), ...added] }
   }).catch(($, e, next) => next(e))

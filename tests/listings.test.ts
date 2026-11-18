@@ -185,6 +185,83 @@ describe("the session's own change to a listed folder is no change", () => {
   })
 })
 
+describe('a full folder record compares up to the bound its listing set', () => {
+  const FULL = Array.from({ length: KEPT_NAMES }, (_, i) => `n${String(i).padStart(4, '0')}`)
+  const fullSession = async ($: Engine, on: Parameters<typeof bench>[0], isAttended = true) => {
+    const b = await session($, on, isAttended)
+    for (const name of FULL) b.files.set(`/repo/full/${name}`, 'x')
+    await call($, { tool: 'Bash', command: 'ls /repo/full' })
+    return b
+  }
+
+  test('an outside add below the last name blocks once, and an add past it does not', async ($, on) => {
+    const b = await fullSession($, on)
+    b.files.set('/repo/full/n0998a', 'x')
+    b.files.set('/repo/full/zz-late', 'x')
+    const first = await call($, { tool: 'Bash', command: 'gh pr ready 4' })
+    expect(first.deny).toContain('- /repo/full\n  added: n0998a\n')
+    expect(first.deny).not.toContain('zz-late')
+    expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
+  })
+
+  test('an own Bash call that removes the last name and adds a1 keeps a pending outside add', async ($, on) => {
+    const b = await fullSession($, on)
+    b.files.set('/repo/full/n0998a', 'x')
+    b.onBash = command => {
+      if (command !== 'make swap') return
+      b.files.delete('/repo/full/n0999')
+      b.files.set('/repo/full/a1', 'x')
+    }
+    expect((await call($, { tool: 'Bash', command: 'make swap' })).deny).toBeUndefined()
+    const first = await call($, { tool: 'Bash', command: 'gh pr ready 4' })
+    expect(first.deny).toContain('- /repo/full\n  added: n0998a\n')
+    for (const own of ['a1', 'n0999', 'removed:']) expect(first.deny).not.toContain(own)
+    expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
+  })
+
+  test('an Edit into the folder keeps a pending outside add and removal', async ($, on) => {
+    const b = await fullSession($, on)
+    b.files.set('/repo/full/n0998a', 'x')
+    b.files.delete('/repo/full/n0999')
+    expect((await call($, { tool: 'Edit', file_path: '/repo/full/a1', old_string: '', new_string: 'x' })).deny).toBeUndefined()
+    b.files.set('/repo/full/a1', 'x')
+    const first = await call($, { tool: 'Bash', command: 'gh pr ready 4' })
+    expect(first.deny).toContain('- /repo/full\n  added: n0998a\n  removed: n0999\n')
+    expect(first.deny).not.toContain('a1')
+    expect((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).deny).toBeUndefined()
+  })
+
+  test('a Write into the folder after a pending outside removal of the last name still names it', async ($, on) => {
+    const b = await fullSession($, on)
+    b.files.delete('/repo/full/n0999')
+    expect((await call($, { tool: 'Write', file_path: '/repo/full/a1', content: 'x' })).deny).toBeUndefined()
+    b.files.set('/repo/full/a1', 'x')
+    b.files.set('/repo/full/n0998a', 'x')
+    const first = await call($, { tool: 'Bash', command: 'gh pr ready 4' })
+    expect(first.deny).toContain('- /repo/full\n  added: n0998a\n  removed: n0999\n')
+    expect(first.deny).not.toContain('a1')
+  })
+})
+
+describe('in the quiet lane, the note keeps the submit line\'s own change out', () => {
+  test('a submit line that changes a listed folder leaves the next note naming only the outside entries', async ($, on) => {
+    const b = await session($, on, false)
+    await call($, { tool: 'Bash', command: `ls ${BOX}` })
+    b.files.set(`${BOX}/c.md`, 'x')
+    b.onBash = command => void (command === 'gh pr ready 4 && make tidy' && b.files.delete(`${BOX}/a.md`))
+    const first = await call($, { tool: 'Bash', command: 'gh pr ready 4 && make tidy' })
+    expect(first.deny).toBeUndefined()
+    expect(folderNote(first.context)).toContain(`- ${BOX}\n  added: c.md\n`)
+    expect(folderNote(first.context)).not.toContain('a.md')
+    b.onBash = undefined
+    expect(folderNote((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).context)).toBeUndefined()
+    b.files.set(`${BOX}/d.md`, 'x')
+    const next = folderNote((await call($, { tool: 'Bash', command: 'gh pr ready 4' })).context)
+    expect(next).toContain(`- ${BOX}\n  added: d.md\n`)
+    for (const name of ['a.md', 'c.md', 'removed:']) expect(next).not.toContain(name)
+  })
+})
+
 describe('a listed folder that changed blocks the stop once', () => {
   test('a removed entry blocks the stop and is named, and the next stop goes through', async ($, on) => {
     const b = await session($, on)
@@ -336,12 +413,28 @@ describe('what a listing records', () => {
     expect(globFoldersOf({ pattern: '$X/*' }, '/repo', HOME)).toEqual([])
   })
 
-  test('a change names what was added and removed, and a full snapshot compares only up to its last name', () => {
-    expect(changeOf('/f', ['a', 'b'], ['a', 'b'])).toBeUndefined()
-    expect(changeOf('/f', ['a', 'b'], ['b', 'c'])).toEqual({ folder: '/f', added: ['c'], removed: ['a'] })
-    const full = Array.from({ length: KEPT_NAMES }, (_, i) => `n${String(i).padStart(5, '0')}`)
-    expect(changeOf('/f', full, [...full, 'z-late'])).toBeUndefined()
-    expect(changeOf('/f', full, ['a-early', ...full])).toEqual({ folder: '/f', added: ['a-early'], removed: [] })
+  test('a change names what was added and removed, and a bounded record compares only up to its bound', () => {
+    expect(changeOf('/f', { names: ['a', 'b'], bound: null }, ['a', 'b'])).toBeUndefined()
+    expect(changeOf('/f', { names: ['a', 'b'], bound: null }, ['b', 'c'])).toEqual({ folder: '/f', added: ['c'], removed: ['a'] })
+    expect(changeOf('/f', { names: ['a', 'b'], bound: 'b' }, ['a', 'b', 'c'])).toBeUndefined()
+    expect(changeOf('/f', { names: ['a', 'b'], bound: 'c' }, ['a', 'b', 'c'])).toEqual({ folder: '/f', added: ['c'], removed: [] })
+    const full = Array.from({ length: KEPT_NAMES }, (_, i) => `n${String(i).padStart(4, '0')}`)
+    expect(listingsAfter({}, 'main', '/f', full, 0).main?.['/f']?.bound).toBe('n0999')
+    expect(listingsAfter({}, 'main', '/f', [...full, 'z'], 0).main?.['/f']?.bound).toBe('n0999')
+    expect(listingsAfter({}, 'main', '/f', full.slice(1), 0).main?.['/f']?.bound).toBe(null)
+  })
+
+  test('a record an older build saved with no bound is bound by its last name when it holds 1,000 names or more', () => {
+    const full = Array.from({ length: KEPT_NAMES }, (_, i) => `n${String(i).padStart(4, '0')}`)
+    expect(changeOf('/f', { names: full }, [...full, 'z-late'])).toBeUndefined()
+    expect(changeOf('/f', { names: full }, ['a-early', ...full])).toEqual({ folder: '/f', added: ['a-early'], removed: [] })
+    expect(changeOf('/f', { names: full.slice(0, -1) }, full)).toEqual({ folder: '/f', added: ['n0999'], removed: [] })
+    const old = { main: { '/f': { names: full, at: 0 } } }
+    const own = listingsAfterOwn(old, 'main', '/f', full, ['a1', ...full.slice(0, -1)])
+    expect(own.main?.['/f']).toEqual({ names: ['a1', ...full.slice(0, -1)], at: 0, bound: 'n0999' })
+    expect(changeOf('/f', own.main?.['/f'] ?? { names: [] }, ['a1', ...full.slice(0, -1), 'n0998a'])).toEqual({ folder: '/f', added: ['n0998a'], removed: [] })
+    expect(listingWith(old, 'main', '/f/z').main?.['/f']).toEqual(old.main['/f'])
+    expect(listingWith(old, 'main', '/f/a1').main?.['/f']).toEqual({ names: ['a1', ...full], at: 0, bound: 'n0999' })
   })
 
   test('the store keeps names only, the newest folders, and takes in a written file', () => {
@@ -361,25 +454,26 @@ describe('what a listing records', () => {
     expect(listingWith({}, 'main', '/f/b')).toEqual({})
   })
 
-  test("an own change applies only its own difference, and refills a full record", () => {
+  test('an own change applies only its own difference, and keeps the bound of a full record', () => {
     const listings = listingsAfter({}, 'main', '/f', ['a', 'b', 'gone'], 0)
     const own = listingsAfterOwn(listings, 'main', '/f', ['a', 'b', 'outside'], ['b', 'mine', 'outside'])
     expect(own.main?.['/f']?.names).toEqual(['b', 'gone', 'mine'])
-    expect(changeOf('/f', own.main?.['/f']?.names ?? [], ['b', 'mine', 'outside'])).toEqual({ folder: '/f', added: ['outside'], removed: ['gone'] })
+    expect(changeOf('/f', own.main?.['/f'] ?? { names: [] }, ['b', 'mine', 'outside'])).toEqual({ folder: '/f', added: ['outside'], removed: ['gone'] })
     expect(listingsAfterOwn(listings, 'main', '/other', ['a'], [])).toBe(listings)
     expect(listingsAfterOwn(listings, AGENT, '/f', ['a'], [])).toBe(listings)
     const full = Array.from({ length: KEPT_NAMES + 3 }, (_, i) => `n${String(i).padStart(5, '0')}`)
     const record = listingsAfter({}, 'main', '/f', full, 0)
     const after = full.slice(1)
-    const refilled = listingsAfterOwn(record, 'main', '/f', full, after)
-    expect(refilled.main?.['/f']?.names).toEqual(after.slice(0, KEPT_NAMES))
-    expect(changeOf('/f', refilled.main?.['/f']?.names ?? [], after)).toBeUndefined()
+    const trimmed = listingsAfterOwn(record, 'main', '/f', full, after).main?.['/f']
+    expect(trimmed?.names).toEqual(full.slice(1, KEPT_NAMES))
+    expect(trimmed?.bound).toBe(full[KEPT_NAMES - 1])
+    expect(changeOf('/f', trimmed ?? { names: [] }, after)).toBeUndefined()
   })
 
-  test('a merge into a full record never cuts a name that differs from the live folder', () => {
+  test('an own merge into a full record never lowers its bound', () => {
     const full = Array.from({ length: KEPT_NAMES }, (_, i) => `n${String(i).padStart(4, '0')}`)
     const record = listingsAfter({}, 'main', '/f', full, 0)
-    const recorded = (listings: ReturnType<typeof listingsAfter>) => listings.main?.['/f']?.names ?? []
+    const recorded = (listings: ReturnType<typeof listingsAfter>) => listings.main?.['/f'] ?? { names: [] }
     const removed = full.slice(0, -1)
     const ownBash = listingsAfterOwn(record, 'main', '/f', removed, ['a1', ...removed])
     expect(changeOf('/f', recorded(ownBash), ['a1', ...removed])).toEqual({ folder: '/f', added: [], removed: ['n0999'] })
@@ -389,10 +483,18 @@ describe('what a listing records', () => {
     const addBash = listingsAfterOwn(record, 'main', '/f', between, ['a1', ...between])
     expect(changeOf('/f', recorded(addBash), ['a1', ...between])).toEqual({ folder: '/f', added: ['n0998a'], removed: [] })
     expect(changeOf('/f', recorded(listingWith(record, 'main', '/f/a1')), ['a1', ...between])).toEqual({ folder: '/f', added: ['n0998a'], removed: [] })
+    const swapped = ['a1', ...between.filter(name => name !== 'n0999')]
+    const swapBash = listingsAfterOwn(record, 'main', '/f', between, swapped)
+    expect(recorded(swapBash)).toEqual({ names: ['a1', ...removed], at: 0, bound: 'n0999' })
+    expect(changeOf('/f', recorded(swapBash), swapped)).toEqual({ folder: '/f', added: ['n0998a'], removed: [] })
+    const later = listingsAfterOwn(record, 'main', '/f', full, ['a1', ...removed])
+    expect(changeOf('/f', recorded(later), ['a1', ...removed])).toBeUndefined()
+    expect(changeOf('/f', recorded(later), ['a1', ...between.filter(name => name !== 'n0999')])).toEqual({ folder: '/f', added: ['n0998a'], removed: [] })
     const quiet = listingsAfterOwn(record, 'main', '/f', full, ['a1', ...full])
-    expect(recorded(quiet)).toEqual(['a1', ...full.slice(0, -1)])
+    expect(recorded(quiet).names).toEqual(['a1', ...full])
     expect(changeOf('/f', recorded(quiet), ['a1', ...full])).toBeUndefined()
-    expect(recorded(listingWith(record, 'main', '/f/z'))).toEqual(full)
+    expect(recorded(listingsAfterOwn(record, 'main', '/f', full, [...full, 'z']))).toEqual(recorded(record))
+    expect(recorded(listingWith(record, 'main', '/f/z'))).toEqual(recorded(record))
   })
 
   test('the report cleans each name and counts the rest past the cap', () => {

@@ -2,7 +2,7 @@ import type { WorkbenchShellParse as ShellParse } from '../../types'
 import { resolvePath, statementsAt, toolSearchRoots } from './guards.ts'
 import { cleanSourceOf } from './outward.ts'
 
-export type Listing = { names: readonly string[]; at: number }
+export type Listing = { names: readonly string[]; at: number; bound?: string | null }
 export type Listings = Readonly<Record<string, Readonly<Record<string, Listing>>>>
 export type FolderChange = { folder: string; added: readonly string[]; removed: readonly string[] }
 
@@ -35,17 +35,17 @@ export function globFoldersOf(input: { path?: unknown; pattern?: unknown }, cwd:
 export const namesOf = (entries: readonly { name: string }[]): string[] => entries.map(entry => entry.name).sort()
 
 export function listingsAfter(listings: Listings, caller: string, folder: string, names: readonly string[], at: number): Listings {
-  const kept = Object.entries({ ...listings[caller], [folder]: { names: names.slice(0, KEPT_NAMES), at } })
+  const kept = names.slice(0, KEPT_NAMES)
+  const folders = Object.entries({ ...listings[caller], [folder]: { names: kept, at, bound: names.length >= KEPT_NAMES ? (kept.at(-1) ?? null) : null } })
     .sort(([, a], [, b]) => b.at - a.at)
     .slice(0, KEPT_FOLDERS)
-  return { ...listings, [caller]: Object.fromEntries(kept) }
+  return { ...listings, [caller]: Object.fromEntries(folders) }
 }
 
-function keptOf(names: readonly string[], top: string | undefined): string[] {
-  if (top === undefined) return names.slice(0, KEPT_NAMES)
-  const covering = names.findIndex(name => name >= top)
-  return names.slice(0, Math.max(KEPT_NAMES, covering === -1 ? names.length : covering + 1))
-}
+export const boundOf = (listing: Pick<Listing, 'names' | 'bound'>): string | null =>
+  listing.bound !== undefined ? listing.bound : listing.names.length >= KEPT_NAMES ? (listing.names.at(-1) ?? null) : null
+
+const isWithin = (name: string, bound: string | null): boolean => bound === null || name <= bound
 
 export function listingWith(listings: Listings, caller: string, path: string): Listings {
   const own = listings[caller]
@@ -53,8 +53,9 @@ export function listingWith(listings: Listings, caller: string, path: string): L
   const updated = Object.entries(own).map(([folder, listing]): [string, Listing] => {
     const below = folder === '/' ? path.slice(1) : path.startsWith(`${folder}/`) ? path.slice(folder.length + 1) : undefined
     const name = below?.split('/')[0]
-    if (name === undefined || name === '' || listing.names.includes(name)) return [folder, listing]
-    return [folder, { ...listing, names: keptOf([...listing.names, name].sort(), listing.names.at(-1)) }]
+    const bound = boundOf(listing)
+    if (name === undefined || name === '' || listing.names.includes(name) || !isWithin(name, bound)) return [folder, listing]
+    return [folder, { ...listing, names: [...listing.names, name].sort(), bound }]
   })
   return { ...listings, [caller]: Object.fromEntries(updated) }
 }
@@ -62,22 +63,20 @@ export function listingWith(listings: Listings, caller: string, path: string): L
 export function listingsAfterOwn(listings: Listings, caller: string, folder: string, before: readonly string[], after: readonly string[]): Listings {
   const listing = listings[caller]?.[folder]
   if (listing === undefined) return listings
+  const bound = boundOf(listing)
   const had = new Set(before)
   const has = new Set(after)
-  const bound = listing.names.length >= KEPT_NAMES ? listing.names.at(-1) : undefined
-  const beyond = bound === undefined ? [] : before.filter(name => name > bound)
-  const names = [...new Set([...listing.names, ...beyond, ...after.filter(name => !had.has(name))])].filter(name => has.has(name) || !had.has(name)).sort()
-  const merged = new Set(names)
-  const differs = [...names.filter(name => !has.has(name)), ...after.filter(name => !merged.has(name) && (bound === undefined || name <= bound))]
-  return { ...listings, [caller]: { ...listings[caller], [folder]: { ...listing, names: keptOf(names, differs.sort().at(-1)) } } }
+  const added = after.filter(name => !had.has(name) && isWithin(name, bound))
+  const names = [...new Set([...listing.names, ...added])].filter(name => has.has(name) || !had.has(name)).sort()
+  return { ...listings, [caller]: { ...listings[caller], [folder]: { ...listing, names, bound } } }
 }
 
-export function changeOf(folder: string, before: readonly string[], after: readonly string[]): FolderChange | undefined {
-  const bound = before.length >= KEPT_NAMES ? before.at(-1) : undefined
-  const had = new Set(before)
+export function changeOf(folder: string, listing: Pick<Listing, 'names' | 'bound'>, after: readonly string[]): FolderChange | undefined {
+  const bound = boundOf(listing)
+  const had = new Set(listing.names)
   const has = new Set(after)
-  const added = after.filter(name => !had.has(name) && (bound === undefined || name <= bound))
-  const removed = before.filter(name => !has.has(name))
+  const added = after.filter(name => !had.has(name) && isWithin(name, bound))
+  const removed = listing.names.filter(name => !has.has(name))
   return added.length === 0 && removed.length === 0 ? undefined : { folder, added, removed }
 }
 

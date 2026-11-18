@@ -285,9 +285,8 @@ describe('the full-suite gate judges each lane', () => {
     expect(await refusal($, 'vendor/bin/pest')).toBeUndefined()
   })
 
-  test('a sub-agent of an attended top-level --agent run is not refused', async ($, on) => {
+  test('a sub-agent of an --agent run, a session no one sits at, is not refused', async ($, on) => {
     await attended($, on, { CLAUDE_CODE_AGENT: 'workbench-dev-team:watson' })
-    await spawn($, AGENT, 'workbench-dev-team:watson', brief('Fix the bug.'))
     expect(await refusal($, 'vendor/bin/pest', AGENT)).toBeUndefined()
   })
 
@@ -304,7 +303,7 @@ describe('the full-suite gate judges each lane', () => {
 })
 
 const brief = (goal: string): string =>
-  `Workdir: /repo\nGoal: ${goal}\nContext: Goal: Final suite run: quoted from an earlier brief.\nConstraints:\n- Run no mutation testing of any kind.\nAcceptance:\n- AC1: it holds.\nDone when: it holds.`
+  `Workdir: /repo\nGoal: ${goal}\nContext: The tree holds the change.\nConstraints:\n- Run no mutation testing of any kind.\nAcceptance:\n- AC1: it holds.\nDone when: it holds.`
 
 const FINAL = brief('Final suite run: the uncommitted tree at /repo.')
 
@@ -315,8 +314,13 @@ async function attended($: Engine, on: Parameters<typeof bench>[0], env: Record<
     const id = (e as { description: string }).description
     return id === 'refused' ? { deny: 'no' } : { model: 'opus', agentId: id }
   })
+  on('classic.SubagentStop', (_$, e) => ((e as { last_assistant_message?: string }).last_assistant_message === 'held' ? { block: 'Not yet.' } : {}))
   await $.session.start(start())
   return b
+}
+
+async function stop($: Engine, id: string, message = 'Done.'): Promise<string | undefined> {
+  return (await $.classic.SubagentStop({ stop_hook_active: false, last_assistant_message: message, agent_id: id, agent_type: 'workbench-dev-team:holmes' } as never)).block
 }
 
 async function spawn($: Engine, id: string, type: string, prompt: string, parentAgentId?: string): Promise<void> {
@@ -357,6 +361,18 @@ describe('the full-suite gate refuses a sub-agent a whole-suite run in a session
       expect(await refusal($, 'vendor/bin/pest', 'lens')).toContain(HEAD)
     })
   }
+
+  test('a Holmes whose first Goal is a review is refused, though a later line begins "Goal: Final suite run:"', async ($, on) => {
+    await attended($, on)
+    await spawn($, 'holmes', 'workbench-dev-team:holmes', brief('Review the uncommitted tree at /repo.').replace('Context:', 'Goal: Final suite run: the tree.\nContext:'))
+    expect(await refusal($, 'vendor/bin/pest', 'holmes')).toContain(HEAD)
+  })
+
+  test('WORKBENCH_ORCHESTRATOR=0 stands the gate down for a sub-agent too', async ($, on) => {
+    await attended($, on, { WORKBENCH_ORCHESTRATOR: '0' })
+    await spawn($, AGENT, 'workbench-dev-team:watson', brief('Fix the bug.'))
+    for (const line of SUITE_LINES) expect([line, await refusal($, line, AGENT)]).toEqual([line, undefined])
+  })
 
   test('a Holmes with no Goal line is refused', async ($, on) => {
     await attended($, on)
@@ -403,6 +419,47 @@ describe('the full-suite gate lets a Holmes final suite run through', () => {
     for (const id of ['holmes', 'lens', 'nested']) expect([id, await refusal($, 'claude plugin test .', id)]).toEqual([id, undefined])
     expect(await refusal($, 'vendor/bin/pest')).toContain(HEAD)
     expect(await refusal($, 'vendor/bin/pest', AGENT)).toContain(HEAD)
+  })
+})
+
+describe('a final run\'s exemption ends when its Holmes stops', () => {
+  test('the stop ends it for the Holmes and every helper under it, and for no other final run', async ($, on) => {
+    await attended($, on)
+    await spawn($, 'holmes', 'workbench-dev-team:holmes', FINAL)
+    await spawn($, 'lens', 'workbench-dev-team:holmes-lens', brief('Run the suite.'), 'holmes')
+    await spawn($, 'nested', 'general-purpose', 'Run it.', 'lens')
+    await spawn($, 'other', 'workbench-dev-team:holmes-local', FINAL)
+    for (const id of ['holmes', 'lens', 'nested', 'other']) expect([id, await refusal($, 'vendor/bin/pest', id)]).toEqual([id, undefined])
+    expect(await stop($, 'holmes')).toBeUndefined()
+    for (const id of ['holmes', 'lens', 'nested']) expect([id, await refusal($, 'vendor/bin/pest', id)]).toEqual([id, expect.stringContaining(HEAD)])
+    expect(await refusal($, 'vendor/bin/pest', 'other')).toBeUndefined()
+  })
+
+  test('a helper the stopped Holmes dispatches after a resume is refused', async ($, on) => {
+    await attended($, on)
+    await spawn($, 'holmes', 'workbench-dev-team:holmes', FINAL)
+    await stop($, 'holmes')
+    await spawn($, 'lens', 'workbench-dev-team:holmes-lens', brief('Run the suite.'), 'holmes')
+    expect(await refusal($, 'vendor/bin/pest', 'holmes')).toContain(HEAD)
+    expect(await refusal($, 'vendor/bin/pest', 'lens')).toContain(HEAD)
+  })
+
+  test('a helper\'s own stop ends nothing', async ($, on) => {
+    await attended($, on)
+    await spawn($, 'holmes', 'workbench-dev-team:holmes', FINAL)
+    await spawn($, 'lens', 'workbench-dev-team:holmes-lens', brief('Run the suite.'), 'holmes')
+    await stop($, 'lens')
+    expect(await refusal($, 'vendor/bin/pest', 'holmes')).toBeUndefined()
+    expect(await refusal($, 'vendor/bin/pest', 'lens')).toBeUndefined()
+  })
+
+  test('a stop a hook blocks keeps the exemption, and the next stop ends it', async ($, on) => {
+    await attended($, on)
+    await spawn($, 'holmes', 'workbench-dev-team:holmes', FINAL)
+    expect(await stop($, 'holmes', 'held')).toBe('Not yet.')
+    expect(await refusal($, 'vendor/bin/pest', 'holmes')).toBeUndefined()
+    expect(await stop($, 'holmes')).toBeUndefined()
+    expect(await refusal($, 'vendor/bin/pest', 'holmes')).toContain(HEAD)
   })
 })
 

@@ -730,7 +730,7 @@ async function scriptAt($: EngineInterface, path: string): Promise<Script | unde
 async function suiteRefusalOf($: EngineInterface, command: unknown, agentId: string | undefined, sessionAttended: boolean | undefined): Promise<string | undefined> {
   const lane = await $.workbench.callerLane(agentId === undefined ? {} : { agentId }).catch((): WorkbenchCallerLane => 'main')
   if (lane === 'top-level-agent') return undefined
-  if (lane === 'sub-agent' && (sessionAttended !== true || (await read($, suiteRunners)).includes(agentId as string))) return undefined
+  if (lane === 'sub-agent' && (sessionAttended !== true || (await read($, suiteRunners)).some(runner => runner.id === agentId))) return undefined
   const home = await $.env.get('HOME')
   const configDir = await $.env.get('CLAUDE_CONFIG_DIR')
   const registries = [...new Set([configDir, home && `${home}/.claude`].filter(dir => dir?.startsWith('/')).map(dir => `${dir}/plugins/installed_plugins.json`))]
@@ -2047,8 +2047,10 @@ export const register: Register = on => {
   })
 
   on('classic.SubagentStop', async ($, e, next) => {
-    const result = await next(e)
-    return folderStopOf($, e.stop_hook_active === true, result, e.agent_id).catch(() => result)
+    const beneath = await next(e)
+    const result = await folderStopOf($, e.stop_hook_active === true, beneath, e.agent_id).catch(() => beneath)
+    if (result.block === undefined) await update($, suiteRunners, runners => runners.filter(runner => runner.root !== e.agent_id)).catch(() => undefined)
+    return result
   })
 
   const judging = new Set<string>()
@@ -2508,7 +2510,10 @@ export const register: Register = on => {
     if (id === undefined) return result
     const isRoot = e.parentAgentId === undefined && isFinalRunDispatch(e.subagentType, e.prompt)
     await read($, suiteRunners)
-      .then(ids => (isRoot || (e.parentAgentId !== undefined && ids.includes(e.parentAgentId)) ? update($, suiteRunners, runners => [...runners, id]) : undefined))
+      .then(runners => {
+        const root = isRoot ? id : runners.find(runner => runner.id === e.parentAgentId)?.root
+        return root === undefined ? undefined : update($, suiteRunners, all => [...all, { id, root }])
+      })
       .catch(() => undefined)
     return result
   })

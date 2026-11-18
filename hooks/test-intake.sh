@@ -54,7 +54,7 @@ has "step 4 derives acceptance criteria"             '### 4\. Acceptance criteri
 has "each criterion is observable"                   'check without asking you'
 has "no criterion demands a full-suite run"          'A criterion never demands a run of the full test suite'
 has "the full suite runs once, at the end"           'The full suite runs once, at the end, in one of two places'
-has "Holmes runs it last for local, uncommitted work" 'For local, uncommitted work, Holmes runs it as his last step'
+has "Mike picks who runs it for local work"          'For local, uncommitted work, it runs after every other review finding is fixed, and Mike picks who runs it: he runs it himself, or Holmes runs it as his last step'
 has "CI on an Index-mode pull request is that run"   'For an Index-mode pull request, CI on the pull request is that one run, and Holmes adds no run of his own'
 if printf '%s' "$FLAT" | grep -qF -- 'as the last step before a push, a commit, or a pull request marked ready'; then
   no "no final run is given to Holmes before every push" "found the old sentence"

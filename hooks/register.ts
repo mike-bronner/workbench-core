@@ -192,7 +192,7 @@ import { subjectVerdict } from './mods/commit-subject'
 import { isAttendedPrompt, isAttendedSession, isDesktopSession, isScheduledFire, laneOf } from './mods/lane'
 import { bareSetRefusal, repairedNotice, runsGit } from './mods/false-bare'
 import type { Script } from './mods/full-suite'
-import { installPathsOf, suiteRefusal } from './mods/full-suite'
+import { installPathsOf, isFinalRunDispatch, suiteRefusal } from './mods/full-suite'
 import { bufferWarningOf } from './mods/monitor'
 import { parseShell } from './mods/shell'
 import { callerKeyOf, freshnessOf, isFinalDescription, isMcpTool, isOutwardTool, isRepeated, isSubmitLine, readSourceOf, readsAfter, refusalTextOf, refusalsAfter, repeatReminderOf, sourcesRefusalOf } from './mods/outward'
@@ -349,6 +349,7 @@ const pendingReleases = atom({ plugin: 'workbench-core', key: 'pendingReleases' 
 // Whether a schedule opened the current turn, so a commit in it is not gated.
 const turnScheduled = atom({ plugin: 'workbench-core', key: 'turnScheduled' } as const, false)
 const turnForwards = atom({ plugin: 'workbench-core', key: 'turnForwards' } as const, false)
+const suiteRunners = atom({ plugin: 'workbench-core', key: 'suiteRunners' } as const, [])
 const statusLine = atom({ plugin: 'workbench-core', key: 'statusLine' } as const, null)
 const learnings = atom({ plugin: 'workbench-core', key: 'learnings' } as const, {})
 const replyRows = atom({ plugin: 'workbench-core', key: 'replyRows' } as const, null)
@@ -726,14 +727,16 @@ async function scriptAt($: EngineInterface, path: string): Promise<Script | unde
   return text.includes('\0') ? { kind: 'program' } : { kind: 'text', text }
 }
 
-async function suiteRefusalOf($: EngineInterface, command: unknown, agentId: string | undefined): Promise<string | undefined> {
-  if ((await $.workbench.callerLane(agentId === undefined ? {} : { agentId }).catch((): WorkbenchCallerLane => 'main')) !== 'main') return undefined
+async function suiteRefusalOf($: EngineInterface, command: unknown, agentId: string | undefined, sessionAttended: boolean | undefined): Promise<string | undefined> {
+  const lane = await $.workbench.callerLane(agentId === undefined ? {} : { agentId }).catch((): WorkbenchCallerLane => 'main')
+  if (lane === 'top-level-agent') return undefined
+  if (lane === 'sub-agent' && (sessionAttended !== true || (await read($, suiteRunners)).some(runner => runner.id === agentId))) return undefined
   const home = await $.env.get('HOME')
   const configDir = await $.env.get('CLAUDE_CONFIG_DIR')
   const registries = [...new Set([configDir, home && `${home}/.claude`].filter(dir => dir?.startsWith('/')).map(dir => `${dir}/plugins/installed_plugins.json`))]
   const installed = (await Promise.all(registries.map(path => readIfAny($, path)))).flatMap(text => (text === undefined ? [] : installPathsOf(text)))
   const pluginRoots = [(await $.env.get('CLAUDE_PLUGIN_ROOT')) || $.plugin.root, ...installed]
-  const refusal = await suiteRefusal(typeof command === 'string' ? command : '', await $.session.cwd(), home, pluginRoots, path => scriptAt($, path))
+  const refusal = await suiteRefusal(typeof command === 'string' ? command : '', await $.session.cwd(), home, pluginRoots, path => scriptAt($, path), lane === 'sub-agent')
   if (refusal === undefined || (await $.env.get('WORKBENCH_ORCHESTRATOR')) === '0' || !(await orchestratorOn($))) return undefined
   return refusal
 }
@@ -2044,8 +2047,10 @@ export const register: Register = on => {
   })
 
   on('classic.SubagentStop', async ($, e, next) => {
-    const result = await next(e)
-    return folderStopOf($, e.stop_hook_active === true, result, e.agent_id).catch(() => result)
+    const beneath = await next(e)
+    const result = await folderStopOf($, e.stop_hook_active === true, beneath, e.agent_id).catch(() => beneath)
+    if (result.block === undefined) await update($, suiteRunners, runners => runners.filter(runner => runner.root !== e.agent_id)).catch(() => undefined)
+    return result
   })
 
   const judging = new Set<string>()
@@ -2067,7 +2072,7 @@ export const register: Register = on => {
     if (unread !== undefined) return { deny: unread }
     const guarded = e.tool === 'Bash' ? await commitGuardOf($, e.command, e.agentId, sessionAttended).catch(() => FAILED_REFUSAL.deny) : undefined
     if (guarded !== undefined) return { deny: guarded }
-    const suite = e.tool === 'Bash' ? await suiteRefusalOf($, e.command, e.agentId).catch(() => GUARD_FAILED) : undefined
+    const suite = e.tool === 'Bash' ? await suiteRefusalOf($, e.command, e.agentId, sessionAttended).catch(() => GUARD_FAILED) : undefined
     if (suite !== undefined) return { deny: suite }
     if (e.tool === 'Bash') await repairBeforeGit($, e.command, sessionAttended === true).catch(() => undefined)
     if (verdict !== undefined) {
@@ -2497,6 +2502,20 @@ export const register: Register = on => {
       }
     }
     return changed ? { ...result, instructionFiles: kept } : result
+  })
+
+  on('agent.spawn', async ($, e, next) => {
+    const result = await next(e)
+    const id = result.agentId
+    if (id === undefined) return result
+    const isRoot = e.parentAgentId === undefined && isFinalRunDispatch(e.subagentType, e.prompt)
+    await read($, suiteRunners)
+      .then(runners => {
+        const root = isRoot ? id : runners.find(runner => runner.id === e.parentAgentId)?.root
+        return root === undefined ? undefined : update($, suiteRunners, all => [...all, { id, root }])
+      })
+      .catch(() => undefined)
+    return result
   })
 
   // A sub-agent's system prompt is its own, so it gets the rules as context at

@@ -19,7 +19,8 @@ undone, `gh pr ready`, `gh release create` or `gh issue close`. Before one, it
 lists the files and URLs the session read, newest first, with the age of each
 read. Use that list as the start of step 1. It also lists again each folder the
 session listed with `ls` or Glob, and blocks once when one gained or lost
-entries, naming them. The same folder check blocks a stop once.
+entries that the session's own Bash, Write, Edit or NotebookEdit calls did not
+make, naming them. The same folder check blocks a stop once.
 
 ## 1. Re-read every source before you call the work done
 

@@ -78,22 +78,17 @@ has "rule 5 keeps \"no action needed\" a verdict"   'No action needed" is a vali
 has "rule 6 limits options to a real fork"          'real fork that Mike has not decided'
 has "rule 6 keeps options before irreversible acts" 'outward-facing or irreversible action'
 has "rule 6 exempts commits and pushes from options" 'Commits and ordinary pushes are the exception'
-has "rule 6 takes a typed request as the approval"  "When Mike's own prompt asks for a commit, a push or a release, or any mix of them, that prompt approves the actions it names, for the turn it opened"
-has "rule 6 reads a request by its meaning"        'Its meaning counts, not its wording, so "ship 0.59.0" asks for a release as plainly as "release 0.59.0" does'
-has "rule 6 ends it at the next prompt"             'his next prompt ends the approval'
-has "rule 6 writes a plan file with no question"    'A plan file needs no question either: create or edit it without asking, in prose or through `AskUserQuestion`'
-has "rule 6 approves nothing on a negated prompt"   'A prompt that negates, defers or asks, such as "commit later" or "should I commit\?", approves nothing'
 has "rule 6 asks one approval question"             'one approval question, not three options'
-has "rule 6 asks it alone, after the review"        'reviewed the tree, ask it through `AskUserQuestion`, on its own'
-has "rule 6 names the answer as the approval"       'His answer is the approval'
-has "rule 6 runs a picked commit with no prompt"     'Run that commit yourself as a plain line, and no permission prompt opens'
-has "rule 6 approves no push and no merge on a pick"  'It approves one commit on the branch HEAD held when he picked, and no push and no merge into the default branch'
-has "rule 6 asks the push on its own"                'ask about the push in a question of its own'
-has "rule 6 leaves how a branch lands to Mike"       'a pull request or a local merge, is his choice'
-has "rule 6 never takes a prompt as the approval"    'A permission prompt for any other form is never the approval'
-has "rule 6 keeps sub-agents from committing"       'A sub-agent never commits or pushes'
-has "rule 6 leaves the question to the orchestrator" 'the orchestrator asks Mike'
+has "rule 6 points at the session commit rules"     'The commit rules in the session.s system prompt \("Commits and code comments"\) say when a request or a pick approves one, and what to ask'
+has "rule 6 asks each approval alone"               'Ask each such question through `AskUserQuestion`, on its own'
+has "rule 6 asks about a sub-agent's tree"          'A tree a sub-agent hands back is work Mike did not ask to commit, so you ask him'
+has "rule 6 never takes a prompt as the approval"    'A permission prompt is never the approval, because a prompt that appears mid-flow gets answered without a review'
 has "rule 6 keeps the Index pipeline silent"        'An Index pipeline run never asks to commit or push'
+if grep -qF '## Commits and code comments' "$ROOT/hooks/mods/prompt-rules.ts"; then
+  ok "the section rule 6 points at is in the system prompt"
+else
+  no "the section rule 6 points at is in the system prompt" "hooks/mods/prompt-rules.ts has no Commits and code comments section"
+fi
 # Rule 6 renders options as one table, because three headings with pros and
 # cons ran 25 to 30 rows and pushed the recommendation off Mike's screen.
 has "rule 6 keeps three options"                    'give options, give three'
@@ -118,6 +113,9 @@ has "rule 8 bans contractions"                      'spell out every contraction
 has "rule 8 bans the em dash and the semicolon"     'Never use an em dash or a semicolon'
 has "rule 8 bans marketing adjectives"              'marketing adjectives'
 has "rule 9 scopes emoji to terminal structure"     'emoji as structure in terminal replies'
+has "rule 9 leads every heading and status line"    'An emoji leads every section heading and every status line'
+has "rule 9 names five status emoji"                'A status line takes one of these five: - ✅ done or passing - ❌ failed or blocked - 🟡 a risk, or a caveat that changes what Mike does - ⏳ waiting or still running - 👉 a step Mike must take'
+has "rule 9 keeps emoji out of table cells"         'Keep emoji out of table cells'
 has "rule 10 adopts the register, not the identity" 'adopt the register and never the identity'
 # Rule 11 is the density rule. Mike's largest past problem with agents was
 # outward prose too dense for a normal person to follow. It is stated rather
@@ -139,6 +137,11 @@ has "rule 11 covers commit bodies and messages"     'a commit body and a message
 # outruns the screen scrolls away the very text a decision depends on.
 has "rule 12 fits a reply on one screen"            '12\. \*\*Fit a terminal reply on one screen'
 has "rule 12 sets the row budget at 80 columns"     'about 40 rows at that width'
+has "rule 12 wins over rules 3, 5 and 15"           'This budget wins over rules 3, 5 and 15: restate each finding, reason, caveat or risk in one line, not a block'
+has "rule 12 allows one table at most"              'Use one table at most per reply'
+has "rule 12 keeps a caveat that changes the act"   'Give a caveat only when it changes what Mike does'
+has "rule 12 bans a recap block"                    'Write no recap and no "what changed" block'
+has "rule 12 never drops what Mike acts on"         'The budget never drops a decision, a question or a command Mike must run'
 # A question goes right after its context, not held for the end with that
 # context restated. Mike set this on 2026-10-06. A verdict can still close.
 has "rule 12 asks right after the context appears"  'Ask each question right after the context it depends on first appears'
@@ -185,10 +188,49 @@ has "rule 15 names every unseen source"               "He never sees a sub-agent
 has "rule 15 counts folded tool output as unseen"     'Tool output is folded \(rule 14\), so it counts as unseen too'
 has "rule 15 restates what a decision or finding needs" 'When a decision or a finding needs anything from it, restate that in the reply: the finding, its reason, the test results, the risks, and each option with its grade'
 has "rule 15 bans a pointer at the source alone"      'Never point at it by its source alone'
-has "the table habit is stated"                     'three or more comparable items in a table'
-has "the caveat habit is stated, and is not a hedge" 'honest caveat.{0,80}It is not a hedge'
+has "rule 15 keeps each restatement to one line"      'Keep each to one line or one table row \(rule 12\)'
+has "the table habit is stated"                     'three or more comparable items in a table, and use one table at most'
+has "the caveat habit is stated, and is not a hedge" 'honest caveat only when it changes what Mike does.{0,60}It is not a hedge'
 has "the synthesis habit is stated"                 'Synthesize sub-agent output'
 has "the close is a verdict, not a summary"         'Close with the verdict, not a summary'
+has "the style shows a reply in the target shape"   'A reply in the target shape'
+
+echo
+echo "the sample reply keeps the rules it shows:"
+SAMPLE="$(printf '%s\n' "$BODY" | awk '/^````markdown$/ {on = 1; next} on && /^````$/ {exit} on')"
+SAMPLE_ROWS="$(printf '%s\n' "$SAMPLE" | grep -c '')"
+if [ -n "$SAMPLE" ] && [ "$SAMPLE_ROWS" -le 40 ]; then
+  ok "the sample fits the 40-row budget ($SAMPLE_ROWS rows)"
+else
+  no "the sample fits the 40-row budget" "found ${SAMPLE_ROWS} rows, or no sample"
+fi
+if printf '%s\n' "$SAMPLE" | head -1 | grep -qE '^(✅|❌|🟡|⏳|👉) '; then
+  ok "the sample leads with a status line"
+else
+  no "the sample leads with a status line" "$(printf '%s\n' "$SAMPLE" | head -1)"
+fi
+BARE_HEADING="$(printf '%s\n' "$SAMPLE" | grep -E '^#+ ' | grep -vE '^#+ [^A-Za-z0-9 ]')"
+if [ -n "$SAMPLE" ] && printf '%s\n' "$SAMPLE" | grep -qE '^#+ ' && [ -z "$BARE_HEADING" ]; then
+  ok "every sample heading leads with an emoji"
+else
+  no "every sample heading leads with an emoji" "no heading, or: $BARE_HEADING"
+fi
+BARE_STATUS="$(printf '%s\n' "$SAMPLE" | grep -E '^- ' | grep -vE '^- (✅|❌|🟡|⏳|👉) ')"
+if [ -n "$SAMPLE" ] && printf '%s\n' "$SAMPLE" | grep -qE '^- ' && [ -z "$BARE_STATUS" ]; then
+  ok "every sample status line leads with a status emoji"
+else
+  no "every sample status line leads with a status emoji" "no status line, or: $BARE_STATUS"
+fi
+if [ "$(printf '%s\n' "$SAMPLE" | grep -cE '^\|[ :-]*-[ :|-]*\|$')" -le 1 ]; then
+  ok "the sample holds one table at most"
+else
+  no "the sample holds one table at most" "more than one table"
+fi
+if printf '%s\n' "$SAMPLE" | grep -qiE 'what changed|recap|summary'; then
+  no "the sample has no recap block" "$(printf '%s\n' "$SAMPLE" | grep -iE -m1 'what changed|recap|summary')"
+else
+  ok "the sample has no recap block"
+fi
 
 # The cuts Mike approved stay cut. Each needle is the phrase that carried the
 # retired rule, so its return is a regression rather than a rewording.
@@ -209,6 +251,7 @@ lacks "no question restated to stand alone"  'stands on its own, so it restates'
 lacks "no heading per option"               '### 🔹 Option'
 lacks "no permission prompt as the approval" 'because the approval gate prompts'
 lacks "no prose fallback for questions"     'Open questions'
+lacks "no caveat wherever one exists"       'caveat wherever one exists'
 
 # ── 2. The source obeys its own register ─────────────────────────────────────
 echo
@@ -385,15 +428,7 @@ if grep -qF '**The merge gate guards against mistakes, not against evasion**' "$
 else
   no "README.md scopes the merge gate to mistakes and names the alias and self-remote routes" "no scope statement, or a route left out"
 fi
-has "rule 6 names the exemption and the landing in its denial" 'a commit outside a ledger unit worktree, a local merge or pull that lands a unit branch, a push, merge, release'
-has "rule 6 states the unit commit with no question"  'The one exception is a plain commit in a unit worktree the provisioning ledger recorded, with HEAD on that unit.s branch: the main session runs it with no question, whatever the repository.s remotes'
-lacks "rule 6 keeps no origin condition on a unit commit" 'origin` remote now|had one at the add|records at the add whether|asks Mike before each commit'
-has "rule 6 counts a unit landing as a commit"        'A local `git merge` or `git pull` that lands a ledger unit branch counts as a commit in every tree, so it asks Mike first, whatever its options, a fast-forward included'
-has "rule 6 reads a pull from any source"             'A `git pull` lands one from any source, a remote included'
-has "rule 6 asks when refs or the ledger are unread"  'One whose merged refs or the ledger cannot be read asks too'
-has "rule 6 lets a catch-up merge run"                'A catch-up merge of any other branch, such as `git merge origin/main`, runs with no question'
-has "rule 6 lets a commit approval cover the merge"   'A commit request approves such merges for its turn, and a commit pick approves one'
-has "rule 6 keeps a default-branch merge a merge"     'A merge into the default branch stays a merge'
+lacks "rule 6 leaves the approval policy to the system prompt" 'ledger|catch-up merge|history rewrite|gh alias set|approves the actions it names|His answer is the approval|A plan file needs no question'
 
 echo
 echo "$PASS passed, $FAIL failed"

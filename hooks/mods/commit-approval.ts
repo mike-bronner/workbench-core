@@ -692,6 +692,11 @@ const isBranchWrite = (arg: string): boolean => /^-[A-Za-z]*[mMfcC][A-Za-z]*$/.t
 
 const refspecsOf = (rest: readonly string[], values: ReadonlySet<string> = new Set()): string[] =>
   positionalsOf(rest, longValuesOf(rest, values)).filter(arg => arg.includes(':'))
+const hasRefmap = (rest: readonly string[]): boolean =>
+  rest.some(arg => {
+    const name = arg.split('=')[0] ?? ''
+    return name.length >= 5 && '--refmap'.startsWith(name)
+  })
 const destinationOf = (refspec: string): string => refspec.slice(refspec.lastIndexOf(':') + 1).replace(/^\+/, '')
 const isLocalRemote = (remote: string | undefined): boolean => remote === undefined || remote === '.' || /^(?:\/|\.\.?\/|~|file:)/.test(remote)
 const pushRemoteOf = (rest: readonly string[]): string | undefined => {
@@ -718,7 +723,7 @@ function writesHead(st: ShellStatement, sub: string | undefined): boolean {
   if (sub === 'branch') return rest.some(isBranchWrite)
   if (sub === 'rebase') return rebaseNamesBranch(rest)
   if (sub === 'pull') return refspecsOf(rest).some(spec => !spec.includes('://'))
-  if (sub === 'fetch') return refspecsOf(rest).length > 0
+  if (sub === 'fetch') return hasRefmap(rest) || refspecsOf(rest).length > 0
   if (sub === 'push') return refspecsOf(rest, PUSH_VALUES).length > 0 && isLocalRemote(pushRemoteOf(rest))
   return false
 }
@@ -1058,6 +1063,45 @@ export function mergesOf(line: string): Merges {
   }
 }
 
+export type CatchUp = { dir: string; kind: 'merge' | 'pull'; remote?: string; ref?: string; isRebaseOff?: true }
+
+const CATCH_UP_OPTIONS: ReadonlySet<string> = new Set(['--no-edit', '--edit', '--ff', '--no-ff', '--ff-only', '-q', '--quiet', '-v', '--verbose', '--stat', '--no-stat', '-n', '--log', '--no-log'])
+const REBASE_OFF: ReadonlySet<string> = new Set(['--no-rebase', '--rebase=false'])
+const CATCH_UP_READERS: ReadonlySet<string> = new Set(['tail', 'head'])
+
+const isQuietRedirect = (redirect: ShellStatement['redirects'][number]): boolean =>
+  redirect.target === '/dev/null' || (['>&', '<&'].includes(redirect.op) && /^(?:\d+|-)$/.test(redirect.target))
+
+const isCatchUpCompanion = (st: ShellStatement, line: string): boolean => {
+  if (st.assignments.length > 0 || st.wrappers.length > 0 || !st.redirects.every(isQuietRedirect)) return false
+  if (st.name !== 'git') return CATCH_UP_READERS.has(st.name)
+  const globals = st.args.slice(0, Math.max(st.subcommandAt, 0))
+  if (st.subcommandAt < 0 || !(globals.length === 0 || (globals.length === 2 && globals[0] === '-C'))) return false
+  const sub = gitSubOf(st, line)
+  const rest = restOf(st)
+  if (sub === 'push') return true
+  if (sub === 'fetch') return rest.length <= 1 && rest.every(arg => !arg.startsWith('-') && !arg.includes(':'))
+  if (sub !== 'merge' && sub !== 'pull') return false
+  const { options } = mergedWordsOf(rest, sub)
+  return options.every(arg => CATCH_UP_OPTIONS.has(arg) || (sub === 'pull' && REBASE_OFF.has(arg)))
+}
+
+export function catchUpsOf(line: string): CatchUp[] {
+  const parse = parseShell(line)
+  const isPlaced = isPlacedLine(line, parse.statements)
+  if (!parse.statements.every(st => isCatchUpCompanion(st, line))) return []
+  return mergingOf(parse.statements, line).flatMap(st => {
+    const kind = gitSubOf(st, line) === 'pull' ? 'pull' : 'merge'
+    const landing = landingOf(st, kind, mergeDirOf(st, isPlaced))
+    if (landing === undefined || landing.dir === null || landing.refs === null || landing.refs.length > 1) return []
+    const [ref] = landing.refs
+    const { words, options } = mergedWordsOf(restOf(st), kind)
+    const remote = kind === 'pull' ? words[0] : undefined
+    const isRebaseOff = kind === 'pull' && options.some(arg => REBASE_OFF.has(arg))
+    return [{ dir: landing.dir, kind, ...(remote === undefined ? {} : { remote }), ...(ref === undefined ? {} : { ref }), ...(isRebaseOff ? { isRebaseOff: true as const } : {}) }]
+  })
+}
+
 export const isDefaultBranch = (branch: string | undefined, originHead: string | undefined): boolean => {
   if (branch === undefined || originHead === undefined) return true
   return branch.replace(/^refs\/heads\//, '').toLowerCase() === defaultNameOf(originHead)
@@ -1081,7 +1125,7 @@ const bare = (ref: string): string => ref.toLowerCase().replace(/^(?:origin|upst
 const isNamed = (target: MergeTarget, names: MergeNames): boolean => {
   if (target.pr !== undefined) return names.prs.includes(target.pr)
   if (target.bases !== undefined && !(target.bases.length > 0 && target.bases.every(base => (names.bases ?? []).includes(bare(base))))) return false
-  return target.refs.length > 0 && target.refs.every(ref => names.words.includes(bare(ref)))
+  return target.refs.length > 0 && target.refs.every(ref => names.words.includes(ref.toLowerCase()) || names.words.includes(bare(ref)))
 }
 
 export function mergeTargetRefusalOf(names: MergeNames | undefined, targets: readonly MergeTarget[]): string | undefined {

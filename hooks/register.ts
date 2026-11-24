@@ -120,7 +120,7 @@ import {
   recordOf,
   withChurn,
 } from './mods/cache-meter'
-import type { Action, ApiWrite, Approval, AskFacts, Commit, Gated, Head, Landing, PendingRelease, Pick, Refs, RequestedCall } from './mods/commit-approval'
+import type { Action, ApiWrite, Approval, AskFacts, CatchUp, Commit, Gated, Head, Landing, PendingRelease, Pick, Refs, RequestedCall } from './mods/commit-approval'
 import {
   AGENT_CONFIG_MERGE_REFUSAL,
   AGENT_MERGE_REFUSAL,
@@ -142,6 +142,7 @@ import {
   approvalAfter,
   askRefusalOf,
   bindingRefusalOf,
+  catchUpsOf,
   filesOf,
   gateOf,
   messageOf,
@@ -815,6 +816,44 @@ async function mergesIntoDefault($: EngineInterface, dirs: readonly (string | nu
   let count = 0
   for (const dir of dirs) {
     if (await isMergeIntoDefault($, dir === null ? undefined : dir === '' ? await $.session.cwd() : dir)) count++
+  }
+  return count
+}
+
+const REBASE_OFF_VALUES: ReadonlySet<string> = new Set(['false', 'no', 'off', '0'])
+
+const configValueOf = ($: EngineInterface, dir: string, key: string): Promise<string | null | undefined> =>
+  $.process
+    .run(['git', '-C', dir, 'config', '--get', key], { timeoutMs: 10_000 })
+    .then(({ exitCode, stdout }) => (exitCode === 0 ? stdout.trim() : exitCode === 1 ? null : undefined), () => undefined)
+
+async function rebasesOnPull($: EngineInterface, dir: string, branch: string): Promise<boolean> {
+  const own = await configValueOf($, dir, `branch.${branch}.rebase`)
+  const value = own === null ? await configValueOf($, dir, 'pull.rebase') : own
+  return value === undefined || (value !== null && !REBASE_OFF_VALUES.has(value.toLowerCase()))
+}
+
+async function isCatchUp($: EngineInterface, catchUp: CatchUp): Promise<boolean> {
+  const at = catchUp.dir === '' ? await $.session.cwd() : catchUp.dir
+  if (!(await isMergeIntoDefault($, at))) return false
+  const branch = (await gitOut($, at, ['symbolic-ref', '-q', 'HEAD']))?.replace(/^refs\/heads\//, '')
+  if (branch === undefined) return false
+  const remote = await gitOut($, at, ['config', '--get', `branch.${branch}.remote`])
+  const upstream = await gitOut($, at, ['rev-parse', '--symbolic-full-name', '@{upstream}'])
+  if (remote === undefined || upstream !== `refs/remotes/${remote}/${branch}`) return false
+  if (catchUp.remote !== undefined && catchUp.remote !== remote) return false
+  if (originRepoOf(await gitOut($, at, ['remote', 'get-url', remote])) === undefined) return false
+  if ((await gitOut($, at, ['config', '--get-all', `remote.${remote}.fetch`])) !== `+refs/heads/*:refs/remotes/${remote}/*`) return false
+  if (catchUp.kind === 'pull' && catchUp.isRebaseOff === undefined && (await rebasesOnPull($, at, branch))) return false
+  if (catchUp.ref === undefined) return true
+  if (catchUp.kind === 'pull') return catchUp.ref === branch || catchUp.ref === `refs/heads/${branch}`
+  return (await gitOut($, at, ['rev-parse', '--symbolic-full-name', catchUp.ref])) === upstream
+}
+
+async function catchUpsIntoDefault($: EngineInterface, catchUps: readonly CatchUp[]): Promise<number> {
+  let count = 0
+  for (const catchUp of catchUps) {
+    if (await isCatchUp($, catchUp)) count++
   }
   return count
 }
@@ -2270,7 +2309,7 @@ export const register: Register = on => {
         if (treeRefusal !== undefined) return { deny: treeRefusal }
         return subject !== undefined ? { deny: subject } : withScanRecall($, 'Bash', e.command, e.agentId, await next(e))
       }
-      const intoDefault = merges.pr + (await mergesIntoDefault($, merges.local))
+      const intoDefault = merges.pr + (await mergesIntoDefault($, merges.local)) - (await catchUpsIntoDefault($, catchUpsOf(e.command)))
       const mergeDirs = await unitLandingDirsOf($, merges.landings)
       const committed = { commits: writes.commits + mergeDirs.length, pushes: writes.pushes }
       const picked = await pickedReleaseOf($, approval, e.command)

@@ -59,7 +59,7 @@ export type Bench = {
   // The repository `git -C <dir> rev-parse` reads, by directory: HEAD, and
   // what @{push} points at. A directory not here, or a field left out, makes
   // git fail, as outside a repository or with no push target.
-  repos: Record<string, { head?: string; pushed?: string; upstream?: string; remote?: string; branch?: string | null; originHead?: string; originUrl?: string; ghResolved?: string | null; remoteUrls?: string | null; remotesShown?: string }>
+  repos: Record<string, { head?: string; pushed?: string; upstream?: string; fullNames?: Record<string, string>; fetchSpec?: string; pullRebase?: string | null; branchRebase?: string | null; remote?: string; branch?: string | null; originHead?: string; originUrl?: string; ghResolved?: string | null; remoteUrls?: string | null; remotesShown?: string }>
   trees: Record<string, string | null>
   shown?: string
   permissionBeneath: Record<string, unknown>
@@ -236,6 +236,11 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
       return answer(gitAt.remoteUrls ?? (gitAt.originUrl === undefined ? undefined : `remote.origin.url ${gitAt.originUrl}`))
     }
     if (gitAt !== undefined && verb === 'rev-parse --symbolic-full-name @{upstream}') return answer(gitAt.upstream)
+    if (gitAt !== undefined && e.argv[3] === 'rev-parse' && e.argv[4] === '--symbolic-full-name' && e.argv.length === 6) return answer(gitAt.fullNames?.[e.argv[5] ?? ''])
+    if (gitAt !== undefined && verb === `remote get-url ${gitAt.remote ?? 'origin'}`) return answer(gitAt.originUrl)
+    if (gitAt !== undefined && verb === `config --get-all remote.${gitAt.remote ?? 'origin'}.fetch`) return answer(gitAt.fetchSpec)
+    if (gitAt !== undefined && verb === 'config --get pull.rebase') return gitAt.pullRebase === null ? { value: { ...ran(''), exitCode: 128 } } : answer(gitAt.pullRebase)
+    if (gitAt !== undefined && verb === `config --get branch.${gitAt.branch ?? 'main'}.rebase`) return gitAt.branchRebase === null ? { value: { ...ran(''), exitCode: 128 } } : answer(gitAt.branchRebase)
     if (gitAt !== undefined && verb === `config --get branch.${gitAt.branch ?? 'main'}.remote`) return answer(gitAt.remote)
     if (gitAt !== undefined && verb === 'symbolic-ref -q HEAD') return answer(branchRef(gitAt))
     if (gitAt !== undefined && verb === 'symbolic-ref -q refs/remotes/origin/HEAD') return answer(gitAt.originHead === undefined ? undefined : `refs/remotes/origin/${gitAt.originHead}`)

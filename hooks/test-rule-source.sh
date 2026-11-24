@@ -410,10 +410,15 @@ for source in "$ROOT/README.md" "$ROOT/hooks/mods/prompt-rules.ts"; do
   else
     no "${source#"$ROOT"/} says unreadable merged refs or ledger ask" "no statement of the closed default"
   fi
-  if grep -qE 'A catch-up merge of any other branch, such as \\?`git merge origin/main\\?`.{0,60} run with no question' "$source"; then
+  if grep -qE 'catch-up.{0,60}of any other branch, such as \\?`git merge origin/main\\?`' "$source"; then
     ok "${source#"$ROOT"/} says a catch-up merge runs with no question"
   else
     no "${source#"$ROOT"/} says a catch-up merge runs with no question" "no statement of the catch-up merge"
+  fi
+  if grep -qE 'own upstream.{0,250}\\?`git pull origin main\\?`' "$source" && ! grep -qF 'stays a merge and needs a merge approval' "$source"; then
+    ok "${source#"$ROOT"/} says a catch-up of the default branch from its own upstream runs with no question"
+  else
+    no "${source#"$ROOT"/} says a catch-up of the default branch from its own upstream runs with no question" "no statement of the default-branch catch-up, or the old rule that every merge into it asks"
   fi
   if grep -qE "A sub-agent's \\\\?\`git merge\\\\?\` or \\\\?\`git pull\\\\?\` that may make a commit (is refused whatever it merges|gets the commit guard's sub-agent refusal)" "$source"; then
     ok "${source#"$ROOT"/} says a sub-agent's merge that makes a commit is refused whatever it merges"
@@ -421,6 +426,12 @@ for source in "$ROOT/README.md" "$ROOT/hooks/mods/prompt-rules.ts"; do
     no "${source#"$ROOT"/} says a sub-agent's merge that makes a commit is refused whatever it merges" "no statement of the sub-agent merge rule"
   fi
 done
+if grep -qF 'A catch-up is a merge, never a rebase' "$ROOT/README.md" \
+  && grep -qF 'A pull with `--rebase` in any value but `false`, or `-r`, is no catch-up, and neither is a plain pull when `branch.<name>.rebase`, or else `pull.rebase`, is set to anything but a false value.' "$ROOT/README.md"; then
+  ok "README.md says a pull that would rebase is never a catch-up"
+else
+  no "README.md says a pull that would rebase is never a catch-up" "no statement that a rebasing pull, by option or by config, is no catch-up"
+fi
 if grep -qF '**The merge gate guards against mistakes, not against evasion**' "$ROOT/README.md" \
   && grep -qF 'a second name for a unit tip, made with `git branch x unit/a` or `git tag t unit/a`, and a merge of that name' "$ROOT/README.md" \
   && grep -qF 'a remote, added on an earlier line, that points at the repository itself' "$ROOT/README.md"; then

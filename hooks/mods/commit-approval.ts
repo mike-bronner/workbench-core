@@ -161,8 +161,8 @@ export const MOVE_REFUSAL =
   'push first, on that branch. If the work needs another branch, tell Mike, and ' +
   'ask the question again once he says how to go on.'
 
-export const branchRefusal = (seen: string, now: string): string =>
-  `This git commit or push was refused: Mike picked it while HEAD was on ${seen}, ` +
+export const branchRefusal = (action: string, seen: string, now: string): string =>
+  `This ${action} was refused: Mike picked it while HEAD was on ${seen}, ` +
   `and HEAD is now on ${now}. A pick approves only the branch HEAD held when he ` +
   'picked, so this pick is used up. Ask the question again, and name the branch ' +
   'HEAD is on now.'
@@ -704,7 +704,8 @@ const shownRef = (ref: string | undefined, what: string): string => (ref === und
 export function bindingRefusalOf(pick: Pick, top: string | undefined, ref: string | undefined): string | undefined {
   const seen = top === undefined ? undefined : pick.heads.find(head => head.top === top)
   if (seen !== undefined && ref !== undefined && seen.ref === ref) return undefined
-  return branchRefusal(shownRef(seen?.ref, 'a branch the gate could not read'), shownRef(ref, 'a branch the gate cannot read'))
+  const action = pick.action === 'rewrite' ? rewriteNameOf(rewriteKindsOf(pick.line ?? '')) : GATED_NAMES[pick.action]
+  return branchRefusal(action, shownRef(seen?.ref, 'a branch the gate could not read'), shownRef(ref, 'a branch the gate cannot read'))
 }
 
 const SHELL_ALIAS = '!'
@@ -916,6 +917,14 @@ export function rewritesAt(line: string): Rewrite[] {
       }
       return { dir }
     })
+}
+
+export function rewriteDirsOf(line: string): (string | null)[] {
+  const { statements } = parseShell(line)
+  const isConfigChanged = changesConfig(statements, line)
+  return statements
+    .filter(st => isRewrite(st, gitSubOf(st, line), isConfigChanged))
+    .map(st => (gitSubOf(st, line) === SHELL_ALIAS ? null : mergeDirOf(st, isPlacedLine(line, statements.filter(other => other !== st)))))
 }
 
 export const rewritesOf = (line: string): number => rewritesAt(line).length

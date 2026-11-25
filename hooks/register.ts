@@ -160,6 +160,7 @@ import {
   isDefaultRef,
   rewriteKindsOf,
   rewriteRefusalOf,
+  rewriteDirsOf,
   rewritesAt,
   rewritesOf,
   bundleRefusalOf,
@@ -2491,7 +2492,7 @@ export const register: Register = on => {
         const target = mergeTargetRefusalOf(approval.names, merges.targets)
         if (target !== undefined) return { deny: target }
       }
-      const rewriteDir = isLinePaid && approval.action === 'rewrite' ? rewritesAt(e.command)[0]?.dir : undefined
+      const rewriteDir = isLinePaid && approval.action === 'rewrite' ? rewriteDirsOf(e.command)[0] : undefined
       const bindingDir = rewriteDir === undefined ? dir : rewriteDir === '' ? await $.session.cwd() : (rewriteDir ?? undefined)
       const isBound = (isPaid && approval.action !== 'merge') || (isLinePaid && approval.action === 'rewrite')
       const binding = isBound ? await bindingRefusal($, approval, bindingDir) : undefined

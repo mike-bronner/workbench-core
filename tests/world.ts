@@ -99,7 +99,7 @@ export type ModelSpec = {
 
 export const GIT_BUILTINS = [
   'add', 'branch', 'checkout', 'checkout-index', 'clean', 'commit', 'config', 'diff', 'fetch', 'log', 'merge', 'mv', 'pull', 'push', 'read-tree', 'rebase',
-  'reset', 'restore', 'rev-parse', 'rm', 'show', 'stash', 'status', 'submodule', 'switch', 'tag', 'worktree',
+  'replace', 'reset', 'restore', 'rev-parse', 'rm', 'show', 'stash', 'status', 'submodule', 'switch', 'tag', 'worktree',
 ]
 
 // The fact answerer of a modeled world.

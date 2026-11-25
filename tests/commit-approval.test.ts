@@ -818,8 +818,7 @@ describe('AC5: a pick is tied to the repository and branch HEAD held when Mike p
     await pick($, b)
     b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'main' }
     const refusal = await bash($, b, 'git commit -m "fix: 🐛 X."')
-    expect(refusal).toContain('HEAD was on fix/x')
-    expect(refusal).toContain('HEAD is now on main')
+    expect(refusal).toMatch(/^This git commit was refused: Mike picked it while HEAD was on fix\/x, and HEAD is now on main\./)
     b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'fix/x' }
     expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
   })
@@ -830,7 +829,7 @@ describe('AC5: a pick is tied to the repository and branch HEAD held when Mike p
     await session($)
     await pushPick($, b)
     b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'main' }
-    expect(await bash($, b, 'git push')).toContain('HEAD is now on main')
+    expect(await bash($, b, 'git push')).toMatch(/^This git push was refused: Mike picked it while HEAD was on fix\/x, and HEAD is now on main\./)
   })
 
   test('a commit in another worktree is tied to the branch that worktree held, and a repository not read at the pick is refused', async ($, on) => {

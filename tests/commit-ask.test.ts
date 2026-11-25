@@ -25,6 +25,7 @@ import {
   mergeTargetRefusalOf,
   mergesOf,
   movesHead,
+  rewriteDirsOf,
   rewritesAt,
   rewritesOf,
   shownOf,
@@ -33,6 +34,7 @@ import { MERGE_REFUSAL, PLAIN_REFUSAL, SUBAGENT_REFUSAL, isReadOnlyPipeline } fr
 import { parseShell } from '../hooks/mods/shell'
 import type { Bench } from './bench'
 import { ASKS, HOME, PERSON, asks, bench, start } from './bench'
+import { GIT_BUILTINS } from './world'
 
 const prompt = (text: string, origin: PromptOrigin = PERSON) => ({ text, wait: false, origin })
 
@@ -253,8 +255,80 @@ describe('AC7: a pick approves exactly one action of the kind its question names
     await picks($, b, 'a rewrite', 'git rebase main')
     expect(await bash($, b, 'git switch feat')).toBe(MOVE_REFUSAL)
     b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'feat', originHead: 'main' }
-    expect(await bash($, b, 'git rebase main')).toContain('Mike picked it while HEAD was on main, and HEAD is now on feat')
+    expect(await bash($, b, 'git rebase main')).toMatch(/^This history rewrite was refused: Mike picked it while HEAD was on main, and HEAD is now on feat\./)
     expect(await bash($, b, 'git rebase main')).toMatch(ASKS.rewrite)
+  })
+
+  for (const [name, line, ask] of [
+    ['branch reset', 'git branch -f feat2 origin/feat2', ASKS.reset],
+    ['remote-tracking ref update', 'HOME=/tmp/evil git fetch origin', ASKS.tracking],
+  ] as const) {
+    test(`a ${name} pick names its own action when HEAD moved`, async ($, on) => {
+      const b = await attended($, on)
+      expect(await bash($, b, line)).toMatch(ask)
+      await picks($, b, 'a rewrite', line)
+      b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'feat', originHead: 'main' }
+      const refusal = await bash($, b, line)
+      expect(refusal).toMatch(new RegExp(`^This ${name} was refused: Mike picked it while HEAD was on main, and HEAD is now on feat\\.`))
+      expect(refusal).not.toContain('commit or push')
+    })
+  }
+
+  const SELF_MOVING = [
+    'git filter-branch -f --tree-filter "sh /private/tmp/claude-503/x/scratchpad/scrub-tree.sh" -- main',
+    'git filter-branch -f HEAD',
+    'git replace abc1234 def5678',
+    'git rebase --root main',
+    'git rebase --update-refs main',
+    'git rebase main feat',
+  ]
+
+  const withGit = (b: Bench): Bench => {
+    b.run = argv => {
+      if (argv[0] !== 'git') return undefined
+      if (argv[1] === '--list-cmds=builtins') return { exitCode: 0, stdout: `${GIT_BUILTINS.join('\n')}\n` }
+      const isAliasRead = argv[1] === '-C' && argv[2] === '/repo' && argv[3] === 'config' && argv[4] === '--get' && (argv[5] ?? '').startsWith('alias.')
+      return isAliasRead ? { exitCode: 1, stdout: '' } : undefined
+    }
+    return b
+  }
+
+  for (const line of SELF_MOVING) {
+    test(`a pick of a line that itself writes HEAD or a branch reads the branch it runs on, and runs the line once: ${line}`, async ($, on) => {
+      const b = withGit(await attended($, on))
+      const deny = await bash($, b, line)
+      expect(deny).toMatch(ASKS.rewrite)
+      expect(deny).toContain('the repository /repo, and the branch main.')
+      await picks($, b, 'a rewrite', line)
+      expect(await bash($, b, line)).toBeUndefined()
+      expect(await bash($, b, line)).toBe(deny)
+    })
+
+    test(`a pick of a line that itself writes HEAD or a branch does not carry over to another branch: ${line}`, async ($, on) => {
+      const b = withGit(await attended($, on))
+      await bash($, b, line)
+      await picks($, b, 'a rewrite', line)
+      b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'feat', originHead: 'main' }
+      expect(await bash($, b, line)).toMatch(/^This history rewrite was refused: Mike picked it while HEAD was on main, and HEAD is now on feat\./)
+      expect(await bash($, b, line)).toMatch(ASKS.rewrite)
+    })
+
+    test(`a pick of a line that itself writes HEAD or a branch is refused when HEAD cannot be read: ${line}`, async ($, on) => {
+      const b = withGit(await attended($, on))
+      await bash($, b, line)
+      await picks($, b, 'a rewrite', line)
+      b.repos['/repo'] = { branch: null }
+      expect(await bash($, b, line)).toContain('Mike picked it while HEAD was on main, and HEAD is now on a branch the gate cannot read')
+    })
+  }
+
+  test('a rewrite beside another verb that writes HEAD, or behind a shell alias, keeps no readable place', () => {
+    expect(rewriteDirsOf('git switch feat && git filter-branch -f -- main')).toEqual([null])
+    expect(rewriteDirsOf("git -c 'alias.x=!git rebase main' x")).toEqual([null])
+    expect(rewriteDirsOf('cd /a && git rebase main feat')).toEqual([null])
+    expect(rewriteDirsOf('git filter-branch -f -- main')).toEqual([''])
+    expect(rewriteDirsOf('git -C /a rebase main feat')).toEqual(['/a'])
+    expect(rewritesAt('git filter-branch -f -- main')).toEqual([{ dir: null }])
   })
 
   test('a reset pick runs its own line, which moves HEAD', async ($, on) => {

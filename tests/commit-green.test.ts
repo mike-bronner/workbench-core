@@ -1,0 +1,754 @@
+import { describe, expect, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
+import type { On, PromptOrigin } from 'claude-code'
+
+import { SUBAGENT_REFUSAL } from '../hooks/mods/commit-guard'
+import type { Script } from '../hooks/mods/full-suite'
+import { SUITE_PARTS_FILE, isWholeRun, partOf, suitePartsOf } from '../hooks/mods/full-suite'
+import type { Bench } from './bench'
+import { ASKS, HOME, PERSON, SID, bench, start } from './bench'
+
+const TREE = 'a'.repeat(40)
+const OTHER = 'b'.repeat(40)
+const URL = 'git@github.com:o/r.git'
+const SUITE = 'claude plugin test .'
+const COMMIT = 'git commit -m "fix: 🐛 X."'
+const ALLOW = { behavior: 'allow' }
+const ASKED = /^This (line|git commit) was refused/
+
+type World = {
+  work: string
+  staged: string
+  scratch: Map<string, string>
+  branch: string
+  pushTarget: string
+  pushUrls: string[]
+  config: Record<string, string>
+  indexEnvs: (string | undefined)[]
+  committed: Map<string, string>
+  dirty: Set<string>
+}
+
+const ok = (stdout: string) => ({ exitCode: 0, stdout })
+const SCRATCH = /^workbench-tree-index-[A-Za-z0-9-]+$/
+const PUSH_KEYS: ReadonlySet<string> = new Set(['push.default', 'remote.origin.push', 'remote.origin.mirror', 'push.followTags'])
+
+const world = (): World => ({ work: TREE, staged: TREE, scratch: new Map(), branch: 'feat', pushTarget: 'origin refs/heads/feat', pushUrls: [URL], config: {}, indexEnvs: [], committed: new Map(), dirty: new Set() })
+
+function modelGit(b: Bench, worlds: Record<string, World>): void {
+  b.run = (argv, init) => {
+    if (argv[0] === 'cp') {
+      const at = Object.keys(worlds).find(top => (argv[2] ?? '').startsWith(`${top}/.git/`))
+      if (at !== undefined) (worlds[at] as World).scratch.set(argv[2] as string, (worlds[at] as World).staged)
+      return ok('')
+    }
+    if (argv[0] === 'rm') {
+      for (const w of Object.values(worlds)) for (const path of argv.slice(2)) w.scratch.delete(path)
+      return ok('')
+    }
+    if (argv[0] !== 'git' || argv[1] !== '-C') return undefined
+    const top = argv[2] ?? ''
+    const w = worlds[top]
+    if (w === undefined) return undefined
+    const verb = argv.slice(3).join(' ')
+    const index = init?.env?.GIT_INDEX_FILE
+    if (verb === 'rev-parse --path-format=absolute --git-path index') return ok(`${top}/.git/index\n`)
+    if (argv[3] === 'rev-parse' && argv[5] === '--git-path' && SCRATCH.test(argv[6] ?? '')) return ok(`${top}/.git/${argv[6]}\n`)
+    if (verb === 'add -A' || verb === 'write-tree') {
+      w.indexEnvs.push(index)
+      if (index === undefined || !w.scratch.has(index)) return { exitCode: 128, stdout: '' }
+      if (verb === 'add -A') {
+        w.scratch.set(index, w.work)
+        return ok('')
+      }
+      return ok(`${w.scratch.get(index)}\n`)
+    }
+    if (verb === 'symbolic-ref --short -q HEAD') return ok(`${w.branch}\n`)
+    if (verb === `for-each-ref --format=%(push:remotename) %(push:remoteref) refs/heads/${w.branch}`) return ok(`${w.pushTarget}\n`)
+    if (verb === 'remote get-url --push --all origin') return ok(w.pushUrls.map(url => `${url}\n`).join(''))
+    if (argv[3] === 'config' && (argv[4] === '--get' || argv[4] === '--get-all') && argv.length === 6 && PUSH_KEYS.has(argv[5] ?? '')) {
+      const value = w.config[argv[5] ?? '']
+      return value === undefined ? { exitCode: 1, stdout: '' } : ok(`${value}\n`)
+    }
+    if (verb.startsWith('--literal-pathspecs ls-tree --name-only HEAD -- ')) {
+      const path = argv.at(-1) ?? ''
+      return ok(w.committed.has(path) ? `${path}\n` : '')
+    }
+    if (argv[3] === 'show' && argv.length === 5 && (argv[4] ?? '').startsWith('HEAD:')) {
+      const text = w.committed.get((argv[4] ?? '').slice('HEAD:'.length))
+      return text === undefined ? { exitCode: 128, stdout: '' } : ok(text)
+    }
+    if (argv[3] === 'cat-file' && argv[4] === '-e' && argv.length === 6) return { exitCode: w.committed.has((argv[5] ?? '').replace(/^HEAD:/, '')) ? 0 : 128, stdout: '' }
+    if (verb.startsWith('--literal-pathspecs diff --quiet HEAD -- ')) {
+      const paths = argv.slice(argv.indexOf('--') + 1)
+      return { exitCode: paths.some(path => w.dirty.has(path)) ? 1 : 0, stdout: '' }
+    }
+    return undefined
+  }
+}
+
+const brief = (goal: string): string =>
+  `Workdir: /repo\nGoal: ${goal}\nContext: The tree holds the change.\nConstraints:\n- Run no mutation testing of any kind.\nAcceptance:\n- AC1: it holds.\nDone when: it holds.`
+
+const FINAL = brief('Final suite run: the uncommitted tree at /repo.')
+
+type Options = { isInteractive?: boolean; env?: Record<string, string>; origin?: PromptOrigin }
+
+async function session($: Engine, on: On, options: Options = {}): Promise<{ b: Bench; w: World; worlds: Record<string, World> }> {
+  const b = bench(on, { env: { HOME, ...options.env } })
+  b.scripts['scratch-roots.sh'] = () => '/scratch\n'
+  for (const top of ['/repo', '/other']) {
+    b.repos[top] = { head: 'c1', pushed: 'c1', branch: 'feat', originHead: 'main', originUrl: URL }
+    b.trees[top] = 'M  README.md\0'
+  }
+  const worlds = { '/repo': world(), '/other': world() }
+  modelGit(b, worlds)
+  on('agent.spawn', async (_$, e) => ({ model: 'opus', agentId: (e as { description: string }).description }))
+  on('classic.SubagentStop', () => ({}))
+  await $.session.start(start(options.isInteractive ?? true))
+  await $.prompt.submit({ text: 'look this over', wait: false, origin: options.origin ?? PERSON })
+  return { b, w: worlds['/repo'], worlds }
+}
+
+async function bash($: Engine, b: Bench, command: string, agentId?: string, extra: Record<string, unknown> = {}): Promise<string | undefined> {
+  const before = b.calls.filter(call => call.tool === 'Bash').length
+  const result = await $.tool.call({ tool: 'Bash', command, ...(agentId ? { agentId } : {}), ...extra } as never)
+  expect([command, b.calls.filter(call => call.tool === 'Bash').length > before]).toEqual([command, result.deny === undefined])
+  return result.deny
+}
+
+async function asked($: Engine, command: string): Promise<unknown> {
+  const result = await $.classic.PermissionRequest({
+    hook_event_name: 'PermissionRequest',
+    session_id: 's',
+    transcript_path: '/t.jsonl',
+    cwd: '/repo',
+    tool_name: 'Bash',
+    tool_input: { command },
+  } as never)
+  return (result as { decision?: unknown }).decision
+}
+
+async function spawnFinal($: Engine): Promise<void> {
+  expect((await $.agent.spawn({ prompt: FINAL, subagentType: 'workbench-dev-team:holmes', description: 'holmes' } as never)).agentId).toBe('holmes')
+}
+
+async function finalRun($: Engine, b: Bench, isRed = false, line = SUITE, extra: Record<string, unknown> = {}): Promise<void> {
+  await spawnFinal($)
+  b.onBash = command => (command === line && isRed ? { isError: true } : undefined)
+  expect(await bash($, b, line, 'holmes', extra)).toBeUndefined()
+  b.onBash = undefined
+}
+
+describe('AC1: a commit of the tree a green final suite run saw runs with no question', () => {
+  test('after a green run, the commit runs and its permission dialog is answered', async ($, on) => {
+    const { b, w } = await session($, on)
+    await finalRun($, b)
+    expect(await asked($, COMMIT)).toEqual(ALLOW)
+    expect(await asked($, 'git commit -F /repo/message.txt')).toEqual(ALLOW)
+    expect(await bash($, b, COMMIT)).toBeUndefined()
+    expect(w.indexEnvs.length).toBeGreaterThan(0)
+    expect(w.indexEnvs.every(index => index !== undefined && SCRATCH.test(index.split('/').pop() ?? ''))).toBe(true)
+  })
+
+  test('each tree reading uses an index of its own, and removes it and its lock', async ($, on) => {
+    const { b, w } = await session($, on)
+    await finalRun($, b)
+    const indexes = new Set(w.indexEnvs)
+    expect(indexes.size).toBeGreaterThan(1)
+    expect(w.scratch.size).toBe(0)
+    const removed = b.runs.filter(argv => argv[0] === 'rm').flatMap(argv => argv.slice(2))
+    for (const index of indexes) expect(removed).toEqual(expect.arrayContaining([index, `${index}.lock`]))
+  })
+
+  test('with no final suite run, the commit asks as today', async ($, on) => {
+    const { b } = await session($, on)
+    expect(await asked($, COMMIT)).toBeUndefined()
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  test('after a red run, the commit asks', async ($, on) => {
+    const { b } = await session($, on)
+    await finalRun($, b, true)
+    expect(await asked($, COMMIT)).toBeUndefined()
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  test('a red run after a green one takes the green back', async ($, on) => {
+    const { b } = await session($, on)
+    await finalRun($, b)
+    await finalRun($, b, true)
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  test('a run in the background records no green', async ($, on) => {
+    const { b } = await session($, on)
+    await finalRun($, b, false, SUITE, { run_in_background: true })
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  test('a run whose result carries a background task id records no green', async ($, on) => {
+    const { b } = await session($, on)
+    b.replyBeneath = tool => (tool === 'Bash' ? ({ backgroundTaskId: 'bg1' } as never) : undefined)
+    await finalRun($, b)
+    b.replyBeneath = undefined
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  test('a tree staged after the run differs from the green tree, so the commit asks', async ($, on) => {
+    const { b, w } = await session($, on)
+    await finalRun($, b)
+    w.staged = OTHER
+    expect(await asked($, COMMIT)).toBeUndefined()
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  test('a tree that changed during the run records no green', async ($, on) => {
+    const { b, w } = await session($, on)
+    b.duringBash = async command => {
+      if (command === SUITE) w.work = OTHER
+    }
+    await finalRun($, b)
+    w.staged = OTHER
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  test('a commit in another repository whose staged tree equals the green tree asks', async ($, on) => {
+    const { b } = await session($, on)
+    await finalRun($, b)
+    b.cwd = '/other'
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  test('/clear drops the green record', async ($, on) => {
+    const { b } = await session($, on)
+    await finalRun($, b)
+    await $.session.end({ reason: 'clear', sessionId: SID } as never)
+    await $.prompt.submit({ text: 'look again', wait: false, origin: PERSON })
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  for (const line of [`${SUITE} | tail -5`, `${SUITE} || true`, `${SUITE}; true`, `${SUITE} && true`, `WORKBENCH_CHECKS=plugin_json ${SUITE}`]) {
+    test(`a run that may not be whole or green, ${JSON.stringify(line)}, records no green`, async ($, on) => {
+      const { b } = await session($, on)
+      await finalRun($, b, false, line)
+      expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    })
+  }
+
+  test('a Holmes that is no final run is refused the suite and records nothing', async ($, on) => {
+    const { b } = await session($, on)
+    await $.agent.spawn({ prompt: brief('Review the uncommitted tree at /repo.'), subagentType: 'workbench-dev-team:holmes', description: 'holmes' } as never)
+    expect(await bash($, b, SUITE, 'holmes')).toBeDefined()
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  test('with the full-suite gate stood down, a suite run by the main session or a non-runner sub-agent records nothing', async ($, on) => {
+    const { b, w } = await session($, on, { env: { WORKBENCH_ORCHESTRATOR: '0' } })
+    await $.agent.spawn({ prompt: brief('Fix the bug.'), subagentType: 'workbench-dev-team:watson', description: 'watson' } as never)
+    expect(await bash($, b, SUITE)).toBeUndefined()
+    expect(await bash($, b, SUITE, 'watson')).toBeUndefined()
+    expect(w.indexEnvs).toEqual([])
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  test('a final run in a session no one sits at records nothing', async ($, on) => {
+    const { b, w } = await session($, on, { isInteractive: false })
+    await finalRun($, b)
+    expect(w.indexEnvs).toEqual([])
+  })
+
+  test('a commit with -a, or a second commit on the line, still asks after a green run', async ($, on) => {
+    const { b } = await session($, on)
+    await finalRun($, b)
+    expect(await asked($, 'git commit -am "fix: 🐛 X."')).toBeUndefined()
+    expect(await asked($, `${COMMIT} && git commit -m "fix: 🐛 Y."`)).toBeUndefined()
+  })
+
+  test('a free commit still needs the whole tree staged and a valid subject', async ($, on) => {
+    const { b } = await session($, on)
+    await finalRun($, b)
+    b.trees['/repo'] = 'M  README.md\0?? notes.md\0'
+    expect(await bash($, b, COMMIT)).toContain('notes.md')
+    b.trees['/repo'] = 'M  README.md\0'
+    expect(await bash($, b, 'git commit -m "fixed things"')).toBeDefined()
+  })
+
+  test('after a green run, a commit with a push runs free on a feature branch and goes to the gate on main', async ($, on) => {
+    const { b, w } = await session($, on)
+    await finalRun($, b)
+    expect(await bash($, b, `${COMMIT} && git push`)).toBeUndefined()
+    w.branch = 'main'
+    w.pushTarget = 'origin refs/heads/main'
+    b.repos['/repo'] = { ...b.repos['/repo'], branch: 'main' }
+    expect(await bash($, b, `${COMMIT} && git push`)).toMatch(ASKED)
+  })
+
+  for (const line of [
+    `${COMMIT} && git rebase main`,
+    'gh pr merge 12',
+    'gh release create 1.0.0 --notes x',
+    "gh alias set co 'pr checkout'",
+    'gh api repos/o/r/git/refs/heads/main -X PATCH -f sha=abc',
+  ]) {
+    test(`after a green run, ${JSON.stringify(line)} still asks`, async ($, on) => {
+      const { b } = await session($, on)
+      await finalRun($, b)
+      expect(await bash($, b, line)).toBeDefined()
+    })
+  }
+})
+
+describe('AC2: a plain push of a feature branch runs free, and a push to the default branch asks', () => {
+  test('a plain git push, and git push origin <branch>, of a feature branch run with no question', async ($, on) => {
+    const { b } = await session($, on)
+    expect(await asked($, 'git push')).toEqual(ALLOW)
+    expect(await bash($, b, 'git push')).toBeUndefined()
+    expect(await bash($, b, 'git push origin feat')).toBeUndefined()
+  })
+
+  test('a push from the default branch asks', async ($, on) => {
+    const { b, w } = await session($, on)
+    w.branch = 'main'
+    w.pushTarget = 'origin refs/heads/main'
+    b.repos['/repo'] = { ...b.repos['/repo'], branch: 'main' }
+    expect(await asked($, 'git push')).toBeUndefined()
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+  })
+
+  test('a plain push whose upstream is the default branch asks', async ($, on) => {
+    const { b, w } = await session($, on)
+    w.pushTarget = 'origin refs/heads/main'
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+  })
+
+  for (const line of ['git push origin main', 'git push origin feat:main', 'git push origin --tags', 'git push -u origin feat', 'git push upstream feat']) {
+    test(`${JSON.stringify(line)} asks`, async ($, on) => {
+      const { b } = await session($, on)
+      expect(await bash($, b, line)).toMatch(ASKS.push)
+    })
+  }
+
+  for (const [key, value] of [
+    ['push.default', 'matching'],
+    ['remote.origin.push', '+refs/heads/*:refs/heads/*'],
+    ['remote.origin.mirror', 'true'],
+    ['push.followTags', 'true'],
+  ] as const) {
+    test(`a push with ${key}=${value} asks, in both forms`, async ($, on) => {
+      const { b, w } = await session($, on)
+      w.config[key] = value
+      expect(await asked($, 'git push')).toBeUndefined()
+      expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+      expect(await bash($, b, 'git push origin feat')).toMatch(ASKS.push)
+    })
+  }
+
+  test('push.default=simple and false switches keep the plain push free', async ($, on) => {
+    const { b, w } = await session($, on)
+    w.config = { 'push.default': 'simple', 'remote.origin.mirror': 'false', 'push.followTags': 'false' }
+    expect(await bash($, b, 'git push')).toBeUndefined()
+  })
+
+  test('a force push is refused as today', async ($, on) => {
+    const { b } = await session($, on)
+    expect(await bash($, b, 'git push --force')).toBeDefined()
+  })
+
+  test('a push whose push URL differs from the pinned origin asks', async ($, on) => {
+    const { b, w } = await session($, on)
+    w.pushUrls = ['git@evil.example:o/r.git']
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+  })
+
+  test('a remote with two push URLs, one of them not pinned, asks in both forms', async ($, on) => {
+    const { b, w } = await session($, on)
+    w.pushUrls = [URL, 'git@evil.example:o/r.git']
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+    expect(await bash($, b, 'git push origin feat')).toMatch(ASKS.push)
+  })
+
+  test('a push to an origin with no known default branch asks', async ($, on) => {
+    const { b } = await session($, on)
+    b.repos['/repo'] = { ...b.repos['/repo'], originHead: undefined }
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+  })
+})
+
+describe('AC3: other lanes keep their commit and push behavior', () => {
+  test('a sub-agent is refused its commit and its push after a green run', async ($, on) => {
+    const { b } = await session($, on)
+    await finalRun($, b)
+    await $.agent.spawn({ prompt: brief('Fix the bug.'), subagentType: 'workbench-dev-team:watson', description: 'watson' } as never)
+    expect(await bash($, b, COMMIT, 'watson')).toBe(SUBAGENT_REFUSAL.deny)
+    expect(await bash($, b, 'git push', 'watson')).toBe(SUBAGENT_REFUSAL.deny)
+    expect(await bash($, b, COMMIT, 'holmes')).toBe(SUBAGENT_REFUSAL.deny)
+  })
+
+  test('a -p run commits and pushes as before, with no run', async ($, on) => {
+    const { b } = await session($, on, { isInteractive: false })
+    expect(await bash($, b, COMMIT)).toBeUndefined()
+    expect(await bash($, b, 'git push')).toBeUndefined()
+  })
+
+  test('the pipeline commits and pushes as before', async ($, on) => {
+    const { b } = await session($, on, { env: { WORKBENCH_DEV_TEAM_PIPELINE: '1', CLAUDE_CODE_AGENT: 'watson' }, isInteractive: false, origin: { kind: 'sdk' } })
+    expect(await bash($, b, COMMIT)).toBeUndefined()
+    expect(await bash($, b, 'git push')).toBeUndefined()
+  })
+
+  test('a scheduled tick commits and pushes as before', async ($, on) => {
+    const { b } = await session($, on, { origin: { kind: 'scheduled-trigger' } })
+    expect(await bash($, b, COMMIT)).toBeUndefined()
+    expect(await bash($, b, 'git push')).toBeUndefined()
+  })
+})
+
+describe('isWholeRun counts only a lone, unnarrowed whole-suite run whose exit status is the suite\'s', () => {
+  const CHECK = 'set -u\nclaude plugin test "$ROOT"\nbash hooks/test-rule-source.sh\n'
+  const read = async (path: string): Promise<Script | undefined> => (path === '/repo/scripts/check.sh' ? { kind: 'text', text: CHECK } : undefined)
+  for (const [line, expected] of [
+    [SUITE, true],
+    [`${SUITE} 2>&1`, true],
+    ['claude plugin test /repo', true],
+    ['bash scripts/check.sh', true],
+    ['bash /repo/scripts/check.sh', true],
+    ['vendor/bin/pest', true],
+    ['vendor/bin/pest --parallel', true],
+    ['make test', true],
+    ['WORKBENCH_CHECKS=plugin_json bash scripts/check.sh', false],
+    ['HOME=/s CLAUDE_CONFIG_DIR=/s claude plugin test .', false],
+    ['env WORKBENCH_CHECKS=x bash scripts/check.sh', false],
+    ['bash scripts/check.sh plugin_json', false],
+    ['claude plugin test /repo/sub', false],
+    ['claude plugin test tests', false],
+    ['claude plugin test . --verbose', false],
+    ['claude plugin test /other', false],
+    ['claude plugin test ../other', false],
+    ['claude plugin test ~/other', false],
+    ['vendor/bin/pest --group unit', false],
+    ['vendor/bin/pest --testsuite=Unit', false],
+    ['vendor/bin/pest --exclude-group slow', false],
+    ['vendor/bin/pest --shard=1/4', false],
+    ['vendor/bin/pest --filter Foo', false],
+    ['vendor/bin/pest tests/Unit', false],
+    ['vendor/bin/pest Unit', false],
+    ['vendor/bin/pest tests/Unit/FooTest.php', false],
+    ['npm --prefix /other test', false],
+    ['make -C /other test', false],
+    [`${SUITE} | tail -5`, false],
+    [`${SUITE} || true`, false],
+    [`${SUITE} && true`, false],
+    [`${SUITE}; true`, false],
+    [`${SUITE} &`, false],
+    [`! ${SUITE}`, false],
+    [`(${SUITE})`, false],
+    [`bash <<'EOF'\n${SUITE}\nEOF`, false],
+    ['bash < scripts/check.sh', false],
+    ['claude plugin test $(pwd)', false],
+    [`cd /repo && ${SUITE}`, false],
+    ['git status', false],
+  ] as const) {
+    test(`${JSON.stringify(line)} is ${expected}`, async () => {
+      expect(await isWholeRun(line, '/repo', HOME, [], read)).toBe(expected)
+    })
+  }
+})
+
+const PARTS = ['bash scripts/check-part-1.sh', 'bash scripts/check-part-2.sh', 'bash scripts/check-part-3.sh', 'bash scripts/check-part-4.sh']
+const WHOLE = 'bash scripts/check.sh'
+const PINNED = ['scripts/check.sh', 'scripts/omit-claude-md-check.py', 'tsconfig.json']
+const DECLARATION = JSON.stringify({ parts: PARTS, whole: WHOLE, files: PINNED })
+
+function declare(w: World, text = DECLARATION): void {
+  w.committed.set(SUITE_PARTS_FILE, text)
+  for (const file of [...PINNED, ...PARTS.map(part => part.replace(/^bash /, ''))]) w.committed.set(file, '#!/bin/bash\n')
+}
+
+async function spawnRunner($: Engine, id: string): Promise<void> {
+  expect((await $.agent.spawn({ prompt: FINAL, subagentType: 'workbench-dev-team:holmes', description: id } as never)).agentId).toBe(id)
+}
+
+async function runParts($: Engine, b: Bench, lines: readonly string[], agentId = 'holmes', red?: string): Promise<void> {
+  b.onBash = command => (command === red ? { isError: true } : undefined)
+  for (const line of lines) expect([line, await bash($, b, line, agentId)]).toEqual([line, undefined])
+  b.onBash = undefined
+}
+
+describe('green from declared parts: a long suite records green part by part', () => {
+  test('every declared part passing on one tree in one final run records green, and not before the last part', async ($, on) => {
+    const { b, w } = await session($, on)
+    declare(w)
+    await spawnRunner($, 'holmes')
+    await runParts($, b, PARTS.slice(0, 3))
+    expect(await asked($, COMMIT)).toBeUndefined()
+    await runParts($, b, PARTS.slice(3))
+    expect(await asked($, COMMIT)).toEqual(ALLOW)
+    expect(await bash($, b, COMMIT)).toBeUndefined()
+  })
+
+  test('the parts may run in any order', async ($, on) => {
+    const { b, w } = await session($, on)
+    declare(w)
+    await spawnRunner($, 'holmes')
+    await runParts($, b, [...PARTS].reverse())
+    expect(await bash($, b, COMMIT)).toBeUndefined()
+  })
+
+  test('one part missing records nothing', async ($, on) => {
+    const { b, w } = await session($, on)
+    declare(w)
+    await spawnRunner($, 'holmes')
+    await runParts($, b, [PARTS[0], PARTS[1], PARTS[3]] as string[])
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  test('one red part records nothing, even when every other part passes', async ($, on) => {
+    const { b, w } = await session($, on)
+    declare(w)
+    await spawnRunner($, 'holmes')
+    await runParts($, b, PARTS, 'holmes', PARTS[1])
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  test('a tree change between parts records nothing', async ($, on) => {
+    const { b, w } = await session($, on)
+    declare(w)
+    await spawnRunner($, 'holmes')
+    await runParts($, b, PARTS.slice(0, 2))
+    w.work = OTHER
+    w.staged = OTHER
+    await runParts($, b, PARTS.slice(2))
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  test('a backgrounded part clears the parts that passed', async ($, on) => {
+    const { b, w } = await session($, on)
+    declare(w)
+    await spawnRunner($, 'holmes')
+    await runParts($, b, PARTS.slice(0, 3))
+    expect(await bash($, b, PARTS[3] as string, 'holmes', { run_in_background: true })).toBeUndefined()
+    await runParts($, b, PARTS.slice(3))
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  test('a new counted run that starts between parts clears the parts that passed', async ($, on) => {
+    const { b, w } = await session($, on)
+    declare(w)
+    await spawnRunner($, 'holmes')
+    await runParts($, b, PARTS.slice(0, 3))
+    b.onBash = command => (command === WHOLE ? { isError: true } : undefined)
+    expect(await bash($, b, WHOLE, 'holmes')).toBeUndefined()
+    await runParts($, b, PARTS.slice(3))
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  test('parts spread across two final runs record nothing', async ($, on) => {
+    const { b, w } = await session($, on)
+    declare(w)
+    await spawnRunner($, 'holmes')
+    await runParts($, b, PARTS.slice(0, 2))
+    await $.classic.SubagentStop({ stop_hook_active: false, last_assistant_message: 'Done.', agent_id: 'holmes', agent_type: 'workbench-dev-team:holmes' } as never)
+    await spawnRunner($, 'holmes2')
+    await runParts($, b, PARTS.slice(2), 'holmes2')
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  test('parts run by a sub-agent that is no final run, with the full-suite gate stood down, record nothing', async ($, on) => {
+    const { b, w } = await session($, on, { env: { WORKBENCH_ORCHESTRATOR: '0' } })
+    declare(w)
+    await $.agent.spawn({ prompt: brief('Fix the bug.'), subagentType: 'workbench-dev-team:watson', description: 'watson' } as never)
+    await runParts($, b, PARTS, 'watson')
+    expect(w.indexEnvs).toEqual([])
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  test('with no declaration, the part lines record nothing and one whole-suite line still records green', async ($, on) => {
+    const { b } = await session($, on)
+    await spawnRunner($, 'holmes')
+    await runParts($, b, PARTS)
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    await runParts($, b, [SUITE])
+    expect(await bash($, b, COMMIT)).toBeUndefined()
+  })
+
+  test('with a declaration, a whole-suite line that is not the declared one, such as claude plugin test ., records nothing', async ($, on) => {
+    const { b, w } = await session($, on)
+    declare(w)
+    await spawnRunner($, 'holmes')
+    await runParts($, b, [SUITE, 'vendor/bin/pest'])
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  test('with a declaration, the declared whole line records green on its own when every pinned file matches HEAD', async ($, on) => {
+    const { b, w } = await session($, on)
+    declare(w)
+    await spawnRunner($, 'holmes')
+    await runParts($, b, [WHOLE])
+    expect(await bash($, b, COMMIT)).toBeUndefined()
+  })
+
+  for (const file of ['scripts/check.sh', SUITE_PARTS_FILE, 'tsconfig.json']) {
+    test(`with a declaration, the declared whole line records nothing when ${file} differs from HEAD`, async ($, on) => {
+      const { b, w } = await session($, on)
+      declare(w)
+      w.dirty.add(file)
+      await spawnRunner($, 'holmes')
+      await runParts($, b, [WHOLE, SUITE])
+      expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    })
+  }
+
+  test('a declaration with no whole line counts only its parts', async ($, on) => {
+    const { b, w } = await session($, on)
+    declare(w, JSON.stringify({ parts: PARTS, files: ['scripts/check.sh'] }))
+    await spawnRunner($, 'holmes')
+    await runParts($, b, [WHOLE, SUITE])
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    await runParts($, b, PARTS)
+    expect(await bash($, b, COMMIT)).toBeUndefined()
+  })
+
+  test('a declaration that cannot be read as plain parts declares nothing', async ($, on) => {
+    const { b, w } = await session($, on)
+    declare(w, JSON.stringify({ parts: [...PARTS.slice(0, 3), 'WORKBENCH_CHECKS=x bash scripts/check-part-4.sh'] }))
+    await spawnRunner($, 'holmes')
+    await runParts($, b, PARTS.slice(0, 3))
+    await runParts($, b, [SUITE, WHOLE])
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+})
+
+describe('green from parts reads the declaration and the part scripts from HEAD', () => {
+  for (const [cut, line] of [
+    [{ parts: [PARTS[0]] }, PARTS[0]],
+    [{ parts: ['true'] }, 'true'],
+  ] as const) {
+    test(`a working-copy declaration cut to ${JSON.stringify(cut)} records no green`, async ($, on) => {
+      const { b, w } = await session($, on)
+      declare(w)
+      b.files.set(`/repo/${SUITE_PARTS_FILE}`, JSON.stringify(cut))
+      w.dirty.add(SUITE_PARTS_FILE)
+      await spawnRunner($, 'holmes')
+      await runParts($, b, [line as string])
+      expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    })
+  }
+
+  test('a committed four-part declaration needs all four parts, so one part alone records no green', async ($, on) => {
+    const { b, w } = await session($, on)
+    declare(w)
+    await spawnRunner($, 'holmes')
+    await runParts($, b, [PARTS[0] as string, 'true'])
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  for (const file of [SUITE_PARTS_FILE, 'scripts/check-part-2.sh', 'scripts/check.sh']) {
+    test(`a working-copy edit to ${file} records no green from the parts`, async ($, on) => {
+      const { b, w } = await session($, on)
+      declare(w)
+      w.dirty.add(file)
+      await spawnRunner($, 'holmes')
+      await runParts($, b, PARTS)
+      expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    })
+  }
+
+  test('a declared file missing from HEAD declares nothing', async ($, on) => {
+    const { b, w } = await session($, on)
+    declare(w)
+    w.committed.delete('scripts/check.sh')
+    await spawnRunner($, 'holmes')
+    await runParts($, b, PARTS)
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  test('a part whose result carries a background task id, then the same part in the foreground, still asks', async ($, on) => {
+    const { b, w } = await session($, on)
+    declare(w)
+    await spawnRunner($, 'holmes')
+    await runParts($, b, PARTS.slice(0, 3))
+    b.replyBeneath = tool => (tool === 'Bash' ? ({ backgroundTaskId: 'bg1' } as never) : undefined)
+    await runParts($, b, PARTS.slice(3))
+    b.replyBeneath = undefined
+    await runParts($, b, PARTS.slice(3))
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  test('/clear between parts 3 and 4 drops the parts record', async ($, on) => {
+    const { b, w } = await session($, on)
+    declare(w)
+    await spawnRunner($, 'holmes')
+    await runParts($, b, PARTS.slice(0, 3))
+    await $.session.end({ reason: 'clear', sessionId: SID } as never)
+    await $.prompt.submit({ text: 'look again', wait: false, origin: PERSON })
+    await runParts($, b, PARTS.slice(3))
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  test('two final runs live at once on one tree do not add up', async ($, on) => {
+    const { b, w } = await session($, on)
+    declare(w)
+    await spawnRunner($, 'holmes')
+    await spawnRunner($, 'holmes2')
+    await runParts($, b, PARTS.slice(0, 2), 'holmes')
+    await runParts($, b, PARTS.slice(2, 3), 'holmes2')
+    await runParts($, b, PARTS.slice(3), 'holmes')
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+
+  test('parts another final run passes while one part runs do not join that part', async ($, on) => {
+    const { b, w } = await session($, on)
+    declare(w)
+    await spawnRunner($, 'holmes')
+    await spawnRunner($, 'holmes2')
+    let isInside = false
+    b.duringBash = async command => {
+      if (command !== PARTS[3] || isInside) return
+      isInside = true
+      for (const line of PARTS.slice(0, 3)) expect([line, await bash($, b, line, 'holmes2')]).toEqual([line, undefined])
+    }
+    expect(await bash($, b, PARTS[3] as string, 'holmes')).toBeUndefined()
+    b.duringBash = undefined
+    expect(isInside).toBe(true)
+    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+  })
+})
+
+describe('suitePartsOf and partOf read the declaration and the part lines', () => {
+  test('the declaration names itself, its files, its whole line\'s script and every part script to pin to HEAD', () => {
+    expect(suitePartsOf(DECLARATION, '/repo')?.files.sort()).toEqual([SUITE_PARTS_FILE, ...PINNED, ...PARTS.map(part => part.replace(/^bash /, ''))].sort())
+  })
+  test('the declared whole line is read as its own line, apart from the parts', () => {
+    const declared = suitePartsOf(DECLARATION, '/repo')
+    expect(partOf(WHOLE, '/repo', declared?.whole === undefined ? [] : [declared.whole])).toBeDefined()
+    expect(partOf(WHOLE, '/repo', declared?.parts ?? [])).toBeUndefined()
+  })
+  const keys = suitePartsOf(DECLARATION, '/repo')?.parts ?? []
+  test('a declaration of plain part lines is read whole', () => {
+    expect(keys.length).toBe(4)
+  })
+  for (const part of PARTS) {
+    test(`${JSON.stringify(part)} is a declared part`, () => {
+      expect(partOf(part, '/repo', keys)).toBeDefined()
+    })
+  }
+  for (const line of [
+    'bash scripts/check-part-1.sh plugin_json',
+    'WORKBENCH_CHECKS=plugin_json bash scripts/check-part-1.sh',
+    'env X=1 bash scripts/check-part-1.sh',
+    'bash scripts/check-part-1.sh | tail -5',
+    'bash scripts/check-part-1.sh && true',
+    'bash scripts/check-part-5.sh',
+    'bash scripts/check.sh',
+  ]) {
+    test(`${JSON.stringify(line)} is no declared part`, () => {
+      expect(partOf(line, '/repo', keys)).toBeUndefined()
+    })
+  }
+  for (const text of ['not json', '{}', '{"parts": []}', '{"parts": [1]}', JSON.stringify({ parts: ['bash scripts/check-part-1.sh x'] }), JSON.stringify({ parts: [PARTS[0], PARTS[0]] }), JSON.stringify({ parts: PARTS, files: ['../x.sh'] }), JSON.stringify({ parts: PARTS, files: 'scripts/check.sh' }), JSON.stringify({ parts: PARTS, whole: PARTS[0] }), JSON.stringify({ parts: PARTS, whole: 1 }), JSON.stringify({ parts: PARTS, whole: 'WORKBENCH_CHECKS=x bash scripts/check.sh' }), JSON.stringify({ parts: ['bash /other/x.sh'] })]) {
+    test(`${JSON.stringify(text)} declares nothing`, () => {
+      expect(suitePartsOf(text, '/repo')).toBeUndefined()
+    })
+  }
+})

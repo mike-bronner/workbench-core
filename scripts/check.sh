@@ -126,10 +126,12 @@ check_bash_syntax() {
   return "$fail"
 }
 
-check_hook_suites() {
-  local fail=0 count=0 t
+hook_suites_of() {
+  local name=$1 part=$2 parts=$3 fail=0 count=0 index=0 t
   for t in hooks/test-*.sh; do
     [ -f "$t" ] || continue
+    index=$((index + 1))
+    [ $(((index - 1) % parts)) -eq "$part" ] || continue
     count=$((count + 1))
     echo "::group::$t"
     if HOME="$SANDBOX" bash "$t"; then
@@ -140,8 +142,20 @@ check_hook_suites() {
       fail=1
     fi
   done
-  [ "$count" -gt 0 ] || no_files hook_suites || return 1
+  [ "$count" -gt 0 ] || no_files "$name" || return 1
   return "$fail"
+}
+
+check_hook_suites() {
+  hook_suites_of hook_suites 0 1
+}
+
+check_hook_suites_odd() {
+  hook_suites_of hook_suites_odd 0 2
+}
+
+check_hook_suites_even() {
+  hook_suites_of hook_suites_even 1 2
 }
 
 check_frontmatter() {

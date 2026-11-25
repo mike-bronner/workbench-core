@@ -1,0 +1,14 @@
+{
+  "parts": [
+    "bash scripts/check-part-1.sh",
+    "bash scripts/check-part-2.sh",
+    "bash scripts/check-part-3.sh",
+    "bash scripts/check-part-4.sh"
+  ],
+  "whole": "bash scripts/check.sh",
+  "files": [
+    "scripts/check.sh",
+    "scripts/omit-claude-md-check.py",
+    "tsconfig.json"
+  ]
+}

@@ -120,7 +120,7 @@ import {
   recordOf,
   withChurn,
 } from './mods/cache-meter'
-import type { Action, ApiWrite, Approval, AskFacts, CatchUp, Commit, Gated, Head, Landing, PendingRelease, Pick, PullRebase, Refs, RequestedCall } from './mods/commit-approval'
+import type { Action, ApiWrite, Approval, AskFacts, CatchUp, Commit, Gated, Head, Landing, PendingRelease, Pick, PullRebase, Refs, RequestedCall, Writes } from './mods/commit-approval'
 import {
   AGENT_CONFIG_MERGE_REFUSAL,
   AGENT_MERGE_REFUSAL,
@@ -195,8 +195,8 @@ import { FAILED_REFUSAL, SUBAGENT_REFUSAL, commitVerdict } from './mods/commit-g
 import { subjectVerdict } from './mods/commit-subject'
 import { isAttendedPrompt, isAttendedSession, isDesktopSession, isScheduledFire, laneOf } from './mods/lane'
 import { bareSetRefusal, repairedNotice, runsGit } from './mods/false-bare'
-import type { Script } from './mods/full-suite'
-import { installPathsOf, isFinalRunDispatch, suiteRefusal } from './mods/full-suite'
+import type { Script, SuiteParts } from './mods/full-suite'
+import { SUITE_PARTS_FILE, installPathsOf, isFinalRunDispatch, isWholeRun, partOf, suitePartsOf, suiteRefusal } from './mods/full-suite'
 import { bufferWarningOf } from './mods/monitor'
 import { parseShell } from './mods/shell'
 import { callerKeyOf, freshnessOf, isFinalDescription, isMcpTool, isOutwardTool, isRepeated, isSubmitLine, readSourceOf, readsAfter, refusalTextOf, refusalsAfter, repeatReminderOf, sourcesRefusalOf } from './mods/outward'
@@ -358,6 +358,8 @@ const pendingReleases = atom({ plugin: 'workbench-core', key: 'pendingReleases' 
 const turnScheduled = atom({ plugin: 'workbench-core', key: 'turnScheduled' } as const, false)
 const turnForwards = atom({ plugin: 'workbench-core', key: 'turnForwards' } as const, false)
 const suiteRunners = atom({ plugin: 'workbench-core', key: 'suiteRunners' } as const, [])
+const greenTree = atom({ plugin: 'workbench-core', key: 'greenTree' } as const, null)
+const greenParts = atom({ plugin: 'workbench-core', key: 'greenParts' } as const, null)
 const statusLine = atom({ plugin: 'workbench-core', key: 'statusLine' } as const, null)
 const learnings = atom({ plugin: 'workbench-core', key: 'learnings' } as const, {})
 const replyRows = atom({ plugin: 'workbench-core', key: 'replyRows' } as const, null)
@@ -740,14 +742,100 @@ async function suiteRefusalOf($: EngineInterface, command: unknown, agentId: str
   const lane = await $.workbench.callerLane(agentId === undefined ? {} : { agentId }).catch((): WorkbenchCallerLane => 'main')
   if (lane === 'top-level-agent') return undefined
   if (lane === 'sub-agent' && (sessionAttended !== true || (await read($, suiteRunners)).some(runner => runner.id === agentId))) return undefined
+  const { home, pluginRoots } = await suiteRootsOf($)
+  const refusal = await suiteRefusal(typeof command === 'string' ? command : '', await $.session.cwd(), home, pluginRoots, path => scriptAt($, path), lane === 'sub-agent')
+  if (refusal === undefined || (await $.env.get('WORKBENCH_ORCHESTRATOR')) === '0' || !(await orchestratorOn($))) return undefined
+  return refusal
+}
+
+async function suiteRootsOf($: EngineInterface): Promise<{ home: string | undefined; pluginRoots: string[] }> {
   const home = await $.env.get('HOME')
   const configDir = await $.env.get('CLAUDE_CONFIG_DIR')
   const registries = [...new Set([configDir, home && `${home}/.claude`].filter(dir => dir?.startsWith('/')).map(dir => `${dir}/plugins/installed_plugins.json`))]
   const installed = (await Promise.all(registries.map(path => readIfAny($, path)))).flatMap(text => (text === undefined ? [] : installPathsOf(text)))
-  const pluginRoots = [(await $.env.get('CLAUDE_PLUGIN_ROOT')) || $.plugin.root, ...installed]
-  const refusal = await suiteRefusal(typeof command === 'string' ? command : '', await $.session.cwd(), home, pluginRoots, path => scriptAt($, path), lane === 'sub-agent')
-  if (refusal === undefined || (await $.env.get('WORKBENCH_ORCHESTRATOR')) === '0' || !(await orchestratorOn($))) return undefined
-  return refusal
+  return { home, pluginRoots: [(await $.env.get('CLAUDE_PLUGIN_ROOT')) || $.plugin.root, ...installed] }
+}
+
+async function treeAt($: EngineInterface, dir: string, isStaged: boolean): Promise<{ top: string; tree: string } | undefined> {
+  const top = await gitOut($, dir, ['rev-parse', '--show-toplevel'])
+  const index = await gitOut($, dir, ['rev-parse', '--path-format=absolute', '--git-path', 'index'])
+  const owner = (await $.session.id().catch(() => 'session')).replace(/[^A-Za-z0-9-]/g, '')
+  const name = `workbench-tree-index-${owner}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+  const scratch = await gitOut($, dir, ['rev-parse', '--path-format=absolute', '--git-path', name])
+  if (top === undefined || index === undefined || scratch === undefined || !scratch.endsWith(`/${name}`)) return undefined
+  const git = (args: readonly string[]) => $.process.run(['git', '-C', top, ...args], { env: { GIT_INDEX_FILE: scratch }, timeoutMs: 60_000 })
+  try {
+    const copied = await $.process.run(['cp', index, scratch], { timeoutMs: 10_000 })
+    if (copied.exitCode !== 0 && isStaged) return undefined
+    if (!isStaged && (await git(['add', '-A'])).exitCode !== 0) return undefined
+    const written = await git(['write-tree'])
+    const tree = written.stdout.trim()
+    return written.exitCode === 0 && /^[0-9a-f]{40,64}$/.test(tree) ? { top, tree } : undefined
+  } finally {
+    await $.process.run(['rm', '-f', scratch, `${scratch}.lock`], { timeoutMs: 10_000 }).catch(() => undefined)
+  }
+}
+
+async function committedPartsAt($: EngineInterface, top: string): Promise<SuiteParts | 'none' | 'blocked'> {
+  const listed = await $.process.run(['git', '-C', top, '--literal-pathspecs', 'ls-tree', '--name-only', 'HEAD', '--', SUITE_PARTS_FILE], { timeoutMs: 10_000 })
+  if (listed.exitCode !== 0) return 'blocked'
+  if (listed.stdout.trim() === '') return 'none'
+  const declared = await $.process.run(['git', '-C', top, 'show', `HEAD:${SUITE_PARTS_FILE}`], { timeoutMs: 10_000 })
+  const parts = declared.exitCode === 0 ? suitePartsOf(declared.stdout, top) : undefined
+  if (parts === undefined) return 'blocked'
+  for (const file of parts.files) {
+    if ((await $.process.run(['git', '-C', top, 'cat-file', '-e', `HEAD:${file}`], { timeoutMs: 10_000 })).exitCode !== 0) return 'blocked'
+  }
+  const changed = await $.process.run(['git', '-C', top, '--literal-pathspecs', 'diff', '--quiet', 'HEAD', '--', ...parts.files], { timeoutMs: 10_000 })
+  return changed.exitCode === 0 ? parts : 'blocked'
+}
+
+async function isGreenAt($: EngineInterface, dir: string): Promise<boolean> {
+  const green = await read($, greenTree)
+  if (green === null) return false
+  const staged = await treeAt($, dir, true)
+  return staged !== undefined && staged.top === green.top && staged.tree === green.tree
+}
+
+async function isFeaturePushAt($: EngineInterface, dir: string, remote: string | undefined, ref: string | undefined): Promise<boolean> {
+  const branch = await gitOut($, dir, ['symbolic-ref', '--short', '-q', 'HEAD'])
+  if (branch === undefined) return false
+  const pushed = remote === undefined ? await gitOut($, dir, ['for-each-ref', '--format=%(push:remotename) %(push:remoteref)', `refs/heads/${branch}`]) : undefined
+  const [target = '', remoteRef = ''] = pushed?.split(' ') ?? []
+  const name = remote ?? target
+  if (name === '' || name.includes('/') || (remote === undefined ? remoteRef !== `refs/heads/${branch}` : ref !== branch && ref !== `refs/heads/${branch}`)) return false
+  if (isDefaultBranch(branch, await gitOut($, dir, ['symbolic-ref', '-q', `refs/remotes/${name}/HEAD`]))) return false
+  if (!(await isPlainPushConfig($, dir, name))) return false
+  const repo = await pinRemotes($, dir)
+  const urls = (await gitOut($, dir, ['remote', 'get-url', '--push', '--all', name]))?.split('\n').map(url => url.trim())
+  const pinned = repo === undefined ? undefined : (await read($, remoteUrls))[remoteKeyOf(repo, name)]
+  return pinned !== undefined && urls !== undefined && urls.length > 0 && urls.every(url => url === pinned)
+}
+
+const PUSH_DEFAULTS: ReadonlySet<string> = new Set(['simple', 'current', 'upstream', 'tracking'])
+
+async function isPlainPushConfig($: EngineInterface, dir: string, remote: string): Promise<boolean> {
+  const pushDefault = await configValueOf($, dir, 'push.default')
+  const refspecs = await $.process
+    .run(['git', '-C', dir, 'config', '--get-all', `remote.${remote}.push`], { timeoutMs: 10_000 })
+    .then(({ exitCode, stdout }) => (exitCode === 1 ? '' : exitCode === 0 ? stdout.trim() : undefined), () => undefined)
+  const isOff = (value: string | null | undefined): boolean => value === null || (value !== undefined && REBASE_OFF_VALUES.has(value.toLowerCase()))
+  if (pushDefault === undefined || (pushDefault !== null && !PUSH_DEFAULTS.has(pushDefault.toLowerCase()))) return false
+  if (refspecs !== '') return false
+  return isOff(await configValueOf($, dir, `remote.${remote}.mirror`)) && isOff(await configValueOf($, dir, 'push.followTags'))
+}
+
+async function isFreeLine($: EngineInterface, line: string, writes: Writes, commit: Commit | undefined): Promise<boolean> {
+  if (writes.commits > 1 || (writes.commits === 1 && (commit === undefined || commit.args === null || shapeOf(commit.args).isAll))) return false
+  const calls = requestedCallsOf(line, ['commit', 'push'])
+  if (calls === undefined || (writes.commits > 0 && (await read($, greenTree)) === null)) return false
+  for (const call of calls) {
+    if (call.action !== 'commit' && call.action !== 'push') return false
+    const dir = call.dir === undefined ? await $.session.cwd() : await projectDirOf($, call.dir)
+    if (dir === undefined) return false
+    if (!(call.action === 'commit' ? await isGreenAt($, dir) : await isFeaturePushAt($, dir, call.remote, call.ref))) return false
+  }
+  return true
 }
 
 async function unreadRefusalOf($: EngineInterface, line: string, agentId: string | undefined, sessionAttended: boolean | undefined): Promise<string | undefined> {
@@ -2374,6 +2462,12 @@ export const register: Register = on => {
         if (treeRefusal !== undefined) return { deny: treeRefusal }
         return subject !== undefined ? { deny: subject } : withScanRecall($, 'Bash', e.command, e.agentId, await next(e))
       }
+      const isFreeShape = releases + merges.local.length + merges.pr + rewrites + aliases + apiIntoDefault === 0
+      if (isFreeShape && (await isFreeLine($, e.command, writes, commit).catch(() => false))) {
+        const treeRefusal = writes.commits === 1 ? await treeRefusalOf($, e.command, commit, e.tool_use_id) : undefined
+        if (treeRefusal !== undefined) return { deny: treeRefusal }
+        return subject !== undefined ? { deny: subject } : withScanRecall($, 'Bash', e.command, e.agentId, await next(e))
+      }
       const intoDefault = merges.pr + (await mergesIntoDefault($, merges.local)) - (await catchUpsIntoDefault($, catchUpsOf(e.command)))
       const mergeDirs = await unitLandingDirsOf($, merges.landings)
       const committed = { commits: writes.commits + mergeDirs.length, pushes: writes.pushes }
@@ -2516,6 +2610,50 @@ export const register: Register = on => {
     return e.tool !== 'Bash' || command === undefined ? next(e) : ledgerCall($, e, command, next as (e: never) => Promise<ToolCallResult>)
   }).catch(($, e, next) => (next.called || e.tool !== 'Bash' || ledgerCommandOf(parseShell(e.command)) === undefined ? next(e) : { deny: GUARD_FAILED }))
 
+  on('tool.call', { tool: /^Bash$/ }, async ($, e, next) => {
+    if (e.tool !== 'Bash' || e.agentId === undefined || sessionAttended !== true) return next(e)
+    const runner = (await read($, suiteRunners)).find(each => each.id === e.agentId)
+    if (runner === undefined) return next(e)
+    const cwd = await $.session.cwd()
+    const declared = await committedPartsAt($, cwd).catch(() => 'blocked' as const)
+    const parts = typeof declared === 'string' ? undefined : declared.parts
+    const part = parts === undefined ? undefined : partOf(e.command, cwd, parts)
+    const { home, pluginRoots } = await suiteRootsOf($)
+    const isWholeLine =
+      part === undefined &&
+      (declared === 'none'
+        ? await isWholeRun(e.command, cwd, home, pluginRoots, path => scriptAt($, path))
+        : typeof declared !== 'string' && declared.whole !== undefined && partOf(e.command, cwd, [declared.whole]) !== undefined)
+    if (part === undefined && !isWholeLine) return next(e)
+    await update($, greenTree, () => null)
+    const tree = e.run_in_background === true ? undefined : await treeAt($, cwd, false)
+    const before = tree?.top === cwd ? tree : undefined
+    const held = await read($, greenParts)
+    if (part === undefined || before === undefined || held === null || held.top !== before.top || held.tree !== before.tree || held.root !== runner.root) await update($, greenParts, () => null)
+    const result = await next(e)
+    const output = result.result as { backgroundTaskId?: unknown } | undefined
+    const isClean = before !== undefined && result.deny === undefined && result.isError !== true && output?.backgroundTaskId === undefined
+    const after = isClean ? await treeAt($, cwd, false) : undefined
+    const green = after !== undefined && after.top === before?.top && after.tree === before.tree ? after : undefined
+    if (part === undefined || parts === undefined) {
+      if (green !== undefined) await update($, greenTree, () => green)
+      return result
+    }
+    if (green === undefined) {
+      await update($, greenParts, () => null)
+      return result
+    }
+    let isWhole = false
+    await update($, greenParts, kept => {
+      const isSame = kept !== null && kept.root === runner.root && kept.top === green.top && kept.tree === green.tree
+      const passed = [...new Set([...(isSame ? kept.passed : []), part])]
+      isWhole = parts.every(each => passed.includes(each))
+      return isWhole ? null : { ...green, root: runner.root, passed }
+    })
+    if (isWhole) await update($, greenTree, () => green)
+    return result
+  }).catch(($, e, next) => next(e))
+
   on('tool.call', { tool: /^(mcp__.+|Bash|Read|WebFetch|Glob|Write|Edit|NotebookEdit)$/ }, async ($, e, next) => {
     const key = callerKeyOf(e.agentId, e.tool)
     const caller = e.agentId ?? 'main'
@@ -2596,7 +2734,9 @@ export const register: Register = on => {
     if (!(await isCommitGated($, sessionAttended, undefined))) return result
     const isUnitCommit = (await isUnitCommitLine($, command).catch(() => false)) && (await treeRefusalOf($, command, readLine(command).commit, undefined).catch(() => GUARD_FAILED)) === undefined
     if (isUnitCommit) return { ...result, decision: { behavior: 'allow' } }
-    const { writes } = readLine(command)
+    const { writes, commit } = readLine(command)
+    const isFree = (await isFreeLine($, command, writes, commit).catch(() => false)) && (writes.commits === 0 || (await treeRefusalOf($, command, commit, undefined).catch(() => GUARD_FAILED)) === undefined)
+    if (isFree) return { ...result, decision: { behavior: 'allow' } }
     const isOne = writes.commits <= 1 && writes.pushes <= 1
     const picked: Action[] = !isOne || approval === 'none' || approval.line !== undefined || approval.release !== undefined ? [] : [approval.action as Action]
     const approved = [...new Set([...(await read($, turnRequest)), ...picked])]
@@ -2791,6 +2931,8 @@ export const register: Register = on => {
       await update($, cache, () => EMPTY_CACHE)
       await update($, replyRows, () => null)
       await update($, commitApproval, () => 'none' as const)
+      await update($, greenTree, () => null)
+      await update($, greenParts, () => null)
       await update($, turnRequest, () => [])
       await update($, turnIntent, () => null)
       await update($, capture, () => ({ turns: 0, hasFired: false, written: [] }))

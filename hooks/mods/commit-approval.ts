@@ -57,7 +57,8 @@ export { commandsOf }
 export const COMMIT_REFUSAL =
   'This git commit was refused: Mike has not approved it. A prompt of his own ' +
   'that asks for a commit or a release approves the commits of the turn it ' +
-  'opened. Ask first for work he did not ask to commit. Once he says his ' +
+  'opened. A green `Final suite run:` that saw this exact tree approves its ' +
+  'commit too. Ask first for other work he did not ask to commit. Once he says his ' +
   'review is done, ask the commit question through AskUserQuestion, alone, ' +
   'with the branch and the proposed message, and run the commit again after ' +
   'he picks "Commit it". One pick approves one commit on the branch HEAD held ' +
@@ -67,7 +68,8 @@ export const COMMIT_REFUSAL =
 export const PUSH_REFUSAL =
   'This git push was refused: Mike has not approved it. A prompt of his own ' +
   'that asks for a push or a release approves the pushes of the turn it ' +
-  'opened. A commit approval, typed or picked, approves no push. Once the ' +
+  'opened. Only a plain push of a feature branch runs with no approval. A ' +
+  'commit approval, typed or picked, approves no push. Once the ' +
   'commit has landed, ask about the push in an AskUserQuestion call of its ' +
   'own, with the branch, the remote and the commits it sends, and push after ' +
   'he picks "Push". One pick approves one push of the branch HEAD held when ' +
@@ -214,7 +216,8 @@ export const NAMED_BUNDLE_REFUSAL =
   'AskUserQuestion was refused: its commit question also names a push, a merge ' +
   'or a release, and one pick approves one commit and nothing more. Ask the ' +
   'commit question alone, with words that name only the commit. Once the ' +
-  'commit has landed, ask about the push, and then about how the branch lands, ' +
+  'commit has landed, push a feature branch with a plain line, or ask about ' +
+  'any other push, and then about how the branch lands, ' +
   'each in a question of its own.'
 
 export const LINES_BUNDLE_REFUSAL =

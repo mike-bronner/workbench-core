@@ -82,7 +82,8 @@ has "rule 6 asks one approval question"             'one approval question, not 
 has "rule 6 points at the session commit rules"     'The commit rules in the session.s system prompt \("Commits and code comments"\) say when a request or a pick approves one, and what to ask'
 has "rule 6 makes a branch sync no fork"            'How to sync a branch with its own remote is no fork, and the same rules give its steps'
 has "rule 6 asks each approval alone"               'Ask each such question through `AskUserQuestion`, on its own'
-has "rule 6 asks about a sub-agent's tree"          'A tree a sub-agent hands back is work Mike did not ask to commit, so you ask him'
+has "rule 6 commits a sub-agent's tree a green run saw" 'A tree a sub-agent hands back commits with no question once a green `Final suite run:` saw that exact tree, and a plain push of a feature branch needs none'
+has "rule 6 asks about a sub-agent's tree otherwise" 'Without that green run, the tree is work Mike did not ask to commit, so you ask him'
 has "rule 6 never takes a prompt as the approval"    'A permission prompt is never the approval, because a prompt that appears mid-flow gets answered without a review'
 has "rule 6 keeps the Index pipeline silent"        'An Index pipeline run never asks to commit or push'
 if grep -qF '## Commits and code comments' "$ROOT/hooks/mods/prompt-rules.ts"; then

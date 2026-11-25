@@ -343,6 +343,90 @@ async function lineFinding(line: string, scope: Scope): Promise<string | undefin
     : undefined
 }
 
+const PLACE_OPTIONS = /^(-C|-d|-w|--chdir|--prefix|--working-dir|--cwd|--dir|--directory|--rootdir|--root|--project|--workdir|--workspace)(=|$)/
+
+const SELECTION_OPTIONS =
+  /^(--(group|exclude-group|testsuite|test-suite|suite|shard|filter|only|grep|invert|testNamePattern|test-name-pattern|testPathPattern|testPathPatterns|testPathIgnorePatterns|exclude|deselect|ignore|ignore-glob|lf|last-failed|ff|failed-first|changed|onlyChanged|only-changed|since|related|findRelatedTests|project|selectProjects|tags?|markers?|keyword|skip|bail|dirty|retry-failed)(=|$)|-[tkg])/
+const SCRIPT_VERBS: ReadonlySet<string> = new Set(['test', 'tests', 'run', 'run-script', 't', 'tst', 'ci', 'check', 'artisan'])
+
+const isInsideTop = (path: string, top: string): boolean =>
+  !path.startsWith('~') && !path.split('/').includes('..') && (!path.startsWith('/') || path.startsWith(`${top.replace(/\/+$/, '')}/`))
+
+function isWholeShape(st: Statement, top: string): boolean {
+  const { args } = st
+  const isTop = (word: string): boolean => word === '.' || word === './' || word.replace(/\/+$/, '') === top.replace(/\/+$/, '')
+  if (st.name === 'claude') return args.length === 3 && args[0] === 'plugin' && args[1] === 'test' && isTop(args[2] as string)
+  const name = st.name.replace(VERSIONED, '$1')
+  const isShell = SHELLS.has(name)
+  const scriptAt = isShell || INTERPRETERS.has(name) ? args.findIndex(arg => !arg.startsWith('-')) : -1
+  if (isShell && (scriptAt !== 0 || args.length !== 1)) return false
+  return args.every((arg, at) => {
+    if (arg.startsWith('-')) return !SELECTION_OPTIONS.test(arg) && !PLACE_OPTIONS.test(arg) && !arg.includes('/')
+    if (at === scriptAt) return isInsideTop(arg, top)
+    return !DIRECT.has(name) && SCRIPT_VERBS.has(arg)
+  })
+}
+
+function plainRunOf(line: string, top: string): Statement | undefined {
+  const parse = parseShell(line)
+  const [only] = parse.statements
+  if (parse.statements.length !== 1 || only === undefined || parse.unknowns.length > 0 || parse.hasSubshell || parse.feeds.length > 0 || only.heredocs.length > 0) return undefined
+  if (only.nameAt !== 0 || only.assignments.length > 0 || only.wrappers.length > 0 || only.escaped.length > 0 || !only.isPlaced) return undefined
+  if (only.words.some(word => word.includes('$')) || only.redirects.some(redirect => redirect.op.startsWith('<'))) return undefined
+  if (/[|&;`]/.test(line.replace(/[0-9]?[<>]&[0-9-]?|&>>?/g, ''))) return undefined
+  return isWholeShape(only, top) ? only : undefined
+}
+
+export async function isWholeRun(line: string, top: string, home: string | undefined, pluginRoots: readonly string[], read: ScriptReader): Promise<boolean> {
+  if (plainRunOf(line, top) === undefined) return false
+  return (await lineFinding(line, { cwd: top, home, pluginRoots, read, depth: 0, isStrict: false, isRunnerOnly: false })) !== undefined
+}
+
+export const SUITE_PARTS_FILE = '.workbench/suite-parts.json'
+
+export type SuiteParts = { parts: string[]; whole?: string; files: string[] }
+
+const relativeOf = (path: string, top: string): string | undefined => {
+  const base = `${top.replace(/\/+$/, '')}/`
+  const relative = (path.startsWith('/') ? (path.startsWith(base) ? path.slice(base.length) : undefined) : path)?.replace(/^(\.\/)+/, '')
+  return relative === undefined || relative === '' || relative.split('/').some(step => step === '..' || step === '.' || step === '') ? undefined : relative
+}
+
+function scriptOf(st: Statement, top: string): string | undefined | null {
+  const name = st.name.replace(VERSIONED, '$1')
+  if (SHELLS.has(name) || INTERPRETERS.has(name)) return relativeOf(st.args.find(arg => !arg.startsWith('-')) ?? '', top) ?? null
+  const word = st.words[st.nameAt] ?? ''
+  return word.includes('/') ? (relativeOf(word, top) ?? null) : undefined
+}
+
+export function suitePartsOf(text: string, top: string): SuiteParts | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return undefined
+  }
+  const { parts, whole, files = [] } = (parsed ?? {}) as { parts?: unknown; whole?: unknown; files?: unknown }
+  if (!Array.isArray(parts) || parts.length === 0 || !parts.every(part => typeof part === 'string')) return undefined
+  if (!Array.isArray(files) || !files.every(file => typeof file === 'string')) return undefined
+  if (whole !== undefined && typeof whole !== 'string') return undefined
+  const runs = parts.map(part => plainRunOf(part, top))
+  const keys = runs.map(run => run?.words.join('\0'))
+  if (!keys.every(key => key !== undefined) || new Set(keys).size !== keys.length) return undefined
+  const wholeRun = whole === undefined ? undefined : plainRunOf(whole, top)
+  if (whole !== undefined && (wholeRun === undefined || keys.includes(wholeRun.words.join('\0')))) return undefined
+  const scripts = [...runs, ...(wholeRun === undefined ? [] : [wholeRun])].map(run => (run === undefined ? null : scriptOf(run, top)))
+  const named = files.map(file => relativeOf(file, top))
+  if (scripts.includes(null) || named.includes(undefined)) return undefined
+  const paths = [SUITE_PARTS_FILE, ...named, ...scripts].filter((path): path is string => typeof path === 'string')
+  return { parts: keys as string[], ...(wholeRun === undefined ? {} : { whole: wholeRun.words.join('\0') }), files: [...new Set(paths)] }
+}
+
+export function partOf(line: string, top: string, parts: readonly string[]): string | undefined {
+  const key = plainRunOf(line, top)?.words.join('\0')
+  return key !== undefined && parts.includes(key) ? key : undefined
+}
+
 export async function suiteRefusal(line: string, cwd: string, home: string | undefined, pluginRoots: readonly string[], read: ScriptReader, isSubAgent = false): Promise<string | undefined> {
   const found = await lineFinding(line, { cwd, home, pluginRoots, read, depth: 0, isStrict: true, isRunnerOnly: false })
   return found === undefined ? undefined : `${HEAD}this call ${found}. ${isSubAgent ? SUB_AGENT_ADVICE : MAIN_ADVICE}`

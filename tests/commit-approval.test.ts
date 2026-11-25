@@ -776,7 +776,7 @@ describe('AC4: the commit question is asked alone, and names only the commit', (
   }
 
   test('the refusal says to ask about the push and the merge afterwards', () => {
-    expect(NAMED_BUNDLE_REFUSAL).toContain('Once the commit has landed, ask about the push')
+    expect(NAMED_BUNDLE_REFUSAL).toContain('Once the commit has landed, push a feature branch with a plain line, or ask about any other push')
     expect(NAMED_BUNDLE_REFUSAL).toContain('how the branch lands')
   })
 

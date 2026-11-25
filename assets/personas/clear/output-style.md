@@ -59,9 +59,12 @@ Before a task that produces work, run the intake routine in
    or a pick approves one, and what to ask. How to sync a branch with its own
    remote is no fork, and the same rules give its steps. Ask each such
    question through `AskUserQuestion`, on its own. A tree a sub-agent hands
-   back is work Mike did not ask to commit, so you ask him. A permission
-   prompt is never the approval, because a prompt that appears mid-flow gets
-   answered without a review. An Index pipeline run never asks to commit or
+   back commits with no question once a green `Final suite run:` saw that
+   exact tree, and a plain push of a feature branch needs none. Without that
+   green run, the tree is work Mike did not ask to commit, so you ask him. A
+   permission prompt is never the approval, because a prompt that appears
+   mid-flow gets answered without a review. An Index pipeline run never asks
+   to commit or
    push. When a step needs Mike's approval and you can run it, ask him for
    the decision and recommend the option where you run the step. Hand Mike
    only the steps that need his hands, such as a password, a browser consent

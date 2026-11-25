@@ -80,6 +80,7 @@ has "rule 6 keeps options before irreversible acts" 'outward-facing or irreversi
 has "rule 6 exempts commits and pushes from options" 'Commits and ordinary pushes are the exception'
 has "rule 6 asks one approval question"             'one approval question, not three options'
 has "rule 6 points at the session commit rules"     'The commit rules in the session.s system prompt \("Commits and code comments"\) say when a request or a pick approves one, and what to ask'
+has "rule 6 makes a branch sync no fork"            'How to sync a branch with its own remote is no fork, and the same rules give its steps'
 has "rule 6 asks each approval alone"               'Ask each such question through `AskUserQuestion`, on its own'
 has "rule 6 asks about a sub-agent's tree"          'A tree a sub-agent hands back is work Mike did not ask to commit, so you ask him'
 has "rule 6 never takes a prompt as the approval"    'A permission prompt is never the approval, because a prompt that appears mid-flow gets answered without a review'
@@ -420,6 +421,20 @@ for source in "$ROOT/README.md" "$ROOT/hooks/mods/prompt-rules.ts"; do
   else
     no "${source#"$ROOT"/} says a catch-up of the default branch from its own upstream runs with no question" "no statement of the default-branch catch-up, or the old rule that every merge into it asks"
   fi
+  if grep -qE 'run \\?`git fetch --all\\?`, then \\?`git pull\\?`, then \\?`git push\\?`, each as a line of its own' "$source" \
+    && grep -qE 'ask which way to sync' "$source" \
+    && grep -qE '(Never rebase to sync a branch, and never run|A rebase and a hand-run) \\?`git merge origin/<branch>\\?`' "$source" \
+    && grep -qE '(covers only a branch and its own remote|covers a branch and its own remote only)' "$source"; then
+    ok "${source#"$ROOT"/} says a branch syncs with its own remote by fetch --all, pull and push, never a rebase or a hand-run merge"
+  else
+    no "${source#"$ROOT"/} says a branch syncs with its own remote by fetch --all, pull and push, never a rebase or a hand-run merge" "no statement of the three sync steps, the no-question rule, the rebase and merge ban, or its scope"
+  fi
+  if grep -qE 'pull\\?`? that does not rebase and lands no unit branch runs with no question on a feature branch, and on the default branch only when it is the catch-up' "$source" \
+    && ! grep -qE 'The fetch and the pull run with no question|\\?`git pull\\?` runs with no question on a feature branch' "$source"; then
+    ok "${source#"$ROOT"/} frees only a sync pull that does not rebase, and on the default branch only the catch-up"
+  else
+    no "${source#"$ROOT"/} frees only a sync pull that does not rebase, and on the default branch only the catch-up" "no limit on the free pull, or the old claim that every pull runs with no question"
+  fi
   if grep -qE "A sub-agent's \\\\?\`git merge\\\\?\` or \\\\?\`git pull\\\\?\` that may make a commit (is refused whatever it merges|gets the commit guard's sub-agent refusal)" "$source"; then
     ok "${source#"$ROOT"/} says a sub-agent's merge that makes a commit is refused whatever it merges"
   else
@@ -432,12 +447,39 @@ if grep -qF 'A catch-up is a merge, never a rebase' "$ROOT/README.md" \
 else
   no "README.md says a pull that would rebase is never a catch-up" "no statement that a rebasing pull, by option or by config, is no catch-up"
 fi
+if grep -qF "On any branch, such a pull, one whose rebase config the gate cannot read, and one whose directory it cannot place without \\\`--no-rebase\\\` is a history rewrite and asks." "$ROOT/hooks/mods/prompt-rules.ts" \
+  && grep -qF 'One that also merges into the default branch or lands a unit branch needs a merge or commit pick first and then a pick of its line, each asked alone.' "$ROOT/hooks/mods/prompt-rules.ts" \
+  && grep -qF '**A pull that would rebase is a history rewrite.**' "$ROOT/README.md" \
+  && grep -qF 'A config it cannot read counts as a rebase too' "$ROOT/README.md" \
+  && grep -qF 'counts as a rebase unless it carries `--no-rebase`' "$ROOT/README.md" \
+  && grep -qF 'A pull into the default branch that would rebase is never the catch-up, so it asks both the merge and the history rewrite.' "$ROOT/README.md" \
+  && grep -qF 'asks both the commit and the history rewrite' "$ROOT/README.md" \
+  && grep -qF 'a `git pull` that would rebase, in Mike' "$ROOT/README.md" \
+  && ! grep -qE 'keeps that question alone|keeps its merge question alone|On a feature branch, a pull that would rebase is a history rewrite' "$ROOT/README.md"; then
+  ok "README.md and the commit rules say a pull that would rebase, on any branch or in an unplaced directory, asks as a history rewrite beside its merge or commit"
+else
+  no "README.md and the commit rules say a pull that would rebase, on any branch or in an unplaced directory, asks as a history rewrite beside its merge or commit" "no statement of the rebase pull on every branch, the unplaced directory, the two picks, or its place in the rewrite list"
+fi
 if grep -qF '**The merge gate guards against mistakes, not against evasion**' "$ROOT/README.md" \
   && grep -qF 'a second name for a unit tip, made with `git branch x unit/a` or `git tag t unit/a`, and a merge of that name' "$ROOT/README.md" \
   && grep -qF 'a remote, added on an earlier line, that points at the repository itself' "$ROOT/README.md"; then
   ok "README.md scopes the merge gate to mistakes and names the alias and self-remote routes"
 else
   no "README.md scopes the merge gate to mistakes and names the alias and self-remote routes" "no scope statement, or a route left out"
+fi
+if grep -qF '**A history rewrite writes or replaces commits.**' "$ROOT/README.md" \
+  && grep -qF '**A branch reset moves a branch pointer and replaces no commit.**' "$ROOT/README.md" \
+  && grep -qF '**A remote-tracking ref update changes only refs under `refs/remotes/`.**' "$ROOT/README.md" \
+  && grep -qF 'say whether the old tip stays reachable from another ref' "$ROOT/hooks/mods/prompt-rules.ts" \
+  && grep -qF 'say whether the old tip stays reachable from another ref' "$ROOT/hooks/mods/commit-approval.ts" \
+  && grep -qF 'so they run with no question on a line of their own. Beside a merge or pull, a fetch with any option or refspec makes that merge or pull no catch-up.' "$ROOT/hooks/mods/prompt-rules.ts" \
+  && grep -qF 'an assignment or a wrapper such as \`env\` in front of it, a \`git config\` or \`git remote\` write or an \`export\` on its line' "$ROOT/hooks/mods/prompt-rules.ts" \
+  && grep -qF 'with an assignment such as `HOME=`, `XDG_CONFIG_HOME=` or a `GIT_` variable, or a wrapper such as `env`' "$ROOT/README.md" \
+  && ! grep -qF 'a branch, fetch or push that moves a ref' "$ROOT/hooks/mods/prompt-rules.ts" \
+  && ! grep -qE 'are history rewrites\.|\(a push and a rewrite\)' "$ROOT/README.md"; then
+  ok "README.md, the commit rules and the gate call a history rewrite, a branch reset and a remote-tracking ref update each by its own name"
+else
+  no "README.md, the commit rules and the gate call a history rewrite, a branch reset and a remote-tracking ref update each by its own name" "a term is missing, or the old wording that calls a ref move a history rewrite is back"
 fi
 lacks "rule 6 leaves the approval policy to the system prompt" 'ledger|catch-up merge|history rewrite|gh alias set|approves the actions it names|His answer is the approval|A plan file needs no question'
 

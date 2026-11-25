@@ -5,6 +5,7 @@ import type { PromptOrigin } from 'claude-code'
 import {
   AGENT_RELEASE_REFUSAL,
   API_WRITE_REFUSAL,
+  BRANCH_RESET_REFUSAL,
   BUNDLE_REFUSAL,
   ONE_REFUSAL,
   REWRITE_REFUSAL,
@@ -171,10 +172,14 @@ describe('git option abbreviations read as their full option', () => {
     expect(rewritesAt('git push -o x . y:main')).toEqual([{ dir: '', refs: ['main'] }])
     expect(rewritesAt('git push --push-o x . y:main')).toEqual([{ dir: '', refs: ['main'] }])
   })
-  for (const line of ['git branch --fo main x', 'git rebase --update-r main', 'git push -o x . y:main']) {
+  for (const [line, refusal] of [
+    ['git branch --fo main x', BRANCH_RESET_REFUSAL],
+    ['git rebase --update-r main', REWRITE_REFUSAL],
+    ['git push -o x . y:main', BRANCH_RESET_REFUSAL],
+  ] as const) {
     test(`the pipeline refuses it from a feature branch: ${line}`, async ($, on) => {
       const b = await lane($, on, 'pipeline')
-      expect(await bash($, b, line)).toBe(REWRITE_REFUSAL)
+      expect(await bash($, b, line)).toBe(refusal)
     })
     test(`asks in Mike's turn: ${line}`, async ($, on) => asks($, on, line))
   }
@@ -385,6 +390,11 @@ describe('round six: origins, abbreviations and the braille blank', () => {
   test('an https origin with .git is this repository, and a host other than github.com is not', () => {
     expect(originRepoOf('https://github.com/o/r.git')).toBe('o/r')
     expect(originRepoOf('git@gitlab.com:o/r.git')).toBeUndefined()
+    expect(originRepoOf('/tmp/github.com/x/y')).toBeUndefined()
+    expect(originRepoOf('https://github.com.evil.com/x/y')).toBeUndefined()
+    expect(originRepoOf('file:///tmp/github.com/x/y.git')).toBeUndefined()
+    expect(originRepoOf('ssh://git@github.com/o/r.git')).toBe('o/r')
+    expect(originRepoOf('https://x-access-token:t@github.com/o/r.git')).toBe('o/r')
     expect(originRepoOf('https://gitlab.example.com/o/r')).toBeUndefined()
   })
 
@@ -405,7 +415,7 @@ describe('round six: origins, abbreviations and the braille blank', () => {
     test(`asks in Mike's turn: ${line}`, async ($, on) => asks($, on, line))
     test(`the pipeline refuses it: ${line}`, async ($, on) => {
       const b = await lane($, on, 'pipeline')
-      expect(await bash($, b, line)).toBe(REWRITE_REFUSAL)
+      expect(await bash($, b, line)).toBe(BRANCH_RESET_REFUSAL)
     })
   }
 

@@ -6,8 +6,10 @@ import {
   AGENT_MERGE_REFUSAL,
   AGENT_RELEASE_REFUSAL,
   API_WRITE_REFUSAL,
+  BRANCH_RESET_REFUSAL,
   RELEASE_REFUSAL,
   REWRITE_REFUSAL,
+  TRACKING_REFUSAL,
   apiWritesOf,
   askRefusalOf,
   isDefaultBranch,
@@ -171,8 +173,8 @@ describe('the ref-moving follow-ups', () => {
   const ROUTES: readonly [string, string, string][] = [
     ['git pull origin x:main', 'merge into the default branch', AGENT_MERGE_REFUSAL],
     ['git bisect reset main && git merge x', 'merge into the default branch', AGENT_MERGE_REFUSAL],
-    ['git branch -f main x', 'history rewrite', REWRITE_REFUSAL],
-    ['git fetch origin x:main', 'history rewrite', REWRITE_REFUSAL],
+    ['git branch -f main x', 'branch reset', BRANCH_RESET_REFUSAL],
+    ['git fetch origin x:main', 'branch reset', BRANCH_RESET_REFUSAL],
   ]
   for (const [line, words, refusal] of ROUTES) {
     test(`asks in Mike's turn: ${line}`, async ($, on) => {
@@ -185,14 +187,14 @@ describe('the ref-moving follow-ups', () => {
   }
 
   test('git push . x:main asks in Mike\'s turn, is a sub-agent\'s push, and the pipeline refuses it', async ($, on) => {
-    await asksInMikesTurn($, on, 'git push . x:main', 'history rewrite')
+    await asksInMikesTurn($, on, 'git push . x:main', 'branch reset')
   })
 
   for (const [line, refusal] of [
-    ['git push . x:main', REWRITE_REFUSAL],
-    ['git branch -f main x', REWRITE_REFUSAL],
-    ['git update-ref refs/heads/MAIN abc1234', REWRITE_REFUSAL],
-    ['git fetch origin +x:main', REWRITE_REFUSAL],
+    ['git push . x:main', BRANCH_RESET_REFUSAL],
+    ['git branch -f main x', BRANCH_RESET_REFUSAL],
+    ['git update-ref refs/heads/MAIN abc1234', BRANCH_RESET_REFUSAL],
+    ['git fetch origin +x:main', BRANCH_RESET_REFUSAL],
     ['git pull origin x:main', AGENT_MERGE_REFUSAL],
   ] as const) {
     test(`the pipeline refuses it from a feature branch: ${line}`, async ($, on) => {
@@ -204,6 +206,47 @@ describe('the ref-moving follow-ups', () => {
   test('a sub-agent\'s push to its own repository is refused as a push', async ($, on) => {
     const b = await lane($, on, 'sub-agent')
     expect(await bash($, b, 'git push . x:main', 'a1')).toBe(SUBAGENT_REFUSAL.deny)
+  })
+
+  for (const name of ['-p', 'scheduled'] as const) {
+    test(`a pull that would rebase on a feature branch is refused as a history rewrite in ${name}, and a merge-style pull still runs`, async ($, on) => {
+      const b = await lane($, on, name)
+      expect(await bash($, b, 'git pull --rebase')).toBe(REWRITE_REFUSAL)
+      b.repos['/repo'] = { ...FEATURE, pullRebase: 'true' }
+      expect(await bash($, b, 'git pull')).toBe(REWRITE_REFUSAL)
+      expect(await bash($, b, 'git pull --no-rebase')).toBeUndefined()
+      b.repos['/repo'] = { ...FEATURE }
+      expect(await bash($, b, 'git pull')).toBeUndefined()
+    })
+  }
+
+  for (const name of ['-p', 'scheduled'] as const) {
+    test(`a line with a branch reset and a pull that would rebase names both kinds in ${name}`, async ($, on) => {
+      const b = await lane($, on, name)
+      expect(await bash($, b, 'git update-ref refs/heads/x abc1234 && git pull --rebase')).toBe(`${REWRITE_REFUSAL} ${BRANCH_RESET_REFUSAL}`)
+    })
+  }
+
+  for (const name of ['-p', 'scheduled', 'pipeline'] as const) {
+    test(`a fetch that maps another branch onto origin/main is refused as a remote-tracking ref update in ${name}`, async ($, on) => {
+      const b = await lane($, on, name)
+      b.repos['/repo'] = { ...FEATURE, branch: 'main' }
+      expect(await bash($, b, 'git fetch origin fix/x:refs/remotes/origin/main')).toBe(TRACKING_REFUSAL)
+    })
+  }
+
+  for (const line of ['cd /repo && git pull --rebase', 'git -C repo pull --rebase']) {
+    test(`the pipeline refuses a pull that would rebase in a directory it cannot place: ${line}`, async ($, on) => {
+      const b = await lane($, on, 'pipeline')
+      expect(await bash($, b, line)).toBe(AGENT_MERGE_REFUSAL)
+    })
+  }
+
+  test('the pipeline runs a pull that would rebase on its own feature branch', async ($, on) => {
+    const b = await lane($, on, 'pipeline')
+    expect(await bash($, b, 'git pull --rebase')).toBeUndefined()
+    b.repos['/repo'] = { ...FEATURE, pullRebase: 'true' }
+    expect(await bash($, b, 'git pull')).toBeUndefined()
   })
 
   test('the pipeline still moves its own feature refs', async ($, on) => {

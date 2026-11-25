@@ -10,7 +10,7 @@ import { DAY, NOTICES, START, bandShows, bench, lastLine, paneShows, run, start,
 const NOTICE_FILE = '# Warmup notices\n\n_Written by session-warmup.sh at startup session start._\n\n## ⚠ Pending session summaries (3)\n\ntext\n\n## ⚠ Output style out of date\n\nmore\n'
 const SETTLE = 3000
 const REPAIR = '/hooks/lib/false-bare.sh'
-const othersOf = (runs: readonly (readonly string[])[]) => runs.filter(argv => !argv[1]?.endsWith(REPAIR))
+const othersOf = (runs: readonly (readonly string[])[]) => runs.filter(argv => !argv[1]?.endsWith(REPAIR) && !(argv[0] === 'git' && ['remote', 'rev-parse'].includes(argv[3] ?? '')))
 
 describe('AC5: memory-status and the toggle run as commands, with no model turn', () => {
   test('the four commands are registered at session start', async ($, on) => {

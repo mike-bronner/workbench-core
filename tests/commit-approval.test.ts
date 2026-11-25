@@ -23,9 +23,17 @@ import {
   mergesOf,
   movesHead,
   pickOf,
+  pullRebasesOf,
   readLine,
+  rewriteKindsOf,
+  rewritesAt,
+  rewriteNameOf,
+  rewriteRefusalOf,
   rewritesOf,
   writesOf,
+  BRANCH_RESET_REFUSAL,
+  REWRITE_REFUSAL,
+  TRACKING_REFUSAL,
 } from '../hooks/mods/commit-approval'
 
 import { PLAIN_REFUSAL, SUBAGENT_REFUSAL } from '../hooks/mods/commit-guard'
@@ -571,7 +579,7 @@ describe('AC3: a commit approval approves no push and no merge, and each gets it
     'gh api -X PUT repos/o/r/pulls/12/merge',
     'gh api repos/o/r/merges -f base=main -f head=feat',
     'git -C /repo merge fix/x',
-    'git pull --rebase',
+    'git pull',
   ]) {
     test(`a merge with no approval is refused in Mike's session: ${JSON.stringify(line)}`, async ($, on) => {
       const b = bench(on)
@@ -580,6 +588,13 @@ describe('AC3: a commit approval approves no push and no merge, and each gets it
       expect(await bash($, b, line)).toMatch(DECLINED.merge)
     })
   }
+
+  test("a rebase pull into the default branch is refused in Mike's session as a merge and a history rewrite", async ($, on) => {
+    const b = bench(on)
+    b.repos['/repo'] = { head: 'c1', pushed: 'c1' }
+    await session($)
+    expect(await bash($, b, 'git pull --rebase')).toMatch(asks('merge into the default branch and history rewrite'))
+  })
 
   for (const line of FED_GH) {
     test(`a gh behind xargs counts as a merge, and is refused in Mike's session: ${JSON.stringify(line)}`, async ($, on) => {
@@ -1172,7 +1187,6 @@ describe('a local merge or pull that lands a ledger unit branch is gated as a co
     'git merge a1b2c3',
     'git merge fetch_head',
     'echo unit/a | xargs git merge feat/y',
-    'echo unit/a | xargs git pull origin main',
   ]) {
     test(`with no approval, a unit landing asks Mike as a commit and names its line: ${JSON.stringify(line)}`, async ($, on) => {
       const b = withLedger(on)
@@ -1183,6 +1197,17 @@ describe('a local merge or pull that lands a ledger unit branch is gated as a co
       expect(refusal).toContain('the branch fix/x')
     })
   }
+
+  test('a pull behind xargs, whose rebase config the gate cannot read, asks as a unit landing and a history rewrite', async ($, on) => {
+    const line = 'echo unit/a | xargs git pull origin main'
+    const b = withLedger(on)
+    await session($)
+    expect(pullRebasesOf(line)).toEqual([{ dir: '', rebase: 'unread' }])
+    expect(await bash($, b, line)).toBe(
+      'This line was refused: it runs a git commit and history rewrite, and Mike has approved none of them. ' +
+        'One pick approves one action, so run each as a line of its own, and ask him about each one through AskUserQuestion, alone.',
+    )
+  })
 
   for (const line of ['git merge origin/main', 'git merge --no-ff main', 'git merge --no-ff unit/c', 'git merge -m "unit/a" feat/y', 'git pull', 'git pull origin', 'git pull origin main', 'git pull --no-ff . feat/y', 'git merge --abort']) {
     test(`a catch-up merge or pull of a branch that is no unit runs with no question: ${JSON.stringify(line)}`, async ($, on) => {
@@ -1211,13 +1236,132 @@ describe('a local merge or pull that lands a ledger unit branch is gated as a co
     expect(await bash($, b, 'git merge')).toMatch(DECLINED.commit)
   })
 
-  for (const line of ['git pull /tmp/unit-tree', 'git pull file:///tmp/r', 'git pull ../unit-tree', 'git pull upstream', 'git pull .', 'git pull "$S"', 'git pull --rebase /tmp/unit-tree']) {
+  for (const line of ['git pull /tmp/unit-tree', 'git pull file:///tmp/r', 'git pull ../unit-tree', 'git pull upstream', 'git pull .', 'git pull "$S"']) {
     test(`a pull that names a source other than the branch's remote, with no refspec, asks as a commit: ${JSON.stringify(line)}`, async ($, on) => {
       const b = withLedger(on)
       await session($)
       expect(await bash($, b, line)).toMatch(DECLINED.commit)
     })
   }
+
+  const BOTH = asks('git commit and history rewrite')
+
+  for (const [line, fixture] of [
+    ['git pull --rebase /tmp/unit-tree', {}],
+    ['git pull --rebase origin unit/a', {}],
+    ['git pull -r origin unit/a', {}],
+    ['git pull origin unit/a', { pullRebase: 'true' }],
+    ['git pull origin unit/a', { branchRebase: 'merges' }],
+    ['git pull origin unit/a', { pullRebase: null }],
+    ['git -c pull.rebase=true pull origin unit/a', {}],
+  ] as const) {
+    test(`a unit-landing pull that would rebase asks the commit and the rewrite: ${JSON.stringify([line, fixture])}`, async ($, on) => {
+      const b = withLedger(on)
+      b.repos['/repo'] = { ...FEATURE, ...fixture }
+      await session($)
+      const refusal = await bash($, b, line)
+      expect(refusal).toMatch(BOTH)
+      expect(refusal).toContain('This pull would rebase, so it needs two picks, each asked alone. First ask the commit question')
+    })
+  }
+
+  test('a unit-landing rebase pull runs only after a commit pick and then a pick of its line', async ($, on) => {
+    const line = 'git pull --rebase origin unit/a'
+    const b = withLedger(on)
+    await session($)
+    expect(await bash($, b, line)).toMatch(BOTH)
+    await pick($, b)
+    expect(await bash($, b, line)).toMatch(DECLINED.rewrite)
+    await pick($, b, 'Run it', [question(`Run \`${line}\` in /repo, on fix/x?`, ['Run it', 'Not now'])])
+    expect(await bash($, b, line)).toBeUndefined()
+    expect(await bash($, b, line)).toMatch(BOTH)
+  })
+
+  test('a commit pick alone does not let a unit-landing rebase pull run', async ($, on) => {
+    const b = withLedger(on)
+    await session($)
+    await pick($, b)
+    expect(await bash($, b, 'git pull --rebase origin unit/a')).toMatch(DECLINED.rewrite)
+  })
+
+  test('a typed commit request alone does not let a unit-landing rebase pull run', async ($, on) => {
+    const b = withLedger(on)
+    await session($, 'commit it')
+    expect(await bash($, b, 'git pull --rebase origin unit/a')).toMatch(DECLINED.rewrite)
+    expect(await bash($, b, 'git pull origin unit/a')).toBeUndefined()
+  })
+
+  test('a pick of the line alone does not let a unit-landing rebase pull run, and it asks the commit', async ($, on) => {
+    const line = 'git pull --rebase origin unit/a'
+    const b = withLedger(on)
+    await session($)
+    expect(await bash($, b, line)).toMatch(BOTH)
+    await pick($, b, 'Run it', [question(`Run \`${line}\` in /repo, on fix/x?`, ['Run it', 'Not now'])])
+    expect(await bash($, b, line)).toMatch(DECLINED.commit)
+  })
+
+  const A = 'git pull --rebase origin unit/a'
+  const runIt = (line: string) => [question(`Run \`${line}\` in /repo, on fix/x?`, ['Run it', 'Not now'])]
+
+  test('a "Run it" pick of the line before the "Commit it" pick does not let the rebase pull run', async ($, on) => {
+    const b = withLedger(on)
+    await session($)
+    expect(await bash($, b, A)).toMatch(BOTH)
+    await pick($, b, 'Run it', runIt(A))
+    await pick($, b)
+    expect(await bash($, b, A)).toMatch(DECLINED.rewrite)
+  })
+
+  test('a commit pick kept by a pick of the line approves that line alone', async ($, on) => {
+    const b = withLedger(on)
+    await session($)
+    expect(await bash($, b, A)).toMatch(BOTH)
+    await pick($, b)
+    await pick($, b, 'Run it', runIt(A))
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
+    expect(await bash($, b, 'git pull --rebase origin unit/b')).toMatch(BOTH)
+    expect(await bash($, b, A)).toBeUndefined()
+  })
+
+  test("Mike's next prompt ends a commit pick kept by a pick of the line", async ($, on) => {
+    const b = withLedger(on)
+    await session($)
+    expect(await bash($, b, A)).toMatch(BOTH)
+    await pick($, b)
+    await pick($, b, 'Run it', runIt(A))
+    await $.prompt.submit(prompt('and then?'))
+    expect(await bash($, b, A)).toMatch(BOTH)
+  })
+
+  test('a commit pick kept by a pick of another line does not pass on to the rebase pull', async ($, on) => {
+    const other = 'git cherry-pick abc1234'
+    const b = withLedger(on)
+    await session($)
+    expect(await bash($, b, A)).toMatch(BOTH)
+    await pick($, b)
+    expect(await bash($, b, other)).toMatch(DECLINED.rewrite)
+    await pick($, b, 'Run it', runIt(other))
+    await pick($, b, 'Run it', runIt(A))
+    expect(await bash($, b, A)).toMatch(DECLINED.commit)
+  })
+
+  test('a typed commit request and a pick of the line let the rebase pull run', async ($, on) => {
+    const b = withLedger(on)
+    await session($, 'commit it')
+    expect(await bash($, b, A)).toMatch(DECLINED.rewrite)
+    await pick($, b, 'Run it', runIt(A))
+    expect(await bash($, b, A)).toBeUndefined()
+  })
+
+  test('a merge-style unit-landing pull keeps its commit question alone, and a commit pick lets it run', async ($, on) => {
+    const b = withLedger(on)
+    await session($)
+    for (const line of ['git pull origin unit/a', 'git pull --no-rebase origin unit/a']) {
+      expect([line, DECLINED.commit.test((await bash($, b, line)) ?? '')]).toEqual([line, true])
+    }
+    await pick($, b)
+    expect(await bash($, b, 'git pull origin unit/a')).toBeUndefined()
+  })
 
   test("a pull that names the branch's own remote reads the upstream, and one whose branch or remote cannot be read asks", async ($, on) => {
     const b = withLedger(on)
@@ -1450,24 +1594,10 @@ describe('a catch-up of the default branch from its own upstream runs free, and 
     'git pull /tmp/unit-tree',
     'git pull /tmp/unit-tree main',
     'git remote set-url origin /tmp/unit-tree && git pull',
-    'git config branch.main.merge refs/heads/fix/x && git pull',
     'git -c alias.m=merge m origin/main',
     'echo origin/main | xargs git merge',
-    'git -c branch.main.merge=refs/heads/fix/x pull',
-    'git -c remote.origin.url=/path/to/other pull origin main',
-    'git -c include.path=/tmp/evil.config pull',
-    'HOME=/tmp/evil git pull',
-    'XDG_CONFIG_HOME=/tmp/evil git pull',
-    'env HOME=/tmp/evil git pull',
-    'export HOME=/tmp/evil; git pull',
-    'git -c remote.origin.fetch=+refs/heads/fix/x:refs/remotes/origin/main fetch && git merge origin/main',
     'git fetch --prune && git merge origin/main',
     'git fetch origin fix/x && git merge origin/main',
-    'git pull --rebase',
-    'git pull -r',
-    'git pull --rebase=merges',
-    'git pull --rebase=interactive origin main',
-    'git pull --rebase=true',
     'git pull --refmap=+refs/heads/fix/x:refs/remotes/origin/main',
     'git merge -s ours origin/main',
   ]) {
@@ -1478,15 +1608,389 @@ describe('a catch-up of the default branch from its own upstream runs free, and 
     })
   }
 
-  test('a fetch that maps a branch onto origin/main before the merge is no catch-up, and asks for the merge with the rewrite', async ($, on) => {
+  for (const line of [
+    'git config branch.main.merge refs/heads/fix/x && git pull',
+    'git -c branch.main.merge=refs/heads/fix/x pull',
+    'git -c remote.origin.url=/path/to/other pull origin main',
+    'git -c include.path=/tmp/evil.config pull',
+    'HOME=/tmp/evil git pull',
+    'XDG_CONFIG_HOME=/tmp/evil git pull',
+    'env HOME=/tmp/evil git pull',
+    'export HOME=/tmp/evil; git pull',
+    'git pull --rebase',
+    'git pull -r',
+    'git pull --rebase=merges',
+    'git pull --rebase=interactive origin main',
+    'git pull --rebase=true',
+    'git pull --rebase origin fix/x',
+  ]) {
+    test(`a pull into main that would rebase, or whose rebase config the gate cannot read, asks for the merge and the rewrite: ${JSON.stringify(line)}`, async ($, on) => {
+      const b = onMain(on)
+      await session($)
+      expect(await bash($, b, line)).toContain('merge into the default branch and history rewrite')
+    })
+  }
+
+  test('a rebase pull into main runs only after a merge pick and then a pick of its line', async ($, on) => {
+    const line = 'git pull --rebase origin fix/x'
+    const b = onMain(on)
+    await session($)
+    const refusal = await bash($, b, line)
+    expect(refusal).toMatch(asks('merge into the default branch and history rewrite'))
+    expect(refusal).toContain('This pull would rebase, so it needs two picks, each asked alone. First ask the merge question')
+    await pick($, b, 'Merge it', [question('Merge fix/x into main?', ['Merge it', 'Open a PR'])])
+    expect(await bash($, b, line)).toMatch(DECLINED.rewrite)
+    await pick($, b, 'Run it', [question(`Run \`${line}\` in /repo, on main?`, ['Run it', 'Not now'])])
+    expect(await bash($, b, line)).toBeUndefined()
+    expect(await bash($, b, line)).toMatch(asks('merge into the default branch and history rewrite'))
+  })
+
+  test('a kept merge pick approves only the branch its question named, leaves other merges asking, and ends with the next prompt', async ($, on) => {
+    const line = 'git pull --rebase origin fix/y'
+    const b = onMain(on)
+    await session($)
+    expect(await bash($, b, line)).toMatch(asks('merge into the default branch and history rewrite'))
+    await pick($, b, 'Merge it', [question('Merge fix/x into main?', ['Merge it', 'Open a PR'])])
+    await pick($, b, 'Run it', [question(`Run \`${line}\` in /repo, on main?`, ['Run it', 'Not now'])])
+    expect(await bash($, b, line)).toBe(MERGE_TARGET_REFUSAL)
+    expect(await bash($, b, 'git merge fix/y')).toMatch(DECLINED.merge)
+    await $.prompt.submit(prompt('next'))
+    expect(await bash($, b, line)).toMatch(asks('merge into the default branch and history rewrite'))
+  })
+
+  test('a merge pick alone, or a pick of its line alone, does not let a rebase pull into main run', async ($, on) => {
+    const line = 'git pull --rebase origin fix/x'
+    const b = onMain(on)
+    await session($)
+    await pick($, b, 'Merge it', [question('Merge fix/x into main?', ['Merge it', 'Open a PR'])])
+    expect(await bash($, b, line)).toMatch(DECLINED.rewrite)
+    await $.prompt.submit(prompt('next'))
+    expect(await bash($, b, line)).toMatch(asks('merge into the default branch and history rewrite'))
+    await pick($, b, 'Run it', [question(`Run \`${line}\` in /repo, on main?`, ['Run it', 'Not now'])])
+    expect(await bash($, b, line)).toMatch(DECLINED.merge)
+  })
+
+  test('a merge-style pull into main that is not the catch-up keeps its merge question alone', async ($, on) => {
+    const b = onMain(on)
+    await session($)
+    for (const line of ['git pull origin fix/x', 'git pull --no-rebase origin fix/x']) {
+      expect([line, DECLINED.merge.test((await bash($, b, line)) ?? '')]).toEqual([line, true])
+    }
+  })
+
+  for (const line of ['cd /repo && git pull --rebase origin fix/x', 'cd /repo && git pull origin fix/x', 'git -C repo pull origin fix/x', 'git switch main; git pull']) {
+    test(`a pull whose directory the gate cannot place counts as a rebase, so it asks for the merge and the rewrite: ${JSON.stringify(line)}`, async ($, on) => {
+      const b = onMain(on)
+      await session($)
+      expect(pullRebasesOf(line).map(pull => pull.dir)).toEqual([null])
+      expect(await bash($, b, line)).toContain('merge into the default branch and history rewrite')
+    })
+  }
+
+  for (const line of ['cd /repo && git pull --no-rebase origin fix/x', 'git -C repo pull --no-rebase origin fix/x', 'git -C repo pull --rebase=false origin fix/x']) {
+    test(`a pull whose directory the gate cannot place, with --no-rebase, keeps its merge question alone: ${JSON.stringify(line)}`, async ($, on) => {
+      const b = onMain(on)
+      await session($)
+      expect(await bash($, b, line)).toMatch(DECLINED.merge)
+    })
+  }
+
+  test('a fetch that maps a branch onto origin/main before the merge is no catch-up, and asks for the merge with the remote-tracking ref update', async ($, on) => {
     const line = 'git fetch --refmap=+refs/heads/fix/x:refs/remotes/origin/main origin fix/x && git merge origin/main'
     const b = onMain(on)
     await session($)
     expect(catchUpsOf(line)).toEqual([])
     expect(await bash($, b, line)).toBe(
-      'This line was refused: it runs a merge into the default branch and history rewrite, and Mike has approved none of them. ' +
+      'This line was refused: it runs a merge into the default branch and remote-tracking ref update, and Mike has approved none of them. ' +
         'One pick approves one action, so run each as a line of its own, and ask him about each one through AskUserQuestion, alone.',
     )
+  })
+
+  const OWN_TRACKING = 'git fetch origin develop feat/923-turnstile-registration:refs/remotes/origin/feat/923-turnstile-registration'
+
+  test('the reader: a fetch that maps each branch onto its own remote-tracking ref is no rewrite and no head move, and every other refspec still is', () => {
+    for (const line of [
+      OWN_TRACKING,
+      'git fetch origin x:refs/remotes/origin/x',
+      'git fetch origin +refs/heads/x:refs/remotes/origin/x',
+      'git -C /repo fetch upstream main:refs/remotes/upstream/main',
+      'git fetch origin x:refs/remotes/origin/x y:refs/remotes/origin/y',
+    ]) {
+      expect([line, rewritesOf(line), movesHead(line)]).toEqual([line, 0, false])
+    }
+    for (const [line, kinds] of [
+      ['git fetch origin fix/x:refs/remotes/origin/main', ['tracking']],
+      ['git fetch upstream x:refs/remotes/origin/x', ['tracking']],
+      ['git fetch origin HEAD:refs/remotes/origin/HEAD', ['tracking']],
+      ['git fetch origin x:refs/remotes/origin/x --refmap=', ['tracking']],
+      ['git fetch --refmap= origin x', ['tracking']],
+      ['git update-ref --stdin', ['reset']],
+      ['git -c remote.origin.fetch=+refs/heads/fix/x:refs/remotes/origin/main fetch origin x:refs/remotes/origin/x', ['tracking']],
+      ['git fetch --refmap=+refs/heads/x:refs/remotes/origin/main origin x', ['tracking']],
+      ['git fetch origin x:refs/remotes/origin/x y:main', ['reset']],
+      ['git fetch . feat:main', ['reset']],
+      ['git update-ref refs/remotes/origin/main abc1234', ['tracking']],
+      ['git update-ref refs/heads/main abc1234', ['reset']],
+      ['git branch -f main x', ['reset']],
+      ['git reset --hard HEAD~1', ['reset']],
+      ['git push . x:main', ['reset']],
+      ['git cherry-pick abc1234', ['history']],
+      ['git commit --amend --no-edit', ['history']],
+      ['git rebase main && git branch -f feat2 x', ['history', 'reset']],
+    ] as const) {
+      expect([line, rewriteKindsOf(line)]).toEqual([line, kinds])
+    }
+    expect(rewriteNameOf(['tracking', 'history', 'reset'])).toBe('history rewrite and branch reset and remote-tracking ref update')
+    expect(rewriteNameOf([])).toBe('history rewrite')
+    expect([rewriteRefusalOf(['tracking', 'reset']), rewriteRefusalOf(['tracking']), rewriteRefusalOf(['reset', 'history']), rewriteRefusalOf([])]).toEqual([
+      `${BRANCH_RESET_REFUSAL} ${TRACKING_REFUSAL}`,
+      TRACKING_REFUSAL,
+      `${REWRITE_REFUSAL} ${BRANCH_RESET_REFUSAL}`,
+      REWRITE_REFUSAL,
+    ])
+    for (const line of ['git fetch -o origin /tmp/other main:refs/remotes/origin/main', 'git fetch --upload-pack=/tmp/evil origin main:refs/remotes/origin/main', 'git fetch --server-option x origin main:refs/remotes/origin/main', 'git fetch --depth 1 origin main:refs/remotes/origin/main', 'git fetch --filter=blob:none origin main:refs/remotes/origin/main']) {
+      expect([line, rewriteKindsOf(line), movesHead(line)]).toEqual([line, ['tracking'], true])
+    }
+    expect(rewritesOf('git fetch --prune --quiet origin main:refs/remotes/origin/main')).toBe(0)
+    for (const flag of ['-p', '--prune', '-q', '--quiet', '-v', '--verbose', '-f', '--force', '-t', '--tags', '-n', '--no-tags', '--progress', '--no-progress', '--atomic', '--dry-run']) {
+      const line = `git fetch ${flag} origin main:refs/remotes/origin/main`
+      expect([line, rewritesOf(line), movesHead(line)]).toEqual([line, 0, false])
+    }
+    for (const flag of ['--prune-tags', '-P', '--unshallow', '--update-head-ok']) {
+      const line = `git fetch ${flag} origin main:refs/remotes/origin/main`
+      expect([line, rewriteKindsOf(line)]).toEqual([line, ['tracking']])
+    }
+    expect(rewriteRefusalOf(['tracking', 'reset', 'history'])).toBe(`${REWRITE_REFUSAL} ${BRANCH_RESET_REFUSAL} ${TRACKING_REFUSAL}`)
+    expect([rewriteKindsOf('git fetch --std origin'), rewritesAt('git fetch --std origin').map(rewrite => rewrite.refs)]).toEqual([['reset'], [['']]])
+    for (const line of ["printf 'fix/x:refs/remotes/origin/main\\n' | git fetch origin --stdin", 'git fetch origin --stdin < specs.txt']) {
+      expect([line, rewriteKindsOf(line), rewritesAt(line).map(rewrite => rewrite.refs)]).toEqual([line, ['reset'], [['']]])
+    }
+  })
+
+  for (const line of [OWN_TRACKING, `${OWN_TRACKING} && git merge-base --is-ancestor origin/develop origin/feat/923-turnstile-registration && git log --oneline -3 origin/feat/923-turnstile-registration`]) {
+    test(`Mike's session runs a fetch into its own remote-tracking refs with no question, beside read-only git commands: ${JSON.stringify(line)}`, async ($, on) => {
+      const b = onMain(on)
+      await session($)
+      expect(await bash($, b, line)).toBeUndefined()
+    })
+  }
+
+  for (const line of ['git fetch origin main:refs/remotes/origin/main && git merge origin/main', 'git fetch origin fix/x:refs/remotes/origin/fix/x && git merge --no-edit origin/main', 'git fetch origin main:refs/remotes/origin/main && git pull --no-rebase']) {
+    test(`the same fetch beside a merge or pull into main takes away the catch-up's free pass, and the merge asks alone: ${JSON.stringify(line)}`, async ($, on) => {
+      const b = onMain(on)
+      await session($)
+      expect(catchUpsOf(line)).toEqual([])
+      expect(await bash($, b, line)).toMatch(DECLINED.merge)
+    })
+  }
+
+  test('a fetch that maps another branch onto origin/main asks as a remote-tracking ref update, never as a history rewrite, so a later catch-up cannot merge that branch with no question', async ($, on) => {
+    const line = 'git fetch origin fix/x:refs/remotes/origin/main'
+    const b = onMain(on)
+    await session($)
+    const deny = await bash($, b, line)
+    expect(deny).toMatch(DECLINED.tracking)
+    expect(deny).not.toContain('history rewrite')
+    expect(deny).toContain('say that a remote-tracking ref update changes only refs under refs/remotes/, and no local branch and no commit')
+  })
+
+  const CONFIGURED_FETCHES = [
+    'git -c remote.origin.fetch=+refs/heads/fix/x:refs/remotes/origin/main fetch',
+    'git --config-env=remote.origin.fetch=SPEC fetch',
+    'GIT_CONFIG_PARAMETERS="\'remote.origin.fetch=+refs/heads/fix/x:refs/remotes/origin/main\'" git fetch',
+    'env HOME=/tmp/evil git fetch',
+    'HOME=/tmp/evil git fetch origin',
+    'XDG_CONFIG_HOME=/tmp/evil git fetch',
+    'GIT_DIR=/tmp/other git fetch',
+    'git fetch --refmap=+refs/heads/fix/x:refs/remotes/origin/main origin',
+    'git config remote.origin.fetch +refs/heads/fix/x:refs/remotes/origin/main && git fetch',
+    'git remote set-url origin /tmp/unit-tree && git fetch',
+    'git remote add up /tmp/unit-tree && git fetch',
+    'git remote rename origin up && git fetch',
+    'export HOME=/tmp/evil; git fetch',
+    'HOME=/tmp/x; git fetch',
+  ]
+
+  test('the reader: a fetch that may read another fetch refspec is a remote-tracking ref update, and a plain fetch is none', () => {
+    for (const line of CONFIGURED_FETCHES) {
+      expect([line, rewriteKindsOf(line)]).toEqual([line, ['tracking']])
+    }
+    for (const line of ['git fetch', 'git fetch --all', 'git fetch origin', 'git fetch --prune origin', 'git -C /repo fetch origin', 'git config --get remote.origin.fetch && git fetch', 'git remote -v && git fetch']) {
+      expect([line, rewritesOf(line), rewriteKindsOf(line)]).toEqual([line, 0, []])
+    }
+  })
+
+  for (const line of ['git fetch', 'git fetch --all', 'git fetch origin', 'git config --get remote.origin.fetch && git fetch']) {
+    test(`Mike's session runs a plain fetch with no question, as it reads the stored fetch refspec: ${JSON.stringify(line)}`, async ($, on) => {
+      const b = onMain(on)
+      await session($)
+      expect(await bash($, b, line)).toBeUndefined()
+    })
+  }
+
+  for (const line of [
+    'git -c remote.origin.fetch=+refs/heads/fix/x:refs/remotes/origin/main fetch',
+    'GIT_CONFIG_PARAMETERS="\'remote.origin.fetch=+refs/heads/fix/x:refs/remotes/origin/main\'" git fetch',
+    'HOME=/tmp/evil git fetch origin',
+    'git remote set-url origin /tmp/unit-tree && git fetch',
+  ]) {
+    test(`Mike's session asks for a fetch that may read another fetch refspec, as a remote-tracking ref update: ${JSON.stringify(line)}`, async ($, on) => {
+      const b = onMain(on)
+      await session($)
+      const deny = await bash($, b, line)
+      expect(deny).toContain('remote-tracking ref update')
+      expect(deny).not.toContain('history rewrite')
+    })
+  }
+
+  for (const line of ['git --config-env=remote.origin.fetch=SPEC fetch', 'env HOME=/tmp/evil git fetch']) {
+    test(`Mike's session does not run a fetch with --config-env or a wrapper free: ${JSON.stringify(line)}`, async ($, on) => {
+      const b = onMain(on)
+      await session($)
+      expect(await bash($, b, line)).toBeDefined()
+    })
+  }
+
+  test('a configured fetch beside a merge into main is no catch-up, and asks for the merge with the remote-tracking ref update', async ($, on) => {
+    const line = 'git -c remote.origin.fetch=+refs/heads/fix/x:refs/remotes/origin/main fetch && git merge origin/main'
+    const b = onMain(on)
+    await session($)
+    expect(catchUpsOf(line)).toEqual([])
+    expect(await bash($, b, line)).toBe(
+      'This line was refused: it runs a merge into the default branch and remote-tracking ref update, and Mike has approved none of them. ' +
+        'One pick approves one action, so run each as a line of its own, and ask him about each one through AskUserQuestion, alone.',
+    )
+  })
+
+  test('a sub-agent is refused a configured fetch as a remote-tracking ref update, and runs a plain one', async ($, on) => {
+    const b = onMain(on)
+    await session($)
+    expect(await bash($, b, 'git -c remote.origin.fetch=+refs/heads/fix/x:refs/remotes/origin/main fetch', 'a1')).toBe(TRACKING_REFUSAL)
+    expect(await bash($, b, 'HOME=/tmp/evil git fetch origin', 'a1')).toBe(TRACKING_REFUSAL)
+    expect(await bash($, b, 'git fetch --all', 'a1')).toBeUndefined()
+  })
+
+  for (const line of ['git fetch -o origin /tmp/other main:refs/remotes/origin/main', 'git fetch --upload-pack=/tmp/evil origin main:refs/remotes/origin/main']) {
+    test(`an own-ref fetch with an option that takes a value asks as a remote-tracking ref update, as the gate cannot tell where it fetches from: ${JSON.stringify(line)}`, async ($, on) => {
+      const b = onMain(on)
+      await session($)
+      const deny = await bash($, b, line)
+      expect(deny).toMatch(DECLINED.tracking)
+      expect(deny).not.toContain('history rewrite')
+    })
+  }
+
+  for (const line of ["printf 'fix/x:refs/remotes/origin/main\\n' | git fetch origin --stdin", 'git fetch origin --stdin < specs.txt', 'git fetch --std origin < specs.txt']) {
+    test(`a fetch that reads its refspecs from stdin asks as a branch reset, as the gate cannot read them: ${JSON.stringify(line)}`, async ($, on) => {
+      const b = onMain(on)
+      await session($)
+      expect(await bash($, b, line)).toMatch(DECLINED.reset)
+      expect(await bash($, b, line, 'a1')).toBe(BRANCH_RESET_REFUSAL)
+    })
+  }
+
+  for (const line of ['git fetch origin fix/x:refs/remotes/origin/main', 'git -c remote.origin.fetch=+refs/heads/fix/x:refs/remotes/origin/main fetch']) {
+    test(`a "Run it" pick on a remote-tracking ref update question runs that line once: ${JSON.stringify(line)}`, async ($, on) => {
+      const b = onMain(on)
+      await session($)
+      const deny = await bash($, b, line)
+      expect(deny).toMatch(DECLINED.tracking)
+      await pick($, b, 'Run it', [question(`Update a remote-tracking ref with \`${line}\` in /repo, on main? It changes no local branch and no commit.`, ['Run it', 'Not now'])])
+      expect(await bash($, b, line)).toBeUndefined()
+      expect(await bash($, b, line)).toBe(deny)
+    })
+  }
+
+  test("Mike's session asks for the catch-up when origin's URL changed after the session started, and runs it free while the URL is unchanged", async ($, on) => {
+    const b = onMain(on)
+    await session($)
+    expect(await bash($, b, 'git fetch')).toBeUndefined()
+    expect(await bash($, b, 'git merge origin/main')).toBeUndefined()
+    expect(await bash($, b, 'git remote set-url origin https://github.com/other/repo')).toBeUndefined()
+    b.repos['/repo'] = { ...MAIN, originUrl: 'https://github.com/other/repo' }
+    expect(await bash($, b, 'git fetch')).toBeUndefined()
+    expect(await bash($, b, 'git merge origin/main')).toMatch(DECLINED.merge)
+    expect(await bash($, b, 'git pull')).toMatch(DECLINED.merge)
+    b.repos['/repo'] = { ...MAIN }
+    expect(await bash($, b, 'git pull')).toBeUndefined()
+  })
+
+  test('the URL recorded at session start, before any catch-up, makes the first catch-up after a set-url ask', async ($, on) => {
+    const b = onMain(on)
+    await session($)
+    b.repos['/repo'] = { ...MAIN, originUrl: 'https://github.com/other/repo' }
+    expect(await bash($, b, 'git pull')).toMatch(DECLINED.merge)
+    expect(await bash($, b, 'git merge origin/main')).toMatch(DECLINED.merge)
+  })
+
+  test('a remote added after session start and made the upstream gives main no catch-up', async ($, on) => {
+    const b = onMain(on)
+    await session($)
+    b.repos['/repo'] = {
+      ...MAIN,
+      remote: 'evil',
+      upstream: 'refs/remotes/evil/main',
+      originUrl: 'https://github.com/x/y',
+      fetchSpec: '+refs/heads/*:refs/remotes/evil/*',
+      remoteUrls: 'remote.origin.url git@github.com:o/r.git\nremote.evil.url https://github.com/x/y',
+      fullNames: { 'evil/main': 'refs/remotes/evil/main' },
+    }
+    expect(await bash($, b, 'git pull')).toMatch(DECLINED.merge)
+    expect(await bash($, b, 'git merge evil/main')).toMatch(DECLINED.merge)
+  })
+
+  test('the session-start record reads remote names and their URLs, so a partial-clone line or a URL with a space in git remote -v does not leave it empty', async ($, on) => {
+    const b = onMain(on)
+    const odd = {
+      remoteUrls: 'remote.origin.url git@github.com:o/r.git\nremote.up.url /tmp/a b',
+      remotesShown: 'origin\tgit@github.com:o/r.git (fetch) [blob:none]\norigin\tgit@github.com:o/r.git (push)\nup\t/tmp/a b (fetch)\nup\t/tmp/a b (push)\n',
+    }
+    b.repos['/repo'] = { ...MAIN, ...odd }
+    await session($)
+    b.repos['/repo'] = { ...MAIN, ...odd, originUrl: 'https://github.com/other/repo', remoteUrls: 'remote.origin.url https://github.com/other/repo\nremote.up.url /tmp/a b' }
+    expect(await bash($, b, 'git pull')).toMatch(DECLINED.merge)
+  })
+
+  for (const line of ['git -C /repo/ pull', 'git -C //repo pull']) {
+    test(`another spelling of the folder reads the same record: ${JSON.stringify(line)}`, async ($, on) => {
+      const b = onMain(on)
+      b.tops['/repo/'] = '/repo'
+      b.tops['//repo'] = '/repo'
+      await session($)
+      b.repos['/repo'] = { ...MAIN, originUrl: 'https://github.com/other/repo' }
+      expect(await bash($, b, line)).toMatch(DECLINED.merge)
+      b.repos['/repo'] = { ...MAIN }
+      expect(await bash($, b, line)).toBeUndefined()
+    })
+  }
+
+  test('a session started in a subfolder records its repository, so git -C <root> pull after a set-url asks', async ($, on) => {
+    const b = onMain(on)
+    b.tops['/repo/sub'] = '/repo'
+    b.cwd = '/repo/sub'
+    await $.session.start(start())
+    await $.prompt.submit(prompt('my review is done'))
+    b.repos['/repo'] = { ...MAIN, originUrl: 'https://github.com/other/repo' }
+    expect(await bash($, b, 'git -C /repo pull')).toMatch(DECLINED.merge)
+    b.repos['/repo'] = { ...MAIN }
+    expect(await bash($, b, 'git -C /repo pull')).toBeUndefined()
+  })
+
+  test('with no URL read at session start, the first catch-up pins the URL, and a later change asks', async ($, on) => {
+    const b = onMain(on)
+    b.repos['/repo'] = { ...MAIN, remoteUrls: null }
+    await session($)
+    b.repos['/repo'] = { ...MAIN }
+    expect(await bash($, b, 'git merge origin/main')).toBeUndefined()
+    b.repos['/repo'] = { ...MAIN, originUrl: 'git@github.com:other/repo.git' }
+    expect(await bash($, b, 'git merge origin/main')).toMatch(DECLINED.merge)
+  })
+
+  test('a sub-agent runs a fetch into its own remote-tracking refs, and is refused one that maps another branch onto origin/main as a remote-tracking ref update', async ($, on) => {
+    const b = onMain(on)
+    await session($)
+    expect(await bash($, b, OWN_TRACKING, 'a1')).toBeUndefined()
+    expect(await bash($, b, 'git fetch origin fix/x:refs/remotes/origin/main', 'a1')).toBe(TRACKING_REFUSAL)
   })
 
   test('a pull that reads another config through GIT_CONFIG_GLOBAL is no catch-up, and asks for the merge with the rewrite', async ($, on) => {
@@ -1510,8 +2014,8 @@ describe('a catch-up of the default branch from its own upstream runs free, and 
     await session($)
     for (const fixture of [{ pullRebase: null }, { branchRebase: null }]) {
       b.repos['/repo'] = { ...MAIN, ...fixture }
-      expect(await bash($, b, 'git pull')).toMatch(DECLINED.merge)
-      expect(await bash($, b, 'git pull origin main')).toMatch(DECLINED.merge)
+      expect(await bash($, b, 'git pull')).toMatch(asks('merge into the default branch and history rewrite'))
+      expect(await bash($, b, 'git pull origin main')).toMatch(asks('merge into the default branch and history rewrite'))
       expect(await bash($, b, 'git pull --no-rebase')).toBeUndefined()
       expect(await bash($, b, 'git merge --no-edit origin/main')).toBeUndefined()
     }
@@ -1544,11 +2048,12 @@ describe('a catch-up of the default branch from its own upstream runs free, and 
   test('a plain pull that stored config makes a rebase is no catch-up, and one that turns the rebase off is', async ($, on) => {
     const b = onMain(on)
     await session($)
+    const both = asks('merge into the default branch and history rewrite')
     for (const value of ['true', 'merges', 'interactive', 'i', 'm', 'yes', '']) {
       b.repos['/repo'] = { ...MAIN, pullRebase: value }
-      expect([value, DECLINED.merge.test((await bash($, b, 'git pull')) ?? '')]).toEqual([value, true])
+      expect([value, both.test((await bash($, b, 'git pull')) ?? '')]).toEqual([value, true])
       b.repos['/repo'] = { ...MAIN, branchRebase: value }
-      expect([value, DECLINED.merge.test((await bash($, b, 'git pull origin main')) ?? '')]).toEqual([value, true])
+      expect([value, both.test((await bash($, b, 'git pull origin main')) ?? '')]).toEqual([value, true])
     }
     b.repos['/repo'] = { ...MAIN, pullRebase: 'true' }
     expect(await bash($, b, 'git merge origin/main')).toBeUndefined()
@@ -1556,7 +2061,7 @@ describe('a catch-up of the default branch from its own upstream runs free, and 
     b.repos['/repo'] = { ...MAIN, pullRebase: 'true', branchRebase: 'false' }
     expect(await bash($, b, 'git pull')).toBeUndefined()
     b.repos['/repo'] = { ...MAIN, pullRebase: 'false', branchRebase: 'merges' }
-    expect(await bash($, b, 'git pull')).toMatch(DECLINED.merge)
+    expect(await bash($, b, 'git pull')).toMatch(both)
     for (const value of ['false', 'no', 'off', '0']) {
       b.repos['/repo'] = { ...MAIN, pullRebase: value }
       expect([value, await bash($, b, 'git pull')]).toEqual([value, undefined])
@@ -1592,6 +2097,22 @@ describe('a catch-up of the default branch from its own upstream runs free, and 
     expect(await bash($, b, 'git merge origin/main && git merge --no-ff unit/a')).toMatch(DECLINED.merge)
     expect(await bash($, b, 'git pull && git pull origin main')).toBeUndefined()
   })
+
+  for (const [where, fixture] of [
+    ['the default branch', {}],
+    ['a feature branch tracking its own remote', { branch: 'fix/x', upstream: 'refs/remotes/origin/fix/x' }],
+  ] as const) {
+    test(`Mike's session syncs ${where} with its own remote by fetch --all, pull and push, each a line of its own`, async ($, on) => {
+      const b = onMain(on)
+      b.repos['/repo'] = { ...MAIN, ...fixture }
+      await session($)
+      expect(await bash($, b, 'git fetch --all')).toBeUndefined()
+      expect(await bash($, b, 'git pull')).toBeUndefined()
+      expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
+      await pushPick($, b)
+      expect(await bash($, b, 'git push')).toBeUndefined()
+    })
+  }
 
   test('a catch-up that is free does not approve the push beside it', async ($, on) => {
     const b = onMain(on)
@@ -1645,6 +2166,100 @@ describe('a catch-up of the default branch from its own upstream runs free, and 
     expect(catchUpsOf('git pull --rebase=false origin main')).toEqual([{ dir: '', kind: 'pull', remote: 'origin', ref: 'main', isRebaseOff: true }])
     for (const line of ['git -c x.y=z pull', 'HOME=/x git pull', 'git pull --rebase', 'git pull -r', 'git fetch --prune && git pull', 'git fetch origin main && git pull', 'git pull > out.txt', 'echo x >> .git/config; git pull', 'git merge -s ours origin/main', 'git pull origin main:main', 'cd /repo && git pull', 'git checkout main && git pull', 'git remote add o /tmp/x && git pull o main', 'git branch -u origin/fix/x && git pull', 'git merge --continue', 'git merge "$B"']) {
       expect([line, catchUpsOf(line)]).toEqual([line, []])
+    }
+  })
+})
+
+describe('on a feature branch, a pull that would rebase asks as a history rewrite, and a merge-style pull runs free', () => {
+  const OWN = { head: 'c1', pushed: 'c1', branch: 'fix/x', originHead: 'main', upstream: 'refs/remotes/origin/fix/x', remote: 'origin' }
+  const onFeature = (on: Parameters<typeof bench>[0]): Bench => {
+    const b = bench(on)
+    b.repos['/repo'] = { ...OWN }
+    return b
+  }
+
+  for (const line of [
+    'git pull --rebase',
+    'git pull -r',
+    'git pull -qr',
+    'git pull --reb',
+    'git pull --rebase=merges',
+    'git pull --rebase=interactive origin fix/x',
+    'git pull --rebase=true',
+    'git pull --no-rebase --rebase',
+    'git pull --ff-only --rebase',
+    'git -C /repo pull --rebase',
+  ]) {
+    test(`a rebase flag makes the pull a history rewrite that asks: ${JSON.stringify(line)}`, async ($, on) => {
+      const b = onFeature(on)
+      await session($)
+      expect(await bash($, b, line)).toMatch(DECLINED.rewrite)
+    })
+  }
+
+  for (const line of ['git pull', 'git pull origin', 'git pull origin fix/x', 'git pull --no-rebase', 'git pull --rebase=false', 'git pull --rebase=no', 'git pull --rebase --no-rebase', 'git pull --no-ff', 'git pull --ff-only']) {
+    test(`a merge-style pull of the branch's own remote runs with no question: ${JSON.stringify(line)}`, async ($, on) => {
+      const b = onFeature(on)
+      await session($)
+      expect(await bash($, b, line)).toBeUndefined()
+    })
+  }
+
+  test('a plain pull that stored config makes a rebase asks, and one whose config turns the rebase off runs', async ($, on) => {
+    const b = onFeature(on)
+    await session($)
+    for (const value of ['true', 'merges', 'interactive', 'i', 'm', 'yes', '']) {
+      b.repos['/repo'] = { ...OWN, pullRebase: value }
+      expect([value, DECLINED.rewrite.test((await bash($, b, 'git pull')) ?? '')]).toEqual([value, true])
+      b.repos['/repo'] = { ...OWN, branchRebase: value }
+      expect([value, DECLINED.rewrite.test((await bash($, b, 'git pull origin fix/x')) ?? '')]).toEqual([value, true])
+    }
+    b.repos['/repo'] = { ...OWN, pullRebase: 'true' }
+    expect(await bash($, b, 'git pull --no-rebase')).toBeUndefined()
+    expect(await bash($, b, 'git merge origin/main')).toBeUndefined()
+    b.repos['/repo'] = { ...OWN, pullRebase: 'true', branchRebase: 'false' }
+    expect(await bash($, b, 'git pull')).toBeUndefined()
+    b.repos['/repo'] = { ...OWN, pullRebase: 'false', branchRebase: 'merges' }
+    expect(await bash($, b, 'git pull')).toMatch(DECLINED.rewrite)
+    for (const value of ['false', 'no', 'off', '0', 'FALSE']) {
+      b.repos['/repo'] = { ...OWN, pullRebase: value }
+      expect([value, await bash($, b, 'git pull')]).toEqual([value, undefined])
+    }
+  })
+
+  test('a rebase config the gate cannot read counts as a rebase, and an explicit --no-rebase still runs', async ($, on) => {
+    const b = onFeature(on)
+    await session($)
+    for (const fixture of [{ pullRebase: null }, { branchRebase: null }]) {
+      b.repos['/repo'] = { ...OWN, ...fixture }
+      expect(await bash($, b, 'git pull')).toMatch(DECLINED.rewrite)
+      expect(await bash($, b, 'git pull --no-rebase')).toBeUndefined()
+    }
+    b.repos['/repo'] = { ...OWN }
+    for (const line of ['git -c pull.rebase=true pull', 'HOME=/tmp/evil git pull', 'export HOME=/tmp/evil; git pull', 'git config pull.rebase true && git pull', 'git --no-pager pull']) {
+      expect([line, DECLINED.rewrite.test((await bash($, b, line)) ?? '')]).toEqual([line, true])
+    }
+    expect(await bash($, b, 'git -c pull.rebase=true pull --no-rebase')).toBeUndefined()
+  })
+
+  test('a rebase pull runs after a pick of its own line', async ($, on) => {
+    const b = onFeature(on)
+    await session($)
+    expect(await bash($, b, 'git pull --rebase')).toMatch(DECLINED.rewrite)
+    await pick($, b, 'Run it', [question('Run `git pull --rebase` in /repo, on fix/x?', ['Run it', 'Not now'])])
+    expect(await bash($, b, 'git pull --rebase')).toBeUndefined()
+  })
+
+  test('the rebase reader takes the last rebase flag, and marks config it cannot read', () => {
+    expect(pullRebasesOf('git pull')).toEqual([{ dir: '', rebase: 'config' }])
+    expect(pullRebasesOf('git -C /repo pull --rebase')).toEqual([{ dir: '/repo', rebase: 'on' }])
+    expect(pullRebasesOf('git pull --rebase --no-rebase')).toEqual([{ dir: '', rebase: 'off' }])
+    expect(pullRebasesOf('git pull --no-rebase -r')).toEqual([{ dir: '', rebase: 'on' }])
+    expect(pullRebasesOf('git pull --rebase=0')).toEqual([{ dir: '', rebase: 'off' }])
+    expect(pullRebasesOf('git pull -j 4 -o r origin fix/x')).toEqual([{ dir: '', rebase: 'config' }])
+    expect(pullRebasesOf('git merge origin/main')).toEqual([])
+    for (const line of ['git -c pull.rebase=true pull', 'HOME=/x git pull', 'env HOME=/x git pull', 'HOME=/x; git pull', 'git config pull.rebase true; git pull', 'git --no-pager pull']) {
+      expect([line, pullRebasesOf(line).map(pull => pull.rebase)]).toEqual([line, ['unread']])
     }
   })
 })

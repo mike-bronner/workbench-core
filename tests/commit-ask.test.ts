@@ -6,6 +6,7 @@ import {
   AGENT_MERGE_REFUSAL,
   AGENT_RELEASE_REFUSAL,
   ALIAS_REFUSAL,
+  BRANCH_RESET_REFUSAL,
   BUNDLE_REFUSAL,
   COMMIT_REFUSAL,
   LINES_BUNDLE_REFUSAL,
@@ -259,16 +260,32 @@ describe('AC7: a pick approves exactly one action of the kind its question names
   test('a reset pick runs its own line, which moves HEAD', async ($, on) => {
     const b = await attended($, on)
     expect(movesHead('git reset --soft HEAD~1')).toBe(true)
-    expect(await bash($, b, 'git reset --soft HEAD~1')).toMatch(ASKS.rewrite)
+    expect(await bash($, b, 'git reset --soft HEAD~1')).toMatch(ASKS.reset)
     await picks($, b, 'a rewrite', 'git reset --soft HEAD~1')
     expect(await bash($, b, 'git reset --soft HEAD~1')).toBeUndefined()
+  })
+
+  test('a branch reset asks under its own name, says how to tell whether the old tip stays reachable, and a pick of its question runs the line once', async ($, on) => {
+    const b = await attended($, on)
+    const line = 'git branch -f feat2 origin/feat2'
+    const deny = await bash($, b, line)
+    expect(deny).toMatch(ASKS.reset)
+    expect(deny).not.toContain('history rewrite')
+    expect(deny).toContain('say that a branch reset moves a branch pointer and replaces no commit, and say whether the old tip stays reachable from another ref')
+    expect(deny).toContain('`git for-each-ref --contains <old tip>`')
+    expect(deny).toContain('offer "Run it" and "Not now"')
+    b.pick = 'Run it'
+    const question = `Reset branch feat2 with \`${line}\` in /repo, on main? It replaces no commit, and the old tip stays reachable from feat.`
+    expect((await $.tool.call(ask(question, ['Run it', 'Not now']) as never)).deny).toBeUndefined()
+    expect(await bash($, b, line)).toBeUndefined()
+    expect(await bash($, b, line)).toBe(deny)
   })
 
   test('one command that counts as a push and a rewrite asks once, and one pick on its line runs it once', async ($, on) => {
     const b = await attended($, on)
     const line = 'git push . x:main'
     const deny = await bash($, b, line)
-    expect(deny).toMatch(asks('git push and history rewrite'))
+    expect(deny).toMatch(asks('git push and branch reset'))
     expect(deny).toContain('offer "Run it" and "Not now"')
     await picks($, b, 'a rewrite', line)
     expect(await bash($, b, line)).toBeUndefined()
@@ -376,7 +393,9 @@ describe('AC3: the merge routes Holmes found are gated in every lane', () => {
     test(`from a feature branch, ${JSON.stringify(line)} asks Mike, and is refused where nobody can answer`, async ($, on) => {
       const b = await attended($, on)
       b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'feat', originHead: 'main' }
-      expect(await bash($, b, line)).toMatch(ASKS.merge)
+      const refusal = await bash($, b, line)
+      if (line.includes('pull')) expect(refusal).toContain('it runs a merge into the default branch and history rewrite')
+      else expect(refusal).toMatch(ASKS.merge)
       expect(dialogs(b)).toEqual([])
     })
     for (const lane of UNATTENDED) {
@@ -440,10 +459,16 @@ describe('AC4: history rewrites and gh alias set need Mike\'s approval', () => {
     expect(aliasSetsOf('gh alias list')).toBe(0)
   })
 
-  for (const line of ['git revert HEAD', 'git am < p.patch', 'git rebase main', 'git reset --soft HEAD~2', 'git update-ref refs/heads/main abc1234']) {
+  for (const [line, asked] of [
+    ['git revert HEAD', ASKS.rewrite],
+    ['git am < p.patch', ASKS.rewrite],
+    ['git rebase main', ASKS.rewrite],
+    ['git reset --soft HEAD~2', ASKS.reset],
+    ['git update-ref refs/heads/main abc1234', ASKS.reset],
+  ] as const) {
     test(`is denied with the instruction to ask in Mike's session, and runs on his pick: ${JSON.stringify(line)}`, async ($, on) => {
       const b = await attended($, on)
-      expect(await bash($, b, line)).toMatch(ASKS.rewrite)
+      expect(await bash($, b, line)).toMatch(asked)
       expect(dialogs(b)).toEqual([])
       await picks($, b, 'a rewrite', line)
       expect(await bash($, b, line)).toBeUndefined()
@@ -466,15 +491,16 @@ describe('the pipeline rewrites history on its own feature branches, and never o
 
   for (const line of REWRITES) {
     test(`on the default branch, on a branch it cannot read, with no origin/HEAD, or after a cd, it is refused: ${JSON.stringify(line)}`, async ($, on) => {
+      const refusal = line.startsWith('git reset') ? BRANCH_RESET_REFUSAL : REWRITE_REFUSAL
       const b = await inLane($, on, PIPELINE)
       b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'main', originHead: 'main' }
-      expect(await bash($, b, line)).toBe(REWRITE_REFUSAL)
+      expect(await bash($, b, line)).toBe(refusal)
       b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: null, originHead: 'main' }
-      expect(await bash($, b, line)).toBe(REWRITE_REFUSAL)
+      expect(await bash($, b, line)).toBe(refusal)
       b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'feat' }
-      expect(await bash($, b, line)).toBe(REWRITE_REFUSAL)
+      expect(await bash($, b, line)).toBe(refusal)
       b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'feat', originHead: 'main' }
-      expect(await bash($, b, `cd /repo && ${line}`)).toBe(REWRITE_REFUSAL)
+      expect(await bash($, b, `cd /repo && ${line}`)).toBe(refusal)
     })
   }
 
@@ -482,7 +508,7 @@ describe('the pipeline rewrites history on its own feature branches, and never o
     const b = await inLane($, on, PIPELINE)
     b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'feat', originHead: 'main' }
     for (const line of ['git update-ref refs/heads/main abc1234', 'git update-ref main abc1234', 'git update-ref -d refs/heads/main']) {
-      expect([line, await bash($, b, line)]).toEqual([line, REWRITE_REFUSAL])
+      expect([line, await bash($, b, line)]).toEqual([line, BRANCH_RESET_REFUSAL])
     }
   })
 
@@ -512,7 +538,7 @@ describe('AC5: a merge pick binds to the remote, the subject and the base its qu
     expect(mergeTargetRefusalOf(names, mergesOf('git pull origin feat').targets)).toBeUndefined()
     expect(mergeTargetRefusalOf(names, mergesOf('git pull https://x/y feat').targets)).toBe(MERGE_TARGET_REFUSAL)
     expect(mergeTargetRefusalOf(names, mergesOf('git pull ../other feat').targets)).toBe(MERGE_TARGET_REFUSAL)
-    for (const change of ['git remote set-url origin https://x/y', 'git remote add origin https://x/y', 'git remote rename up origin']) {
+    for (const change of ['git remote set-url origin https://x/y', 'git remote add origin https://x/y', 'git remote rename up origin', 'HOME=/tmp/x', 'export HOME=/tmp/x', 'git config remote.origin.url https://x/y']) {
       expect([change, mergeTargetRefusalOf(names, mergesOf(`${change} && git pull origin feat`).targets)]).toEqual([change, MERGE_TARGET_REFUSAL])
     }
   })

@@ -56,19 +56,20 @@ Before a task that produces work, run the intake routine in
    exception. A commit, a push, a merge into the default branch or a release
    gets one approval question, not three options. The commit rules in the
    session's system prompt ("Commits and code comments") say when a request
-   or a pick approves one, and what to ask. Ask each such question through
-   `AskUserQuestion`, on its own. A tree a sub-agent hands back is work Mike
-   did not ask to commit, so you ask him. A permission prompt is never the
-   approval, because a prompt that appears mid-flow gets answered without a
-   review. An Index pipeline run never asks to commit or push. When a step
-   needs Mike's approval and you can run it, ask him for the decision and
-   recommend the option where you run the step. Hand Mike only the steps that
-   need his hands, such as a password, a browser consent or a one-time code.
-   Some CLI sign-ins wait for a browser callback, such as `gh auth login` or
-   `gcloud auth login`. Start such a sign-in in a visible Terminal tab, not in
-   background Bash. In background Bash, the sign-in can miss its callback and
-   save no credentials, so the next step fails. Read the sign-in's success
-   line in the tab before you run the next step.
+   or a pick approves one, and what to ask. How to sync a branch with its own
+   remote is no fork, and the same rules give its steps. Ask each such
+   question through `AskUserQuestion`, on its own. A tree a sub-agent hands
+   back is work Mike did not ask to commit, so you ask him. A permission
+   prompt is never the approval, because a prompt that appears mid-flow gets
+   answered without a review. An Index pipeline run never asks to commit or
+   push. When a step needs Mike's approval and you can run it, ask him for
+   the decision and recommend the option where you run the step. Hand Mike
+   only the steps that need his hands, such as a password, a browser consent
+   or a one-time code. Some CLI sign-ins wait for a browser callback, such as
+   `gh auth login` or `gcloud auth login`. Start such a sign-in in a visible
+   Terminal tab, not in background Bash. In background Bash, the sign-in can
+   miss its callback and save no credentials, so the next step fails. Read
+   the sign-in's success line in the tab before you run the next step.
 7. **Hold a position.** Push back once, with the reason. Once Mike decides,
    implement the decision and do not reopen it. When the evidence turns,
    reverse in one sentence and continue.

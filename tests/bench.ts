@@ -60,6 +60,7 @@ export type Bench = {
   // what @{push} points at. A directory not here, or a field left out, makes
   // git fail, as outside a repository or with no push target.
   repos: Record<string, { head?: string; pushed?: string; upstream?: string; fullNames?: Record<string, string>; fetchSpec?: string; pullRebase?: string | null; branchRebase?: string | null; remote?: string; branch?: string | null; originHead?: string; originUrl?: string; ghResolved?: string | null; remoteUrls?: string | null; remotesShown?: string }>
+  tops: Record<string, string>
   trees: Record<string, string | null>
   shown?: string
   permissionBeneath: Record<string, unknown>
@@ -127,6 +128,7 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     inputs: [],
     dialog: {},
     repos: {},
+    tops: {},
     trees: {},
     permissionBeneath: {},
     cwd: '/repo',
@@ -215,11 +217,12 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     // With no modeled world, the destructive-scope guard's facts say that
     // nothing but the filesystem root exists, and git answers nothing.
     if ((e.argv[1] ?? '').endsWith('/scope-facts.sh')) return { value: ran(e.argv[2] === 'dir' && e.argv[3] === '/' ? '/\n' : e.argv[2] === 'entry' ? 'missing\n' : '') }
-    const gitAt = e.argv[0] === 'git' && e.argv[1] === '-C' ? b.repos[e.argv[2] ?? ''] : undefined
+    const top = b.tops[e.argv[2] ?? ''] ?? e.argv[2]
+    const gitAt = e.argv[0] === 'git' && e.argv[1] === '-C' ? b.repos[top ?? ''] : undefined
     const branchRef = (repo: Bench['repos'][string]) => (repo.branch === null ? undefined : `refs/heads/${repo.branch ?? 'main'}`)
     const verb = e.argv.slice(3).join(' ')
     const answer = (out: string | undefined) => ({ value: out === undefined ? { ...ran(''), exitCode: 1 } : ran(`${out}\n`) })
-    if (gitAt !== undefined && verb === 'rev-parse --show-toplevel') return answer(e.argv[2])
+    if (gitAt !== undefined && verb === 'rev-parse --show-toplevel') return answer(top)
     if (gitAt !== undefined && verb === 'config --get remote.origin.url') return answer(gitAt.originUrl)
     if (gitAt !== undefined && verb === 'config --get-regexp ^remote\\..*\\.gh-resolved$') return gitAt.ghResolved === null ? { value: { ...ran(''), exitCode: 128 } } : answer(gitAt.ghResolved)
     if (gitAt !== undefined && verb === 'remote -v') {
@@ -238,6 +241,17 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     if (gitAt !== undefined && verb === 'rev-parse --symbolic-full-name @{upstream}') return answer(gitAt.upstream)
     if (gitAt !== undefined && e.argv[3] === 'rev-parse' && e.argv[4] === '--symbolic-full-name' && e.argv.length === 6) return answer(gitAt.fullNames?.[e.argv[5] ?? ''])
     if (gitAt !== undefined && verb === `remote get-url ${gitAt.remote ?? 'origin'}`) return answer(gitAt.originUrl)
+    const urls: [string, string][] =
+      gitAt?.remoteUrls === undefined || gitAt.remoteUrls === null
+        ? gitAt?.originUrl === undefined
+          ? []
+          : [['origin', gitAt.originUrl]]
+        : gitAt.remoteUrls.split('\n').flatMap(entry => {
+            const match = /^remote\.(\S+)\.url (.+)$/.exec(entry)
+            return match === null ? [] : [[match[1] as string, match[2] as string] as [string, string]]
+          })
+    if (gitAt !== undefined && verb === 'remote') return gitAt.remoteUrls === null ? { value: { ...ran(''), exitCode: 128 } } : { value: ran(urls.map(([name]) => `${name}\n`).join('')) }
+    if (gitAt !== undefined && e.argv[3] === 'remote' && e.argv[4] === 'get-url' && e.argv.length === 6) return answer(urls.find(([name]) => name === e.argv[5])?.[1])
     if (gitAt !== undefined && verb === `config --get-all remote.${gitAt.remote ?? 'origin'}.fetch`) return answer(gitAt.fetchSpec)
     if (gitAt !== undefined && verb === 'config --get pull.rebase') return gitAt.pullRebase === null ? { value: { ...ran(''), exitCode: 128 } } : answer(gitAt.pullRebase)
     if (gitAt !== undefined && verb === `config --get branch.${gitAt.branch ?? 'main'}.rebase`) return gitAt.branchRebase === null ? { value: { ...ran(''), exitCode: 128 } } : answer(gitAt.branchRebase)
@@ -329,6 +343,8 @@ export const ASKS = {
   merge: asks('merge into the default branch'),
   release: asks('release'),
   rewrite: asks('history rewrite'),
+  reset: asks('branch reset'),
+  tracking: asks('remote-tracking ref update'),
   alias: asks('gh alias set'),
   api: asks('GitHub API write to the default branch'),
 }
@@ -361,7 +377,7 @@ export const turn = (answer: string, agentId?: string) => ({
 // workbench-dev-team will, and hands each answer to the test through the
 // store: an inline plugin runs in an environment of its own.
 export function caller(calls: (on: On) => void): Plugin {
-  return { name: 'dev-team-stand-in', tier: 'append', register: calls }
+  return { name: 'dev-team-stand-in', tier: 'builtin', register: calls }
 }
 
 // The workbench pane as `surface` draws it: the module's ui.render hook on the

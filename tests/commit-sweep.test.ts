@@ -7,6 +7,7 @@ import {
   AGENT_MERGE_REFUSAL,
   AGENT_RELEASE_REFUSAL,
   API_WRITE_REFUSAL,
+  BRANCH_RESET_REFUSAL,
   MOVE_REFUSAL,
   ONE_REFUSAL,
   REWRITE_REFUSAL,
@@ -123,7 +124,7 @@ describe('findings 1 and 3: update-ref, rebase with a branch, and a bare reset',
   for (const line of ['git update-ref -m msg refs/heads/main abc1234', 'git update-ref --create-reflog -m x refs/heads/main abc1234', 'git rebase feat/x main', 'git rebase --onto A B main', 'git update-ref --stdin']) {
     test(`the pipeline refuses it from a feature branch: ${line}`, async ($, on) => {
       const b = await pipeline($, on)
-      expect(await bash($, b, line)).toBe(REWRITE_REFUSAL)
+      expect(await bash($, b, line)).toBe(line.includes('update-ref') ? BRANCH_RESET_REFUSAL : REWRITE_REFUSAL)
     })
   }
 

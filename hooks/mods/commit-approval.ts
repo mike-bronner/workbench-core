@@ -88,12 +88,35 @@ export const MERGE_TARGET_REFUSAL =
   'as `gh pr merge 12` or `git merge fix/x`. To merge anything else, ask him again.'
 
 export const REWRITE_REFUSAL =
-  'This history rewrite was refused: git cherry-pick, revert, am, rebase, update-ref, ' +
-  'a reset that moves a branch, and a shell alias need Mike\'s pick in his own turn, ' +
-  'and nobody can give one here. A sub-agent, a -p run and a turn ' +
+  'This history rewrite was refused: git cherry-pick, revert, am, rebase, filter-branch, ' +
+  'replace, commit --amend, a pull that would rebase and a shell alias write or replace commits, and they need ' +
+  'Mike\'s pick in his own turn. Nobody can give one here. A sub-agent, a -p run and a turn ' +
   'nobody attends never rewrite history. The pipeline rewrites only its own ' +
   'feature branches, and never the default branch or a branch the gate cannot ' +
   'read. Report that the change is ready, and leave it to Mike\'s session.'
+
+export const BRANCH_RESET_REFUSAL =
+  'This branch reset was refused: git branch -f, -m or -c, update-ref, a reset that ' +
+  'moves a branch, a fetch or push into a local branch, and a fetch --stdin, whose ' +
+  'refspecs the gate cannot read, move or may move a branch pointer. They ' +
+  'replace no commit, but they need Mike\'s pick in his own turn. Nobody can give one here. ' +
+  'A sub-agent, a -p run and a turn nobody attends never reset a branch. The pipeline ' +
+  'resets only its own feature branches, and never the default branch or a branch the ' +
+  'gate cannot read. Report that the change is ready, and leave it to Mike\'s session.'
+
+export const TRACKING_REFUSAL =
+  'This remote-tracking ref update was refused: it changes only refs under refs/remotes/, ' +
+  'and no local branch and no commit, but it can point a remote-tracking ref such as ' +
+  'origin/main at another branch. These routes count: git update-ref on a ref under ' +
+  'refs/remotes/. A fetch with --refmap, or with an option other than a plain flag such as ' +
+  '--prune, beside a refspec. A fetch with a git option before fetch but -C, or with an ' +
+  'assignment such as HOME= or a wrapper such as env in front of it. A fetch on a line that ' +
+  'also runs a git config write, a git remote add, set-url or rename, an export or a bare ' +
+  'assignment. A fetch with a refspec that maps a branch onto another name under refs/remotes/. ' +
+  'Each needs Mike\'s pick in his own turn, and nobody can give one here. A plain git fetch, ' +
+  'git fetch --all or git fetch <remote>, and a fetch that maps each branch onto its own ' +
+  'remote-tracking ref, such as `git fetch origin x:refs/remotes/origin/x`, run on a line of ' +
+  'their own. Report what you need, and leave it to Mike\'s session.'
 
 export const API_WRITE_REFUSAL =
   'This GitHub API write was refused: a gh api write to repos/<owner>/<repo>/contents ' +
@@ -440,7 +463,7 @@ export type LineKind = 'release' | 'rewrite' | 'alias' | 'api'
 export type Head = { top: string; ref: string }
 export type ReleaseId = { repo: string; tag: string; target: string }
 export type PendingRelease = ReleaseId & { names: readonly string[] }
-export type Pick = { action: PickAction | LineKind; heads: readonly Head[]; names?: MergeNames; line?: string; release?: ReleaseId }
+export type Pick = { action: PickAction | LineKind; heads: readonly Head[]; names?: MergeNames; line?: string; release?: ReleaseId; kept?: 'commit' | 'merge' }
 export type Approval = 'none' | Pick
 export type PendingLines = Readonly<Record<string, LineKind>>
 
@@ -450,7 +473,7 @@ const isLineKind = (kind: string): kind is LineKind => LINE_KINDS.has(kind)
 export type Action = PickAction | 'release'
 
 export type Gated = 'commit' | 'push' | 'merge' | 'release' | 'rewrite' | 'alias' | 'api'
-export type Counts = { writes: Writes; releases: number; merges: number; rewrites: number; aliases: number; apiWrites: number }
+export type Counts = { writes: Writes; releases: number; merges: number; rewrites: number; aliases: number; apiWrites: number; isApart?: boolean }
 export type Gate = { isOne: boolean; missing: readonly Gated[] }
 
 export const GATED_REFUSALS: Readonly<Record<Gated, string>> = {
@@ -463,12 +486,11 @@ export const GATED_REFUSALS: Readonly<Record<Gated, string>> = {
   api: API_WRITE_REFUSAL,
 }
 
-const GATED_NAMES: Readonly<Record<Gated, string>> = {
+const GATED_NAMES: Readonly<Record<Exclude<Gated, 'rewrite'>, string>> = {
   commit: 'git commit',
   push: 'git push',
   merge: 'merge into the default branch',
   release: 'release',
-  rewrite: 'history rewrite',
   alias: 'gh alias set',
   api: 'GitHub API write to the default branch',
 }
@@ -482,7 +504,7 @@ export const picksLine = (approval: Approval, line: string, release?: ReleaseId)
 
 export function gateOf(counts: Counts, approval: Approval, request: readonly Action[], line = '', release?: ReleaseId): Gate {
   const { writes, releases, merges, rewrites, aliases, apiWrites } = counts
-  const picked = approval === 'none' || isLinePick(approval) ? undefined : approval.action
+  const picked = approval === 'none' ? undefined : !isLinePick(approval) ? approval.action : approval.kept !== undefined && picksLine(approval, line, release) ? approval.kept : undefined
   const missing: Gated[] = []
   if (releases === 1 && !request.includes('release')) missing.push('release')
   if (writes.commits === 1 && picked !== 'commit' && !grants(request, 'commit')) missing.push('commit')
@@ -494,7 +516,7 @@ export function gateOf(counts: Counts, approval: Approval, request: readonly Act
   const isOne = writes.commits > 1 || writes.pushes > 1 || merges > 1 || releases > 1
   const many: Readonly<Record<Gated, boolean>> = { commit: false, push: false, merge: false, release: false, rewrite: rewrites > 1, alias: aliases > 1, api: apiWrites > 1 }
   const isLined = approval !== 'none' && isLinePick(approval) && picksLine(approval, line, release) && missing.includes(approval.action)
-  return { isOne, missing: isLined ? missing.filter(kind => many[kind]) : missing }
+  return { isOne, missing: isLined ? missing.filter(kind => many[kind] || ((kind === 'commit' || kind === 'merge') && counts.isApart === true)) : missing }
 }
 
 export function lineKindOf(missing: readonly Gated[], command: string): LineKind | undefined {
@@ -510,7 +532,43 @@ export function refusalOf(counts: Counts, approval: Approval, request: readonly 
   return first === undefined ? undefined : GATED_REFUSALS[first]
 }
 
-const namesOfGated = (missing: readonly Gated[]): string => missing.map(gated => GATED_NAMES[gated]).join(' and ')
+export type RewriteKind = 'history' | 'reset' | 'tracking'
+
+const REWRITE_ORDER: readonly RewriteKind[] = ['history', 'reset', 'tracking']
+
+const REWRITE_NAMES: Readonly<Record<RewriteKind, string>> = {
+  history: 'history rewrite',
+  reset: 'branch reset',
+  tracking: 'remote-tracking ref update',
+}
+
+const REWRITE_NOTES: Readonly<Record<RewriteKind, string | undefined>> = {
+  history: undefined,
+  reset:
+    'In the question, say that a branch reset moves a branch pointer and replaces no commit, and say whether the old tip stays reachable from another ref. ' +
+    'Read that first with `git for-each-ref --contains <old tip>`: the old tip stays reachable when it lists a ref other than the branch the line moves.',
+  tracking:
+    'In the question, say that a remote-tracking ref update changes only refs under refs/remotes/, and no local branch and no commit, ' +
+    'and name each remote-tracking ref it updates and the branch it points that ref at.',
+}
+
+const kindsShown = (kinds: readonly RewriteKind[]): RewriteKind[] => {
+  const shown = REWRITE_ORDER.filter(kind => kinds.includes(kind))
+  return shown.length === 0 ? ['history'] : shown
+}
+
+export const rewriteNameOf = (kinds: readonly RewriteKind[]): string => kindsShown(kinds).map(kind => REWRITE_NAMES[kind]).join(' and ')
+
+const REWRITE_REFUSALS: Readonly<Record<RewriteKind, string>> = {
+  history: REWRITE_REFUSAL,
+  reset: BRANCH_RESET_REFUSAL,
+  tracking: TRACKING_REFUSAL,
+}
+
+export const rewriteRefusalOf = (kinds: readonly RewriteKind[]): string => kindsShown(kinds).map(kind => REWRITE_REFUSALS[kind]).join(' ')
+
+const namesOfGated = (missing: readonly Gated[], kinds: readonly RewriteKind[] = []): string =>
+  missing.map(gated => (gated === 'rewrite' ? rewriteNameOf(kinds) : GATED_NAMES[gated])).join(' and ')
 
 const SHOWN_ESCAPES: Readonly<Record<string, string>> = { '\n': '\\n', '\r': '\\r', '\t': '\\t', '`': '\\`', '\\': '\\\\' }
 
@@ -523,7 +581,13 @@ const codeOf = (char: string): string => {
 
 export const shownOf = (text: string): string => text.replace(HIDDEN, char => (char === ' ' ? char : (SHOWN_ESCAPES[char] ?? codeOf(char))))
 
-export type AskFacts = { command: string; repo?: string; branch?: string; message?: string; files?: readonly string[]; release?: ReleaseId }
+export type AskFacts = { command: string; repo?: string; branch?: string; message?: string; files?: readonly string[]; release?: ReleaseId; isApart?: true; rewrites?: readonly RewriteKind[] }
+
+const apartHowOf = (kind: 'commit' | 'merge'): string =>
+  'This pull would rebase, so it needs two picks, each asked alone. ' +
+  (kind === 'commit' ? 'First ask the commit question, and offer "Commit it" and "Not yet". ' : 'First ask the merge question, name the branch it merges in plain words, and offer "Merge it". ') +
+  'After that pick, ask a second question that writes the line in backticks, exactly as it stands here, and offers "Run it" and "Not now". ' +
+  `The "Run it" pick approves the rebase, and the "${kind === 'commit' ? 'Commit it' : 'Merge it'}" pick before it approves the ${kind}.`
 
 const LINE_HOW =
   'Write the line in the question in backticks, exactly as it stands here, and offer "Run it" and "Not now". ' +
@@ -560,11 +624,11 @@ export function askRefusalOf(missing: readonly Gated[], facts: AskFacts): string
   if (facts.release !== undefined && missing.length === 1 && kind === 'release') return releaseRefusalOf(facts.release)
   if (kind === undefined || (missing.length > 1 && lineKindOf(missing, facts.command) === undefined)) {
     return (
-      `This line was refused: it runs a ${namesOfGated(missing)}, and Mike has approved none of them. ` +
+      `This line was refused: it runs a ${namesOfGated(missing, facts.rewrites)}, and Mike has approved none of them. ` +
       'One pick approves one action, so run each as a line of its own, and ask him about each one through AskUserQuestion, alone.'
     )
   }
-  const names = namesOfGated(missing)
+  const names = namesOfGated(missing, facts.rewrites)
   const repo = facts.repo === undefined ? 'a repository the gate cannot read' : shownOf(facts.repo)
   const branch = facts.branch === undefined ? 'a branch the gate cannot read' : shownOf(facts.branch.replace(/^refs\/heads\//, ''))
   const parts = [
@@ -577,7 +641,9 @@ export function askRefusalOf(missing: readonly Gated[], facts: AskFacts): string
     const listed = files === undefined ? 'every file git status lists' : files.length === 0 ? 'that git status lists no files' : `every file git status lists: ${files.join(', ')}`
     parts.push(`Name the message, ${facts.message === undefined ? 'as the line gives it' : shownOf(facts.message)}, and ${listed}.`)
   }
-  parts.push(missing.length === 1 ? ASK_HOW[kind] : LINE_HOW, 'After he picks, run the line again, unchanged.')
+  if (missing.includes('rewrite')) parts.push(...kindsShown(facts.rewrites ?? []).flatMap(kind => REWRITE_NOTES[kind] ?? []))
+  const apart = facts.isApart === true ? (['commit', 'merge'] as const).find(gated => missing.includes(gated)) : undefined
+  parts.push(missing.length === 1 ? ASK_HOW[kind] : apart !== undefined ? apartHowOf(apart) : LINE_HOW, 'After he picks, run the line again, unchanged.')
   return parts.join(' ')
 }
 
@@ -723,19 +789,40 @@ function writesHead(st: ShellStatement, sub: string | undefined): boolean {
   if (sub === 'branch') return rest.some(isBranchWrite)
   if (sub === 'rebase') return rebaseNamesBranch(rest)
   if (sub === 'pull') return refspecsOf(rest).some(spec => !spec.includes('://'))
-  if (sub === 'fetch') return hasRefmap(rest) || refspecsOf(rest).length > 0
+  if (sub === 'fetch') return hasRefmap(rest) || readsStdin(rest) || refspecsOf(rest).length > 0
   if (sub === 'push') return refspecsOf(rest, PUSH_VALUES).length > 0 && isLocalRemote(pushRemoteOf(rest))
   return false
 }
+
+const readsStdin = (rest: readonly string[]): boolean => rest.some(arg => arg === '--stdin' || isLongFor(arg, '--stdin'))
 
 const breaksPlace = (st: ShellStatement, sub: string | undefined): boolean => sub !== 'update-ref' && writesHead(st, sub)
 
 const MOVES: ReadonlySet<string> = new Set(['stash', 'reset'])
 
+const isOwnTracking = (remote: string, refspec: string): boolean => {
+  const [source = '', target, ...more] = refspec.replace(/^\+/, '').split(':')
+  const name = source.replace(/^refs\/heads\//, '')
+  return more.length === 0 && name !== '' && name.toUpperCase() !== 'HEAD' && !name.split('/').includes('..') && target === `refs/remotes/${remote}/${name}`
+}
+
+const PLAIN_FETCH_FLAGS: ReadonlySet<string> = new Set(['-p', '--prune', '-q', '--quiet', '-v', '--verbose', '-f', '--force', '-t', '--tags', '-n', '--no-tags', '--progress', '--no-progress', '--atomic', '--dry-run'])
+
+const isTrackingFetch = (st: ShellStatement): boolean => {
+  const rest = restOf(st)
+  const [remote = '', ...words] = positionalsOf(rest, new Set())
+  return (
+    readsOwnConfig(st) &&
+    rest.every(arg => !arg.startsWith('-') || PLAIN_FETCH_FLAGS.has(arg)) &&
+    REMOTE_NAME.test(remote) &&
+    words.every(word => !word.includes(':') || isOwnTracking(remote, word))
+  )
+}
+
 export function movesHead(line: string): boolean {
   return parseShell(line).statements.some(st => {
     const sub = gitSubOf(st, line)
-    if (writesHead(st, sub)) return true
+    if (writesHead(st, sub)) return !(sub === 'fetch' && isTrackingFetch(st))
     return sub !== undefined && MOVES.has(sub) && !(sub === 'stash' && ['list', 'show'].includes(restOf(st)[0] ?? ''))
   })
 }
@@ -751,14 +838,55 @@ const movesBranch = (rest: readonly string[]): boolean => {
   return targets.length > 0 && !(targets.length === 1 && targets[0] === 'HEAD')
 }
 
-const isRewrite = (st: ShellStatement, sub: string | undefined): boolean => {
+const CONFIG_READS: ReadonlySet<string> = new Set(['--get', '--get-all', '--get-regexp', '--get-urlmatch', '-l', '--list', 'get', 'list'])
+
+const changesConfig = (statements: readonly ShellStatement[], line: string): boolean =>
+  statements.some(st => {
+    const sub = gitSubOf(st, line)
+    const rest = restOf(st)
+    if (st.name === 'export' || (st.nameAt === -1 && st.assignments.length > 0)) return true
+    if (sub === 'config') return !rest.some(arg => CONFIG_READS.has(arg))
+    return sub === 'remote' && REMOTE_CHANGES.has(rest[0] ?? '')
+  })
+
+const isRewrite = (st: ShellStatement, sub: string | undefined, isConfigChanged = false): boolean => {
   if (sub === undefined) return false
   const rest = restOf(st)
   if (sub === 'reset') return movesBranch(rest)
   if (sub === 'commit') return rest.some(arg => /^--am/.test(arg))
-  if (sub === 'replace' || sub === 'fetch' || sub === 'push') return writesHead(st, sub)
+  if (sub === 'fetch') return isConfigChanged || !readsOwnConfig(st) || (writesHead(st, sub) && !isTrackingFetch(st))
+  if (sub === 'replace' || sub === 'push') return writesHead(st, sub)
   if (sub === 'branch') return rest.some(isBranchWrite)
   return REWRITES.has(sub) && !rest.some(arg => REWRITE_STOPS.has(arg))
+}
+
+const BRANCH_RESETS: ReadonlySet<string> = new Set(['reset', 'branch', 'push'])
+
+const fetchTargetsOf = (rest: readonly string[]): string[] => [
+  ...(readsStdin(rest) ? [''] : []),
+  ...refspecsOf(rest).map(destinationOf),
+  ...rest.flatMap((arg, at) => {
+    const [name = '', ...value] = arg.split('=')
+    const refmap = value.length > 0 ? value.join('=') : (rest[at + 1] ?? '')
+    return name.length < 5 || !'--refmap'.startsWith(name) || refmap === '' ? [] : [destinationOf(refmap)]
+  }),
+]
+
+const rewriteKindOf = (st: ShellStatement, sub: string | undefined): RewriteKind => {
+  const rest = restOf(st)
+  const isTracking = (refs: readonly string[]) => refs.every(ref => ref.startsWith('refs/remotes/'))
+  if (sub === 'fetch' || (sub === SHELL_ALIAS && st.args[st.subcommandAt] === 'fetch')) return isTracking(fetchTargetsOf(rest)) ? 'tracking' : 'reset'
+  if (sub === 'update-ref') return isTracking([rest.includes('--stdin') ? '' : (positionalsOf(rest, UPDATE_REF_VALUES)[0] ?? '')]) ? 'tracking' : 'reset'
+  return BRANCH_RESETS.has(sub ?? '') ? 'reset' : 'history'
+}
+
+export function rewriteKindsOf(line: string): RewriteKind[] {
+  const { statements } = parseShell(line)
+  const isConfigChanged = changesConfig(statements, line)
+  return statements.flatMap(st => {
+    const sub = gitSubOf(st, line)
+    return isRewrite(st, sub, isConfigChanged) ? [rewriteKindOf(st, sub)] : []
+  })
 }
 
 export type Rewrite = { dir: string | null; refs?: readonly string[] }
@@ -768,15 +896,16 @@ const UNPLACED_REWRITES: ReadonlySet<string> = new Set([SHELL_ALIAS, 'filter-bra
 export function rewritesAt(line: string): Rewrite[] {
   const parse = parseShell(line)
   const isPlaced = isPlacedLine(line, parse.statements)
+  const isConfigChanged = changesConfig(parse.statements, line)
   return parse.statements
-    .filter(st => isRewrite(st, gitSubOf(st, line)))
+    .filter(st => isRewrite(st, gitSubOf(st, line), isConfigChanged))
     .map(st => {
       const sub = gitSubOf(st, line)
       const rest = restOf(st)
       const placed = sub === 'branch' || sub === 'fetch' || sub === 'push' ? isPlacedLine(line, parse.statements.filter(other => other !== st)) : isPlaced
       const dir = UNPLACED_REWRITES.has(sub ?? '') || (sub === 'rebase' && rebaseNamesBranch(rest)) ? null : mergeDirOf(st, placed)
       if (sub === 'update-ref') return { dir, refs: [rest.includes('--stdin') ? '' : (positionalsOf(rest, UPDATE_REF_VALUES)[0] ?? '')] }
-      if (sub === 'fetch') return { dir, refs: refspecsOf(rest).map(destinationOf) }
+      if (sub === 'fetch') return { dir, refs: [...(readsStdin(rest) ? [''] : []), ...refspecsOf(rest).map(destinationOf)] }
       if (sub === 'push') return { dir, refs: refspecsOf(rest, PUSH_VALUES).map(destinationOf) }
       if (sub === 'branch') {
         const names = positionalsOf(rest, longValuesOf(rest, BRANCH_VALUES))
@@ -875,8 +1004,10 @@ export function apiWritesOf(line: string): ApiWrite[] {
   })
 }
 
+const GITHUB_URL = /^(?:https:\/\/(?:[^@/\s]+@)?github\.com\/|ssh:\/\/git@github\.com(?::22)?\/|git@github\.com:)[^/\s]+\/[^/\s]+\/?$/i
+
 export const originRepoOf = (url: string | undefined): string | undefined =>
-  url === undefined || !/github\.com[:/]/i.test(url) ? undefined : /[:/]([^/:\s]+\/[^/\s]+?)(?:\.git)?\/?$/.exec(url.trim())?.[1]?.toLowerCase()
+  url === undefined || !GITHUB_URL.test(url.trim()) ? undefined : /[:/]([^/:\s]+\/[^/\s]+?)(?:\.git)?\/?$/.exec(url.trim())?.[1]?.toLowerCase()
 
 export const isOtherRepo = (repo: string | null | undefined, origin: string | undefined): boolean =>
   repo !== undefined && (repo === null || origin === undefined || repo !== origin)
@@ -1050,7 +1181,7 @@ export function configuredMergesOf(line: string): (string | null)[] {
 export function mergesOf(line: string): Merges {
   const parse = parseShell(line)
   const isPlaced = isPlacedLine(line, parse.statements)
-  const isRemoteChanged = parse.statements.some(st => gitSubOf(st, line) === 'remote' && REMOTE_CHANGES.has(restOf(st)[0] ?? ''))
+  const isRemoteChanged = changesConfig(parse.statements, line)
   const merging = mergingOf(parse.statements, line)
   const prs = parse.statements.map(prTargetOf).filter((target): target is MergeTarget => target !== undefined)
   const hidden = prs.length === 0 && findOps(parse, line).ops.has('merge') ? [{ refs: [] }] : []
@@ -1100,6 +1231,36 @@ export function catchUpsOf(line: string): CatchUp[] {
     const isRebaseOff = kind === 'pull' && options.some(arg => REBASE_OFF.has(arg))
     return [{ dir: landing.dir, kind, ...(remote === undefined ? {} : { remote }), ...(ref === undefined ? {} : { ref }), ...(isRebaseOff ? { isRebaseOff: true as const } : {}) }]
   })
+}
+
+export type PullRebase = { dir: string | null; rebase: 'on' | 'off' | 'config' | 'unread' }
+
+export const REBASE_OFF_VALUES: ReadonlySet<string> = new Set(['false', 'no', 'off', '0'])
+
+const rebaseFlagOf = (options: readonly string[]): 'on' | 'off' | undefined =>
+  options.reduce<'on' | 'off' | undefined>((mode, arg) => {
+    if (arg === '--no-rebase') return 'off'
+    const at = arg.indexOf('=')
+    const name = at === -1 ? arg : arg.slice(0, at)
+    if (name.length >= 3 && name.startsWith('--') && '--rebase'.startsWith(name)) return at !== -1 && REBASE_OFF_VALUES.has(arg.slice(at + 1).toLowerCase()) ? 'off' : 'on'
+    return /^-[^-sXjoS]*r/.test(arg) ? 'on' : mode
+  }, undefined)
+
+const readsOwnConfig = (st: ShellStatement): boolean => {
+  const globals = st.args.slice(0, Math.max(st.subcommandAt, 0))
+  return st.assignments.length === 0 && st.wrappers.length === 0 && (globals.length === 0 || (globals.length === 2 && globals[0] === '-C'))
+}
+
+export function pullRebasesOf(line: string): PullRebase[] {
+  const parse = parseShell(line)
+  const isPlaced = isPlacedLine(line, parse.statements)
+  const isConfigChanged = parse.statements.some(st => st.name === 'export' || (st.nameAt === -1 && st.assignments.length > 0) || gitSubOf(st, line) === 'config')
+  return mergingOf(parse.statements, line)
+    .filter(st => gitSubOf(st, line) === 'pull')
+    .map(st => ({
+      dir: mergeDirOf(st, isPlaced),
+      rebase: rebaseFlagOf(mergedWordsOf(restOf(st), 'pull').options) ?? (isConfigChanged || !readsOwnConfig(st) ? 'unread' : 'config'),
+    }))
 }
 
 export const isDefaultBranch = (branch: string | undefined, originHead: string | undefined): boolean => {

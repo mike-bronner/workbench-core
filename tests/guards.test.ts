@@ -908,7 +908,7 @@ describe('decision A: a line whose command the reader cannot name is refused by 
 
 const REENTRANT: Plugin = {
   name: 'reentrant',
-  tier: 'append',
+  tier: 'builtin',
   register: on => {
     let isInside = false
     on('session.cwd', async ($, e, next) => {

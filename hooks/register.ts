@@ -120,7 +120,7 @@ import {
   recordOf,
   withChurn,
 } from './mods/cache-meter'
-import type { Action, ApiWrite, Approval, AskFacts, CatchUp, Commit, Gated, Head, Landing, PendingRelease, Pick, Refs, RequestedCall } from './mods/commit-approval'
+import type { Action, ApiWrite, Approval, AskFacts, CatchUp, Commit, Gated, Head, Landing, PendingRelease, Pick, PullRebase, Refs, RequestedCall } from './mods/commit-approval'
 import {
   AGENT_CONFIG_MERGE_REFUSAL,
   AGENT_MERGE_REFUSAL,
@@ -132,7 +132,6 @@ import {
   ONE_REFUSAL,
   PATHSPEC_REFUSAL,
   RELEASE_REFUSAL,
-  REWRITE_REFUSAL,
   SHARED_LINE_REFUSAL,
   UNREAD_TREE_REFUSAL,
   agentReleaseRefusalOf,
@@ -144,6 +143,8 @@ import {
   bindingRefusalOf,
   catchUpsOf,
   filesOf,
+  pullRebasesOf,
+  REBASE_OFF_VALUES,
   gateOf,
   messageOf,
   lineKindOf,
@@ -157,6 +158,8 @@ import {
   originRepoOf,
   remoteTargetOf,
   isDefaultRef,
+  rewriteKindsOf,
+  rewriteRefusalOf,
   rewritesAt,
   rewritesOf,
   bundleRefusalOf,
@@ -348,6 +351,7 @@ const commitApproval = atom({ plugin: 'workbench-core', key: 'commitApproval' } 
 const turnRequest = atom({ plugin: 'workbench-core', key: 'turnRequest' } as const, [])
 const turnIntent = atom({ plugin: 'workbench-core', key: 'turnIntent' } as const, null)
 const pendingLines = atom({ plugin: 'workbench-core', key: 'pendingLines' } as const, {})
+const remoteUrls = atom({ plugin: 'workbench-core', key: 'remoteUrls' } as const, {})
 const pendingReleases = atom({ plugin: 'workbench-core', key: 'pendingReleases' } as const, [])
 // Whether a schedule opened the current turn, so a commit in it is not gated.
 const turnScheduled = atom({ plugin: 'workbench-core', key: 'turnScheduled' } as const, false)
@@ -697,12 +701,13 @@ async function pendingReleaseOf($: EngineInterface, command: string): Promise<Pe
   return { ...release, names: top === undefined ? [release.repo] : [release.repo, top] }
 }
 
-async function askRefusal($: EngineInterface, missing: readonly Gated[], command: string, dir: string, commit: Commit | undefined): Promise<string> {
+async function askRefusal($: EngineInterface, missing: readonly Gated[], command: string, dir: string, commit: Commit | undefined, isApart = false): Promise<string> {
   const release = missing.length === 1 && missing[0] === 'release' ? await pendingReleaseOf($, command) : undefined
   if (release !== undefined) await update($, pendingReleases, releases => [...releases.filter(each => !sameRelease(each, release)), release])
   const kind = release === undefined ? lineKindOf(missing, command) : undefined
   if (kind !== undefined) await update($, pendingLines, lines => ({ ...lines, [command]: kind }))
-  const facts = await askFactsOf($, command, dir, commit)
+  const rewrites = [...rewriteKindsOf(command), ...(isApart ? (['history'] as const) : [])]
+  const facts = { ...(await askFactsOf($, command, dir, commit)), rewrites, ...(isApart ? { isApart: true as const } : {}) }
   return askRefusalOf(missing, release === undefined ? facts : { ...facts, release })
 }
 
@@ -806,6 +811,33 @@ async function isPipelineRewrite($: EngineInterface, line: string, agentId: stri
   return true
 }
 
+const remoteKeyOf = (dir: string, remote: string): string => `${dir}\0${remote}`
+
+async function pinRemotes($: EngineInterface, dir: string): Promise<string | undefined> {
+  const top = await gitOut($, dir, ['rev-parse', '--show-toplevel'])
+  if (top === undefined) return undefined
+  if ((await read($, remoteUrls))[remoteKeyOf(top, '')] !== undefined) return top
+  const listed = await $.process.run(['git', '-C', top, 'remote'], { timeoutMs: 10_000 }).catch(() => undefined)
+  if (listed === undefined || listed.exitCode !== 0) return undefined
+  const pins: [string, string][] = [[remoteKeyOf(top, ''), '']]
+  for (const name of listed.stdout.split('\n').map(line => line.trim()).filter(line => line !== '')) {
+    const url = await gitOut($, top, ['remote', 'get-url', name])
+    if (url === undefined) return undefined
+    pins.push([remoteKeyOf(top, name), url])
+  }
+  await update($, remoteUrls, held => ({ ...Object.fromEntries(pins), ...held }))
+  return top
+}
+
+async function isPipelineRebase($: EngineInterface, pulls: readonly PullRebase[], agentId: string | undefined): Promise<boolean> {
+  if (agentId !== undefined || (await $.env.get('WORKBENCH_DEV_TEAM_PIPELINE')) !== '1') return false
+  for (const pull of pulls) {
+    if (pull.rebase === 'off') continue
+    if (pull.dir === null || (await isMergeIntoDefault($, pull.dir === '' ? await $.session.cwd() : pull.dir))) return false
+  }
+  return true
+}
+
 async function isMergeIntoDefault($: EngineInterface, at: string | undefined): Promise<boolean> {
   const branch = at === undefined ? undefined : await gitOut($, at, ['symbolic-ref', '-q', 'HEAD'])
   const originHead = at === undefined ? undefined : await gitOut($, at, ['symbolic-ref', '-q', 'refs/remotes/origin/HEAD'])
@@ -820,15 +852,13 @@ async function mergesIntoDefault($: EngineInterface, dirs: readonly (string | nu
   return count
 }
 
-const REBASE_OFF_VALUES: ReadonlySet<string> = new Set(['false', 'no', 'off', '0'])
-
 const configValueOf = ($: EngineInterface, dir: string, key: string): Promise<string | null | undefined> =>
   $.process
     .run(['git', '-C', dir, 'config', '--get', key], { timeoutMs: 10_000 })
     .then(({ exitCode, stdout }) => (exitCode === 0 ? stdout.trim() : exitCode === 1 ? null : undefined), () => undefined)
 
-async function rebasesOnPull($: EngineInterface, dir: string, branch: string): Promise<boolean> {
-  const own = await configValueOf($, dir, `branch.${branch}.rebase`)
+async function rebasesOnPull($: EngineInterface, dir: string, branch: string | undefined): Promise<boolean> {
+  const own = branch === undefined ? null : await configValueOf($, dir, `branch.${branch}.rebase`)
   const value = own === null ? await configValueOf($, dir, 'pull.rebase') : own
   return value === undefined || (value !== null && !REBASE_OFF_VALUES.has(value.toLowerCase()))
 }
@@ -842,7 +872,10 @@ async function isCatchUp($: EngineInterface, catchUp: CatchUp): Promise<boolean>
   const upstream = await gitOut($, at, ['rev-parse', '--symbolic-full-name', '@{upstream}'])
   if (remote === undefined || upstream !== `refs/remotes/${remote}/${branch}`) return false
   if (catchUp.remote !== undefined && catchUp.remote !== remote) return false
-  if (originRepoOf(await gitOut($, at, ['remote', 'get-url', remote])) === undefined) return false
+  const url = await gitOut($, at, ['remote', 'get-url', remote])
+  if (originRepoOf(url) === undefined || url === undefined) return false
+  const top = await pinRemotes($, at)
+  if (top === undefined || (await read($, remoteUrls))[remoteKeyOf(top, remote)] !== url) return false
   if ((await gitOut($, at, ['config', '--get-all', `remote.${remote}.fetch`])) !== `+refs/heads/*:refs/remotes/${remote}/*`) return false
   if (catchUp.kind === 'pull' && catchUp.isRebaseOff === undefined && (await rebasesOnPull($, at, branch))) return false
   if (catchUp.ref === undefined) return true
@@ -854,6 +887,21 @@ async function catchUpsIntoDefault($: EngineInterface, catchUps: readonly CatchU
   let count = 0
   for (const catchUp of catchUps) {
     if (await isCatchUp($, catchUp)) count++
+  }
+  return count
+}
+
+async function rebasingPullsOf($: EngineInterface, pulls: readonly PullRebase[]): Promise<number> {
+  let count = 0
+  for (const pull of pulls) {
+    if (pull.rebase === 'off') continue
+    if (pull.dir === null || pull.rebase !== 'config') {
+      count++
+      continue
+    }
+    const at = pull.dir === '' ? await $.session.cwd() : pull.dir
+    const branch = (await gitOut($, at, ['symbolic-ref', '-q', 'HEAD']))?.replace(/^refs\/heads\//, '')
+    if (await rebasesOnPull($, at, branch)) count++
   }
   return count
 }
@@ -2092,6 +2140,7 @@ export const register: Register = on => {
     await orchestratorOn($).catch(() => undefined)
     await drawStatus($)
     const repaired = await repairFalseBare($, await $.session.cwd()).catch(() => undefined)
+    if (sessionAttended) await pinRemotes($, await $.session.cwd()).catch(() => undefined)
     // Nobody reads a status line or a toast in an unattended run.
     if (sessionAttended) {
       if (repaired !== undefined) $.clock.after(SETTLE_MS, () => $.ui.toast(repairedNotice(repaired), { timeoutMs: 10_000 }))
@@ -2252,7 +2301,10 @@ export const register: Register = on => {
       const linePick = result.deny === undefined ? linePickOf(e.questions, result.result, pending) : undefined
       if (linePick !== undefined) {
         const heads = linePick.kind === 'rewrite' ? await headsAt($) : []
-        await update($, commitApproval, () => ({ action: linePick.kind, heads, line: linePick.line }))
+        await update($, commitApproval, held => {
+          const kept = linePick.kind === 'rewrite' && held !== 'none' && held.line === undefined && held.release === undefined && (held.action === 'commit' || held.action === 'merge') ? held.action : undefined
+          return { action: linePick.kind, heads, line: linePick.line, ...(kept === undefined ? {} : { kept }), ...(kept === 'merge' && held !== 'none' && held.names !== undefined ? { names: held.names } : {}) }
+        })
         return result
       }
       const action = isGated && result.deny === undefined ? pickOf(e.questions, result.result) : undefined
@@ -2279,7 +2331,12 @@ export const register: Register = on => {
         if (agentMerges.landings.length > 0 && (await isSubAgentCaller($, e.agentId)) && (isCommitting || (await unitLandingDirsOf($, agentMerges.landings)).length > 0)) {
           return { deny: SUBAGENT_REFUSAL.deny }
         }
-        if (rewrites > 0 && !(await isPipelineRewrite($, e.command, e.agentId))) return { deny: REWRITE_REFUSAL }
+        const lanePulls = pullRebasesOf(e.command)
+        const laneRebases = await rebasingPullsOf($, lanePulls)
+        if (rewrites > 0 && !(await isPipelineRewrite($, e.command, e.agentId))) {
+          return { deny: rewriteRefusalOf([...rewriteKindsOf(e.command), ...(laneRebases > 0 ? (['history'] as const) : [])]) }
+        }
+        if (laneRebases > 0 && !(await isPipelineRebase($, lanePulls, e.agentId))) return { deny: rewriteRefusalOf(['history']) }
         if (aliases > 0) return { deny: ALIAS_REFUSAL }
         if (apiIntoDefault > 0) return { deny: API_WRITE_REFUSAL }
         if (subject !== undefined) return { deny: subject }
@@ -2312,8 +2369,10 @@ export const register: Register = on => {
       const intoDefault = merges.pr + (await mergesIntoDefault($, merges.local)) - (await catchUpsIntoDefault($, catchUpsOf(e.command)))
       const mergeDirs = await unitLandingDirsOf($, merges.landings)
       const committed = { commits: writes.commits + mergeDirs.length, pushes: writes.pushes }
+      const rebases = await rebasingPullsOf($, pullRebasesOf(e.command))
       const picked = await pickedReleaseOf($, approval, e.command)
-      const gateFor = (request: readonly Action[]) => gateOf({ writes: committed, releases, merges: intoDefault, rewrites, aliases, apiWrites: apiIntoDefault }, approval, request, e.command, picked)
+      const counts = { writes: committed, releases, merges: intoDefault, rewrites: rewrites + rebases, aliases, apiWrites: apiIntoDefault, isApart: rebases > 0 }
+      const gateFor = (request: readonly Action[]) => gateOf(counts, approval, request, e.command, picked)
       const asked = await read($, turnRequest)
       const isIntentGap = gateFor(asked).missing.some(gated => INTENT_ACTIONS.includes(gated as Action))
       const request = isIntentGap ? await intendedRequest($, asked) : asked
@@ -2326,7 +2385,7 @@ export const register: Register = on => {
       const [mergeDir] = mergeDirs
       const dir = writes.commits + writes.pushes === 0 && mergeDir !== undefined ? mergeDir : dirOf(steps, await $.session.cwd(), await $.env.get('HOME'))
       const isPaid = approval !== 'none' && isPaidByPick(committed, intoDefault, approval, request)
-      if (isPaid && approval.action === 'merge') {
+      if ((isPaid && approval.action === 'merge') || (isLinePaid && approval.kept === 'merge' && intoDefault > 0)) {
         const target = mergeTargetRefusalOf(approval.names, merges.targets)
         if (target !== undefined) return { deny: target }
       }
@@ -2341,8 +2400,9 @@ export const register: Register = on => {
       if (gate.missing.length > 0) {
         const isReleaseOnly = gate.missing.every(gated => gated === 'release')
         const canAsk = (await read($, turnAttended)) || (isReleaseOnly && sessionAttended === true)
-        if (!canAsk) return { deny: GATED_REFUSALS[gate.missing[0] as Gated] }
-        return { deny: await askRefusal($, gate.missing, e.command, dir ?? (await $.session.cwd()), writes.commits === 1 ? commit : undefined) }
+        const first = gate.missing[0] as Gated
+        if (!canAsk) return { deny: first === 'rewrite' ? rewriteRefusalOf([...rewriteKindsOf(e.command), ...(rebases > 0 ? (['history'] as const) : [])]) : GATED_REFUSALS[first] }
+        return { deny: await askRefusal($, gate.missing, e.command, dir ?? (await $.session.cwd()), writes.commits === 1 ? commit : undefined, rebases > 0) }
       }
       const before = isPaid && dir !== undefined ? await refsOf($, dir) : undefined
       const result = await (isLinePaid ? next(e).finally(() => update($, commitApproval, () => 'none' as const)) : next(e))

@@ -463,6 +463,15 @@ describe('the working rules on commits and code comments', () => {
     expect(RULES).not.toContain('It does not change who approves a commit or when.')
   })
 
+  test('a branch syncs with its own remote by fetch --all, pull and push, never by a rebase or a hand-run merge', () => {
+    expect(RULES).toContain('To bring a branch in sync with its own remote, such as after a rejected push, run `git fetch --all`, then `git pull`, then `git push`, each as a line of its own.')
+    expect(RULES).toContain("Do not ask which way to sync. The fetch runs with no question. A pull that does not rebase and lands no unit branch runs with no question on a feature branch, and on the default branch only when it is the catch-up from that branch's own upstream that the next rule describes. The push needs a push approval, as every push does.")
+    expect(RULES).not.toContain('The fetch and the pull run with no question')
+    expect(RULES).toContain('Never rebase to sync a branch, and never run `git merge origin/<branch>` or any other merge by hand for it.')
+    expect(RULES).toContain('This rule covers only a branch and its own remote. Bringing the default branch into a feature branch stays a merge, such as `git merge origin/main`, and a ledger unit branch lands as the next rule says.')
+    expect(RULES).not.toContain('`git pull origin main` or `git merge origin/main`, with no')
+  })
+
   test('a prompt that asks for a commit, a push, a merge or a release approves those actions for its turn', () => {
     expect(RULES).toContain('A prompt in which the user asks for a commit, a push, a merge or a release, or any mix of them, approves exactly those actions for the turn that prompt opened, in the user\'s own words')
     expect(RULES).toContain('The meaning counts, not the phrase: any wording that asks for the action now approves it, such as "go ahead and commit the changes", "ship the new version" or "get this out the door".')
@@ -471,8 +480,9 @@ describe('the working rules on commits and code comments', () => {
     expect(RULES).toContain('A commit request approves such merges for its turn, as it approves commits, and a commit pick approves one, on the branch HEAD held when the user picked.')
     expect(RULES).toContain('A local `git merge` or `git pull` that lands a ledger unit branch counts as a commit in every tree, so it asks the user first.')
     expect(RULES).toContain('A `git pull` lands one from any source, a remote included. One whose merged refs or the ledger cannot be read asks too.')
-    expect(RULES).toContain("On the default branch, it is a merge, never a rebase, of that branch's own upstream and nothing else, such as `git pull`, `git pull origin main` or `git merge origin/main`, with no `-c` option or environment override, on a line whose only other git commands are a plain `git fetch` or a push.")
+    expect(RULES).toContain("On the default branch, it is a merge, never a rebase, of that branch's own upstream and nothing else, such as `git pull` or `git pull origin main`, with no `-c` option or environment override, on a line whose only other git commands are a plain `git fetch` or a push.")
     expect(RULES).toContain("A pull that would rebase, through `--rebase`, `-r` or the repository's config, is never a catch-up, because the user never rebases.")
+    expect(RULES).toContain('On any branch, such a pull, one whose rebase config the gate cannot read, and one whose directory it cannot place without `--no-rebase` is a history rewrite and asks. One that also merges into the default branch or lands a unit branch needs a merge or commit pick first and then a pick of its line, each asked alone.')
     expect(RULES).toContain('Any other merge or pull into the default branch lands a branch there, such as a feature branch, a unit branch or another remote\'s branch, and needs a merge approval.')
     expect(RULES).not.toContain('stays a merge and needs a merge approval')
     expect(RULES).not.toContain('only from `.` or a path')
@@ -499,10 +509,19 @@ describe('the working rules on commits and code comments', () => {
     expect(RULES).toContain('Ask the user that question on its own, never beside another, and name each of them in it.')
     expect(RULES).toContain('For a release, run the line first, so the gate names its tag, repository and target. A question about running a release asked before that is refused.')
     expect(RULES).toContain('that pick approves one `gh release create` of that tag in that repository, to that target, once, whatever its title, notes, flags or quoting.')
-    expect(RULES).toContain('For a history rewrite, `gh alias set` or an API write, write the line in the question in backticks, in the escaped form the deny shows when it holds a hidden character, and offer "Run it": that pick approves that one line, once.')
+    expect(RULES).toContain('For a history rewrite, a branch reset, a remote-tracking ref update, `gh alias set` or an API write, write the line in the question in backticks, in the escaped form the deny shows when it holds a hidden character, and offer "Run it": that pick approves that one line, once.')
     expect(RULES).toContain('A sub-agent, a `-p` run, the pipeline and an agent run cannot ask, so each of them is refused a release in any spelling.')
     expect(RULES).not.toContain('approval dialog')
     expect(RULES).not.toContain('ten minutes')
+  })
+
+  test('each git action is called by its own name: a history rewrite writes or replaces commits, a branch reset moves a branch, and a fetch into its own remote-tracking refs runs free', () => {
+    expect(RULES).toContain('history rewrite (cherry-pick, revert, am, rebase, filter-branch, replace or `commit --amend`), branch reset (`git branch -f`, `-m` or `-c`, `update-ref`, a reset that moves a branch, a fetch or push into a local branch, or `git fetch --stdin`), remote-tracking ref update (a fetch with `--refmap`, an option other than a plain flag such as `--prune` beside a refspec, a git option before `fetch` but `-C`, an assignment or a wrapper such as `env` in front of it, a `git config` or `git remote` write or an `export` on its line, or a refspec that maps a branch onto another name under `refs/remotes/`)')
+    expect(RULES).toContain('Call each action by its own name, and say "history rewrite" only for one that writes or replaces commits. For a branch reset, say that it replaces no commit, and say whether the old tip stays reachable from another ref.')
+    expect(RULES).toContain('A plain `git fetch`, `git fetch --all` or `git fetch <remote>`, and a fetch with only plain flags that maps each branch onto its own remote-tracking ref, such as `git fetch origin x:refs/remotes/origin/x`, change no local branch and no commit, so they run with no question on a line of their own. Beside a merge or pull, a fetch with any option or refspec makes that merge or pull no catch-up.')
+    expect(RULES).toContain('A sub-agent, a `-p` run and a scheduled tick never rewrite history, reset a branch or run such a remote-tracking ref update.')
+    expect(RULES).not.toContain('a branch, fetch or push that moves a ref')
+    expect(RULES).toContain("Its remote's URL must still be the one the session first saw, so after `git remote set-url` it asks as a merge. A remote added after the session started is no catch-up either. A pull")
   })
 
   test('a plan file is written with no question and no prompt', () => {

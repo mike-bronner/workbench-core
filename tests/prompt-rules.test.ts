@@ -591,6 +591,15 @@ describe('the working rules on secrets', () => {
     const row = RULES.split('\n').find(line => line.startsWith('| Credential guard |')) ?? ''
     expect(row).toContain('a keychain folder such as `~/Library/Keychains`')
     expect(row).toContain('It judges no `security` subcommand, only the paths a line names')
+    expect(row).toContain('A `.env` file is a path whose base name is `.env` or starts with `.env.`')
+    expect(row).toContain('A `.env` path is refused in a word, option value or redirect of any program')
+    expect(row).toContain('So is an unquoted name that starts with `.`, or with a `.` right after')
+    expect(row).toContain('every unquoted glob in a line whose text names `globdots`, `dotglob` or `globignore` or uses a `(D)` qualifier')
+    expect(row).toContain('Where a program expands a glob itself, a glob that can match `.env` or `.env.<suffix>` with `*` matching a leading dot counts')
+    expect(row).toContain("The `Grep` tool's `glob` is judged the same way")
+    expect(row).toContain('but not in a search pattern, a commit message, heredoc text a known text reader such as `gh --body-file -` takes, or code')
+    expect(row).toContain('no git option but `-C`, and a line with no pipe, redirect, substitution, wrapper, assignment, function definition, `/` in the command word, `xargs`-style feeder, or `$_` outside single quotes')
+    expect(row).toContain('`git add` of a `.env` file is refused, because the next commit would carry the secret')
   })
 })
 

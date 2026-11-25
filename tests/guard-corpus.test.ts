@@ -3,9 +3,7 @@
 // must refuse every call its retired bash guard refused: the cases the guard's
 // own suite fed it and seeded random ones, all in the static corpus
 // tests/guard-corpus/guard-cases.ts, recorded from the bash guards before they
-// were retired. A port may let a refused call through only where a sandboxed
-// run of the command under bash and under zsh did no harm (the fixture's
-// SANDBOX half), and each such call is listed below.
+// were retired.
 
 import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
@@ -54,14 +52,21 @@ async function portRefusal($: Engine, b: Bench, call: Record<string, unknown>): 
 const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
   'credential-guard': [
     "\n;<<'EOF'\nconst h = await $.env.get('HOME')\nEOF\n cp",
-    "# security env -i .envrc\n.env sudo ~/.ssh \n",
     ".envrcx/.ssh/id_rsa $.env.get;security }",
     "cat security<<'EOF'\nconst h = await $.env.get('HOME')\nEOF\n",
     "env -i;# ${HOME}/.gnupg/pubring.kbx\nhead -c 10 .envln -s\necho",
     "x/.ssh/id_rsa security .env.example\ncp $.env.getDeveloper/.aws|sudo\nprintf %s",
-    "~/.claude/.credentials.json app.env .envrc;# sudo node -e",
     "~/.ssh # grep x }",
+    ">\nsudo;grep xevalprocess.env.HOME { out.txt)",
+    'grep -rn "\\.env" docs/',
+    'head -c 10 process.env.HOME',
     "<<'EOF'\nconst h = await $.env.get('HOME')\nEOF\n head -c 10\nsecurity #",
+    '\n security app.env',
+    'app.env python3 -c',
+    'app.env;echo;grep x;out.txt .envapp.env .env.example ls',
+    'app.env\n||cp > eval;env -i find-generic-password -w;app.env }',
+    'security out.txt .env.example app.env.envrc.env (',
+    "~/.claude/.credentials.json app.env .envrc;# sudo node -e",
   ],
   'provisioning-guard': [
     "\"SELECT 'create database'\" env -i { create\\\ndb",
@@ -70,6 +75,23 @@ const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
     "tee 2># $(;( evalecho hi # sessions/a.md",
   ],
   'peer-message-gate': [],
+}
+
+const RULED: Readonly<Record<string, readonly string[]>> = {
+  'credential-guard': [
+    '{"tool_name": "Read", "tool_input": {"file_path": "~/.claude/a.env"}}',
+    '{"tool_name": "Edit", "tool_input": {"file_path": "/repo/sub/a.env"}}',
+    '{"tool_name": "NotebookEdit", "tool_input": {"notebook_path": "/.claude/a.env"}}',
+    '{"tool_name": "Read", "tool_input": {"file_path": "/Users/other/.claude/a.env"}}',
+    '{"tool_name": "Write", "tool_input": {"file_path": "~/.claude/a.env"}}',
+    '{"tool_name": "Edit", "tool_input": {"file_path": "~/sub/a.env"}}',
+    '{"tool_name": "Edit", "tool_input": {"file_path": "/sub/a.env"}}',
+    '{"tool_name": "Write", "tool_input": {"file_path": "$HOME/sub/a.env"}}',
+    '{"tool_name": "Read", "tool_input": {"file_path": "/Users/other/a.env"}}',
+    '{"tool_name": "Write", "tool_input": {"file_path": "/sub/a.env"}}',
+    '{"tool_name": "NotebookEdit", "tool_input": {"notebook_path": "/sub/a.env"}}',
+    '{"tool_name": "NotebookEdit", "tool_input": {"notebook_path": "/repo/sub/a.env"}}',
+  ],
 }
 
 async function differential($: Engine, b: Bench, guard: string, writer: string): Promise<{ letThrough: string[]; unproven: string[] }> {
@@ -104,10 +126,29 @@ describe('AC3: each port refuses everything its retired bash guard refused', () 
     test(`${guard}: every refused case is refused, or sandbox-proven harmless and listed`, { timeoutMs: 60_000 }, async ($, on) => {
       const b = benchFor(on, writer)
       const { letThrough, unproven } = await differential($, b, guard, writer)
-      expect(unproven).toEqual([])
+      expect([...new Set(unproven)].sort()).toEqual([...(RULED[guard] ?? [])].sort())
       expect([...letThrough].sort()).toEqual([...(EXCEPTIONS[guard] ?? [])].sort())
     })
   }
+
+  test('no Bash command the credential guard lets through names a .env or non-template .env.* base name', () => {
+    const template = /^\.env(\.[A-Za-z0-9_-]+)*\.(example|sample|template|dist|defaults?)$/i
+    for (const command of EXCEPTIONS['credential-guard'] ?? []) {
+      const names = command.split(/[\s/;|&(){}'"`<>]+/).filter(token => /^\.env(\.|$)/i.test(token) && !template.test(token))
+      expect([command, names]).toEqual([command, []])
+    }
+  })
+
+  test('each case let through by a ruling is a file-tool call the corpus refused, and names no .env or .env.* file', () => {
+    const denied = new Set(DENIED.map(d => d.payload))
+    for (const [guard, payloads] of Object.entries(RULED)) {
+      for (const payload of payloads) {
+        const call = JSON.parse(payload) as { tool_name: string; tool_input: Record<string, string> }
+        const path = call.tool_input.file_path ?? call.tool_input.notebook_path ?? ''
+        expect([guard, payload, denied.has(payload), call.tool_name === 'Bash', /(^|\/)\.env(\.|$)/i.test(path)]).toEqual([guard, payload, true, false, false])
+      }
+    }
+  })
 
   // A guard with no suite case, no random case, or no refusal would make the
   // test above pass with nothing to compare.

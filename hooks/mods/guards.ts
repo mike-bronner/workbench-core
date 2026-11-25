@@ -443,13 +443,39 @@ function homeDirsRe(home: string | undefined): RegExp {
 // A macOS keychain folder and Claude's credential file, under any home.
 const KEYCHAINS = /(^|[\s"'=:(/])Library\/Keychains(\/|$|[\s"';)])/i
 const CLAUDE_CREDENTIALS = /(^|[\s"'=:(/])\.credentials\.json($|[\s"';)])/i
-// `.env` and `.env.production`, never `.envrc`, in any case. In a Bash word,
-// `$.env` (the hooks module's own `$.env.get`) is code, not a file.
-const DOTENV = /\.env(?![A-Za-z0-9_-])/i
-const DOTENV_NAMES = /(?<!\$)\.env(?![A-Za-z0-9_-])/gi
-const TEMPLATE = /\.env[^/]*\.(example|sample|template|dist|defaults?)$/i
+const DOTENV_NAMES = /\.env(?![A-Za-z0-9_-])/gi
+const DOTENV_BASE = /^\.env(?![A-Za-z0-9_-])/i
+const STEM_CHAR = /[A-Za-z0-9_]/
+const PATTERN_CHARS = '*?[{(|^#~<>'
 const TEMPLATE_REST = /^(\.[A-Za-z0-9_-]+)*\.(example|sample|template|dist|defaults?)\)?[.,:;!]*(['"`][.,:;!'"`)\]]*)?$/i
-const TEMPLATE_GROUP = /\.env(\.[A-Za-z0-9_-]+)*\.(example|sample|template|dist|defaults?)(\(|(\|[^\s;&<>()]*)?\)(?![.,:;!)]*(\s|$|['"`])))/i
+const TEMPLATE_KEYWORD = /\.(example|sample|template|dist|defaults?)(?=[(|)])/gi
+const SCAN_LIMIT = 256
+
+function scanWhile(line: string, from: number, test: (char: string) => boolean): number | undefined {
+  let at = from
+  while (at < line.length && test(line[at] as string)) if (++at - from > SCAN_LIMIT) return undefined
+  return at
+}
+
+function hasTemplateGroup(line: string): boolean {
+  for (const m of line.matchAll(TEMPLATE_KEYWORD)) {
+    let start = m.index
+    while (start > 0 && /[A-Za-z0-9_.-]/.test(line[start - 1] as string)) if (m.index - --start > SCAN_LIMIT) return true
+    if (!/\.env(\.[A-Za-z0-9_-]+)*\.$/i.test(line.slice(start, m.index + 1))) continue
+    let at = m.index + m[0].length
+    if (line[at] === '(') return true
+    if (line[at] === '|') {
+      const end = scanWhile(line, at + 1, char => !/[\s;&<>()]/.test(char))
+      if (end === undefined) return true
+      at = end
+    }
+    if (line[at] !== ')') continue
+    const after = scanWhile(line, at + 1, char => '.,:;!)'.includes(char))
+    if (after === undefined) return true
+    if (!(after >= line.length || /[\s'"`]/.test(line[after] as string))) return true
+  }
+  return false
+}
 // Programs that read file contents, or link or copy a file. A protected path
 // alone does not refuse: `ls ~/.ssh` lists names and shows no secret.
 export const READERS = [
@@ -469,12 +495,346 @@ export function credentialPathRefusal(raw: string, home: string | undefined): st
   if (homeDirsRe(home).test(path)) return credential('a protected credential folder (~/.ssh, ~/.aws, ~/.gnupg)', `: ${path}`)
   if (KEYCHAINS.test(path)) return credential('a macOS keychain folder', `: ${path}`)
   if (CLAUDE_CREDENTIALS.test(path)) return credential("Claude's credential store", `: ${path}`)
-  if (DOTENV.test(path) && !TEMPLATE.test(path)) return credential('a .env file', `: ${path}`)
+  if (namesDotenvPath(path)) return credential('a .env file', `: ${path}`)
   return undefined
 }
 
+const isDotenvBase = (part: string): boolean => DOTENV_BASE.test(part) && !TEMPLATE_REST.test(part.slice(4))
+
+const hasPatternChar = (text: string): boolean => [...text].some(char => PATTERN_CHARS.includes(char))
+
+const PART_STARTS = '{,(|[)'
+
+const isDotGlob = (word: string): boolean => word.split('/').some(part => hasPatternChar(part) && (part.startsWith('.') || [...PART_STARTS].some(char => part.includes(`${char}.`))))
+
+const DOTENV_SUFFIXES: ReadonlySet<string> = new Set(['env', 'local', 'production', 'staging', 'development', 'test', 'testing', 'dev', 'prod', 'keys', 'vault', 'ci', 'bak'])
+const DOTENV_TARGETS = ['.env', ...[...DOTENV_SUFFIXES].flatMap(suffix => [`.env.${suffix}`, `.env.${suffix}.local`])]
+
+function expandGlobBraces(pattern: string, budget: { left: number }): string[] | undefined {
+  const open = pattern.indexOf('{')
+  if (open === -1) return [pattern]
+  let depth = 0
+  const commas: number[] = []
+  for (let i = open; i < pattern.length; i++) {
+    const char = pattern[i]
+    if (char === '{') depth++
+    else if (char === ',' && depth === 1) commas.push(i)
+    else if (char === '}' && --depth === 0) {
+      const bounds = [open, ...commas, i]
+      const results: string[] = []
+      for (let n = 0; n < bounds.length - 1; n++) {
+        if (--budget.left < 0) return undefined
+        const expanded = expandGlobBraces(pattern.slice(0, open) + pattern.slice((bounds[n] as number) + 1, bounds[n + 1]) + pattern.slice(i + 1), budget)
+        if (expanded === undefined) return undefined
+        results.push(...expanded)
+      }
+      return results
+    }
+  }
+  return undefined
+}
+
+function stepsOf(part: string): ({ kind: 'star' } | { kind: 'any' } | { kind: 'set'; test: (char: string) => boolean })[] | undefined {
+  const steps: ({ kind: 'star' } | { kind: 'any' } | { kind: 'set'; test: (char: string) => boolean })[] = []
+  for (let i = 0; i < part.length; i++) {
+    const char = part[i] as string
+    const close = char === '[' ? part.indexOf(']', i + 2) : -1
+    if (char === '*') steps.push({ kind: 'star' })
+    else if (char === '?') steps.push({ kind: 'any' })
+    else if (close !== -1) {
+      const body = part.slice(i + 1, close)
+      let set: RegExp
+      try {
+        set = new RegExp(`^[${body.replace(/^!/, '^').replace(/\\/g, '\\\\')}]$`, 'i')
+      } catch {
+        return undefined
+      }
+      steps.push({ kind: 'set', test: c => set.test(c) })
+      i = close
+    } else {
+      const literal = char.toLowerCase()
+      steps.push({ kind: 'set', test: c => c.toLowerCase() === literal })
+    }
+  }
+  return steps
+}
+
+function partCanMatchDotenv(part: string): boolean {
+  const extension = /^\*\.([A-Za-z]{1,12})$/.exec(part)?.[1]
+  if (extension !== undefined) return DOTENV_SUFFIXES.has(extension.toLowerCase())
+  const steps = stepsOf(part)
+  if (steps === undefined) return true
+  return DOTENV_TARGETS.some(target => {
+    let reached = new Set([0])
+    for (const step of steps) {
+      const next = new Set<number>()
+      for (const at of reached) {
+        if (step.kind === 'star') for (let to = at; to <= target.length; to++) next.add(to)
+        else if (at < target.length && (step.kind === 'any' || step.test(target[at] as string))) next.add(at + 1)
+      }
+      reached = next
+      if (reached.size === 0) return false
+    }
+    return reached.has(target.length)
+  })
+}
+
+function globCanMatchDotenv(pattern: string): boolean {
+  if (!hasPatternChar(pattern)) return false
+  const alternatives = expandGlobBraces(pattern, { left: 64 })
+  if (alternatives === undefined) return true
+  return alternatives.some(alternative => partCanMatchDotenv(alternative.split('/').at(-1) ?? ''))
+}
+
+const isDotenvName = (piece: string, at: number): boolean => {
+  let start = at
+  while (start > 0 && STEM_CHAR.test(piece[start - 1] as string)) start--
+  const isVariable = start > 0 && piece[start - 1] === '$'
+  const stem = (isVariable ? 1 : 0) + at - start
+  if (stem > 1) return isVariable
+  return stem === 0 && !/[.*?\]-]/.test(piece[at - 1] ?? '')
+}
+
+const isTemplateRest = (rest: string): boolean => rest.length <= 256 && TEMPLATE_REST.test(rest)
+
 const readsDotenv = (word: string): boolean =>
-  piecesOf(word).some(piece => [...piece.matchAll(DOTENV_NAMES)].some(m => !TEMPLATE_REST.test(piece.slice(m.index + 4))))
+  piecesOf(word).some(piece => [...piece.matchAll(DOTENV_NAMES)].some(m => isDotenvName(piece, m.index) && !isTemplateRest(piece.slice(m.index + 4, m.index + 261))))
+
+const REUSES_LAST = /\$(_(?![A-Za-z0-9_])|\{_(?![A-Za-z0-9_]))/
+const isDotglobLine = (line: string): boolean =>
+  /globdots|dotglob|globignore/.test(line.toLowerCase().replaceAll('_', '')) || [...line.matchAll(/\(([^()\s]*)\)/g)].some(group => group[1]?.includes('D'))
+const DOT_RANGE = /(^|[\s/'"])\.[^\s/<>;|&'"]*<\d*-\d*>/
+
+type Lexed = { text: string; isDotGlob: boolean; isGlob: boolean }
+type Quoting = { words: Lexed[]; targets: Lexed[]; subWords: Lexed[]; subTargets: Lexed[]; isDotGroup: boolean; isSubBroken: boolean; reusesLast: boolean }
+
+function closingOf(line: string, at: number, open: string, close: string): number {
+  let depth = 0
+  for (let i = at; i < line.length; i++) {
+    const char = line[i]
+    if (char === '\\') i++
+    else if (char === "'" && open !== "'") {
+      i = line.indexOf("'", i + 1)
+      if (i === -1) return -1
+    } else if (char === open && open !== close) depth++
+    else if (char === close && (open === close ? i > at : --depth === 0)) return i
+  }
+  return -1
+}
+
+function quotingOf(line: string): Quoting | undefined {
+  const words: Lexed[] = []
+  const targets: Lexed[] = []
+  const subWords: Lexed[] = []
+  const subTargets: Lexed[] = []
+  const heredocs: { delimiter: string; strips: boolean; expands: boolean }[] = []
+  let reusesLast = false
+  let isDotGroup = false
+  let isSubBroken = false
+  let closeAt = -2
+  let pipeDotAt = -2
+  let text = ''
+  let isWord = false
+  let isTarget = false
+  let isGlob = false
+  let isDotGlobWord = false
+  let isSegmentStart = true
+  let isDotSegment = false
+  let hasSegmentPattern = false
+  const add = (chars: string, isQuoted: boolean): void => {
+    for (const char of chars) {
+      if (char === '/') {
+        isDotSegment = false
+        hasSegmentPattern = false
+      } else if (isSegmentStart && char === '.') isDotSegment = true
+      if (!isQuoted && PATTERN_CHARS.includes(char)) {
+        isGlob = true
+        hasSegmentPattern = true
+      }
+      if (isDotSegment && hasSegmentPattern) isDotGlobWord = true
+      isSegmentStart = char === '/' || (!isQuoted && PART_STARTS.includes(char))
+      text += char
+    }
+    isWord = true
+  }
+  const end = (): void => {
+    if (isWord) (isTarget ? targets : words).push({ text, isDotGlob: isDotGlobWord, isGlob })
+    if (isWord) isTarget = false
+    text = ''
+    isWord = false
+    isGlob = false
+    isDotGlobWord = false
+    isSegmentStart = true
+    isDotSegment = false
+    hasSegmentPattern = false
+  }
+  const substitution = (at: number, open: string, close: string): number => {
+    const closed = closingOf(line, at, open, close)
+    if (closed === -1) return -1
+    const inner = quotingOf(line.slice(at + 1, closed))
+    if (inner === undefined) {
+      isSubBroken = true
+      if (REUSES_LAST.test(line.slice(at, closed))) reusesLast = true
+    } else {
+      subWords.push(...inner.subWords, ...inner.words)
+      subTargets.push(...inner.subTargets, ...inner.targets)
+      reusesLast ||= inner.reusesLast
+      isDotGroup ||= inner.isDotGroup
+      isSubBroken ||= inner.isSubBroken
+    }
+    add('$_', true)
+    return closed
+  }
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i] as string
+    const next = line[i + 1] ?? ''
+    if (char === '\\' && next === '\n') i++
+    else if (char === '\\') {
+      add(next, true)
+      i++
+    } else if (char === "'" || (char === '$' && next === "'")) {
+      const open = char === '$' ? i + 1 : i
+      let close = open + 1
+      while (close < line.length && line[close] !== "'") close += char === '$' && line[close] === '\\' ? 2 : 1
+      if (close >= line.length) return undefined
+      add(line.slice(open + 1, close), true)
+      i = close
+    } else if (char === '"') {
+      let at = i + 1
+      for (; at < line.length && line[at] !== '"'; at++) {
+        const inner = line[at] as string
+        if (inner === '\\' && line[at + 1] === '\n') at++
+        else if (inner === '\\' && '$`"\\'.includes(line[at + 1] ?? '')) add(line[++at] as string, true)
+        else if (inner === '$' && line[at + 1] === '(') {
+          at = substitution(at + 1, '(', ')')
+          if (at === -1) return undefined
+        } else if (inner === '`') {
+          at = substitution(at, '`', '`')
+          if (at === -1) return undefined
+        } else {
+          if (inner === '$' && REUSES_LAST.test(line.slice(at, at + 4))) reusesLast = true
+          add(inner, true)
+        }
+      }
+      if (at >= line.length) return undefined
+      add('', true)
+      i = at
+    } else if (char === '$' && next === '(') {
+      i = substitution(i + 1, '(', ')')
+      if (i === -1) return undefined
+    } else if (char === '`') {
+      i = substitution(i, '`', '`')
+      if (i === -1) return undefined
+    } else if (char === '<' && next === '<' && line[i + 2] !== '<') {
+      end()
+      let at = i + 2
+      const strips = line[at] === '-'
+      if (strips) at++
+      while (line[at] === ' ' || line[at] === '\t') at++
+      const start = at
+      while (at < line.length && !/[\s;&|<>()]/.test(line[at] as string)) at++
+      const raw = line.slice(start, at)
+      if (raw === '') return undefined
+      heredocs.push({ delimiter: raw.replace(/["'\\]/g, ''), strips, expands: !/["'\\]/.test(raw) })
+      i = at - 1
+    } else if (char === '\n' && heredocs.length > 0) {
+      end()
+      let at = i + 1
+      for (const heredoc of heredocs.splice(0)) {
+        for (;;) {
+          if (at > line.length) return undefined
+          const newline = line.indexOf('\n', at)
+          const stop = newline === -1 ? line.length : newline
+          const body = line.slice(at, stop)
+          at = stop + 1
+          if ((heredoc.strips ? body.replace(/^\t+/, '') : body) === heredoc.delimiter) break
+          if (heredoc.expands && REUSES_LAST.test(body)) reusesLast = true
+        }
+      }
+      i = at - 2
+    } else if ((char === '<' || char === '>') && next === '(') {
+      i = substitution(i + 1, '(', ')')
+      if (i === -1) return undefined
+    } else if (char === '<' || char === '>') {
+      if (isWord && /^\d+$/.test(text)) isWord = false
+      end()
+      while (i + 1 < line.length && '<>&|'.includes(line[i + 1] as string)) i++
+      isTarget = true
+    } else if (char === '(') {
+      if (closeAt !== -1 && closeAt < i) closeAt = line.indexOf(')', i)
+      if (pipeDotAt !== -1 && pipeDotAt < i) pipeDotAt = line.indexOf('|.', i)
+      const after = closeAt === -1 ? '' : (line[closeAt + 1] ?? '')
+      const isAttached = isWord || (after !== '' && !/[\s;&|<>()]/.test(after))
+      const hasDotPart = next === '.' || (pipeDotAt !== -1 && (closeAt === -1 || pipeDotAt < closeAt))
+      if (isAttached && (isDotSegment || after === '.' || hasDotPart)) isDotGroup = true
+      if (isWord && isDotSegment) isDotGlobWord = true
+      end()
+    } else if (/\s/.test(char) || ';&|)'.includes(char)) end()
+    else if (char === '#' && !isWord) {
+      const newline = line.indexOf('\n', i)
+      i = newline === -1 ? line.length : newline - 1
+    } else {
+      if (char === '$' && REUSES_LAST.test(line.slice(i, i + 4))) reusesLast = true
+      add(char, false)
+    }
+  }
+  if (heredocs.length > 0) return undefined
+  end()
+  return { words, targets, subWords, subTargets, isDotGroup, isSubBroken, reusesLast }
+}
+
+type WordFlags = { words: boolean[]; targets: boolean[] }
+type LineFlags = { flags: Map<Statement, WordFlags>; reusesLast: boolean; isDotglobLine: boolean; isDotGroup: boolean }
+
+const fromText = (text: string, isDotglob: boolean): boolean => isDotGlob(text) || (isDotglob && hasPatternChar(text))
+const LOOSE_DOT_GROUP = /[(|)]\.|\.[^\s().]*\(/
+
+function flagsOf(parse: ShellParse, line: string): LineFlags {
+  const isDotglob = isDotglobLine(line)
+  const quoting = quotingOf(line)
+  const flags = new Map<Statement, WordFlags>()
+  const targetsOf = (s: Statement): string[] => s.redirects.filter(r => r.isReal && r.op !== '<<' && r.op !== '<<-').map(r => r.target)
+  for (const s of parse.statements) flags.set(s, { words: s.words.map(word => fromText(word, isDotglob)), targets: targetsOf(s).map(target => fromText(target, isDotglob)) })
+  const fallback: LineFlags = { flags, reusesLast: REUSES_LAST.test(line), isDotglobLine: isDotglob, isDotGroup: quoting?.isDotGroup ?? LOOSE_DOT_GROUP.test(line) }
+  if (quoting === undefined) return fallback
+  const take = (list: readonly Lexed[], from: number, text: string): number => {
+    for (let at = from; at < list.length; at++) if (list[at]?.text === text) return at
+    return -1
+  }
+  const flag = (lexed: Lexed | undefined): boolean => lexed !== undefined && (lexed.isDotGlob || (isDotglob && lexed.isGlob))
+  const cursors = { line: [0, 0], substitution: [0, 0] }
+  const aligned = new Map<Statement, WordFlags>()
+  for (const s of parse.statements) {
+    if (s.source !== 'line' && (s.source !== 'substitution' || quoting.isSubBroken)) continue
+    const [lexedWords, lexedTargets] = s.source === 'line' ? [quoting.words, quoting.targets] : [quoting.subWords, quoting.subTargets]
+    const cursor = s.source === 'line' ? cursors.line : cursors.substitution
+    const words: boolean[] = []
+    for (const word of s.words) {
+      const at = take(lexedWords, cursor[0] as number, word)
+      if (at === -1) return fallback
+      words.push(flag(lexedWords[at]))
+      cursor[0] = at + 1
+    }
+    const targets: boolean[] = []
+    for (const target of targetsOf(s)) {
+      const at = take(lexedTargets, cursor[1] as number, target)
+      if (at === -1) return fallback
+      targets.push(flag(lexedTargets[at]))
+      cursor[1] = at + 1
+    }
+    aligned.set(s, { words, targets })
+  }
+  for (const [s, wordFlags] of aligned) flags.set(s, wordFlags)
+  return { flags, reusesLast: quoting.reusesLast, isDotglobLine: isDotglob, isDotGroup: quoting.isDotGroup }
+}
+
+const namesDotenvPath = (word: string): boolean =>
+  collapsed(word)
+    .split('/')
+    .some(part => isDotenvBase(part) || (part.startsWith('.') && hasPatternChar(part))) || /(\$\{?[A-Za-z0-9_]+\}?|`)\.env(?![A-Za-z0-9_-])/i.test(word)
+
+export const credentialGlobRefusal = (glob: string): string | undefined =>
+  namesDotenvPath(glob) || readsDotenv(glob) || globCanMatchDotenv(glob) ? credential('a .env file', `: ${glob}`) : undefined
 
 // The one heredoc shape a body is text in, an allowlist: a plain `cat`, with
 // no wrapper, in a line the reader read whole, whose standard output goes to
@@ -557,20 +917,34 @@ export function credentialRefusal(
     if (texts.some(text => dirs.test(text))) return credential('a protected credential folder (~/.ssh, ~/.aws, ~/.gnupg)', '')
     if (texts.some(text => KEYCHAINS.test(text))) return credential('a macOS keychain folder', '')
     if (texts.some(text => CLAUDE_CREDENTIALS.test(text))) return credential("Claude's credential store", '')
-    const dotenvUnits = parse.statements.flatMap(s => [
-      ...s.words,
-      ...s.redirects.filter(r => r.isReal).map(r => r.target),
-      ...(regularTargets.has(exemptTarget(s, parse) ?? '\u0000') ? [] : s.heredocs.flatMap(h => piecesOf(h.body))),
-    ])
-    if (dotenvUnits.map(collapsed).some(readsDotenv) || TEMPLATE_GROUP.test(collapsed(line))) return credential('a .env file', '')
   }
-  const isSubject = texts.some(
-    text =>
-      dirs.test(text) ||
-      KEYCHAINS.test(text) ||
-      CLAUDE_CREDENTIALS.test(text) ||
-      DOTENV.test(text),
-  )
+  const { flags, reusesLast, isDotglobLine: isDotglob, isDotGroup } = flagsOf(parse, line)
+  const feedsArgs = parse.statements.some(s => ARG_FEEDERS.has(s.name) || s.wrappers.some(w => ARG_FEEDERS.has(w)))
+  const units: [string, boolean][] = []
+  const dropped: [string, boolean][] = []
+  for (const s of parse.statements) {
+    const words = pathWords(s, parse, line)
+    const isText = readsMessageInput(s, parse) || readsText(s, parse)
+    const wordFlags = flags.get(s)
+    const isExpanding = (at: number): boolean => wordFlags?.words[at] ?? true
+    const targets = s.redirects.filter(r => r.isReal && r.op !== '<<' && r.op !== '<<-')
+    units.push(
+      ...words.kept.map((at): [string, boolean] => [s.words[at] as string, isExpanding(at)]),
+      ...targets.flatMap((r, at): [string, boolean][] => (isText && r.op === '<<<' ? [] : [[r.target, wordFlags?.targets[at] ?? true]])),
+      ...(isText || regularTargets.has(exemptTarget(s, parse) ?? '\u0000') ? [] : s.heredocs.flatMap(h => piecesOf(h.body)).map((piece): [string, boolean] => [piece, feedsArgs && fromText(piece, isDotglob)])),
+    )
+    dropped.push(...words.dropped.map((at): [string, boolean] => [s.words[at] as string, isExpanding(at)]))
+  }
+  const reads = ([word, isDotGlobWord]: [string, boolean]): boolean => isDotGlobWord || readsDotenv(collapsed(word))
+  const isDotenvLine =
+    units.some(reads) ||
+    (reusesLast && dropped.some(reads)) ||
+    parse.statements.some(s => programGlobs(s, parse, line).some(globCanMatchDotenv)) ||
+    isDotGroup ||
+    DOT_RANGE.test(line) ||
+    hasTemplateGroup(collapsed(line))
+  if (isDotenvLine) return credential('a .env file', '')
+  const isSubject = texts.some(text => dirs.test(text) || KEYCHAINS.test(text) || CLAUDE_CREDENTIALS.test(text) || readsDotenv(text) || isDotGlob(text))
   if (isSubject && line.length > MAX_INPUT) return credential('a credential path in a command longer than 200,000 characters', '')
   if (isSubject && isPartlyRead(parse)) return credential('a credential path', `. ${unreadNote}`)
   return undefined
@@ -643,42 +1017,240 @@ const FD: Options = {
   ],
 }
 const AG: Options = { short: 'mABCGgp', long: ['max-count', 'after', 'before', 'context', 'file-search-regex', 'ignore', 'ignore-dir', 'path-to-ignore', 'depth', 'pager'] }
+const GIT_GREP: Options = { short: GREP.short, long: [...GREP.long, 'max-depth', 'threads'] }
+const PATTERN_TOOLS: ReadonlyMap<string, Options> = new Map([
+  ['grep', GREP],
+  ['egrep', GREP],
+  ['fgrep', GREP],
+  ['ggrep', GREP],
+  ['rg', RG],
+  ['ag', AG],
+  ['ack', AG],
+])
+const COMMIT: Options = {
+  short: 'mFCct',
+  long: ['message', 'file', 'reuse-message', 'reedit-message', 'template', 'author', 'date', 'fixup', 'squash', 'cleanup', 'trailer', 'pathspec-from-file'],
+}
+const TEXT_REDIRECTS: ReadonlySet<string> = new Set(['<<', '<<-', '<<<'])
+const ARG_FEEDERS: ReadonlySet<string> = new Set(['xargs', 'parallel', 'read', 'mapfile', 'readarray'])
+
+const subcommandOf = (s: Statement): string | undefined => (s.name === 'git' && s.subcommandAt !== -1 ? s.args[s.subcommandAt] : undefined)
+
+function patternsOf(s: Statement): { patterns: string[]; at: number[]; isGiven: boolean } {
+  const isGitGrep = subcommandOf(s) === 'grep'
+  const options = isGitGrep ? GIT_GREP : PATTERN_TOOLS.get(s.name)
+  if (options === undefined) return { patterns: [], at: [], isGiven: false }
+  const base = s.nameAt + 1 + (isGitGrep ? s.subcommandAt + 1 : 0)
+  const { operands, operandAt, values, valueAt } = operandsOf(s.args.slice(base - s.nameAt - 1), options, [], [], true)
+  const given = [...(values.e ?? []), ...(values.regexp ?? [])]
+  const givenAt = [...(valueAt.e ?? []), ...(valueAt.regexp ?? [])]
+  const isGiven = given.length > 0 || values.f !== undefined || values.file !== undefined
+  const patterns = isGiven ? given : operands.slice(0, 1)
+  return { patterns, at: (isGiven ? givenAt : operandAt.slice(0, 1)).map(at => base + at), isGiven }
+}
+
+const commitOperands = (s: Statement, parse: ShellParse): Operands | undefined =>
+  subcommandOf(s) === 'commit' && s.isPlaced && s.source === 'line' && parse.feeds.length === 0 ? operandsOf(s.args.slice(s.subcommandAt + 1), COMMIT, [], [], true) : undefined
+
+const commitValues = (s: Statement, parse: ShellParse): Record<string, string[]> | undefined => commitOperands(s, parse)?.values
+
+function pathWords(s: Statement, parse: ShellParse, line: string): { kept: number[]; dropped: number[] } {
+  const commit = commitOperands(s, parse)
+  const commitBase = s.nameAt + s.subcommandAt + 2
+  const messageAt = [...(commit?.valueAt.m ?? []), ...(commit?.valueAt.message ?? [])].map(at => commitBase + at)
+  const { patterns, at: patternAt, isGiven } = patternsOf(s)
+  const droppedAt = new Set([...messageAt, ...patternAt.filter((_, n) => isGiven || !namesDotenvPath(patterns[n] as string))])
+  const inert = inertWords(s, parse, line)
+  const kept: number[] = []
+  const dropped: number[] = []
+  s.words.forEach((word, index) => {
+    const at = droppedAt.has(index) ? -1 : inert.indexOf(word)
+    if (!droppedAt.has(index) && at === -1) kept.push(index)
+    else {
+      if (at !== -1) inert.splice(at, 1)
+      dropped.push(index)
+    }
+  })
+  return { kept, dropped }
+}
+
+const FIND_ACTIONS_OK: ReadonlySet<string> = new Set(['-print', '-print0'])
+const ARCHIVERS: ReadonlySet<string> = new Set(['tar', 'gtar', 'bsdtar', 'rsync', 'zip'])
+
+const EXCLUDES = /^(--exclude[a-z-]*|--filter|-X|-x)$/
+
+function programGlobs(s: Statement, parse: ShellParse, line: string): string[] {
+  if (s.name === 'git' && s.subcommandAt !== -1) {
+    const after = s.nameAt + s.subcommandAt + 2
+    const { at: patternAt } = patternsOf(s)
+    return pathWords(s, parse, line)
+      .kept.filter(at => at >= after && !patternAt.includes(at))
+      .map(at => s.words[at] as string)
+      .filter(word => !word.startsWith('-') && !/^:(!|\^|\(exclude)/.test(word))
+  }
+  if (s.name === 'find' || s.name === 'gfind' || s.name === 'bfs') {
+    const hasAction = s.args.some(arg => /^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|printf|fls|ls|quit)$/.test(arg) && !FIND_ACTIONS_OK.has(arg))
+    return hasAction ? s.args.filter((_, at) => at > 0 && FIND_PATTERNS.has(s.args[at - 1] as string)) : []
+  }
+  if (s.name === 'rg') {
+    const { values } = operandsOf(s.args, RG, [], [], true)
+    return [...(values.g ?? []), ...(values.glob ?? []), ...(values.iglob ?? [])].filter(glob => !glob.startsWith('!'))
+  }
+  if (['grep', 'ggrep', 'egrep', 'fgrep'].includes(s.name)) return operandsOf(s.args, GREP, [], [], true).values.include ?? []
+  if (ARCHIVERS.has(s.name)) {
+    return s.args.filter((arg, at) => !EXCLUDES.test(arg) && !EXCLUDES.test(s.args[at - 1] ?? '') && !/^--(exclude|filter)[a-z-]*=/.test(arg)).map(arg => arg.replace(/^-[^=]*=/, ''))
+  }
+  return []
+}
+
+const LS_FLAGS = /^-[@1ABCFGHLOPRSTUWabcdefghiklmnopqrstuvwxy]+$/
+const STAT_FLAGS = /^-[FLlnqrsx]+$/
+const ECHO_FLAGS = /^-[neE]+$/
+const FILE_TESTS: ReadonlySet<string> = new Set(['-e', '-f', '-d', '-r', '-s', '-L', '-h', '-w', '-x', '-b', '-c', '-p', '-S', '-O', '-G', '-N'])
+const TEST_NAMES: ReadonlySet<string> = new Set(['test', '[', '[['])
+const FIND_PATTERNS: ReadonlySet<string> = new Set(['-name', '-iname', '-path', '-ipath', '-wholename', '-iwholename'])
+const FIND_VALUES: ReadonlySet<string> = new Set(['-type', '-maxdepth', '-mindepth'])
+const FIND_WORDS: ReadonlySet<string> = new Set(['-print', '-print0', '-prune', '-not', '!', '(', ')', '-o', '-or', '-a', '-and'])
+const GIT_INERT: ReadonlyMap<string, RegExp> = new Map([
+  ['rm', /^(-[nqr]+|--(cached|dry-run|quiet)|--)$/],
+  ['check-ignore', /^(-[qvn]+|--(quiet|verbose|non-matching|no-index)|--)$/],
+])
+const SHADOWERS: ReadonlySet<string> = new Set(['function', 'alias', 'hash', 'enable', 'builtin', 'command'])
+const DEFINES_FUNCTION = /\(\s*\)|(^|[\s;&|({])function\s/
+
+const isQuietLine = (s: Statement, parse: ShellParse, line: string): boolean =>
+  s.source === 'line' &&
+  s.isPlaced &&
+  s.wrappers.length === 0 &&
+  !(s.words[s.nameAt] ?? '/').includes('/') &&
+  parse.feeds.length === 0 &&
+  s.redirects.every(r => !r.isReal) &&
+  !DEFINES_FUNCTION.test(line) &&
+  parse.statements.every(
+    t => t.source === 'line' && t.assignments.length === 0 && !SHADOWERS.has(t.name) && !ARG_FEEDERS.has(t.name) && !t.wrappers.some(w => ARG_FEEDERS.has(w)),
+  )
+
+function operandsAfter(args: readonly string[], flags: RegExp, valued: readonly string[] = []): string[] | undefined {
+  const operands: string[] = []
+  for (let i = 0, isEnd = false; i < args.length; i++) {
+    const arg = args[i] as string
+    if (isEnd || !arg.startsWith('-') || arg === '-') operands.push(arg)
+    else if (arg === '--') isEnd = true
+    else if (valued.includes(arg)) i++
+    else if (!flags.test(arg)) return undefined
+  }
+  return operands
+}
+
+function testOperands(args: readonly string[]): string[] | undefined {
+  const operands: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] as string
+    if (FILE_TESTS.has(arg) && i + 1 < args.length) operands.push(args[++i] as string)
+    else if (arg !== '!' && arg !== ']' && arg !== ']]') return undefined
+  }
+  return operands
+}
+
+function findPatterns(args: readonly string[]): string[] | undefined {
+  const patterns: string[] = []
+  let i = 0
+  while (i < args.length && /^-[HLP]$/.test(args[i] as string)) i++
+  while (i < args.length && !/^[-!(]/.test(args[i] as string)) i++
+  for (; i < args.length; i++) {
+    const arg = args[i] as string
+    if (FIND_PATTERNS.has(arg) && i + 1 < args.length) patterns.push(args[++i] as string)
+    else if (FIND_VALUES.has(arg)) i++
+    else if (!FIND_WORDS.has(arg)) return undefined
+  }
+  return patterns
+}
+
+function inertWords(s: Statement, parse: ShellParse, line: string): string[] {
+  if (!isQuietLine(s, parse, line)) return []
+  const sub = subcommandOf(s)
+  if (sub !== undefined) {
+    const flags = GIT_INERT.get(sub)
+    const globals = s.args.slice(0, s.subcommandAt)
+    const rest = s.args.slice(s.subcommandAt + 1)
+    const options = rest.includes('--') ? rest.slice(0, rest.indexOf('--')) : rest
+    const isPlain = globals.length % 2 === 0 && globals.every((arg, i) => i % 2 === 1 || arg === '-C')
+    if (flags === undefined || !isPlain || (sub === 'rm' && !options.includes('--cached'))) return []
+    return operandsAfter(rest, flags) ?? []
+  }
+  if (s.name === 'ls') return operandsAfter(s.args, LS_FLAGS) ?? []
+  if (s.name === 'stat') return operandsAfter(s.args, STAT_FLAGS, ['-f', '-t']) ?? []
+  if (TEST_NAMES.has(s.name)) return testOperands(s.args) ?? []
+  if (s.name === 'find') return findPatterns(s.args) ?? []
+  if (s.name === 'echo') return (operandsAfter(s.args, ECHO_FLAGS) ?? []).filter(word => /\s/.test(word))
+  if (s.name === 'printf' && !(s.args[0] ?? '-').startsWith('-')) return s.args.filter(word => /\s/.test(word))
+  return []
+}
+
+const GH_BODY_SUBCOMMANDS: ReadonlySet<string> = new Set(['pr', 'issue', 'release'])
+
+function readsText(s: Statement, parse: ShellParse): boolean {
+  if (s.source !== 'line' || !s.isPlaced || s.wrappers.length > 0 || parse.feeds.length > 0) return false
+  if (parse.statements.some(t => ARG_FEEDERS.has(t.name) || t.wrappers.some(w => ARG_FEEDERS.has(w)))) return false
+  if (s.name === 'wc') return s.args.every(arg => /^-[clmwL]+$/.test(arg))
+  if (s.name === 'pbcopy') return s.args.length === 0
+  if (s.name !== 'gh' || !GH_BODY_SUBCOMMANDS.has(s.args[s.subcommandAt] ?? '')) return false
+  return s.args.some((arg, i) => ((arg === '--body-file' || arg === '--notes-file' || arg === '-F') && s.args[i + 1] === '-') || arg === '--body-file=-' || arg === '--notes-file=-')
+}
+
+function readsMessageInput(s: Statement, parse: ShellParse): boolean {
+  const values = commitValues(s, parse)
+  const isStdin = [...(values?.F ?? []), ...(values?.file ?? [])].includes('-')
+  const inputs = s.redirects.filter(r => r.isReal && (r.fd === '' || r.fd === '0') && r.op.startsWith('<'))
+  return isStdin && inputs.length === 1 && TEXT_REDIRECTS.has(inputs[0]?.op ?? '') && s.heredocs.length <= 1
+}
 
 // The words that are not options or option values, and the values of the
 // options in `wanted`.
-function operandsOf(args: readonly string[], options: Options, wanted: readonly string[] = [], stops: readonly string[] = []): { operands: string[]; values: Record<string, string[]>; flags: Set<string> } {
+type Operands = { operands: string[]; values: Record<string, string[]>; flags: Set<string>; operandAt: number[]; valueAt: Record<string, number[]> }
+
+function operandsOf(args: readonly string[], options: Options, wanted: readonly string[] = [], stops: readonly string[] = [], abbreviates = false): Operands {
   const operands: string[] = []
+  const operandAt: number[] = []
   const values: Record<string, string[]> = {}
+  const valueAt: Record<string, number[]> = {}
   const flags = new Set<string>()
-  const add = (name: string, value: string) => (values[name] ??= []).push(value)
+  const add = (name: string, value: string, at: number) => {
+    ;(values[name] ??= []).push(value)
+    ;(valueAt[name] ??= []).push(at)
+  }
   for (let i = 0; i < args.length; i++) {
     const arg = args[i] as string
     if (arg === '--') {
       operands.push(...args.slice(i + 1))
+      operandAt.push(...args.slice(i + 1).map((_, n) => i + 1 + n))
       break
     }
     if (arg.startsWith('--')) {
       const [name = '', value] = arg.slice(2).split(/=(.*)/s)
       if (stops.includes(name)) break
       flags.add(name)
-      if (options.long.includes(name) || wanted.includes(name)) add(name, value ?? (args[++i] ?? ''))
+      const known = [...options.long, ...wanted]
+      const matches = known.includes(name) || !abbreviates ? [name].filter(option => known.includes(option)) : known.filter(option => name !== '' && option.startsWith(name))
+      if (matches.length === 1) add(matches[0] as string, value ?? (args[++i] ?? ''), i)
       continue
     }
     if (arg.startsWith('-') && arg.length > 1) {
       for (let j = 1; j < arg.length; j++) {
         const letter = arg[j] as string
-        if (stops.includes(letter)) return { operands, values, flags }
+        if (stops.includes(letter)) return { operands, values, flags, operandAt, valueAt }
         flags.add(letter)
         if (options.short.includes(letter)) {
-          add(letter, j < arg.length - 1 ? arg.slice(j + 1) : (args[++i] ?? ''))
+          add(letter, j < arg.length - 1 ? arg.slice(j + 1) : (args[++i] ?? ''), i)
           break
         }
       }
       continue
     }
     operands.push(arg)
+    operandAt.push(i)
   }
-  return { operands, values, flags }
+  return { operands, values, flags, operandAt, valueAt }
 }
 
 // The places one search statement searches, as words, and the directory it

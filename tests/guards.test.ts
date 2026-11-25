@@ -17,6 +17,7 @@ import {
   PEER_REFUSAL,
   READERS,
   SEARCH_UNREAD,
+  credentialGlobRefusal,
   credentialPathRefusal,
   credentialRefusal,
   hiddenCommandRefusal,
@@ -24,6 +25,7 @@ import {
   provisioningRefusal,
   resolvePath,
   searchRefusal,
+  searchRoots,
   summaryWriterRefusal,
   toolSearchRoots,
 } from '../hooks/mods/guards'
@@ -391,9 +393,18 @@ describe('AC4: the credential guard', () => {
 
   test('a credential path in a line the reader cannot read whole is refused', () => {
     expect(credentialRefusal('$R ~/.ssh/id_rsa', HOME)).toContain('could not read all')
-    expect(credentialRefusal(`echo ${'x'.repeat(200_001)}; cat "a note about the .env.example file"`, HOME)).toContain('longer than 200,000')
-    expect(credentialRefusal(`echo ${'x'.repeat(199_000)}; cat "a note about the .env.example file"`, HOME)).toBeUndefined()
+    expect(credentialRefusal(`echo ${'x'.repeat(200_001)}; git commit -m "Keep .env out of git"`, HOME)).toContain('longer than 200,000')
+    expect(credentialRefusal(`echo ${'x'.repeat(199_000)}; git commit -m "Keep .env out of git"`, HOME)).toBeUndefined()
+    expect(credentialRefusal(`echo ${'x'.repeat(200_001)}; cat "a note about the .env.example file"`, HOME)).toBeUndefined()
     expect(credentialPathRefusal('/repo/src/main.ts', HOME)).toBeUndefined()
+  })
+
+  test('a line the reader cannot read whole that names no .env file under Mike\'s rule is no credential subject', () => {
+    for (const line of ['$R process.env.PATH', '$R app.env', '$R import.meta.env', '$R prod.env.local']) {
+      expect(credentialRefusal(line, HOME)).toBeUndefined()
+    }
+    expect(credentialRefusal('$R; git commit -m "Keep .env out"', HOME)).toContain('could not read all')
+    expect(credentialRefusal('cat .e* "x', HOME)).toContain('Credential guard (workbench-core)')
   })
 
   const TEMPLATES = ['.env.example', '.env.sample', '.env.template', '.env.dist', '.env.defaults']
@@ -473,7 +484,7 @@ describe('AC4: the credential guard', () => {
     }
   })
 
-  test('a quoted sentence that names a real .env file beside a reader is refused, as a heredoc body is', () => {
+  test('a quoted sentence that names a real .env file beside a reader is refused, and echo prose alone runs', () => {
     expect(credentialRefusal('cat "a note about the .env file"', HOME)).toContain('a .env file')
     expect(credentialRefusal('echo "a note about .env files" | cat', HOME)).toContain('a .env file')
     expect(credentialRefusal('echo "a note about .env files"', HOME)).toBeUndefined()
@@ -519,20 +530,565 @@ describe('AC4: the credential guard', () => {
   })
 
   test('a reader name inside another word, such as services.php, makes no line a read', () => {
-    expect(credentialRefusal("git commit -F - <<'EOF'\nfix: x\n\nMoved it into config/services.php and .env\nEOF", HOME)).toBeUndefined()
+    expect(credentialRefusal("gh pr comment 1 --body-file - <<'EOF'\nMoved it into config/services.php and .env\nEOF", HOME)).toBeUndefined()
     for (const end of ['.', ',', ':', '!', '?', '`', '"']) {
-      expect(credentialRefusal(`git commit -F - <<'EOF'\nfix: x\n\nMoved it into \`config/services.php${end} Then .env\nEOF`, HOME)).toBeUndefined()
+      expect(credentialRefusal(`gh pr comment 1 --body-file - <<'EOF'\nMoved it into \`config/services.php${end} Then .env\nEOF`, HOME)).toBeUndefined()
     }
-    expect(credentialRefusal('echo config/services.php .env', HOME)).toBeUndefined()
-    expect(credentialRefusal('echo config/services.php; php artisan x .env', HOME)).toContain('a .env file')
+    expect(credentialRefusal('echo config/services.php ~/.ssh/id_rsa', HOME)).toBeUndefined()
+    expect(credentialRefusal('echo config/services.php; php artisan x ~/.ssh/id_rsa', HOME)).toContain('a protected credential folder')
     expect(credentialRefusal('/usr/bin/cat .env', HOME)).toContain('a .env file')
-    expect(credentialRefusal("git commit -F - <<'EOF'\nfix: x\n\nRead it with cat and .env\nEOF", HOME)).toContain('a .env file')
+    expect(credentialRefusal("xargs echo <<'EOF'\nRead it with cat and .env\nEOF", HOME)).toContain('a .env file')
   })
 
   test('a reader name after a dot that is called, as in .cp( or io.open(, counts as a reader', () => {
     expect(credentialRefusal(`npx tsx -e "require('fs').cp('${HOME}/.ssh/id_rsa','/tmp/k',()=>{})"`, HOME)).toContain('a protected credential folder')
     expect(credentialRefusal(`lua -e "print(io.open('.env'):read('a'))"`, HOME)).toContain('a .env file')
     expect(credentialRefusal(`lua -e "f=io.open;print(f('.env'):read('a'))"`, HOME)).toContain('a .env file')
+  })
+
+  test('the three refusals reported on 2026-11-25 run: process.env.PATH in an edit, and .env in a grep or git grep pattern', async ($, on) => {
+    const b = await session($, on)
+    for (const line of [
+      "python3 - <<'PY'\np = 'test/discovery.test.js'\ns = open(p).read().replace('process.env.PATH', 'PATH')\nopen(p, 'w').write(s)\nPY",
+      "perl -pi -e 's/process.env.PATH/env.PATH/' test/discovery.test.js",
+      "grep -rn 'touches a .env file' hooks",
+      'git grep -ln "touches a .env file" -- hooks',
+    ]) {
+      expect(await refusal($, b, bash(line))).toBeUndefined()
+    }
+  })
+
+  test('a .env file is a base name of .env or .env.<suffix>, and a .env after another name is no .env file', () => {
+    for (const line of [
+      'node -e "console.log(process.env)"',
+      'node -e "const { PATH } = process.env; console.log(PATH)"',
+      'node -e "console.log(import.meta.env)"',
+      "sed -i '' 's/process.env.PATH/x/' a.js",
+      `node -e 'console.log(process.env.HOME, "$ENV")'`,
+      'cat app.env',
+      'cat config/prod.env.local',
+      'cp server.env.bak /scratch/x',
+      `node -e "require('fs').readFileSync('app.env')"`,
+      'xargs cat <<EOF\nprocess.env\nEOF',
+      'cat .envrc .env_x .env-x',
+    ]) {
+      expect(credentialRefusal(line, HOME)).toBeUndefined()
+    }
+    for (const line of ['cat .env', 'cat .ENV.Production', 'cat config/.env.staging', `node -e "require('fs').readFileSync('.env.local')"`, 'xargs cat <<EOF\nconfig/.env\nEOF']) {
+      expect(credentialRefusal(line, HOME)).toContain('a .env file')
+    }
+    for (const path of ['/repo/app.env', '/repo/prod.env.local', '/repo/src/process.env.ts', '/repo/.envrc', '/repo/.env.sample', '/repo/.env.local.example']) {
+      expect(credentialPathRefusal(path, HOME)).toBeUndefined()
+    }
+    for (const path of ['/repo/.env', '/repo/config/.ENV.staging', '/repo/.env.local/notes', '/repo/.env.example.bak']) {
+      expect(credentialPathRefusal(path, HOME)).toContain('a .env file')
+    }
+  })
+
+  test('an unquoted name that starts with a dot and holds a glob, brace or zsh pattern character is refused', () => {
+    for (const line of [
+      'cat .env*',
+      'cp config/.env.* /tmp/x',
+      'cat .env{,.local}',
+      'cat .{env,x}',
+      'cat .e*',
+      'cat config/.en?',
+      'cat .[e]nv.local',
+      'cat {a,.env}',
+      'cat .e*.vault',
+      'cat .[e]nv.bak',
+      'cat .?nv.ci',
+      'cat .e{n..n}v',
+      'cat .{e..f}nv',
+      'cat .(env)',
+      'cat .e(nv|x)',
+      'cat .^x',
+      'cat .en#v',
+      'cat .e~x',
+      'cat .e<1-9>',
+      'cat .git*',
+      'cat .{a,b}',
+      'cat x/.e*/y',
+    ]) {
+      expect(credentialRefusal(line, HOME)).toContain('a .env file')
+    }
+    for (const line of ['cat *.env', 'cat *', 'ls *.txt', 'cat x.e*', 'cat src/*.ts', "sed 's/.*//' f"]) {
+      expect(credentialRefusal(line, HOME)).toBeUndefined()
+    }
+  })
+
+  test('a dot right after an unquoted brace, comma, group or bracket starts a name too', () => {
+    for (const line of ['cat {.,}env.local', 'cat {.e,x}nv*', 'cat (.|x)e*', 'cat (#i).e*', 'cat x/{a,.e}*']) {
+      expect(credentialRefusal(line, HOME)).toContain('a .env file')
+    }
+    for (const line of ["cat '{.,}env.local'", 'cat {a,b}.txt', 'cat (x)']) {
+      expect(credentialRefusal(line, HOME)).toBeUndefined()
+    }
+  })
+
+  test('a substitution is read with its own quoting', () => {
+    for (const line of ["X=$(gh pr list --jq '.[0].number')", "echo \"$(sed 's/.*//' f)\"", "Y=`jq '.[0]' f`"]) {
+      expect(credentialRefusal(line, HOME)).toBeUndefined()
+    }
+    expect(credentialRefusal('X=$(cat .e*)', HOME)).toContain('a .env file')
+  })
+
+  test('a line that lets a glob match a leading dot makes every unquoted glob count', () => {
+    for (const line of [
+      'unsetopt noglobdots; cat *',
+      'bash -c "shopt -s dotglob; cat *"',
+      'zsh -c "setopt globdots; cat *"',
+      "zsh -o globdots -c 'cat *'",
+      "bash -O dotglob -c 'cat *'",
+      'options[globdots]=on; cat *',
+      'cat ^x(D)',
+      'export GLOB_IGNORE=x; cat *',
+      'setopt globdots; cat *',
+      'setopt GLOB_DOTS && cat *',
+      'shopt -s dotglob; cat *',
+      'GLOBIGNORE=x; cat *',
+      'cat *(D)',
+      'cat *(.D)',
+      'set -o globdots; cat src/*',
+    ]) {
+      expect(credentialRefusal(line, HOME)).toContain('a .env file')
+    }
+    expect(credentialRefusal("shopt -s dotglob; sed 's/.*//' f", HOME)).toBeUndefined()
+  })
+
+  test('a quoted dot glob counts where the program expands it itself', () => {
+    for (const line of [
+      "git add '.e*'",
+      "git diff -- '.e*'",
+      "git -C /repo ls-files '.e*'",
+      "find . -name '.e*' -exec cat {} \\;",
+      "find . -iname '.e*' -delete",
+      "find . -path './.e*' -ls",
+      "rg -g '.e*' KEY",
+      "rg --glob='.e*' KEY",
+      "rg --iglob '.e*' KEY",
+      "grep -r --include='.e*' KEY .",
+      "ggrep -r --include '.e*' KEY .",
+      "find . -name '*env' -exec cat {} +",
+      "rg --hidden -g '*env' KEY",
+      "git add -f '*env'",
+      "git add '**/*env.local'",
+      "grep -r --include '*env*' KEY .",
+      "zip -r /tmp/o.zip . -i '*env'",
+      "tar czf /tmp/o.tgz --include '.e*' .",
+      "bsdtar -cf /tmp/o.tar '.e*'",
+      "rsync -a --include '.e*' --exclude '*' . /tmp/x",
+      "zip -r /tmp/o.zip . -i '.e*'",
+    ]) {
+      expect(credentialRefusal(line, HOME)).toContain('a .env file')
+    }
+    for (const line of [
+      "sed -e 's/.e*//' file",
+      "find . -name '.e*'",
+      "find . -name '.e*' -print",
+      "rg -g '*.ts' KEY",
+      "grep -r --include='*.ts' KEY .",
+      "git grep '.*foo'",
+      "git commit -m 'fix the .* regex'",
+      "tar czf /tmp/o.tgz --exclude='.git*' .",
+      "rsync -a --exclude '.*' . /tmp/x",
+      "grep -r --exclude '.e*' KEY .",
+      "grep -r --exclude-dir='.*' KEY .",
+      "rg -g '!.e*' KEY",
+      "git add '*.txt'",
+      "git add 'src/**/*.ts'",
+      "rg -g '*.ts' -g 'src/**/*.ts' KEY",
+      "git diff -- ':!.e*'",
+      "find . -name '*.ts' -exec wc -l {} +",
+      "X=$(gh pr list --jq '.[0].number')",
+    ]) {
+      expect(credentialRefusal(line, HOME)).toBeUndefined()
+    }
+  })
+
+  test('the Grep tool\'s glob is judged by the same rule', async ($, on) => {
+    const b = await session($, on)
+    for (const glob of ['.env', '.env.local', '.e*', '**/.env*', '{.env,x}', '.[e]nv', '*env', '**/*env*', '*.local', '*', 'src/**']) {
+      expect(await refusal($, b, { tool: 'Grep', pattern: 'KEY', path: '/repo', glob })).toContain('Credential guard (workbench-core)')
+    }
+    expect(await refusal($, b, { tool: 'Grep', pattern: 'KEY', glob: '*env' })).toContain('Credential guard (workbench-core)')
+    for (const glob of ['*.ts', '**/*.{ts,tsx}', '.github/**/*.yml', '.env.example', '*.txt', 'src/**/*.ts']) {
+      expect(await refusal($, b, { tool: 'Grep', pattern: 'KEY', path: '/repo', glob })).toBeUndefined()
+    }
+    expect(await refusal($, b, { tool: 'Grep', pattern: 'KEY', glob: '*.ts' })).toBeUndefined()
+    expect(credentialGlobRefusal('.e*')).toContain('a .env file')
+    expect(credentialGlobRefusal('*env')).toContain('a .env file')
+    expect(credentialGlobRefusal('*.ts')).toBeUndefined()
+  })
+
+  test('the quoting reader keys each word by its place, and fails closed where it cannot align', () => {
+    expect(credentialRefusal("echo '.e*' && cat .e\\\n*", HOME)).toContain('a .env file')
+    expect(credentialRefusal("cat .e* <<'EOF'\n.e*\nEOF", HOME)).toContain('a .env file')
+    expect(credentialRefusal("sed 's/.*//' <<'EOF'\ndon't\nEOF", HOME)).toBeUndefined()
+    expect(credentialRefusal("echo \"don't\" '.*'; sed 's/.*//' f", HOME)).toBeUndefined()
+    expect(credentialRefusal("cat <<'EOF'\n.e*\nEOF\necho '.e*'", HOME)).toBeUndefined()
+    expect(credentialRefusal("cat $'\\x2e'e*", HOME)).toContain('a .env file')
+    expect(credentialRefusal('echo \'.e*\' "x', HOME)).toContain('Credential guard (workbench-core)')
+  })
+
+  test('a long line gets a fast verdict', () => {
+    const quotes = `echo ${'".'.repeat(100_001)}`
+    const closed = `echo ${'".'.repeat(100_000)}`
+    const braces = `cat ${'{a,b}'.repeat(40)} x`
+    for (const line of [quotes, closed, braces]) {
+      const start = Date.now()
+      credentialRefusal(line, HOME)
+      expect(Date.now() - start < 2_000).toBe(true)
+    }
+    expect(credentialRefusal(braces, HOME)).toBeUndefined()
+    expect(credentialRefusal(`echo ${'x'.repeat(200_001)}; node -e "console.log(process.env.PATH)"`, HOME)).toBeUndefined()
+  })
+
+  test('a search pattern is dropped by its place, never by its text', () => {
+    expect(credentialRefusal("grep .e* -e '.e*'", HOME)).toContain('a .env file')
+    expect(credentialRefusal("git grep --no-index '.e*' -- '.e*'", HOME)).toContain('a .env file')
+    expect(credentialRefusal("git commit .e* -m '.e*'", HOME)).toContain('a .env file')
+    expect(credentialRefusal("grep -e '.env.local' src", HOME)).toBeUndefined()
+    expect(credentialRefusal('grep --regex .env x src', HOME)).toBeUndefined()
+  })
+
+  test('a glob a program expands is judged by whether it can match .env or .env.<suffix>', () => {
+    for (const glob of ['*.keys', '*testing', '*.vault', 'a/*', '*env', 'x/*', '*.ci', '*.bak', '*.env', '.env.*', '?env', '*[e]nv.local', '*.{ts,local}']) {
+      expect([glob, credentialGlobRefusal(glob) === undefined]).toEqual([glob, false])
+    }
+    for (const glob of ['*.ts', '*.txt', 'src/**/*.ts', '*.{ts,tsx}', '*.json', 'docs/*.md', '*.example', '*Test.php', '*.test.ts', '*.spec.js', '*_test.go']) {
+      expect([glob, credentialGlobRefusal(glob) === undefined]).toEqual([glob, true])
+    }
+    expect(credentialGlobRefusal('src/**')).toContain('a .env file')
+    expect(credentialGlobRefusal('*.production.local')).toContain('a .env file')
+  })
+
+  test('a test-file glob runs as a program glob', () => {
+    for (const line of [
+      'find tests -name "*Test.php" -exec vendor/bin/pest {} +',
+      "find . -name '*.test.ts' -exec cat {} +",
+      "rg -g '*.spec.js' KEY",
+      "git add '*_test.go'",
+    ]) {
+      expect(credentialRefusal(line, HOME)).toBeUndefined()
+    }
+  })
+
+  test('a test-file glob runs as a Grep tool glob', async ($, on) => {
+    const b = await session($, on)
+    for (const glob of ['*Test.php', '*.test.ts', '*.spec.js', '*_test.go']) {
+      expect(await refusal($, b, { tool: 'Grep', pattern: 'KEY', path: '/repo', glob })).toBeUndefined()
+    }
+  })
+
+  test('each slow shape gets a fast verdict', () => {
+    for (const line of [
+      `cat ${'x.env.'.repeat(40_000)}`,
+      `echo '(${'D'.repeat(100_000)}`,
+      `echo ${'('.repeat(100_000)}`,
+      `cat a${'.env'.repeat(50_000)}`,
+      `cat ${'.env.example|'.repeat(20_000)}`,
+    ]) {
+      const start = Date.now()
+      credentialRefusal(line, HOME)
+      expect([line.slice(0, 20), Date.now() - start < 2_000]).toEqual([line.slice(0, 20), true])
+    }
+  })
+
+  test('the long-option abbreviation is the credential guard\'s alone', () => {
+    expect(credentialRefusal('grep --regex .env x src', HOME)).toBeUndefined()
+    expect(credentialRefusal("grep -e '.env.local' src", HOME)).toBeUndefined()
+    expect(credentialRefusal('grep --regex .env .env', HOME)).toContain('a .env file')
+    const roots = searchRoots(parseShell('grep -r --exclude-d pattern /'), '/repo', HOME)
+    expect(searchRefusal(roots, HOME)).toContain('Whole-disk search guard')
+  })
+
+  test('a .env after a variable may be a .env file, and is refused', () => {
+    for (const line of ['cat $DIR.env', 'cat ${DIR}.env', 'cat "$DIR".env', 'cat $(pwd)/.env', 'cp $D.env.local /scratch/x']) {
+      expect(credentialRefusal(line, HOME)).toContain('a .env file')
+    }
+  })
+
+  test('a search pattern is no path, and the paths a search reads still count', () => {
+    for (const line of [
+      "grep -rn '\\.env' docs",
+      "grep -n 'process.env' src/a.js",
+      'rg -n "import.meta.env" src',
+      'grep -e "a .env b" -e x src',
+      'grep --regexp="a .env b" src',
+      'git grep -n "a .env b" -- hooks',
+    ]) {
+      expect(credentialRefusal(line, HOME)).toBeUndefined()
+    }
+    for (const line of [
+      'grep PASSWORD .env',
+      'grep -e x .env.production',
+      'grep -r --include=.env x .',
+      'rg -f .env x',
+      'git grep x -- config/.env',
+      'grep "a .env b" .env.local',
+      'grep "a .env b" "a .env b"',
+      'grep -e"a .env b" "a .env b"',
+    ]) {
+      expect(credentialRefusal(line, HOME)).toContain('a .env file')
+    }
+  })
+
+  test('a pattern that reads as a .env path is refused, because the guard cannot tell it from a path', () => {
+    for (const line of [
+      'grep -rn .env src',
+      'rg config/.env src',
+      'grep ".env*" src',
+      'grep --unknown .env x src',
+      'ack -C ^ .env',
+      'ack --files-from .env x',
+      'ack --ackrc .env x',
+      'grep --exclude-f .env x',
+    ]) {
+      expect(credentialRefusal(line, HOME)).toContain('a .env file')
+    }
+  })
+
+  test('a long option may be abbreviated, and an abbreviation that names one known option takes its value', () => {
+    expect(credentialRefusal('grep --regex "a .env b" src', HOME)).toBeUndefined()
+    expect(credentialRefusal('grep --exclude-fr .env x src', HOME)).toContain('a .env file')
+    expect(credentialRefusal('grep --ex "a .env b" src', HOME)).toBeUndefined()
+  })
+
+  test('a command or subcommand named like an Object.prototype key is judged, not thrown on', () => {
+    for (const line of ['constructor .env', '__proto__ .env', 'toString .env', 'git toString .env', 'git constructor .env', 'git __proto__ .env']) {
+      expect(credentialRefusal(line, HOME)).toContain('a .env file')
+    }
+  })
+
+  test('a commit message is prose, unless the line pipes it on', () => {
+    for (const line of [
+      'git commit -m "Read the .env with cat"',
+      'git commit --message="Read the .env with cat"',
+      "git commit -F - <<'EOF'\nfix: x\n\nRead it with cat and .env\nEOF",
+      'git commit -F - <<< "Read it with cat and .env"',
+    ]) {
+      expect(credentialRefusal(line, HOME)).toBeUndefined()
+    }
+    for (const line of [
+      'git commit -m .env | xargs cat',
+      "git commit -F - <<'EOF' | xargs cat\n.env\nEOF",
+      'git commit -F - < .env',
+      'cat $(git commit -m .env)',
+    ]) {
+      expect(credentialRefusal(line, HOME)).toContain('a .env file')
+    }
+  })
+
+  test('a redirect to or from a .env file is refused with no reading program in the line', () => {
+    for (const line of ['echo A=1 > .env', "printf 'A=1' >> config/.env.local", 'mysql app < ~/proj/.env.test', 'echo x 2> .env.production']) {
+      expect(credentialRefusal(line, HOME)).toContain('a .env file')
+    }
+    expect(credentialRefusal('echo A=1 > .env.example', HOME)).toBeUndefined()
+    expect(credentialRefusal('echo A=1 > notes.txt', HOME)).toBeUndefined()
+  })
+
+  test('a .env path word is refused whatever the program, a reader or not', async ($, on) => {
+    const b = await session($, on)
+    for (const line of [
+      'source .env',
+      '. .env',
+      'git commit -F .env',
+      'docker run --env-file .env app',
+      'docker run --env-file=.env app',
+      'xargs -a .env echo',
+      'some-tool-nobody-knows config/.env.local',
+    ]) {
+      expect(credentialRefusal(line, HOME)).toContain('a .env file')
+      expect(await refusal($, b, bash(line))).toContain('Credential guard (workbench-core)')
+    }
+    const exported = "export $(grep -v '^#' .env | xargs)"
+    expect(credentialRefusal(exported, HOME)).toContain('a .env file')
+    expect((await refusal($, b, bash(exported))) === undefined).toBe(false)
+    for (const line of ['source .env.example', 'docker run --env-file .env.sample app', 'some-tool process.env.PATH', 'echo $ENV']) {
+      expect(credentialRefusal(line, HOME)).toBeUndefined()
+    }
+  })
+
+  test('a .env path given only to a program that reads no file content runs', async ($, on) => {
+    const b = await session($, on)
+    for (const line of [
+      'ls .env',
+      'ls -la config/.env.local',
+      'test -f .env',
+      '[ -f .env ]',
+      '[[ ! -e .env.local ]]',
+      'stat -f %z .env',
+      'find . -name ".env*"',
+      'find . -type f -iname .env -print',
+      'git rm --cached .env',
+      'git -C /repo check-ignore -q .env',
+      'echo "a note about .env files"',
+      "printf '%s\\n' 'Keep .env out of git.'",
+    ]) {
+      expect(credentialRefusal(line, HOME)).toBeUndefined()
+      expect(await refusal($, b, bash(line))).toBeUndefined()
+    }
+  })
+
+  test('a program that reads no file content is refused with an action, an unknown option, a pipe, a redirect or a substitution', () => {
+    for (const line of [
+      'find . -name .env -exec cat {} \\;',
+      'find . -name .env -delete',
+      'find .env',
+      'echo .env | xargs cat',
+      'echo .env',
+      'echo ".env"',
+      'ls .env > out',
+      'ls --unknown .env',
+      'ls $(echo .env)',
+      'git add .env',
+      'git -C /repo add .env',
+      'git add .env && cat .env',
+      'git add -p .env',
+      'git -c filter.x.clean=cat check-ignore .env',
+      'git rm .env',
+      'test .env = x',
+      'sudo ls .env',
+      "printf -v f '%s' 'a .env note'",
+    ]) {
+      expect(credentialRefusal(line, HOME)).toContain('a .env file')
+    }
+  })
+
+  test('a glob or brace inside quotes is text, because the shell expands neither there', async ($, on) => {
+    const b = await session($, on)
+    for (const line of [
+      "sed 's/.*//' file",
+      "awk '/.*/' file",
+      "perl -pe 's/.*//' file",
+      "grep -E '.*foo' file",
+      'echo "a .* b"',
+      `python3 -c "import re; print(re.sub('.*', '', 'x'))"`,
+      "sed -e 's/.e*//' -e \"s/{a,b}//\" file",
+    ]) {
+      expect(credentialRefusal(line, HOME)).toBeUndefined()
+      expect(await refusal($, b, bash(line))).toBeUndefined()
+    }
+    for (const line of ['cat .e*', 'cat ".env"', "cat '.env.local'", 'cat .env{,.local}', 'cat ".e"*', 'cat \\.e*']) {
+      expect(credentialRefusal(line, HOME)).toContain('a .env file')
+    }
+  })
+
+  test('a glob in a heredoc body counts only where xargs or a read loop turns the body into arguments', () => {
+    expect(credentialRefusal("python3 - <<'PY'\nimport re\nprint(re.sub('.*', '', 'x'))\nPY", HOME)).toBeUndefined()
+    expect(credentialRefusal("while read f; do cat $f; done <<'EOF'\n.e*\nEOF", HOME)).toContain('a .env file')
+  })
+
+  test('a $_ inside single quotes is perl or awk text, and in double quotes or bare it is the shell variable', () => {
+    expect(credentialRefusal("ls .env; perl -ne 'print $_' notes.txt", HOME)).toBeUndefined()
+    expect(credentialRefusal('ls .env; perl -ne "print $_" notes.txt', HOME)).toContain('a .env file')
+    expect(credentialRefusal("ls .env; awk '{ print $_ }' notes.txt", HOME)).toBeUndefined()
+  })
+
+  test('a .env word the guard let through cannot come back through $_', () => {
+    for (const line of [
+      'ls .env; cat $_',
+      'test -f .env && cat "$_"',
+      'git commit -m .env; cat $_',
+      'grep -r -e .env.local; cat $_',
+      'ls .env; cat ${_}',
+    ]) {
+      expect(credentialRefusal(line, HOME)).toContain('a .env file')
+    }
+    expect(credentialRefusal('ls .env', HOME)).toBeUndefined()
+    expect(credentialRefusal('ls notes.md; cat $_', HOME)).toBeUndefined()
+    for (const line of ['ls .env; cat "${_}"', 'ls .env; cat ${_:-}', 'ls .env; cat "${_:0}"', 'ls .env; cat ${_#x}']) {
+      expect(credentialRefusal(line, HOME)).toContain('a .env file')
+    }
+    for (const line of ['ls .env; echo $_x', 'ls .env; echo "${_x}"']) {
+      expect(credentialRefusal(line, HOME)).toBeUndefined()
+    }
+  })
+
+  test('a substitution right before .env may name a folder, and is refused', () => {
+    expect(credentialRefusal('cat `pwd`.env', HOME)).toContain('a .env file')
+    expect(credentialRefusal('cat $(pwd).env', HOME)).toContain('a .env file')
+  })
+
+  test('the text consumers take only their own text forms, and their path arguments still count', () => {
+    for (const line of [
+      "gh pr create -F - <<'EOF'\nKeep .env out.\nEOF",
+      "gh pr edit 1 --body-file=- <<'EOF'\nKeep .env out.\nEOF",
+      "gh issue create --body-file - <<'EOF'\nKeep .env out.\nEOF",
+      "git commit --file - <<'EOF'\nfix: x\n\nKeep .env out.\nEOF",
+      "git commit --file=- <<< 'Keep .env out.'",
+    ]) {
+      expect(credentialRefusal(line, HOME)).toBeUndefined()
+    }
+    for (const line of ['pbcopy .env', 'pbcopy < .env', 'wc -l .env', "gh pr create --body-file .env"]) {
+      expect(credentialRefusal(line, HOME)).toContain('a .env file')
+    }
+  })
+
+  test('a function, a path or an assignment in front of a program that reads no file content keeps no exemption', () => {
+    for (const line of [
+      'ls() { cat "$@"; }; ls .env',
+      'function ls { cat "$@"; }; ls .env',
+      './ls .env',
+      '/tmp/x/ls .env',
+      'PATH=/x:$PATH ls .env',
+      'FOO=1 git rm --cached .env',
+      'X=1; ls .env',
+      'alias ls=cat; ls .env',
+      'enable -n ls; ls .env',
+      'builtin ls .env',
+      'command ls .env',
+      'hash -p /bin/cat ls; ls .env',
+      'git rm -- --cached .env',
+    ]) {
+      expect(credentialRefusal(line, HOME)).toContain('a .env file')
+    }
+    expect(credentialRefusal('git rm --cached -- .env', HOME)).toBeUndefined()
+    expect(credentialRefusal('/bin/ls notes.md', HOME)).toBeUndefined()
+  })
+
+  test('a heredoc body or here-string is text only for a known text consumer', () => {
+    for (const line of [
+      "gh pr comment 1 --body-file - <<'EOF'\nKeep .env out of git.\nEOF",
+      "gh release create v1 --notes-file - <<'EOF'\nKeep .env out of git.\nEOF",
+      'wc -w <<< "Keep .env out of git."',
+      'pbcopy <<< "Keep .env out of git."',
+      "git commit -F - <<'EOF'\nfix: x\n\nKeep .env out of git.\nEOF",
+    ]) {
+      expect(credentialRefusal(line, HOME)).toBeUndefined()
+    }
+    for (const line of [
+      'git add --pathspec-from-file=- <<< .env',
+      'git update-index --add --stdin <<< .env',
+      'pax -w -f /tmp/o.pax <<< .env',
+      'bsdtar -cf /tmp/o.tar -T - <<< .env',
+      "nodejs <<'EOF'\nrequire('fs').readFileSync('.env')\nEOF",
+      'wc --files0-from=- <<< .env',
+      "gh api -F x=@- <<'EOF'\n.env\nEOF",
+      "gh pr comment 1 --body-file - <<'EOF' | xargs cat\n.env\nEOF",
+    ]) {
+      expect(credentialRefusal(line, HOME)).toContain('a .env file')
+    }
+  })
+
+  test('a heredoc body or here-string that xargs or a read loop turns into arguments counts, reader or not', () => {
+    for (const line of [
+      "xargs -I{} some-tool {} <<'EOF'\n.env\nEOF",
+      'xargs some-tool <<< ".env"',
+      "some-tool <<'EOF' | xargs other-tool\n.env\nEOF",
+      "while read f; do some-tool \"$f\"; done <<'EOF'\n.env\nEOF",
+    ]) {
+      expect(credentialRefusal(line, HOME)).toContain('a .env file')
+    }
+  })
+
+  test('every .env path shape is refused for every action', () => {
+    for (const path of ['.env', '.env.local', 'foo/.env', '~/proj/.env.test', `${HOME}/proj/.env.production`]) {
+      for (const line of [`cat ${path}`, `grep x ${path}`, `cp ${path} /scratch/x`, `ln -s ${path} x`, `sed -i '' 's/a/b/' ${path}`, `echo x > ${path}`, `wc -l < ${path}`]) {
+        expect(credentialRefusal(line, HOME)).toContain('a .env file')
+      }
+    }
   })
 })
 

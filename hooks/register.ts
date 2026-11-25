@@ -211,6 +211,7 @@ import {
   PEER_REFUSAL,
   SEARCH_UNREAD,
   bodyTargets,
+  credentialGlobRefusal,
   credentialPathRefusal,
   credentialRefusal,
   GUARD_FAILED,
@@ -2019,7 +2020,8 @@ async function guardVerdict($: EngineInterface, e: Guarded, isAttended: boolean)
         const realDir = home ? await realPathOf($, ledgerDirOf(home)) : undefined
         return ledgerPathRefusal(path, real, realDir)
       }
-      const refusal = path === '' ? undefined : (credentialPathRefusal(path, home) ?? (isWrite ? await ledgerRefusal() : undefined))
+      const glob = e.tool === 'Grep' ? text(e.glob) : ''
+      const refusal = (path === '' ? undefined : (credentialPathRefusal(path, home) ?? (isWrite ? await ledgerRefusal() : undefined))) ?? (glob === '' ? undefined : credentialGlobRefusal(glob))
       if (refusal !== undefined) return { deny: refusal }
       if (e.tool !== 'Grep' && e.tool !== 'Glob') return undefined
       const roots = await withRealPaths($, toolSearchRoots(e.tool, { path: e.path, pattern: e.pattern }, await $.session.cwd(), home))

@@ -1986,6 +1986,89 @@ describe('a catch-up of the default branch from its own upstream runs free, and 
     expect(await bash($, b, 'git merge origin/main')).toMatch(DECLINED.merge)
   })
 
+  const EVIL_UPSTREAM = {
+    remote: 'evil',
+    upstream: 'refs/remotes/evil/main',
+    originUrl: 'https://github.com/x/y',
+    fetchSpec: '+refs/heads/*:refs/remotes/evil/*',
+    remoteUrls: 'remote.origin.url git@github.com:o/r.git\nremote.evil.url https://github.com/x/y',
+    fullNames: { 'evil/main': 'refs/remotes/evil/main' },
+  }
+
+  test('a linked worktree shares the main worktree record, so a remote added after session start gives its main no catch-up', async ($, on) => {
+    const b = onMain(on)
+    b.repos['/wt'] = { ...MAIN, commonDir: '/repo/.git' }
+    await session($)
+    b.repos['/repo'] = { ...MAIN, ...EVIL_UPSTREAM, branch: 'other' }
+    b.repos['/wt'] = { ...MAIN, ...EVIL_UPSTREAM, commonDir: '/repo/.git' }
+    expect(await bash($, b, 'git -C /wt pull')).toMatch(DECLINED.merge)
+    expect(await bash($, b, 'git -C /wt merge evil/main')).toMatch(DECLINED.merge)
+    b.repos['/wt'] = { ...MAIN, commonDir: '/repo/.git' }
+    expect(await bash($, b, 'git -C /wt pull')).toBeUndefined()
+  })
+
+  test('a session started in a linked worktree records the repository, so a set-url seen from the main worktree asks', async ($, on) => {
+    const b = onMain(on)
+    b.repos['/wt'] = { ...MAIN, commonDir: '/repo/.git' }
+    b.cwd = '/wt'
+    await $.session.start(start())
+    await $.prompt.submit(prompt('my review is done'))
+    b.repos['/repo'] = { ...MAIN, originUrl: 'https://github.com/other/repo' }
+    expect(await bash($, b, 'git -C /repo pull')).toMatch(DECLINED.merge)
+    b.repos['/repo'] = { ...MAIN }
+    expect(await bash($, b, 'git -C /repo pull')).toBeUndefined()
+  })
+
+  const withOldRemote = (b: Bench, urlRead: { exitCode: number; stdout: string } | undefined, configRead: { exitCode: number; stdout: string }): void => {
+    b.run = argv => {
+      const line = argv.join(' ')
+      if (line === 'git -C /repo remote') return { exitCode: 0, stdout: 'origin\nold\n' }
+      if (line === 'git -C /repo remote get-url old') return urlRead ?? { exitCode: 128, stdout: '' }
+      if (line === 'git -C /repo config --get remote.old.url') return configRead
+      return undefined
+    }
+  }
+
+  test('a remote with no URL is recorded as such, so the record is made at session start and origin catches up free until its URL changes', async ($, on) => {
+    const b = onMain(on)
+    withOldRemote(b, undefined, { exitCode: 1, stdout: '' })
+    await session($)
+    expect(await bash($, b, 'git pull')).toBeUndefined()
+    b.repos['/repo'] = { ...MAIN, originUrl: 'https://github.com/other/repo' }
+    expect(await bash($, b, 'git pull')).toMatch(DECLINED.merge)
+  })
+
+  for (const [label, urlRead] of [
+    ['a failed URL read', undefined],
+    ['the name git reads as its URL', { exitCode: 0, stdout: 'old\n' }],
+  ] as const) {
+    test(`a catch-up from a remote with no URL asks, with ${label}`, async ($, on) => {
+      const b = onMain(on)
+      withOldRemote(b, urlRead, { exitCode: 1, stdout: '' })
+      await session($)
+      b.repos['/repo'] = { ...MAIN, remote: 'old', upstream: 'refs/remotes/old/main', fetchSpec: '+refs/heads/*:refs/remotes/old/*', fullNames: { 'old/main': 'refs/remotes/old/main' } }
+      expect(await bash($, b, 'git pull')).toMatch(DECLINED.merge)
+      expect(await bash($, b, 'git merge old/main')).toMatch(DECLINED.merge)
+    })
+  }
+
+  for (const [label, configRead] of [
+    ['its URL is configured', { exitCode: 0, stdout: 'https://github.com/x/y\n' }],
+    ['its config cannot be read', { exitCode: 128, stdout: '' }],
+  ] as const) {
+    test(`a URL read that fails while ${label} makes no record at session start, and the first catch-up records as before`, async ($, on) => {
+      const b = onMain(on)
+      withOldRemote(b, undefined, configRead)
+      await session($)
+      expect(await bash($, b, 'git pull')).toMatch(DECLINED.merge)
+      b.run = undefined
+      b.repos['/repo'] = { ...MAIN, originUrl: 'https://github.com/o/r' }
+      expect(await bash($, b, 'git pull')).toBeUndefined()
+      b.repos['/repo'] = { ...MAIN }
+      expect(await bash($, b, 'git pull')).toMatch(DECLINED.merge)
+    })
+  }
+
   test('a sub-agent runs a fetch into its own remote-tracking refs, and is refused one that maps another branch onto origin/main as a remote-tracking ref update', async ($, on) => {
     const b = onMain(on)
     await session($)

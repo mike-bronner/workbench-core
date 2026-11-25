@@ -59,7 +59,7 @@ export type Bench = {
   // The repository `git -C <dir> rev-parse` reads, by directory: HEAD, and
   // what @{push} points at. A directory not here, or a field left out, makes
   // git fail, as outside a repository or with no push target.
-  repos: Record<string, { head?: string; pushed?: string; upstream?: string; fullNames?: Record<string, string>; fetchSpec?: string; pullRebase?: string | null; branchRebase?: string | null; remote?: string; branch?: string | null; originHead?: string; originUrl?: string; ghResolved?: string | null; remoteUrls?: string | null; remotesShown?: string }>
+  repos: Record<string, { head?: string; pushed?: string; upstream?: string; fullNames?: Record<string, string>; fetchSpec?: string; pullRebase?: string | null; branchRebase?: string | null; remote?: string; branch?: string | null; originHead?: string; originUrl?: string; ghResolved?: string | null; remoteUrls?: string | null; remotesShown?: string; commonDir?: string }>
   tops: Record<string, string>
   trees: Record<string, string | null>
   shown?: string
@@ -223,6 +223,7 @@ export function bench(on: On, options: BenchOptions = {}): Bench {
     const verb = e.argv.slice(3).join(' ')
     const answer = (out: string | undefined) => ({ value: out === undefined ? { ...ran(''), exitCode: 1 } : ran(`${out}\n`) })
     if (gitAt !== undefined && verb === 'rev-parse --show-toplevel') return answer(top)
+    if (gitAt !== undefined && verb === 'rev-parse --path-format=absolute --git-common-dir') return answer(gitAt.commonDir ?? `${top}/.git`)
     if (gitAt !== undefined && verb === 'config --get remote.origin.url') return answer(gitAt.originUrl)
     if (gitAt !== undefined && verb === 'config --get-regexp ^remote\\..*\\.gh-resolved$') return gitAt.ghResolved === null ? { value: { ...ran(''), exitCode: 128 } } : answer(gitAt.ghResolved)
     if (gitAt !== undefined && verb === 'remote -v') {

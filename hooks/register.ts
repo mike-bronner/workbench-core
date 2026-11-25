@@ -813,20 +813,26 @@ async function isPipelineRewrite($: EngineInterface, line: string, agentId: stri
 
 const remoteKeyOf = (dir: string, remote: string): string => `${dir}\0${remote}`
 
+async function pinnedUrlOf($: EngineInterface, dir: string, name: string): Promise<string | undefined> {
+  const url = await gitOut($, dir, ['remote', 'get-url', name])
+  if (url !== undefined) return url
+  return (await configValueOf($, dir, `remote.${name}.url`)) === null ? '' : undefined
+}
+
 async function pinRemotes($: EngineInterface, dir: string): Promise<string | undefined> {
-  const top = await gitOut($, dir, ['rev-parse', '--show-toplevel'])
-  if (top === undefined) return undefined
-  if ((await read($, remoteUrls))[remoteKeyOf(top, '')] !== undefined) return top
-  const listed = await $.process.run(['git', '-C', top, 'remote'], { timeoutMs: 10_000 }).catch(() => undefined)
+  const repo = await gitOut($, dir, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
+  if (repo === undefined) return undefined
+  if ((await read($, remoteUrls))[remoteKeyOf(repo, '')] !== undefined) return repo
+  const listed = await $.process.run(['git', '-C', dir, 'remote'], { timeoutMs: 10_000 }).catch(() => undefined)
   if (listed === undefined || listed.exitCode !== 0) return undefined
-  const pins: [string, string][] = [[remoteKeyOf(top, ''), '']]
+  const pins: [string, string][] = [[remoteKeyOf(repo, ''), '']]
   for (const name of listed.stdout.split('\n').map(line => line.trim()).filter(line => line !== '')) {
-    const url = await gitOut($, top, ['remote', 'get-url', name])
+    const url = await pinnedUrlOf($, dir, name)
     if (url === undefined) return undefined
-    pins.push([remoteKeyOf(top, name), url])
+    pins.push([remoteKeyOf(repo, name), url])
   }
   await update($, remoteUrls, held => ({ ...Object.fromEntries(pins), ...held }))
-  return top
+  return repo
 }
 
 async function isPipelineRebase($: EngineInterface, pulls: readonly PullRebase[], agentId: string | undefined): Promise<boolean> {
@@ -874,8 +880,8 @@ async function isCatchUp($: EngineInterface, catchUp: CatchUp): Promise<boolean>
   if (catchUp.remote !== undefined && catchUp.remote !== remote) return false
   const url = await gitOut($, at, ['remote', 'get-url', remote])
   if (originRepoOf(url) === undefined || url === undefined) return false
-  const top = await pinRemotes($, at)
-  if (top === undefined || (await read($, remoteUrls))[remoteKeyOf(top, remote)] !== url) return false
+  const repo = await pinRemotes($, at)
+  if (repo === undefined || (await read($, remoteUrls))[remoteKeyOf(repo, remote)] !== url) return false
   if ((await gitOut($, at, ['config', '--get-all', `remote.${remote}.fetch`])) !== `+refs/heads/*:refs/remotes/${remote}/*`) return false
   if (catchUp.kind === 'pull' && catchUp.isRebaseOff === undefined && (await rebasesOnPull($, at, branch))) return false
   if (catchUp.ref === undefined) return true

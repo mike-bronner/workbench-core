@@ -521,7 +521,7 @@ describe('the working rules on commits and code comments', () => {
     expect(RULES).toContain('A plain `git fetch`, `git fetch --all` or `git fetch <remote>`, and a fetch with only plain flags that maps each branch onto its own remote-tracking ref, such as `git fetch origin x:refs/remotes/origin/x`, change no local branch and no commit, so they run with no question on a line of their own. Beside a merge or pull, a fetch with any option or refspec makes that merge or pull no catch-up.')
     expect(RULES).toContain('A sub-agent, a `-p` run and a scheduled tick never rewrite history, reset a branch or run such a remote-tracking ref update.')
     expect(RULES).not.toContain('a branch, fetch or push that moves a ref')
-    expect(RULES).toContain("Its remote's URL must still be the one the session first saw, so after `git remote set-url` it asks as a merge. A remote added after the session started is no catch-up either. A pull")
+    expect(RULES).toContain("Its remote's URL must still be the one the session first saw, so after `git remote set-url` it asks as a merge. A remote added after the session started is no catch-up either, in any worktree of the repository, and nor is a remote with no URL. A pull")
   })
 
   test('a plan file is written with no question and no prompt', () => {

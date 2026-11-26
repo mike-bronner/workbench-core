@@ -60,7 +60,10 @@ Before a task that produces work, run the intake routine in
    remote is no fork, and the same rules give its steps. Ask each such
    question through `AskUserQuestion`, on its own. A tree a sub-agent hands
    back commits with no question once a green `Final suite run:` saw that
-   exact tree, and a plain push of a feature branch needs none. Without that
+   exact tree, and a plain push of a feature branch needs none. A plain push
+   of the default branch needs none either when every commit it sends was
+   such a commit. A sub-agent may run that commit and push itself after the
+   green run, and nobody runs the full suite just to commit. Without that
    green run, the tree is work Mike did not ask to commit, so you ask him. A
    permission prompt is never the approval, because a prompt that appears
    mid-flow gets answered without a review. An Index pipeline run never asks

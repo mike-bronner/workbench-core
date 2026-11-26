@@ -68,7 +68,9 @@ export const COMMIT_REFUSAL =
 export const PUSH_REFUSAL =
   'This git push was refused: Mike has not approved it. A prompt of his own ' +
   'that asks for a push or a release approves the pushes of the turn it ' +
-  'opened. Only a plain push of a feature branch runs with no approval. A ' +
+  'opened. Only a plain push of a feature branch, or of the default branch ' +
+  'when every commit it sends was made with no question from a green final ' +
+  'suite run, runs with no approval. A ' +
   'commit approval, typed or picked, approves no push. Once the ' +
   'commit has landed, ask about the push in an AskUserQuestion call of its ' +
   'own, with the branch, the remote and the commits it sends, and push after ' +

@@ -2,11 +2,11 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On, PromptOrigin } from 'claude-code'
 
-import { SUBAGENT_REFUSAL } from '../hooks/mods/commit-guard'
+import { FORCE_REFUSAL, SUBAGENT_REFUSAL } from '../hooks/mods/commit-guard'
 import type { Script } from '../hooks/mods/full-suite'
 import { SUITE_PARTS_FILE, isWholeRun, partOf, suitePartsOf } from '../hooks/mods/full-suite'
 import type { Bench } from './bench'
-import { ASKS, HOME, PERSON, SID, bench, start } from './bench'
+import { ASKS, HOME, PERSON, SID, bench, exactly, start } from './bench'
 
 const TREE = 'a'.repeat(40)
 const OTHER = 'b'.repeat(40)
@@ -27,13 +27,32 @@ type World = {
   indexEnvs: (string | undefined)[]
   committed: Map<string, string>
   dirty: Set<string>
+  tracked: string | undefined
+  fetchSpec: string | undefined
+  parents: Map<string, string[]>
+  trees: Map<string, string>
+  otherFetch: string[]
+  hooksPath: string | undefined
+  hookConfig: string
 }
 
 const ok = (stdout: string) => ({ exitCode: 0, stdout })
 const SCRATCH = /^workbench-tree-index-[A-Za-z0-9-]+$/
-const PUSH_KEYS: ReadonlySet<string> = new Set(['push.default', 'remote.origin.push', 'remote.origin.mirror', 'push.followTags'])
+const PUSH_KEYS: ReadonlySet<string> = new Set(['push.default', 'remote.origin.push', 'remote.origin.mirror', 'push.followTags', 'push.recurseSubmodules', 'submodule.recurse'])
 
-const world = (): World => ({ work: TREE, staged: TREE, scratch: new Map(), branch: 'feat', pushTarget: 'origin refs/heads/feat', pushUrls: [URL], config: {}, indexEnvs: [], committed: new Map(), dirty: new Set() })
+const world = (): World => ({ work: TREE, staged: TREE, scratch: new Map(), branch: 'feat', pushTarget: 'origin refs/heads/feat', pushUrls: [URL], config: {}, indexEnvs: [], committed: new Map(), dirty: new Set(), tracked: undefined, fetchSpec: '+refs/heads/*:refs/remotes/origin/*', parents: new Map(), trees: new Map(), otherFetch: [], hooksPath: undefined, hookConfig: '' })
+
+function ancestorsOf(w: World, from: string | undefined): Set<string> {
+  const seen = new Set<string>()
+  const queue = from === undefined ? [] : [from]
+  while (queue.length > 0) {
+    const at = queue.shift() as string
+    if (seen.has(at)) continue
+    seen.add(at)
+    queue.push(...(w.parents.get(at) ?? []))
+  }
+  return seen
+}
 
 function modelGit(b: Bench, worlds: Record<string, World>): void {
   b.run = (argv, init) => {
@@ -62,6 +81,21 @@ function modelGit(b: Bench, worlds: Record<string, World>): void {
         return ok('')
       }
       return ok(`${w.scratch.get(index)}\n`)
+    }
+    const head = b.repos[top]?.head ?? ''
+    if (verb === 'show -s --no-show-signature --format=%H %T %P HEAD') return ok(`${head} ${w.trees.get(head) ?? ''} ${(w.parents.get(head) ?? []).join(' ')}\n`)
+    if (verb === 'rev-parse --path-format=absolute --git-path hooks') return ok(`${w.hooksPath ?? `${top}/.git/hooks`}\n`)
+    if (verb === 'config --get-regexp ^hook\\.') return w.hookConfig === '' ? { exitCode: 1, stdout: '' } : ok(w.hookConfig)
+    if (verb === 'config --get-regexp ^remote\\..*\\.fetch$') {
+      const lines = [...(w.fetchSpec === undefined ? [] : [`remote.origin.fetch ${w.fetchSpec}`]), ...w.otherFetch]
+      return lines.length === 0 ? { exitCode: 1, stdout: '' } : ok(lines.map(line => `${line}\n`).join(''))
+    }
+    if (verb === 'config --get-all remote.origin.fetch') return w.fetchSpec === undefined ? { exitCode: 1, stdout: '' } : ok(`${w.fetchSpec}\n`)
+    if (verb === `merge-base --is-ancestor refs/remotes/origin/${w.branch} HEAD`) return { exitCode: w.tracked === undefined ? 128 : ancestorsOf(w, head).has(w.tracked) ? 0 : 1, stdout: '' }
+    if (verb === `rev-list refs/remotes/origin/${w.branch}..HEAD`) {
+      if (w.tracked === undefined) return { exitCode: 128, stdout: '' }
+      const sent = ancestorsOf(w, w.tracked)
+      return ok([...ancestorsOf(w, head)].filter(sha => !sent.has(sha)).map(sha => `${sha}\n`).join(''))
     }
     if (verb === 'symbolic-ref --short -q HEAD') return ok(`${w.branch}\n`)
     if (verb === `for-each-ref --format=%(push:remotename) %(push:remoteref) refs/heads/${w.branch}`) return ok(`${w.pushTarget}\n`)
@@ -117,8 +151,9 @@ async function bash($: Engine, b: Bench, command: string, agentId?: string, extr
   return result.deny
 }
 
-async function asked($: Engine, command: string): Promise<unknown> {
+async function asked($: Engine, command: string, agentId?: string): Promise<unknown> {
   const result = await $.classic.PermissionRequest({
+    ...(agentId === undefined ? {} : { agent_id: agentId }),
     hook_event_name: 'PermissionRequest',
     session_id: 's',
     transcript_path: '/t.jsonl',
@@ -131,6 +166,10 @@ async function asked($: Engine, command: string): Promise<unknown> {
 
 async function spawnFinal($: Engine): Promise<void> {
   expect((await $.agent.spawn({ prompt: FINAL, subagentType: 'workbench-dev-team:holmes', description: 'holmes' } as never)).agentId).toBe('holmes')
+}
+
+async function spawnWatson($: Engine): Promise<void> {
+  expect((await $.agent.spawn({ prompt: brief('Fix the bug.'), subagentType: 'workbench-dev-team:watson', description: 'watson' } as never)).agentId).toBe('watson')
 }
 
 async function finalRun($: Engine, b: Bench, isRed = false, line = SUITE, extra: Record<string, unknown> = {}): Promise<void> {
@@ -274,7 +313,7 @@ describe('AC1: a commit of the tree a green final suite run saw runs with no que
     expect(await bash($, b, 'git commit -m "fixed things"')).toBeDefined()
   })
 
-  test('after a green run, a commit with a push runs free on a feature branch and goes to the gate on main', async ($, on) => {
+  test('after a green run, a commit with a push runs free on a feature branch and asks on main with no remote-tracking ref', async ($, on) => {
     const { b, w } = await session($, on)
     await finalRun($, b)
     expect(await bash($, b, `${COMMIT} && git push`)).toBeUndefined()
@@ -299,7 +338,7 @@ describe('AC1: a commit of the tree a green final suite run saw runs with no que
   }
 })
 
-describe('AC2: a plain push of a feature branch runs free, and a push to the default branch asks', () => {
+describe('AC2: a plain push of a feature branch runs free, and a push to the default branch with no green commit asks', () => {
   test('a plain git push, and git push origin <branch>, of a feature branch run with no question', async ($, on) => {
     const { b } = await session($, on)
     expect(await asked($, 'git push')).toEqual(ALLOW)
@@ -375,15 +414,396 @@ describe('AC2: a plain push of a feature branch runs free, and a push to the def
   })
 })
 
-describe('AC3: other lanes keep their commit and push behavior', () => {
-  test('a sub-agent is refused its commit and its push after a green run', async ($, on) => {
-    const { b } = await session($, on)
+const BASE = 'd'.repeat(40)
+const SIDE = 'f'.repeat(40)
+
+function onMain(b: Bench, w: World): void {
+  w.branch = 'main'
+  w.pushTarget = 'origin refs/heads/main'
+  w.tracked = BASE
+  b.repos['/repo'] = { ...b.repos['/repo'], branch: 'main', head: BASE }
+}
+
+function commitOn(b: Bench, w: World, tree: string, parents: string[] = [b.repos['/repo']?.head ?? '']): string {
+  const sha = (w.parents.size + 1).toString(16).padStart(40, 'e')
+  w.parents.set(sha, parents)
+  w.trees.set(sha, tree)
+  b.repos['/repo'] = { ...b.repos['/repo'], head: sha }
+  return sha
+}
+
+async function greenCommit($: Engine, b: Bench, w: World, landed: (b: Bench, w: World) => void = () => void commitOn(b, w, w.staged)): Promise<void> {
+  await finalRun($, b)
+  b.duringBash = async command => {
+    if (command === COMMIT) landed(b, w)
+  }
+  expect(await bash($, b, COMMIT)).toBeUndefined()
+  b.duringBash = undefined
+}
+
+describe('a plain push of the default branch runs free when every commit it sends came from a green run', () => {
+  test('after a free green commit on main, git push and git push origin main run with no question', async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
+    await greenCommit($, b, w)
+    expect(await asked($, 'git push')).toEqual(ALLOW)
+    expect(await asked($, 'git push origin main')).toEqual(ALLOW)
+    expect(await bash($, b, 'git push')).toBeUndefined()
+    expect(await bash($, b, 'git push origin main')).toBeUndefined()
+  })
+
+  test('two free green commits in a row push free together', async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
+    await greenCommit($, b, w)
+    w.work = OTHER
+    w.staged = OTHER
+    await greenCommit($, b, w)
+    expect(await bash($, b, 'git push')).toBeUndefined()
+  })
+
+  test('with no commit hooks, a green commit and its push on one line run free on main, and the commit is recorded', async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
     await finalRun($, b)
-    await $.agent.spawn({ prompt: brief('Fix the bug.'), subagentType: 'workbench-dev-team:watson', description: 'watson' } as never)
+    const line = `${COMMIT} && git push`
+    b.duringBash = async command => {
+      if (command === line) commitOn(b, w, w.staged)
+    }
+    expect(await asked($, line)).toEqual(ALLOW)
+    expect(await bash($, b, line)).toBeUndefined()
+    b.duringBash = undefined
+    expect(await bash($, b, 'git push')).toBeUndefined()
+  })
+
+  for (const [name, setUp] of [
+    ['a pre-commit hook', (b: Bench, w: World) => void b.files.set('/repo/.git/hooks/pre-commit', '#!/bin/sh\n')],
+    ['a commit-msg hook under core.hooksPath', (b: Bench, w: World) => {
+      w.hooksPath = '/hooks'
+      b.files.set('/hooks/commit-msg', '#!/bin/sh\n')
+    }],
+    ['a post-commit hook', (b: Bench, w: World) => void b.files.set('/repo/.git/hooks/post-commit', '#!/bin/sh\n')],
+    ['a prepare-commit-msg hook', (b: Bench, w: World) => void b.files.set('/repo/.git/hooks/prepare-commit-msg', '#!/bin/sh\n')],
+    ['a hook set in git config', (b: Bench, w: World) => void (w.hookConfig = 'hook.lint.event pre-commit\n')],
+  ] as const) {
+    test(`with ${name}, a green commit and its push on one line ask, and separate lines stay free`, async ($, on) => {
+      const { b, w } = await session($, on)
+      setUp(b, w)
+      await finalRun($, b)
+      expect(await asked($, `${COMMIT} && git push`)).toBeUndefined()
+      expect(await bash($, b, `${COMMIT} && git push`)).toMatch(ASKED)
+      onMain(b, w)
+      expect(await bash($, b, `${COMMIT} && git push`)).toMatch(ASKED)
+      await greenCommit($, b, w)
+      expect(await bash($, b, 'git push')).toBeUndefined()
+    })
+  }
+
+  test('a hooks path the gate cannot read makes the combined line ask', async ($, on) => {
+    const { b, w } = await session($, on)
+    w.hooksPath = 'relative/hooks'
+    await finalRun($, b)
+    expect(await bash($, b, `${COMMIT} && git push`)).toMatch(ASKED)
+  })
+
+  test('with no green commit, a push of main asks', async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
+    commitOn(b, w, TREE)
+    expect(await asked($, 'git push')).toBeUndefined()
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+  })
+
+  test('a commit made another way after the green one makes the push ask', async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
+    await greenCommit($, b, w)
+    commitOn(b, w, OTHER)
+    expect(await asked($, 'git push')).toBeUndefined()
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+    expect(await bash($, b, 'git push origin main')).toMatch(ASKS.push)
+  })
+
+  test('a merge commit on top of a green commit makes the push ask', async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
+    await greenCommit($, b, w)
+    w.parents.set(SIDE, [BASE])
+    commitOn(b, w, TREE, [b.repos['/repo']?.head ?? '', SIDE])
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+  })
+
+  test('a commit the free line made with a tree other than the green one is not recorded', async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
+    await greenCommit($, b, w, (b, w) => void commitOn(b, w, OTHER))
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+  })
+
+  test('a free line that leaves a second commit on top records neither', async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
+    await greenCommit($, b, w, (b, w) => {
+      commitOn(b, w, w.staged)
+      commitOn(b, w, w.staged)
+    })
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+  })
+
+  test('a non-fast-forward push of main asks', async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
+    await greenCommit($, b, w)
+    w.parents.set(SIDE, [BASE])
+    w.tracked = SIDE
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+  })
+
+  test('a push of main with no remote-tracking ref asks', async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
+    await greenCommit($, b, w)
+    w.tracked = undefined
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+  })
+
+  test('a push of main with nothing to send asks', async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
+    await greenCommit($, b, w)
+    w.tracked = b.repos['/repo']?.head
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+  })
+
+  test('a fetch refspec other than the default makes the push of main ask', async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
+    await greenCommit($, b, w)
+    w.fetchSpec = '+refs/heads/*:refs/remotes/origin/other/*'
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+  })
+
+  test('a push of main whose push URL changed asks, in both forms', async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
+    await greenCommit($, b, w)
+    w.pushUrls = ['git@evil.example:o/r.git']
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+    expect(await bash($, b, 'git push origin main')).toMatch(ASKS.push)
+  })
+
+  for (const [key, value] of [
+    ['push.default', 'matching'],
+    ['remote.origin.push', '+refs/heads/*:refs/heads/*'],
+    ['remote.origin.mirror', 'true'],
+    ['push.followTags', 'true'],
+  ] as const) {
+    test(`a push of main with ${key}=${value} asks, in both forms`, async ($, on) => {
+      const { b, w } = await session($, on)
+      onMain(b, w)
+      await greenCommit($, b, w)
+      w.config[key] = value
+      expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+      expect(await bash($, b, 'git push origin main')).toMatch(ASKS.push)
+    })
+  }
+
+  for (const [line, refusal] of [
+    ['git push --force', exactly(FORCE_REFUSAL.deny)],
+    ['git push origin +main', exactly(FORCE_REFUSAL.deny)],
+    ['git push origin main:other', ASKS.push],
+    ['git push -u origin main', ASKS.push],
+    ['git push origin --tags', ASKS.push],
+    ['gh pr merge 12', ASKS.merge],
+    ['gh release create 1.0.0 --notes x', ASKS.release],
+    ['git rebase origin/main', ASKS.rewrite],
+    ["gh alias set co 'pr checkout'", ASKS.alias],
+    ['gh api repos/o/r/git/refs/heads/main -X PATCH -f sha=abc', ASKS.api],
+  ] as const) {
+    test(`after a free green commit on main, ${JSON.stringify(line)} is refused as before`, async ($, on) => {
+      const { b, w } = await session($, on)
+      onMain(b, w)
+      await greenCommit($, b, w)
+      expect(await asked($, line)).toBeUndefined()
+      expect(await bash($, b, line)).toMatch(refusal)
+    })
+  }
+
+  for (const [key, value] of [
+    ['push.recurseSubmodules', 'on-demand'],
+    ['push.recurseSubmodules', 'check'],
+    ['submodule.recurse', 'true'],
+  ] as const) {
+    test(`${key}=${value} makes both the feature push and the push of main ask`, async ($, on) => {
+      const { b, w } = await session($, on)
+      w.config[key] = value
+      expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+      onMain(b, w)
+      await greenCommit($, b, w)
+      expect(await asked($, 'git push')).toBeUndefined()
+      expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+      expect(await bash($, b, 'git push origin main')).toMatch(ASKS.push)
+    })
+  }
+
+  test('push.recurseSubmodules=no and submodule.recurse=false keep both pushes free', async ($, on) => {
+    const { b, w } = await session($, on)
+    w.config = { 'push.recurseSubmodules': 'no', 'submodule.recurse': 'false' }
+    expect(await bash($, b, 'git push')).toBeUndefined()
+    onMain(b, w)
+    await greenCommit($, b, w)
+    expect(await bash($, b, 'git push')).toBeUndefined()
+  })
+
+  test('push.default=current keeps the push of main free', async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
+    await greenCommit($, b, w)
+    w.config['push.default'] = 'current'
+    expect(await bash($, b, 'git push')).toBeUndefined()
+  })
+
+  test("another remote whose fetch refspec writes into origin's remote-tracking refs makes the push of main ask", async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
+    await greenCommit($, b, w)
+    w.otherFetch = ['remote.up.fetch +refs/heads/*:refs/remotes/up/*']
+    expect(await bash($, b, 'git push')).toBeUndefined()
+    w.otherFetch = ['remote.up.fetch +refs/heads/*:refs/remotes/origin/*']
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+    w.otherFetch = ['remote.up.fetch +refs/heads/main:refs/remotes/origin/main']
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+    w.otherFetch = ['remote.up.fetch +refs/*:refs/*']
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+  })
+
+  test('an amend that replaces the green tip makes the push of main ask', async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
+    await greenCommit($, b, w)
+    commitOn(b, w, w.staged, [BASE])
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+  })
+
+  test('a free commit that fails and leaves HEAD unchanged records nothing', async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
+    commitOn(b, w, TREE)
+    await greenCommit($, b, w, () => undefined)
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+  })
+
+  test('with no origin HEAD, a push asks until every commit it sends is green, then runs free', async ($, on) => {
+    const { b, w } = await session($, on)
+    w.tracked = BASE
+    b.repos['/repo'] = { ...b.repos['/repo'], originHead: undefined, head: BASE }
+    commitOn(b, w, OTHER)
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+    w.tracked = b.repos['/repo']?.head
+    await greenCommit($, b, w)
+    expect(await bash($, b, 'git push')).toBeUndefined()
+  })
+
+  test('/clear drops the green commits, so the push of main asks', async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
+    await greenCommit($, b, w)
+    await $.session.end({ reason: 'clear', sessionId: SID } as never)
+    await $.prompt.submit({ text: 'look again', wait: false, origin: PERSON })
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+  })
+
+  test('a sub-agent pushes main free after a free green commit, and is refused once an unrecorded commit joins it', async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
+    await greenCommit($, b, w)
+    await spawnWatson($)
+    expect(await asked($, 'git push', 'watson')).toEqual(ALLOW)
+    expect(await bash($, b, 'git push', 'watson')).toBeUndefined()
+    commitOn(b, w, OTHER)
+    expect(await asked($, 'git push', 'watson')).toBeUndefined()
+    expect(await bash($, b, 'git push', 'watson')).toBe(SUBAGENT_REFUSAL.deny)
+  })
+
+  test('a feature-branch push still needs no green commit and no remote-tracking ref', async ($, on) => {
+    const { b, w } = await session($, on)
+    w.tracked = undefined
+    w.fetchSpec = undefined
+    expect(await bash($, b, 'git push')).toBeUndefined()
+  })
+})
+
+describe('AC3: other lanes keep their commit and push behavior', () => {
+  test('with no green run, a sub-agent is refused its commit and its push', async ($, on) => {
+    const { b } = await session($, on)
+    await spawnWatson($)
+    expect(await asked($, COMMIT, 'watson')).toBeUndefined()
     expect(await bash($, b, COMMIT, 'watson')).toBe(SUBAGENT_REFUSAL.deny)
     expect(await bash($, b, 'git push', 'watson')).toBe(SUBAGENT_REFUSAL.deny)
-    expect(await bash($, b, COMMIT, 'holmes')).toBe(SUBAGENT_REFUSAL.deny)
   })
+
+  test('after a green run, a sub-agent commits the green tree and pushes the green commit with no question', async ($, on) => {
+    const { b, w } = await session($, on)
+    w.tracked = BASE
+    b.repos['/repo'] = { ...b.repos['/repo'], head: BASE }
+    await finalRun($, b)
+    await spawnWatson($)
+    b.duringBash = async command => {
+      if (command === COMMIT) commitOn(b, w, w.staged)
+    }
+    expect(await asked($, COMMIT, 'watson')).toEqual(ALLOW)
+    expect(await bash($, b, COMMIT, 'watson')).toBeUndefined()
+    b.duringBash = undefined
+    expect(await asked($, 'git push', 'watson')).toEqual(ALLOW)
+    expect(await bash($, b, 'git push', 'watson')).toBeUndefined()
+  })
+
+  test('a sub-agent feature push with an unrecorded commit, or no remote-tracking ref, is refused', async ($, on) => {
+    const { b, w } = await session($, on)
+    await finalRun($, b)
+    await spawnWatson($)
+    expect(await bash($, b, 'git push', 'watson')).toBe(SUBAGENT_REFUSAL.deny)
+    w.tracked = BASE
+    b.repos['/repo'] = { ...b.repos['/repo'], head: BASE }
+    commitOn(b, w, w.staged)
+    expect(await bash($, b, 'git push', 'watson')).toBe(SUBAGENT_REFUSAL.deny)
+  })
+
+  test('after a green run, a sub-agent commit of another tree is refused', async ($, on) => {
+    const { b, w } = await session($, on)
+    await finalRun($, b)
+    await spawnWatson($)
+    w.staged = OTHER
+    expect(await bash($, b, COMMIT, 'watson')).toBe(SUBAGENT_REFUSAL.deny)
+  })
+
+  test('a sub-agent cannot record green itself, so its commit stays refused', async ($, on) => {
+    const { b, w } = await session($, on)
+    await spawnWatson($)
+    expect(await bash($, b, SUITE, 'watson')).toBeDefined()
+    expect(w.indexEnvs).toEqual([])
+    expect(await bash($, b, COMMIT, 'watson')).toBe(SUBAGENT_REFUSAL.deny)
+  })
+
+  test('a sub-agent in a -p run is refused its commit and its push as before', async ($, on) => {
+    const { b } = await session($, on, { isInteractive: false })
+    await spawnWatson($)
+    expect(await bash($, b, COMMIT, 'watson')).toBe(SUBAGENT_REFUSAL.deny)
+    expect(await bash($, b, 'git push', 'watson')).toBe(SUBAGENT_REFUSAL.deny)
+  })
+
+  for (const [name, options] of [
+    ['a -p run', { isInteractive: false }],
+    ['the pipeline', { env: { WORKBENCH_DEV_TEAM_PIPELINE: '1', CLAUDE_CODE_AGENT: 'watson' }, isInteractive: false, origin: { kind: 'sdk' } }],
+    ['a scheduled tick', { origin: { kind: 'scheduled-trigger' } }],
+  ] as const) {
+    test(`${name} pushes main with an unrecorded commit as before`, async ($, on) => {
+      const { b, w } = await session($, on, options as Options)
+      onMain(b, w)
+      commitOn(b, w, OTHER)
+      expect(await bash($, b, 'git push')).toBeUndefined()
+    })
+  }
 
   test('a -p run commits and pushes as before, with no run', async ($, on) => {
     const { b } = await session($, on, { isInteractive: false })

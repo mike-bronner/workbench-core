@@ -240,6 +240,15 @@ describe('the commit guard: each refusal names its rule', () => {
     })
   }
 
+  test('a green-free sub-agent line passes the sub-agent rule, and a force push or a merge is still refused', () => {
+    const green = { ...CALLERS['sub-agent'], isGreenFree: true }
+    expect(verdictOf('git commit -m "fix: 🐛 Fix x."', green)).toBeUndefined()
+    expect(verdictOf('git push', green)).toBeUndefined()
+    expect(verdictOf('git push -f', green)).toBe(FORCE_REFUSAL)
+    expect(verdictOf('gh pr merge 5', green)).toBe(MERGE_REFUSAL)
+    expect(verdictOf('git push', CALLERS['sub-agent'])).toBe(SUBAGENT_REFUSAL)
+  })
+
   test('the built-name rule meets only an unwatched run', () => {
     expect(verdictOf('"$PY" script.py', { lane: 'main', isUnattended: true })?.deny).toBe(BUILT_REFUSAL.deny)
     expect(verdictOf('"$PY" script.py', { lane: 'top-level-agent', isUnattended: false })).toBeUndefined()

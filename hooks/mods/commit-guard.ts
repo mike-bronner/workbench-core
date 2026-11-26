@@ -1,7 +1,7 @@
 import type { WorkbenchCallerLane as CallerLane, WorkbenchShellParse as ShellParse, WorkbenchShellStatement as Statement, WorkbenchShellUnknown } from '../../types'
 import { expandingOf } from './shell'
 
-export type Caller = { lane: CallerLane | undefined; isUnattended: boolean }
+export type Caller = { lane: CallerLane | undefined; isUnattended: boolean; isGreenFree?: boolean }
 
 type Op = 'commit' | 'push' | 'merge'
 
@@ -445,8 +445,8 @@ export const MERGE_REFUSAL = refusal(
 )
 
 export const SUBAGENT_REFUSAL = refusal(
-  'a sub-agent does not commit or push.',
-  `Leave the working tree uncommitted. Report the diff and a proposed commit message to the session that dispatched you. Do not ask to commit. Do not look for another route to a commit or push. ${READS}`,
+  'a sub-agent does not commit or push without a green final suite run.',
+  `A sub-agent's plain commit runs only for the exact tree a green Final suite run saw, and its plain push only when every commit it sends was made that way. This line is neither, so leave the working tree uncommitted. Report the diff and a proposed commit message to the session that dispatched you. Do not ask to commit, and do not run the full suite just to commit. Do not look for another route to a commit or push. ${READS}`,
 )
 
 export const PLAIN_REFUSAL = refusal(
@@ -477,7 +477,7 @@ export function commitVerdict(parse: ShellParse, line: string, caller: Caller): 
   if (found.isForce) return FORCE_REFUSAL
   if (found.ops.has('merge') && (caller.lane !== 'main' || caller.isUnattended)) return MERGE_REFUSAL
   const writes = found.ops.has('commit') || found.ops.has('push')
-  if (writes && caller.lane !== 'main' && caller.lane !== 'top-level-agent') return SUBAGENT_REFUSAL
+  if (writes && caller.lane !== 'main' && caller.lane !== 'top-level-agent' && caller.isGreenFree !== true) return SUBAGENT_REFUSAL
   if (found.ops.size > 0 && found.isHidden) return PLAIN_REFUSAL
   if (isUnwatched && hasBuiltName(parse)) return BUILT_REFUSAL
   return undefined

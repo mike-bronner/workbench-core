@@ -359,6 +359,7 @@ declare module 'claude-code' {
       suiteRunners: readonly { id: string; root: string }[]
       greenTree: { top: string; tree: string } | null
       greenParts: { top: string; tree: string; root: string; passed: readonly string[] } | null
+      greenCommits: readonly string[]
       statusLine: string | null
       // When this session first started, in ms. A reload keeps it.
       startedAt: number

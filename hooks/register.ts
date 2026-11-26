@@ -361,6 +361,7 @@ const turnForwards = atom({ plugin: 'workbench-core', key: 'turnForwards' } as c
 const suiteRunners = atom({ plugin: 'workbench-core', key: 'suiteRunners' } as const, [])
 const greenTree = atom({ plugin: 'workbench-core', key: 'greenTree' } as const, null)
 const greenParts = atom({ plugin: 'workbench-core', key: 'greenParts' } as const, null)
+const greenCommits = atom({ plugin: 'workbench-core', key: 'greenCommits' } as const, [])
 const statusLine = atom({ plugin: 'workbench-core', key: 'statusLine' } as const, null)
 const learnings = atom({ plugin: 'workbench-core', key: 'learnings' } as const, {})
 const replyRows = atom({ plugin: 'workbench-core', key: 'replyRows' } as const, null)
@@ -719,11 +720,11 @@ async function pickedReleaseOf($: EngineInterface, approval: Approval, command: 
   return approval !== 'none' && approval.release !== undefined ? pendingReleaseOf($, command) : undefined
 }
 
-async function commitGuardOf($: EngineInterface, command: unknown, agentId: string | undefined, sessionAttended: boolean | undefined): Promise<string | undefined> {
+async function commitGuardOf($: EngineInterface, command: unknown, agentId: string | undefined, sessionAttended: boolean | undefined, isGreenFree: boolean): Promise<string | undefined> {
   const line = typeof command === 'string' ? command : ''
   const lane = await $.workbench.callerLane(agentId === undefined ? {} : { agentId }).catch(() => undefined)
   const isUnattended = sessionAttended !== true || !(await read($, turnAttended))
-  return commitVerdict(parseShell(line), line, { lane, isUnattended })?.deny
+  return commitVerdict(parseShell(line), line, { lane, isUnattended, isGreenFree })?.deny
 }
 
 async function isSubAgentCaller($: EngineInterface, agentId: string | undefined): Promise<boolean> {
@@ -798,19 +799,79 @@ async function isGreenAt($: EngineInterface, dir: string): Promise<boolean> {
   return staged !== undefined && staged.top === green.top && staged.tree === green.tree
 }
 
-async function isFeaturePushAt($: EngineInterface, dir: string, remote: string | undefined, ref: string | undefined): Promise<boolean> {
+async function isFreePushAt($: EngineInterface, dir: string, remote: string | undefined, ref: string | undefined, isAfterCommit: boolean, isGreenOnly: boolean): Promise<boolean> {
   const branch = await gitOut($, dir, ['symbolic-ref', '--short', '-q', 'HEAD'])
   if (branch === undefined) return false
   const pushed = remote === undefined ? await gitOut($, dir, ['for-each-ref', '--format=%(push:remotename) %(push:remoteref)', `refs/heads/${branch}`]) : undefined
   const [target = '', remoteRef = ''] = pushed?.split(' ') ?? []
   const name = remote ?? target
   if (name === '' || name.includes('/') || (remote === undefined ? remoteRef !== `refs/heads/${branch}` : ref !== branch && ref !== `refs/heads/${branch}`)) return false
-  if (isDefaultBranch(branch, await gitOut($, dir, ['symbolic-ref', '-q', `refs/remotes/${name}/HEAD`]))) return false
+  const isDefault = isDefaultBranch(branch, await gitOut($, dir, ['symbolic-ref', '-q', `refs/remotes/${name}/HEAD`]))
   if (!(await isPlainPushConfig($, dir, name))) return false
   const repo = await pinRemotes($, dir)
   const urls = (await gitOut($, dir, ['remote', 'get-url', '--push', '--all', name]))?.split('\n').map(url => url.trim())
   const pinned = repo === undefined ? undefined : (await read($, remoteUrls))[remoteKeyOf(repo, name)]
-  return pinned !== undefined && urls !== undefined && urls.length > 0 && urls.every(url => url === pinned)
+  if (pinned === undefined || urls === undefined || urls.length === 0 || urls.some(url => url !== pinned)) return false
+  return (!isDefault && !isGreenOnly) || (await isGreenRangeAt($, dir, name, branch, isAfterCommit))
+}
+
+const writesUnder = (spec: string, prefix: string): boolean => {
+  const target = spec.replace(/^\+/, '').split(':')[1]
+  if (target === undefined || target === '') return false
+  const star = target.indexOf('*')
+  return star === -1 ? target.startsWith(prefix) : prefix.startsWith(target.slice(0, star)) || target.slice(0, star).startsWith(prefix)
+}
+
+async function isOnlyFetchInto($: EngineInterface, dir: string, remote: string): Promise<boolean> {
+  const listed = await $.process.run(['git', '-C', dir, 'config', '--get-regexp', '^remote\\..*\\.fetch$'], { timeoutMs: 10_000 }).catch(() => undefined)
+  if (listed === undefined || listed.exitCode !== 0) return false
+  const own = `remote.${remote}.fetch`
+  return listed.stdout
+    .split('\n')
+    .filter(entry => entry.trim() !== '')
+    .every(entry => {
+      const [key = '', spec = ''] = entry.trim().split(/\s+/)
+      return key === own || !writesUnder(spec, `refs/remotes/${remote}/`)
+    })
+}
+
+async function isGreenRangeAt($: EngineInterface, dir: string, remote: string, branch: string, isAfterCommit: boolean): Promise<boolean> {
+  if ((await gitOut($, dir, ['config', '--get-all', `remote.${remote}.fetch`])) !== `+refs/heads/*:refs/remotes/${remote}/*`) return false
+  if (!(await isOnlyFetchInto($, dir, remote))) return false
+  const tracked = `refs/remotes/${remote}/${branch}`
+  const isAncestor = await $.process.run(['git', '-C', dir, 'merge-base', '--is-ancestor', tracked, 'HEAD'], { timeoutMs: 10_000 }).then(({ exitCode }) => exitCode === 0, () => false)
+  if (!isAncestor) return false
+  const listed = await $.process.run(['git', '-C', dir, 'rev-list', `${tracked}..HEAD`], { timeoutMs: 10_000 }).catch(() => undefined)
+  if (listed === undefined || listed.exitCode !== 0) return false
+  const range = listed.stdout.split('\n').map(sha => sha.trim()).filter(sha => sha !== '')
+  const green = new Set(await read($, greenCommits))
+  return (range.length > 0 || isAfterCommit) && range.every(sha => green.has(sha))
+}
+
+const COMMIT_HOOKS = ['pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit'] as const
+
+async function hasCommitHooks($: EngineInterface, dir: string): Promise<boolean> {
+  const hooks = await gitOut($, dir, ['rev-parse', '--path-format=absolute', '--git-path', 'hooks'])
+  if (hooks === undefined || !hooks.startsWith('/')) return true
+  const configured = await $.process.run(['git', '-C', dir, 'config', '--get-regexp', '^hook\\.'], { timeoutMs: 10_000 }).catch(() => undefined)
+  if (configured === undefined || configured.exitCode !== 1) return true
+  for (const name of COMMIT_HOOKS) {
+    if (await $.fs.exists(`${hooks}/${name}`).catch(() => true)) return true
+  }
+  return false
+}
+
+async function recordGreenCommit($: EngineInterface, dir: string, before: string | undefined): Promise<void> {
+  const green = await read($, greenTree)
+  const top = await gitOut($, dir, ['rev-parse', '--show-toplevel'])
+  const [sha = '', tree = '', ...parents] = (await gitOut($, dir, ['show', '-s', '--no-show-signature', '--format=%H %T %P', 'HEAD']))?.split(' ') ?? []
+  if (green === null || top !== green.top || tree !== green.tree || !/^[0-9a-f]{40,64}$/.test(sha) || parents.join(' ') !== (before ?? '')) return
+  await update($, greenCommits, held => [...new Set([...held, sha])])
+}
+
+async function freeCommitDirOf($: EngineInterface, line: string): Promise<string | undefined> {
+  const call = requestedCallsOf(line, ['commit', 'push'])?.find(each => each.action === 'commit')
+  return call === undefined ? undefined : call.dir === undefined ? await $.session.cwd() : await projectDirOf($, call.dir)
 }
 
 const PUSH_DEFAULTS: ReadonlySet<string> = new Set(['simple', 'current', 'upstream', 'tracking'])
@@ -823,20 +884,43 @@ async function isPlainPushConfig($: EngineInterface, dir: string, remote: string
   const isOff = (value: string | null | undefined): boolean => value === null || (value !== undefined && REBASE_OFF_VALUES.has(value.toLowerCase()))
   if (pushDefault === undefined || (pushDefault !== null && !PUSH_DEFAULTS.has(pushDefault.toLowerCase()))) return false
   if (refspecs !== '') return false
+  if (!(await isNoRecursion($, dir, 'push.recurseSubmodules')) || !(await isNoRecursion($, dir, 'submodule.recurse'))) return false
   return isOff(await configValueOf($, dir, `remote.${remote}.mirror`)) && isOff(await configValueOf($, dir, 'push.followTags'))
 }
 
-async function isFreeLine($: EngineInterface, line: string, writes: Writes, commit: Commit | undefined): Promise<boolean> {
+const NO_RECURSION: ReadonlySet<string> = new Set(['no', 'false'])
+
+async function isNoRecursion($: EngineInterface, dir: string, key: string): Promise<boolean> {
+  const value = await configValueOf($, dir, key)
+  return value === null || (value !== undefined && NO_RECURSION.has(value.toLowerCase()))
+}
+
+async function isFreeLine($: EngineInterface, line: string, writes: Writes, commit: Commit | undefined, isGreenOnly = false): Promise<boolean> {
   if (writes.commits > 1 || (writes.commits === 1 && (commit === undefined || commit.args === null || shapeOf(commit.args).isAll))) return false
   const calls = requestedCallsOf(line, ['commit', 'push'])
   if (calls === undefined || (writes.commits > 0 && (await read($, greenTree)) === null)) return false
+  const isCombined = calls.some(call => call.action === 'commit') && calls.some(call => call.action === 'push')
+  let isAfterCommit = false
   for (const call of calls) {
     if (call.action !== 'commit' && call.action !== 'push') return false
     const dir = call.dir === undefined ? await $.session.cwd() : await projectDirOf($, call.dir)
     if (dir === undefined) return false
-    if (!(call.action === 'commit' ? await isGreenAt($, dir) : await isFeaturePushAt($, dir, call.remote, call.ref))) return false
+    if (call.action === 'commit') {
+      if (!(await isGreenAt($, dir)) || (isCombined && (await hasCommitHooks($, dir)))) return false
+      isAfterCommit = true
+    } else if (!(await isFreePushAt($, dir, call.remote, call.ref, isAfterCommit, isGreenOnly))) return false
   }
   return true
+}
+
+async function isAgentFreeLine($: EngineInterface, line: string, agentId: string | undefined, sessionAttended: boolean | undefined): Promise<boolean> {
+  if (agentId === undefined || sessionAttended !== true || (await $.env.get('WORKBENCH_DEV_TEAM_PIPELINE')) === '1' || (await read($, turnScheduled))) return false
+  if ((await $.workbench.callerLane({ agentId }).catch(() => undefined)) !== 'sub-agent') return false
+  const { writes, commit } = readLine(line)
+  if (writes.commits + writes.pushes === 0) return false
+  if ((await read($, greenTree)) === null && (await read($, greenCommits)).length === 0) return false
+  const others = releaseCountOf(line) + mergesOf(line).local.length + mergesOf(line).pr + rewritesOf(line) + aliasSetsOf(line) + apiWritesOf(line).length
+  return others === 0 && isFreeLine($, line, writes, commit, true)
 }
 
 async function unreadRefusalOf($: EngineInterface, line: string, agentId: string | undefined, sessionAttended: boolean | undefined): Promise<string | undefined> {
@@ -2364,7 +2448,8 @@ export const register: Register = on => {
     if (release !== undefined) return { deny: release }
     const unread = e.tool === 'Bash' ? await unreadRefusalOf($, e.command, e.agentId, sessionAttended).catch(() => GUARD_FAILED) : undefined
     if (unread !== undefined) return { deny: unread }
-    const guarded = e.tool === 'Bash' ? await commitGuardOf($, e.command, e.agentId, sessionAttended).catch(() => FAILED_REFUSAL.deny) : undefined
+    const isAgentFree = e.tool === 'Bash' && (await isAgentFreeLine($, e.command, e.agentId, sessionAttended).catch(() => false))
+    const guarded = e.tool === 'Bash' ? await commitGuardOf($, e.command, e.agentId, sessionAttended, isAgentFree).catch(() => FAILED_REFUSAL.deny) : undefined
     if (guarded !== undefined) return { deny: guarded }
     const suite = e.tool === 'Bash' ? await suiteRefusalOf($, e.command, e.agentId, sessionAttended).catch(() => GUARD_FAILED) : undefined
     if (suite !== undefined) return { deny: suite }
@@ -2419,6 +2504,18 @@ export const register: Register = on => {
       const aliases = aliasSetsOf(e.command)
       const apiWrites = apiWritesOf(e.command)
       const apiIntoDefault = apiWrites.length === 0 ? 0 : await apiWritesIntoDefault($, apiWrites)
+      const runFree = async () => {
+        const { writes, commit } = readLine(e.command)
+        const treeRefusal = writes.commits === 1 ? await treeRefusalOf($, e.command, commit, e.tool_use_id) : undefined
+        if (treeRefusal !== undefined) return { deny: treeRefusal }
+        if (subject !== undefined) return { deny: subject }
+        const commitDir = writes.commits === 1 ? await freeCommitDirOf($, e.command) : undefined
+        const before = commitDir === undefined ? undefined : await gitOut($, commitDir, ['rev-parse', '--verify', '--quiet', 'HEAD'])
+        const result = await next(e)
+        if (commitDir !== undefined) await recordGreenCommit($, commitDir, before).catch(() => undefined)
+        return withScanRecall($, 'Bash', e.command, e.agentId, result)
+      }
+      if (isAgentFree) return runFree()
       if (!(await isCommitGated($, sessionAttended, e.agentId))) {
         const agentMerges = mergesOf(e.command)
         if ((await mergesIntoDefault($, agentMerges.local)) > 0) {
@@ -2464,11 +2561,7 @@ export const register: Register = on => {
         return subject !== undefined ? { deny: subject } : withScanRecall($, 'Bash', e.command, e.agentId, await next(e))
       }
       const isFreeShape = releases + merges.local.length + merges.pr + rewrites + aliases + apiIntoDefault === 0
-      if (isFreeShape && (await isFreeLine($, e.command, writes, commit).catch(() => false))) {
-        const treeRefusal = writes.commits === 1 ? await treeRefusalOf($, e.command, commit, e.tool_use_id) : undefined
-        if (treeRefusal !== undefined) return { deny: treeRefusal }
-        return subject !== undefined ? { deny: subject } : withScanRecall($, 'Bash', e.command, e.agentId, await next(e))
-      }
+      if (isFreeShape && (await isFreeLine($, e.command, writes, commit).catch(() => false))) return runFree()
       const intoDefault = merges.pr + (await mergesIntoDefault($, merges.local)) - (await catchUpsIntoDefault($, catchUpsOf(e.command)))
       const mergeDirs = await unitLandingDirsOf($, merges.landings)
       const committed = { commits: writes.commits + mergeDirs.length, pushes: writes.pushes }
@@ -2723,7 +2816,14 @@ export const register: Register = on => {
 
   on('classic.PermissionRequest', async ($, e, next) => {
     const result = await next(e)
-    if (result.decision !== undefined || e.agent_id !== undefined) return result
+    if (result.decision !== undefined) return result
+    if (e.agent_id !== undefined) {
+      const line = (e.tool_input as { command?: unknown } | null | undefined)?.command
+      if (e.tool_name !== 'Bash' || typeof line !== 'string' || !(await isAgentFreeLine($, line, e.agent_id, sessionAttended).catch(() => false))) return result
+      const { writes, commit } = readLine(line)
+      const isTreeWhole = writes.commits === 0 || (await treeRefusalOf($, line, commit, undefined).catch(() => GUARD_FAILED)) === undefined
+      return isTreeWhole ? { ...result, decision: { behavior: 'allow' } } : result
+    }
     if (e.tool_name === 'Write' || e.tool_name === 'Edit') {
       return (await isPlanFile($, e.tool_input).catch(() => false)) ? { ...result, decision: { behavior: 'allow' } } : result
     }
@@ -2934,6 +3034,7 @@ export const register: Register = on => {
       await update($, commitApproval, () => 'none' as const)
       await update($, greenTree, () => null)
       await update($, greenParts, () => null)
+      await update($, greenCommits, () => [])
       await update($, turnRequest, () => [])
       await update($, turnIntent, () => null)
       await update($, capture, () => ({ turns: 0, hasFired: false, written: [] }))

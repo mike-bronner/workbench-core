@@ -793,6 +793,46 @@ describe('AC3: other lanes keep their commit and push behavior', () => {
   })
 
   for (const [name, options] of [
+    ['a scheduled tick', { origin: { kind: 'scheduled-trigger' } }],
+    ['the pipeline flag in an attended session', { env: { WORKBENCH_DEV_TEAM_PIPELINE: '1' } }],
+  ] as const) {
+    test(`after a green run in ${name}, a sub-agent is refused its commit and its push`, async ($, on) => {
+      const { b, w } = await session($, on, options as Options)
+      w.tracked = BASE
+      b.repos['/repo'] = { ...b.repos['/repo'], head: BASE }
+      await finalRun($, b)
+      await spawnWatson($)
+      expect(await asked($, COMMIT, 'watson')).not.toEqual(ALLOW)
+      expect(await bash($, b, COMMIT, 'watson')).toBe(SUBAGENT_REFUSAL.deny)
+      expect(await asked($, 'git push', 'watson')).not.toEqual(ALLOW)
+      expect(await bash($, b, 'git push', 'watson')).toBe(SUBAGENT_REFUSAL.deny)
+    })
+  }
+
+  test('a green tree recorded in a person\'s turn frees no sub-agent commit once a scheduled tick opens', async ($, on) => {
+    const { b, w } = await session($, on)
+    w.tracked = BASE
+    b.repos['/repo'] = { ...b.repos['/repo'], head: BASE }
+    await finalRun($, b)
+    await spawnWatson($)
+    expect(await asked($, COMMIT, 'watson')).toEqual(ALLOW)
+    await $.prompt.submit({ text: 'tick', wait: false, origin: { kind: 'scheduled-trigger' } })
+    expect(await asked($, COMMIT, 'watson')).not.toEqual(ALLOW)
+    expect(await bash($, b, COMMIT, 'watson')).toBe(SUBAGENT_REFUSAL.deny)
+  })
+
+  test('a green commit recorded in a person\'s turn frees no sub-agent push once a scheduled tick opens', async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
+    await greenCommit($, b, w)
+    await spawnWatson($)
+    expect(await asked($, 'git push', 'watson')).toEqual(ALLOW)
+    await $.prompt.submit({ text: 'tick', wait: false, origin: { kind: 'scheduled-trigger' } })
+    expect(await asked($, 'git push', 'watson')).not.toEqual(ALLOW)
+    expect(await bash($, b, 'git push', 'watson')).toBe(SUBAGENT_REFUSAL.deny)
+  })
+
+  for (const [name, options] of [
     ['a -p run', { isInteractive: false }],
     ['the pipeline', { env: { WORKBENCH_DEV_TEAM_PIPELINE: '1', CLAUDE_CODE_AGENT: 'watson' }, isInteractive: false, origin: { kind: 'sdk' } }],
     ['a scheduled tick', { origin: { kind: 'scheduled-trigger' } }],

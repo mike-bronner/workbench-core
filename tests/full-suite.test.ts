@@ -8,7 +8,39 @@ import { bench, run, start } from './bench'
 const HOME = '/Users/tester'
 const AGENT = 'a5a2f4470341f9233'
 
+const MENTIONS = [
+  '#!/bin/bash',
+  '# Run directly. It never runs claude plugin test, it reads the skills that name it.',
+  'set -u',
+  'DIR="$(cd "$(dirname "$0")" && pwd)"',
+  'survive=()',
+  "while IFS='|' read -r kind which want; do",
+  '  case "$which" in',
+  '    orchestrate) file="$DIR/SKILL.md" ;;',
+  '    orchestrate-*) file="$DIR/../$which/SKILL.md"; [ -f "$file" ] || { survive+=("no skills/$which/SKILL.md"); continue; } ;;',
+  '  esac',
+  `  grep -Fq "$want" "$file" || survive+=("$which: no $kind '$want'")`,
+  "done <<'EOF'",
+  'phrase|orchestrate|In a plugin repo, Watson also runs `claude plugin test .`.',
+  'phrase|orchestrate|Never run vendor/bin/pest yourself.',
+  'EOF',
+  `grep -Fq 'claude plugin test .' "$DIR/SKILL.md" || survive+=("the skill no longer names claude plugin test")`,
+  'echo "checked what names npm test and claude plugin test ."',
+]
+
 const FILES: Record<string, string> = {
+  '/repo/skills/orchestrate/lint-compaction.sh': [...MENTIONS, '[ "${#survive[@]}" -eq 0 ]', ''].join('\n'),
+  '/repo/skills/orchestrate/sizes.sh': [...MENTIONS, 'echo "$file"', ''].join('\n'),
+  '/repo/skills/orchestrate/SKILL.md': 'Run `claude plugin test .` once, last.\n',
+  '/repo/scripts/plugin-suite.sh': '# the whole suite\nclaude plugin test .\n',
+  '/repo/scripts/lint-runs.sh': 'claude plugin test .\n',
+  '/repo/scripts/suite-function.sh': 'suite() {\n  claude plugin test "$ROOT"\n}\nsuite\n',
+  '/repo/scripts/suite-pipe.sh': 'claude plugin test . 2>&1 | tail -5\n',
+  '/repo/scripts/suite-eval.sh': 'eval "claude plugin test ."\n',
+  '/repo/scripts/suite-shell.sh': "bash -c 'claude plugin test .'\n",
+  '/repo/scripts/suite-array.sh': 'for x in a; do { out+=("$(claude plugin test .)"); }; done\n',
+  '/repo/scripts/suite-sourced.sh': '. /repo/lib/missing.sh\n',
+  '/repo/scripts/suite-unread.sh': 'while read -r n; do echo $((n + 1)); done < list\necho "claude plugin test ."\n',
   '/repo/scripts/check.sh': 'set -u\nfor t in hooks/test-*.sh; do bash "$t"; done\n',
   '/repo/run.sh': '#!/bin/bash\nvendor/bin/pest --parallel\n',
   '/repo/scratch/wrap.sh': 'bash /repo/scripts/check.sh\n',
@@ -133,6 +165,14 @@ const SCRIPTS: [string, string][] = [
   ['bash -c "vendor/bin/pest"', 'this call runs vendor/bin/pest with no test file'],
   ['bash <<EOF\nvendor/bin/pest\nEOF', 'this call runs vendor/bin/pest with no test file'],
   ['bash < run.sh', 'runs run.sh, which runs vendor/bin/pest with no test file'],
+  ['bash scripts/plugin-suite.sh', 'runs scripts/plugin-suite.sh, which runs claude plugin test, which runs the whole suite'],
+  ['bash scripts/lint-runs.sh', 'runs scripts/lint-runs.sh, which runs claude plugin test, which runs the whole suite'],
+  ['bash scripts/suite-function.sh', 'runs scripts/suite-function.sh, which runs claude plugin test, which runs the whole suite'],
+  ['bash scripts/suite-pipe.sh', 'runs scripts/suite-pipe.sh, which runs claude plugin test, which runs the whole suite'],
+  ['bash scripts/suite-eval.sh', 'runs scripts/suite-eval.sh, which runs claude plugin test, which runs the whole suite'],
+  ['bash scripts/suite-shell.sh', 'runs scripts/suite-shell.sh, which runs claude plugin test, which runs the whole suite'],
+  ['bash scripts/suite-array.sh', 'runs scripts/suite-array.sh, which runs claude plugin test, which runs the whole suite'],
+  ['bash scripts/suite-unread.sh', 'runs scripts/suite-unread.sh, which holds a line this gate cannot read whole and names a test runner'],
 ]
 
 const UNREADABLE: [string, string][] = [
@@ -144,6 +184,7 @@ const UNREADABLE: [string, string][] = [
   ['python3 missing.py', 'a script this gate cannot read'],
   ['python3 -I missing.py', 'a script this gate cannot read'],
   ['deno run -A missing.ts', 'a script this gate cannot read'],
+  ['bash scripts/suite-sourced.sh', 'runs scripts/suite-sourced.sh, which runs /repo/lib/missing.sh, a script this gate cannot read'],
 ]
 
 const NARROW = [
@@ -214,6 +255,8 @@ const ORDINARY = [
   'deno run -A main.ts',
   'deno run --allow-net server.ts',
   `bash "$HOME/bin/ok.sh"`,
+  'bash skills/orchestrate/lint-compaction.sh',
+  'bash skills/orchestrate/sizes.sh',
 ]
 
 describe('the full-suite gate refuses the main agent a whole-suite run', () => {

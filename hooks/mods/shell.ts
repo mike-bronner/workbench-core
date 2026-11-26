@@ -1148,7 +1148,7 @@ function lex(text: string, reading: Reading, source: ShellSource, depth: number,
     } else if (isArray && (c === ' ' || c === '\t' || c === '\n' || c === ')')) {
       word += c
       isArray = c !== ')'
-    } else if (exact && c === '(' && hasWord && /^[A-Za-z_][A-Za-z0-9_]*\+?=$/.test(word) && words.every(w => ASSIGNMENT.test(w))) {
+    } else if (exact && c === '(' && hasWord && /^[A-Za-z_][A-Za-z0-9_]*\+?=$/.test(word) && words.every(w => ASSIGNMENT.test(w) || (KEYWORDS.has(w) && w !== 'coproc'))) {
       // `x=(a b)` and `x+=(c)` assign an array.
       word += c
       isArray = true

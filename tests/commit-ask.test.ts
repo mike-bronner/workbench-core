@@ -30,7 +30,7 @@ import {
   rewritesOf,
   shownOf,
 } from '../hooks/mods/commit-approval'
-import { MERGE_REFUSAL, PLAIN_REFUSAL, SUBAGENT_REFUSAL, isReadOnlyPipeline } from '../hooks/mods/commit-guard'
+import { FORCE_REFUSAL, MERGE_REFUSAL, PLAIN_REFUSAL, SUBAGENT_REFUSAL, isReadOnlyPipeline } from '../hooks/mods/commit-guard'
 import { parseShell } from '../hooks/mods/shell'
 import type { Bench } from './bench'
 import { ASKS, HOME, PERSON, asks, bench, start } from './bench'
@@ -604,6 +604,72 @@ describe('the pipeline rewrites history on its own feature branches, and never o
     expect(isDefaultRef('refs/heads/feat', 'refs/remotes/origin/main')).toBe(false)
     expect(isDefaultRef('refs/heads/feat', undefined)).toBe(true)
   })
+})
+
+describe('the PR watch: a pipeline Watson on its own feature branch commits a fix, catches up with its base and pushes plainly', () => {
+  const PIPELINES: readonly Lane[] = [
+    UNATTENDED[1] as Lane,
+    { name: 'the pipeline by its flag alone', options: { env: { HOME, WORKBENCH_DEV_TEAM_PIPELINE: '1' } }, isInteractive: false, origin: { kind: 'sdk' } },
+  ]
+  const FEAT = { head: 'c1', pushed: 'c1', branch: 'feat', originHead: 'main', upstream: 'refs/remotes/origin/feat', remote: 'origin', originUrl: 'git@github.com:o/r.git' }
+  const MAIN = { ...FEAT, branch: 'main', upstream: 'refs/remotes/origin/main' }
+  const ALLOWED = [
+    'git commit -m "fix: 🐛 Fix the red check."',
+    'git merge origin/main',
+    'git merge --no-edit origin/main',
+    'git -C /repo merge --no-edit origin/main',
+    'git push',
+    'git push origin feat',
+    'git -C /repo push origin feat',
+  ]
+  const FORCED = ['git push --force', 'git push -f', 'git push origin +feat', 'git push --force-with-lease', 'git push --force-with-lease origin feat', 'git push -f origin feat']
+
+  for (const lane of PIPELINES) {
+    for (const line of ALLOWED) {
+      test(`${lane.name}: on a feature branch it runs ${JSON.stringify(line)}`, async ($, on) => {
+        const b = await inLane($, on, lane)
+        b.repos['/repo'] = { ...FEAT }
+        expect(await bash($, b, line)).toBeUndefined()
+        expect(dialogs(b)).toEqual([])
+      })
+    }
+
+    for (const line of FORCED) {
+      test(`${lane.name}: a force push is refused on its own feature branch: ${JSON.stringify(line)}`, async ($, on) => {
+        const b = await inLane($, on, lane)
+        b.repos['/repo'] = { ...FEAT }
+        expect(await bash($, b, line)).toBe(FORCE_REFUSAL.deny)
+      })
+    }
+
+    for (const line of ['git merge feat', 'git merge --no-edit origin/feat', 'git merge origin/main', 'git -C /repo merge feat']) {
+      test(`${lane.name}: a merge into the default branch is refused: ${JSON.stringify(line)}`, async ($, on) => {
+        const b = await inLane($, on, lane)
+        b.repos['/repo'] = { ...MAIN }
+        expect(await bash($, b, line)).toBe(AGENT_MERGE_REFUSAL)
+      })
+    }
+
+    test(`${lane.name}: a merge into the default branch from the feature branch, and a pull request merge, are refused`, async ($, on) => {
+      const b = await inLane($, on, lane)
+      b.repos['/repo'] = { ...FEAT }
+      expect(await bash($, b, 'git switch main && git merge feat')).toBe(AGENT_MERGE_REFUSAL)
+      expect(await bash($, b, 'gh pr merge 12')).toBe(MERGE_REFUSAL.deny)
+    })
+
+    for (const [line, refusal] of [
+      ['git rebase origin/feat', REWRITE_REFUSAL],
+      ['git cherry-pick abc1234', REWRITE_REFUSAL],
+      ['git commit --amend -m "fix: 🐛 Fix the red check."', REWRITE_REFUSAL],
+      ['git reset --soft HEAD~1', BRANCH_RESET_REFUSAL],
+    ] as const) {
+      test(`${lane.name}: a history rewrite on the default branch is refused: ${JSON.stringify(line)}`, async ($, on) => {
+        const b = await inLane($, on, lane)
+        b.repos['/repo'] = { ...MAIN }
+        expect(await bash($, b, line)).toBe(refusal)
+      })
+    }
+  }
 })
 
 describe('AC5: a merge pick binds to the remote, the subject and the base its question named', () => {

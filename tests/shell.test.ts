@@ -627,6 +627,19 @@ describe('AC2, AC3, AC7: the shapes the first review found misread', () => {
     expect(named('echo x=(zap now)').map(s => s.name)).toContain('zap')
   })
 
+  test('an array assignment after a reserved word runs no command, only its substitutions', () => {
+    for (const line of ['x || { a+=("no skills/$w/SKILL.md"); }', 'for w in a; do a+=(zap now); done', 'if x; then a=(zap now); fi', '! a=(zap now)', '{ b=1 a=(zap now); }']) {
+      const parse = parseShell(line)
+      expect([line, parse.unknowns]).toEqual([line, []])
+      expect([line, parse.statements.some(s => s.name === 'zap' || s.name.endsWith('skill.md'))]).toEqual([line, false])
+    }
+    expect(statements('x || { a+=("no skills/$w/SKILL.md"); }').find(s => s.nameAt === -1)?.assignments).toEqual(['a+=(no skills/$w/SKILL.md)'])
+    expect(named('{ a+=("$(zap now)"); }')).toContainEqual({ name: 'zap', args: ['now'] })
+    expect(named('for w in a; do a=($(zap now)); done')).toContainEqual({ name: 'zap', args: ['now'] })
+    expect(named('{ echo x=(zap now); }').map(s => s.name)).toContain('zap')
+    for (const line of ['coproc x=(zap now)', '{ coproc x=(zap now); }']) expect([line, named(line).map(s => s.name)]).toEqual([line, expect.arrayContaining(['zap'])])
+  })
+
   test('round 4: an array or case is closed where its script ends', () => {
     // A heredoc body fed to a shell is a script of its own.
     expect(named('bash <<E\nx=(\nE\nzap now')).toContainEqual({ name: 'zap', args: ['now'] })

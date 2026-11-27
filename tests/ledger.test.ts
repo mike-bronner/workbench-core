@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 
 import { AGENT_WORKTREE_REFUSAL, ENTER_WORKTREE_REFUSAL, EXIT_WORKTREE_REFUSAL, provisioningRefusal } from '../hooks/mods/guards'
 import type { LedgerEntry } from '../hooks/mods/ledger'
-import { LEDGER_WRITE_REFUSAL, LOCK_TRIES, LOCK_WAIT_MS, MAX_DATABASE, NAME_FORM, PRUNE_AFTER_MS, ROOT_FORM, ledgerCommandOf, namesUnitBranch, unitBranchesOf, unitDatabaseOf } from '../hooks/mods/ledger'
+import { LEDGER_RULES, LEDGER_WRITE_REFUSAL, LOCK_TRIES, LOCK_WAIT_MS, MAX_DATABASE, NAME_FORM, PRUNE_AFTER_MS, ROOT_FORM, ledgerCommandOf, namesUnitBranch, unitBranchesOf, unitDatabaseOf } from '../hooks/mods/ledger'
 import { SUBAGENT_REFUSAL } from '../hooks/mods/commit-guard'
 import { parseShell } from '../hooks/mods/shell'
 import type { Bench } from './bench'
@@ -1079,5 +1079,180 @@ describe('the shapes the ledger reads', () => {
     for (const line of [`${ADD} && true`, `FOO=1 ${ADD}`, `git worktree add -b unit/a $T`, `createdb ${DB} > out`, `sudo createdb ${DB}`, 'psql -c "SELECT 1"', 'git branch unit/a', 'createdb a b', `dropdb ${DB}`]) {
       expect([line, kinds(line)]).toEqual([line, undefined])
     }
+  })
+})
+
+describe('AC2: the guard texts say a session tears down its own units once they land, without asking', () => {
+  test('the rules and the note after an accepted add name the teardown', async ($, on) => {
+    const b = await attended($, on)
+    const rule = 'Once a unit a session recorded has landed, that session tears it down itself, without asking Mike: it removes the worktree, deletes the branch with git branch -d, then drops the database if it created one.'
+    expect(LEDGER_RULES).toContain(rule)
+    expect(provisioningRefusal('git worktree prune')).toContain(rule)
+    const answer = await bash($, b, ADD)
+    expect(answer.context.join('\n')).toContain(
+      `Once the unit has landed, tear it down yourself, without asking Mike: git -C /repo worktree remove ${TREE}, then git -C /repo branch -d unit/a, then psql -c 'DROP DATABASE "${DB}"' with the create's -h, -p and -U, if you created it.`,
+    )
+  })
+
+  test('an add records the commit the unit starts from, from its base or from HEAD', async ($, on) => {
+    const b = await attended($, on, argv => {
+      if (argv.slice(3).join(' ') === 'rev-parse --verify -q feat/x^{commit}') return { exitCode: 0, stdout: 'c0\n' }
+      if (argv.slice(3).join(' ') === 'rev-parse --verify -q HEAD^{commit}') return { exitCode: 0, stdout: 'c1\n' }
+      return undefined
+    })
+    await bash($, b, ADD)
+    await bash($, b, `git worktree add -b unit/b ${ROOT}/unit-b`)
+    expect(entries(b).map(({ branch, start }) => ({ branch, start }))).toEqual([
+      { branch: 'unit/a', start: 'c0' },
+      { branch: 'unit/b', start: 'c1' },
+    ])
+  })
+
+  test('an add whose start cannot be read still runs, and records no start', async ($, on) => {
+    const b = await attended($, on, argv => (argv[3] === 'rev-parse' && argv[4] === '--verify' ? { exitCode: 128, stdout: '' } : undefined))
+    const answer = await bash($, b, ADD)
+    expect([answer.deny, answer.reached]).toEqual([undefined, true])
+    expect(entries(b).map(e => [e.worktree, 'start' in e])).toEqual([[TREE, false]])
+  })
+})
+
+describe('AC3: a Stop blocks once per turn while a unit this session recorded has landed', () => {
+  type Git = { tip?: string; upstream?: string; merged?: readonly string[]; status?: string | null; isBroken?: boolean }
+
+  async function landedWorld($: Engine, on: Parameters<typeof bench>[0], list: readonly LedgerEntry[], git: Git = {}, isInteractive = true): Promise<World> {
+    const b = world(on, argv => {
+      const verb = argv.slice(3)
+      if (git.isBroken && argv[0] === 'git') throw new Error('git timed out')
+      if (verb.slice(0, 3).join(' ') === 'rev-parse --verify -q' && (verb[3] ?? '').startsWith('refs/heads/')) return git.tip === undefined ? { exitCode: 1, stdout: '' } : { exitCode: 0, stdout: `${git.tip}\n` }
+      if (verb.join(' ') === 'rev-parse --verify -q unit/a@{upstream}') return git.upstream === undefined ? { exitCode: 128, stdout: '' } : { exitCode: 0, stdout: `${git.upstream}\n` }
+      if (verb[0] === 'merge-base' && verb[1] === '--is-ancestor') return { exitCode: (git.merged ?? ['HEAD']).includes(verb[3] ?? '') ? 0 : 1, stdout: '' }
+      if (argv[2] === TREE && verb.join(' ') === 'status --porcelain') return git.status === null ? { exitCode: 128, stdout: '' } : { exitCode: 0, stdout: git.status ?? '' }
+      return undefined
+    })
+    b.files.set(TREE, '')
+    seed(b, list)
+    await $.session.start(start(isInteractive))
+    await $.prompt.submit({ text: 'run the units', wait: false, origin: PERSON })
+    return b
+  }
+
+  const mine = (overrides: Partial<LedgerEntry> = {}): LedgerEntry => entry({ session: SID, start: 'c0', ...overrides })
+  const stopped = ($: Engine, extra: Record<string, unknown> = {}) => $.classic.Stop({ stop_hook_active: false, last_assistant_message: 'Merged unit/a.', ...extra } as never)
+
+  test('a landed unit blocks the stop with its tree, branch and database, and the lines this session runs', async ($, on) => {
+    await landedWorld($, on, [mine({ isDatabaseCreated: true, connection: '-h db -p 5433' })], { tip: 'c2' })
+    const block = (await stopped($)).block ?? ''
+    expect(block).toContain('this session recorded these units, and each one has landed.')
+    expect(block).toContain('Tear each unit down now, without asking Mike.')
+    expect(block).toContain(
+      [
+        `- worktree ${TREE}, branch unit/a, database ${DB} (unit unit-a). Run:`,
+        `  - \`git -C /repo worktree remove ${TREE}\``,
+        '  - `git -C /repo branch -d unit/a`',
+        `  - \`psql -h db -p 5433 -c 'DROP DATABASE "${DB}"'\``,
+      ].join('\n'),
+    )
+    expect(block).not.toContain('! ')
+  })
+
+  test('the block fires once per turn, and again in the next turn', async ($, on) => {
+    await landedWorld($, on, [mine()], { tip: 'c2' })
+    expect((await stopped($)).block).toContain('branch unit/a (unit')
+    expect((await stopped($)).block).toBeUndefined()
+    await $.prompt.submit({ text: 'and now?', wait: false, origin: PERSON })
+    expect((await stopped($)).block).toContain('branch unit/a')
+  })
+
+  test('a database the ledger has not marked created is not named', async ($, on) => {
+    await landedWorld($, on, [mine()], { tip: 'c2' })
+    const block = (await stopped($)).block ?? ''
+    expect(block).toContain(`- worktree ${TREE}, branch unit/a (unit unit-a). Run:`)
+    expect(block).not.toContain('DROP DATABASE')
+  })
+
+  test('a unit merged into both HEAD and the upstream its branch tracks blocks', async ($, on) => {
+    await landedWorld($, on, [mine()], { tip: 'c2', upstream: 'u1', merged: ['HEAD', 'u1'] })
+    expect((await stopped($)).block).toContain('branch unit/a')
+  })
+
+  test('a unit whose tree the ledger marks removed names only its branch', async ($, on) => {
+    await landedWorld($, on, [mine({ worktree: null })], { tip: 'c2' })
+    const block = (await stopped($)).block ?? ''
+    expect(block).toContain('- branch unit/a (unit unit-a). Run:\n  - `git -C /repo branch -d unit/a`')
+    expect(block).not.toContain('worktree remove')
+  })
+
+  test('a unit whose recorded tree is absent on disk names only its branch', async ($, on) => {
+    const b = await landedWorld($, on, [mine()], { tip: 'c2' })
+    b.files.delete(TREE)
+    const block = (await stopped($)).block ?? ''
+    expect(block).toContain('- branch unit/a (unit unit-a). Run:\n  - `git -C /repo branch -d unit/a`')
+    expect(block).not.toContain('worktree')
+  })
+
+  for (const [name, list, git] of [
+    ['a unit with no commit of its own', [mine()], { tip: 'c0' }],
+    ['a unit whose branch is not merged', [mine()], { tip: 'c2', merged: [] }],
+    ['a unit merged into another branch but not into the main checkout HEAD', [mine()], { tip: 'c2', merged: ['feat/x'] }],
+    ['a unit merged into HEAD but not into the upstream its branch tracks', [mine()], { tip: 'c2', upstream: 'u1' }],
+    ['a removed-tree entry whose database is not the naming form', [mine({ worktree: null, database: 'app' })], { tip: 'c2' }],
+    ['a unit whose tree exists and whose database is not the naming form', [mine({ isDatabaseCreated: true, database: 'app' })], { tip: 'c2' }],
+    ['a unit whose branch holds a shell metacharacter', [mine({ branch: 'unit/a;touch' })], { tip: 'c2' }],
+    ['a unit whose connection holds a shell metacharacter', [mine({ isDatabaseCreated: true, connection: '-h db;touch x' })], { tip: 'c2' }],
+    ['a unit whose tree holds a change', [mine()], { tip: 'c2', status: ' M a.ts\n' }],
+    ['a unit whose tree holds an untracked file', [mine()], { tip: 'c2', status: '?? b.ts\n' }],
+    ['a unit whose tree status fails', [mine()], { tip: 'c2', status: null }],
+    ['a unit whose branch is gone', [mine()], {}],
+    ['a unit recorded before the ledger kept its start', [entry({ session: SID })], { tip: 'c2' }],
+    ["another session's landed unit", [mine({ session: 'old-session' })], { tip: 'c2' }],
+    ['a landed unit of another project', [mine({ project: '/other' })], { tip: 'c2' }],
+  ] as const) {
+    test(`${name} never blocks`, async ($, on) => {
+      await landedWorld($, on, list, git)
+      expect((await stopped($)).block).toBeUndefined()
+    })
+  }
+
+  test('a landed unit never blocks when git fails or times out', async ($, on) => {
+    const git: Git = { tip: 'c2' }
+    await landedWorld($, on, [mine()], git)
+    git.isBroken = true
+    expect((await stopped($)).block).toBeUndefined()
+  })
+
+  test('a sub-agent stop and a stop the engine already continued never block', async ($, on) => {
+    await landedWorld($, on, [mine()], { tip: 'c2' })
+    expect((await stopped($, { agent_id: SUB, agent_type: 'workbench-dev-team:watson' })).block).toBeUndefined()
+    expect((await stopped($, { stop_hook_active: true })).block).toBeUndefined()
+    expect((await stopped($)).block).toContain('branch unit/a')
+  })
+
+  test('an unattended session never blocks', async ($, on) => {
+    await landedWorld($, on, [mine()], { tip: 'c2' }, false)
+    expect((await stopped($)).block).toBeUndefined()
+  })
+
+  test('an unreadable ledger never blocks', async ($, on) => {
+    const b = await landedWorld($, on, [], { tip: 'c2' })
+    b.files.set(LEDGER, '{ not json')
+    expect((await stopped($)).block).toBeUndefined()
+  })
+
+  test("a block from a Stop hook beneath stands alone", async ($, on) => {
+    on('classic.Stop', () => ({ block: 'another plugin' }))
+    await landedWorld($, on, [mine()], { tip: 'c2' })
+    expect((await stopped($)).block).toBe('another plugin')
+  })
+})
+
+describe("AC4: another session's units stay Mike's", () => {
+  test('the session-start leftover report still lists them with the ! lines, and a landed own unit is not in it', async ($, on) => {
+    const b = world(on, argv => (argv[3] === 'rev-parse' && argv[4] === '--verify' ? { exitCode: 0, stdout: 'c2\n' } : undefined))
+    seed(b, [entry({ worktree: null }), entry({ session: SID, start: 'c0', worktree: null, unit: 'mine', branch: 'unit/mine', createdAt: 2 })])
+    await $.session.start(start())
+    const result = await $.classic.SessionStart({ source: 'startup', session_id: SID, transcript_path: '/t.jsonl', cwd: '/repo' } as never)
+    const context = (result.additionalContext ?? []).join('\n')
+    expect(context).toContain('- branch unit/a (project /repo, recorded by session old-session at 1970-01-01T00:00:00.001Z). Mike runs:\n  - `! git -C /repo branch -d unit/a`')
+    expect(context).not.toContain('unit/mine')
   })
 })

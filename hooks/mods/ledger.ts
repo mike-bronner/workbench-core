@@ -18,12 +18,13 @@ export type LedgerEntry = {
   database: string
   connection: string
   isDatabaseCreated: boolean
+  start?: string
 }
 
 export type LedgerRead = { entries: LedgerEntry[] } | { corrupt: string }
 
 export type LedgerCommand =
-  | { kind: 'add'; dir: string | undefined; branch: string; path: string }
+  | { kind: 'add'; dir: string | undefined; branch: string; path: string; base: string | undefined }
   | { kind: 'remove'; dir: string | undefined; path: string }
   | { kind: 'create'; name: string; connection: string }
   | { kind: 'drop'; name: string; connection: string }
@@ -45,6 +46,7 @@ export type LedgerFacts = {
   database: string | undefined
   names: Readonly<Record<string, string>>
   rootProblem: string | undefined
+  start?: string | undefined
 }
 
 export const LEDGER_RULES =
@@ -55,7 +57,9 @@ export const LEDGER_RULES =
   "`createdb <name>` or `psql -c 'CREATE DATABASE \"<name>\"'`, and `psql -c 'DROP DATABASE \"<name>\"'`. " +
   'A database line may also carry -h, -p, -U and -w, and psql -d. A drop must carry the same -h, -p and -U as the create. ' +
   'Create the worktree first: its unit database name is reserved with it. ' +
-  'A session creates a unit database, removes a unit worktree or drops a unit database only for a unit it recorded itself in the provisioning ledger. Mike cleans up the units of other sessions. The main session deletes a branch with git branch -d or -D, and a sub-agent may not delete a unit branch. ' +
+  'A session creates a unit database, removes a unit worktree or drops a unit database only for a unit it recorded itself in the provisioning ledger. Mike cleans up the units of other sessions. ' +
+  'Once a unit a session recorded has landed, that session tears it down itself, without asking Mike: it removes the worktree, deletes the branch with git branch -d, then drops the database if it created one. ' +
+  'The main session deletes a branch with git branch -d or -D, and a sub-agent may not delete a unit branch. ' +
   'A sub-agent provisions nothing: it reports the need to its orchestrator. ' +
   'For anything else, stop and ask Mike, who runs the command himself with the ! prefix. ' +
   'Read-only commands still run: git worktree list, psql -c "SELECT ...", mysqladmin status.'
@@ -92,7 +96,8 @@ const isEntry = (value: unknown): value is LedgerEntry => {
     typeof e.branch === 'string' &&
     typeof e.database === 'string' &&
     typeof e.connection === 'string' &&
-    typeof e.isDatabaseCreated === 'boolean'
+    typeof e.isDatabaseCreated === 'boolean' &&
+    (e.start === undefined || typeof e.start === 'string')
   )
 }
 
@@ -153,7 +158,7 @@ function gitCommandOf(s: Statement): LedgerCommand | undefined {
   if (dir === null) return undefined
   const [sub, ...rest] = args.slice(subcommandAt)
   if (sub === 'worktree' && rest[0] === 'add' && rest[1] === '-b' && (rest.length === 4 || rest.length === 5) && rest.slice(2).every(isOperand)) {
-    return { kind: 'add', dir, branch: rest[2] as string, path: rest[3] as string }
+    return { kind: 'add', dir, branch: rest[2] as string, path: rest[3] as string, base: rest[4] }
   }
   if (sub === 'worktree' && rest[0] === 'remove' && rest.length === 2 && isOperand(rest[1])) return { kind: 'remove', dir, path: rest[1] }
   return undefined
@@ -270,9 +275,12 @@ export const isCleaned = (entry: LedgerEntry): boolean => entry.worktree === nul
 export const isUnitForm = (entry: LedgerEntry, home: string | undefined, project: string): boolean =>
   entry.project === project && entry.worktree !== null && unitOf(entry.worktree, home, project) === entry.unit
 
-const treeCleanupOf = (entry: LedgerEntry): string => `! git -C ${entry.project} worktree remove ${entry.worktree}`
-const branchCleanupOf = (entry: LedgerEntry): string => `! git -C ${entry.project} branch -d ${entry.branch}`
-const databaseCleanupOf = (entry: LedgerEntry): string => ['! psql', entry.connection, `-c 'DROP DATABASE "${entry.database}"'`].filter(Boolean).join(' ')
+const treeLineOf = (entry: LedgerEntry): string => `git -C ${entry.project} worktree remove ${entry.worktree}`
+const branchLineOf = (entry: LedgerEntry): string => `git -C ${entry.project} branch -d ${entry.branch}`
+const databaseLineOf = (entry: LedgerEntry): string => ['psql', entry.connection, `-c 'DROP DATABASE "${entry.database}"'`].filter(Boolean).join(' ')
+const treeCleanupOf = (entry: LedgerEntry): string => `! ${treeLineOf(entry)}`
+const branchCleanupOf = (entry: LedgerEntry): string => `! ${branchLineOf(entry)}`
+const databaseCleanupOf = (entry: LedgerEntry): string => `! ${databaseLineOf(entry)}`
 
 const otherSessionRefusal = (what: string, entry: LedgerEntry, advice: string): { deny: string } =>
   refusal(
@@ -308,12 +316,23 @@ export function ledgerPlanOf(command: LedgerCommand, facts: LedgerFacts, read: L
     if (facts.isPathTaken) return refusal(`${worktree} already exists, and a tree made by hand may be there`, 'Pick a unit folder that does not exist yet.')
     const taken = entries.find(entry => !isCleaned(entry) && (entry.worktree === worktree || entry.database === facts.database))
     if (taken !== undefined) return refusal(`the provisioning ledger already holds ${taken.worktree === worktree ? worktree : `the database name ${facts.database}`}`, 'Pick another unit folder name.')
-    const entry: LedgerEntry = { project: facts.project, session: facts.session, createdAt: facts.now, unit, worktree, branch: command.branch, database: facts.database, connection: '', isDatabaseCreated: false }
+    const entry: LedgerEntry = {
+      project: facts.project,
+      session: facts.session,
+      createdAt: facts.now,
+      unit,
+      worktree,
+      branch: command.branch,
+      database: facts.database,
+      connection: '',
+      isDatabaseCreated: false,
+      ...(facts.start === undefined ? {} : { start: facts.start }),
+    }
     const isThis = (other: LedgerEntry): boolean => other.worktree === worktree && other.session === facts.session && other.createdAt === facts.now
     return {
       before: current => [...current, entry],
       failed: current => without(current, isThis),
-      advise: `Provisioning ledger: recorded the worktree ${worktree} on the unit branch ${command.branch}. Its unit test database name is ${facts.database}. Create it with createdb ${facts.database} when the unit needs one.`,
+      advise: `Provisioning ledger: recorded the worktree ${worktree} on the unit branch ${command.branch}. Its unit test database name is ${facts.database}. Create it with createdb ${facts.database} when the unit needs one. Once the unit has landed, tear it down yourself, without asking Mike: git -C ${facts.project} worktree remove ${worktree}, then git -C ${facts.project} branch -d ${command.branch}, then psql -c 'DROP DATABASE "${facts.database}"' with the create's -h, -p and -U, if you created it.`,
       stale: `git failed, so ${worktree} does not exist, yet its entry stays in the ledger. It holds no tree, so the session-start leftover check drops it after ten minutes`,
     }
   }
@@ -403,3 +422,36 @@ export function leftoverBlockOf(leftovers: readonly Leftover[]): string | undefi
 
 export const leftoverCorruptOf = (path: string, why: string): string =>
   `# Provisioning ledger unreadable\n\nThe provisioning ledger at ${path} cannot be read (${why}). Creating and removing a worktree or a database are refused until it reads. Tell Mike, who repairs or moves the file.`
+
+const SAFE_WORD = /^[A-Za-z0-9._:@/-]+$/
+
+const isSafeLine = (entry: LedgerEntry): boolean =>
+  [entry.project, entry.branch, ...(entry.worktree === null ? [] : [entry.worktree])].every(word => SAFE_WORD.test(word)) && (entry.connection === '' || entry.connection.split(' ').every(word => SAFE_WORD.test(word)))
+
+export const ownUnitsOf = (entries: readonly LedgerEntry[], home: string | undefined, project: string, session: string, names: Readonly<Record<string, string>>): LedgerEntry[] =>
+  entries.filter(
+    entry =>
+      entry.session === session &&
+      entry.project === project &&
+      entry.start !== undefined &&
+      isSafeLine(entry) &&
+      entry.database === names[entry.unit] &&
+      (entry.worktree === null || isUnitForm(entry, home, project)),
+  )
+
+export type Landed = { entry: LedgerEntry; hasTree: boolean }
+
+export function teardownReasonOf(landed: readonly Landed[]): string | undefined {
+  if (landed.length === 0) return undefined
+  const lines = landed.map(({ entry, hasTree }) => {
+    const parts = [hasTree ? `worktree ${entry.worktree}` : '', `branch ${entry.branch}`, entry.isDatabaseCreated ? `database ${entry.database}` : ''].filter(Boolean)
+    const cleanups = [hasTree ? treeLineOf(entry) : '', branchLineOf(entry), entry.isDatabaseCreated ? databaseLineOf(entry) : ''].filter(Boolean)
+    return [`- ${parts.join(', ')} (unit ${entry.unit}). Run:`, ...cleanups.map(line => `  - \`${line}\``)].join('\n')
+  })
+  return [
+    'Provisioning ledger (workbench-core): this session recorded these units, and each one has landed. Each branch is merged, and each tree holds no change.',
+    'Tear each unit down now, without asking Mike. Run each line alone, in the order shown. Then report the teardown in one line.',
+    '',
+    ...lines,
+  ].join('\n')
+}

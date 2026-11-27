@@ -232,7 +232,7 @@ import {
   toolSearchRoots,
 } from './mods/guards'
 import type { CwdPlace, SearchRoot } from './mods/guards'
-import type { LedgerCommand, LedgerEntry, LedgerRead, Leftover } from './mods/ledger'
+import type { Landed, LedgerCommand, LedgerEntry, LedgerRead, Leftover } from './mods/ledger'
 import {
   BACKGROUND_REFUSAL,
   LEDGER_FILE,
@@ -253,8 +253,10 @@ import {
   leftoverCorruptOf,
   namesUnitBranch,
   normalPathOf,
+  ownUnitsOf,
   rootOf,
   staleNoteOf,
+  teardownReasonOf,
   unitBranchesOf,
   unitDatabaseOf,
   unitOf,
@@ -347,6 +349,7 @@ const cache = atom({ plugin: 'workbench-core', key: 'cache' } as const, EMPTY_CA
 const turnAttended = atom({ plugin: 'workbench-core', key: 'turnAttended' } as const, false)
 // Whether the question rule already re-prompted in the current turn.
 const reprompted = atom({ plugin: 'workbench-core', key: 'reprompted' } as const, false)
+const teardownReminded = atom({ plugin: 'workbench-core', key: 'teardownReminded' } as const, false)
 const delegationReminded = atom({ plugin: 'workbench-core', key: 'delegationReminded' } as const, '')
 const commitApproval = atom({ plugin: 'workbench-core', key: 'commitApproval' } as const, 'none')
 const turnRequest = atom({ plugin: 'workbench-core', key: 'turnRequest' } as const, [])
@@ -1906,7 +1909,8 @@ async function ledgerCall($: EngineInterface, e: { command: string; agentId?: st
     for (const entry of read.entries.filter(other => other.project === project)) names[entry.unit] = await unitDatabaseOf(project, entry.unit)
   }
   const rootProblem = isTreeLine ? await rootProblemOf($, home, project) : undefined
-  const facts = { lane, home, project, cwd: await $.session.cwd(), session: await $.session.id(), now: await $.clock.now(), isPathTaken, isRealTree, database, names, rootProblem }
+  const start = command.kind === 'add' && lane === 'main' ? await gitOut($, project, ['rev-parse', '--verify', '-q', `${command.base ?? 'HEAD'}^{commit}`]) : undefined
+  const facts = { lane, home, project, cwd: await $.session.cwd(), session: await $.session.id(), now: await $.clock.now(), isPathTaken, isRealTree, database, names, rootProblem, start }
   const plan = ledgerPlanOf(command, facts, read, path)
   if (plan === 'pass') return next(e as never)
   if ('deny' in plan) return plan
@@ -1942,6 +1946,37 @@ async function leftoverBlock($: EngineInterface): Promise<string | undefined> {
   const isGone = (entry: LedgerEntry): boolean => gone.some(other => other.session === entry.session && other.createdAt === entry.createdAt && other.worktree === entry.worktree)
   if (gone.length > 0) await ledgerEdit($, path, entries => entries.filter(entry => !isGone(entry)))
   return leftoverBlockOf(leftovers)
+}
+
+const gitExitOf = ($: EngineInterface, dir: string, args: readonly string[]): Promise<{ exitCode: number; stdout: string } | undefined> =>
+  $.process.run(['git', '-C', dir, ...args], { timeoutMs: 5_000 }).then(({ exitCode, stdout }) => ({ exitCode, stdout }), () => undefined)
+
+async function isLanded($: EngineInterface, project: string, entry: LedgerEntry): Promise<Landed | undefined> {
+  const tip = await gitOut($, project, ['rev-parse', '--verify', '-q', `refs/heads/${entry.branch}`])
+  if (tip === undefined || tip === entry.start) return undefined
+  const isMergedInto = async (target: string): Promise<boolean> => (await gitExitOf($, project, ['merge-base', '--is-ancestor', tip, target]))?.exitCode === 0
+  if (!(await isMergedInto('HEAD'))) return undefined
+  const upstream = await gitExitOf($, project, ['rev-parse', '--verify', '-q', `${entry.branch}@{upstream}`])
+  if (upstream === undefined || (upstream.exitCode === 0 && !(await isMergedInto(upstream.stdout.trim())))) return undefined
+  if (entry.worktree === null || !(await $.fs.exists(entry.worktree).catch(() => true))) return { entry, hasTree: false }
+  const status = await gitExitOf($, entry.worktree, ['status', '--porcelain'])
+  return status?.exitCode === 0 && status.stdout.trim() === '' ? { entry, hasTree: true } : undefined
+}
+
+async function teardownReason($: EngineInterface): Promise<string | undefined> {
+  const home = await $.env.get('HOME')
+  if (!home) return undefined
+  const read = await ledgerRead($, ledgerPathOf(home))
+  if ('corrupt' in read) return undefined
+  const project = await $.session.root()
+  const names: Record<string, string> = {}
+  for (const entry of read.entries.filter(other => other.project === project)) names[entry.unit] = await unitDatabaseOf(project, entry.unit)
+  const landed: Landed[] = []
+  for (const entry of ownUnitsOf(read.entries, home, project, await $.session.id(), names)) {
+    const unit = await isLanded($, project, entry)
+    if (unit !== undefined) landed.push(unit)
+  }
+  return teardownReasonOf(landed)
 }
 
 async function vaultGitOf($: EngineInterface, line: string, parse: WorkbenchShellParse, home: string | undefined): Promise<string | undefined> {
@@ -2328,6 +2363,7 @@ export const register: Register = on => {
     await update($, turnAttended, () => isAttendedPrompt(e.origin, e.text))
     await update($, turnScheduled, () => e.origin.kind === 'scheduled-trigger' || isScheduledFire(e.text))
     await update($, reprompted, () => false)
+    await update($, teardownReminded, () => false)
     const blocks = await promptRecall($, e.text).catch(() => [])
     return next(blocks.length === 0 ? reminded : { ...reminded, context: [...(reminded.context ?? []), ...blocks] })
   })
@@ -2349,9 +2385,15 @@ export const register: Register = on => {
       result.block === undefined &&
       (await read($, turnAttended)) &&
       !(await read($, reprompted))
-    if (!isOurs || !(await asksInProse($, e.last_assistant_message ?? ''))) return result
-    await update($, reprompted, () => true)
-    return { ...result, block: REPROMPT_REASON }
+    if (isOurs && (await asksInProse($, e.last_assistant_message ?? ''))) {
+      await update($, reprompted, () => true)
+      return { ...result, block: REPROMPT_REASON }
+    }
+    const isTeardownOurs = sessionAttended === true && !e.agent_id && !e.agent_type && !e.stop_hook_active && result.block === undefined && !(await read($, teardownReminded))
+    const teardown = isTeardownOurs ? await teardownReason($).catch(() => undefined) : undefined
+    if (teardown === undefined) return result
+    await update($, teardownReminded, () => true)
+    return { ...result, block: teardown }
   })
 
   on('classic.SubagentStop', async ($, e, next) => {

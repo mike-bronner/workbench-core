@@ -244,8 +244,8 @@ describe('a release asks where AskUserQuestion can reach Mike, and is refused wh
 })
 
 describe('AC8: a host that answers every dialog on its own runs no gated line without a typed request or a pick', () => {
+  const COMMIT = 'git commit -m "fix: 🐛 X."'
   const GATED = [
-    'git commit -m "fix: 🐛 X."',
     'git push',
     'git merge fix/x',
     'gh pr merge 12 --squash',
@@ -256,7 +256,7 @@ describe('AC8: a host that answers every dialog on its own runs no gated line wi
     'gh api -X PUT repos/o/r/contents/f -f branch=main -f message=x',
   ]
   for (const name of ['mike', 'peer', 'scheduled'] as const) {
-    const lines = name === 'scheduled' ? GATED.slice(2) : GATED
+    const lines = name === 'scheduled' ? GATED.slice(1) : GATED
     test(`${name}: every gated line is denied, the gate raises no dialog, and the permission hook allows none`, async ($, on) => {
       const b = await lane($, on, name)
       b.repos['/repo'] = { ...FEATURE, branch: 'main' }
@@ -277,6 +277,7 @@ describe('AC8: a host that answers every dialog on its own runs no gated line wi
       }
       expect(dialogs(b)).toEqual([])
       expect(b.calls.some(call => call.tool === 'Bash')).toBe(false)
+      if (name !== 'scheduled') expect([COMMIT, await bash($, b, COMMIT)]).toEqual([COMMIT, undefined])
     })
   }
 })

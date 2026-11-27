@@ -164,20 +164,6 @@ function gitCommandOf(s: Statement): LedgerCommand | undefined {
   return undefined
 }
 
-const COMMIT_SWITCHES: ReadonlySet<string> = new Set(['-a', '--all', '-q', '--quiet'])
-
-export function plainCommitDirOf(parse: ShellParse): string | undefined {
-  const s = plainStatementOf(parse)
-  if (s?.name !== 'git' || s.subcommandAt !== 2 || s.args[0] !== '-C' || s.args[2] !== 'commit') return undefined
-  const rest = s.args.slice(3)
-  for (let i = 0; i < rest.length; i++) {
-    const arg = rest[i] as string
-    if (['-m', '--message', '-F', '--file'].includes(arg) && rest[i + 1] !== undefined) i++
-    else if (!(arg.startsWith('--message=') || arg.startsWith('--file=') || COMMIT_SWITCHES.has(arg))) return undefined
-  }
-  return s.args[1]
-}
-
 const CONNECTION: ReadonlySet<string> = new Set(['-h', '-p', '-U', '--host', '--port', '--username'])
 const SHORT: Readonly<Record<string, string>> = { '--host': '-h', '--port': '-p', '--username': '-U' }
 const SWITCHES: ReadonlySet<string> = new Set(['-w', '--no-password'])
@@ -387,9 +373,6 @@ export function ledgerPlanOf(command: LedgerCommand, facts: LedgerFacts, read: L
     stale: `${command.name} was dropped. The session-start leftover check still lists it, and that line can be ignored`,
   }
 }
-
-export const unitEntryOf = (entries: readonly LedgerEntry[], home: string | undefined, project: string, session: string, dir: string): LedgerEntry | undefined =>
-  entries.find(entry => entry.worktree === normalPathOf(dir) && entry.session === session && isUnitForm(entry, home, project))
 
 export const unitBranchesOf = (read: LedgerRead, project: string): string[] | undefined =>
   'corrupt' in read ? undefined : read.entries.filter(entry => entry.project === project).map(entry => entry.branch.toLowerCase())

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { PromptOrigin } from 'claude-code'
 
-import { AGENT_RELEASE_REFUSAL, EARLY_RELEASE_REFUSAL, LINES_BUNDLE_REFUSAL, NAMED_BUNDLE_REFUSAL, RELEASE_REFUSAL, askRefusalOf, releaseIdOf, releasesNamedOf } from '../hooks/mods/commit-approval'
+import { AGENT_RELEASE_REFUSAL, EARLY_RELEASE_REFUSAL, LINES_BUNDLE_REFUSAL, RELEASE_REFUSAL, askRefusalOf, releaseIdOf, releasesNamedOf } from '../hooks/mods/commit-approval'
 import type { Bench } from './bench'
 import { ASKS, HOME, PERSON, bench, start } from './bench'
 
@@ -264,14 +264,13 @@ describe('AC9: a release question asked before the gate refused a release is ref
     expect(await bash($, b, 'git push')).toBeUndefined()
   })
 
-  test('a commit question about the release notes is let through and its pick runs the commit', async ($, on) => {
+  test('a commit of the release notes runs with no question, and a commit question about them is let through', async ($, on) => {
     const b = await attended($, on)
     b.trees['/repo'] = 'A  notes.md\0'
     const line = 'git commit -m "docs: 📝 Add the release notes."'
-    expect(await bash($, b, line)).toMatch(ASKS.commit)
-    expect(await ask($, b, 'Commit the release notes?', 'Yes, commit', ['Yes, commit', 'Not yet'])).toBe(NAMED_BUNDLE_REFUSAL)
-    expect(await ask($, b, 'Commit "docs: 📝 Add the release notes." with notes.md on main?', 'Yes, commit', ['Yes, commit', 'Not yet'])).toBeUndefined()
     expect(await bash($, b, line)).toBeUndefined()
+    expect(await ask($, b, 'Commit the release notes?', 'Yes, commit', ['Yes, commit', 'Not yet'])).toBeUndefined()
+    expect(await bash($, b, 'gh release create 1.0.0 --notes x')).toMatch(ASKS.release)
   })
 
   for (const [name, question, labels] of [

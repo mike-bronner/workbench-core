@@ -130,9 +130,7 @@ import {
   GATED_REFUSALS,
   MOVE_REFUSAL,
   ONE_REFUSAL,
-  PATHSPEC_REFUSAL,
   RELEASE_REFUSAL,
-  SHARED_LINE_REFUSAL,
   UNREAD_TREE_REFUSAL,
   agentReleaseRefusalOf,
   agentUnreadRefusalOf,
@@ -142,11 +140,9 @@ import {
   askRefusalOf,
   bindingRefusalOf,
   catchUpsOf,
-  filesOf,
   pullRebasesOf,
   REBASE_OFF_VALUES,
   gateOf,
-  messageOf,
   lineKindOf,
   isOtherRepo,
   linePickOf,
@@ -176,7 +172,6 @@ import {
   movesHead,
   pickOf,
   refOf,
-  changesIndexBeside,
   requestedCallsOf,
   leftOutOf,
   leftOutRefusal,
@@ -189,7 +184,7 @@ import {
   intentText,
   mayAskIntent,
   withIntent,
-  shapeOf,
+  isAllOf,
   unnamedOf,
 } from './mods/commit-approval'
 import { FAILED_REFUSAL, SUBAGENT_REFUSAL, commitVerdict } from './mods/commit-guard'
@@ -240,9 +235,7 @@ import {
   LOCK_WAIT_MS,
   PRUNE_AFTER_MS,
   corruptRefusal,
-  plainCommitDirOf,
   lockedRefusal,
-  unitEntryOf,
   isProvisioningLine,
   ledgerCommandOf,
   ledgerOf,
@@ -357,7 +350,6 @@ const turnIntent = atom({ plugin: 'workbench-core', key: 'turnIntent' } as const
 const pendingLines = atom({ plugin: 'workbench-core', key: 'pendingLines' } as const, {})
 const remoteUrls = atom({ plugin: 'workbench-core', key: 'remoteUrls' } as const, {})
 const pendingReleases = atom({ plugin: 'workbench-core', key: 'pendingReleases' } as const, [])
-// Whether a schedule opened the current turn, so a commit in it is not gated.
 const turnScheduled = atom({ plugin: 'workbench-core', key: 'turnScheduled' } as const, false)
 const turnForwards = atom({ plugin: 'workbench-core', key: 'turnForwards' } as const, false)
 const suiteRunners = atom({ plugin: 'workbench-core', key: 'suiteRunners' } as const, [])
@@ -707,13 +699,13 @@ async function pendingReleaseOf($: EngineInterface, command: string): Promise<Pe
   return { ...release, names: top === undefined ? [release.repo] : [release.repo, top] }
 }
 
-async function askRefusal($: EngineInterface, missing: readonly Gated[], command: string, dir: string, commit: Commit | undefined, isApart = false, tags: readonly string[] = []): Promise<string> {
+async function askRefusal($: EngineInterface, missing: readonly Gated[], command: string, dir: string, isApart = false, tags: readonly string[] = []): Promise<string> {
   const release = missing.length === 1 && missing[0] === 'release' ? await pendingReleaseOf($, command) : undefined
   if (release !== undefined) await update($, pendingReleases, releases => [...releases.filter(each => !sameRelease(each, release)), release])
   const kind = release === undefined ? lineKindOf(missing, command) : undefined
   if (kind !== undefined) await update($, pendingLines, lines => ({ ...lines, [command]: kind }))
   const rewrites = [...rewriteKindsOf(command), ...(isApart ? (['history'] as const) : [])]
-  const facts = { ...(await askFactsOf($, command, dir, commit)), rewrites, ...(isApart ? { isApart: true as const } : {}), ...(tags.length === 0 ? {} : { tags }) }
+  const facts = { ...(await askFactsOf($, command, dir)), rewrites, ...(isApart ? { isApart: true as const } : {}), ...(tags.length === 0 ? {} : { tags }) }
   return askRefusalOf(missing, release === undefined ? facts : { ...facts, release })
 }
 
@@ -907,7 +899,7 @@ async function isNoRecursion($: EngineInterface, dir: string, key: string): Prom
 }
 
 async function isFreeLine($: EngineInterface, line: string, writes: Writes, commit: Commit | undefined, isGreenOnly = false, sent: string[] = []): Promise<boolean> {
-  if (writes.commits > 1 || (writes.commits === 1 && (commit === undefined || commit.args === null || shapeOf(commit.args).isAll))) return false
+  if (writes.commits > 1 || (writes.commits === 1 && (commit === undefined || commit.args === null || isAllOf(commit.args)))) return false
   const calls = requestedCallsOf(line, ['commit', 'push'])
   if (calls === undefined || (writes.commits > 0 && (await read($, greenTree)) === null)) return false
   const isCombined = calls.some(call => call.action === 'commit') && calls.some(call => call.action === 'push')
@@ -965,17 +957,11 @@ async function bindingRefusal($: EngineInterface, pick: Pick, dir: string | unde
   return bindingRefusalOf(pick, top, ref)
 }
 
-async function askFactsOf($: EngineInterface, command: string, dir: string, commit: Commit | undefined): Promise<AskFacts> {
+async function askFactsOf($: EngineInterface, command: string, dir: string): Promise<AskFacts> {
   const remote = remoteTargetOf(command, originRepoOf(await gitOut($, await $.session.cwd(), ['config', '--get', 'remote.origin.url'])))
   const repo = remote === undefined ? await gitOut($, dir, ['rev-parse', '--show-toplevel']) : `${remote.repo} on GitHub`
   const branch = remote === undefined ? await gitOut($, dir, ['symbolic-ref', '-q', 'HEAD']) : remote.branch
-  const facts: AskFacts = { command, ...(repo === undefined ? {} : { repo }), ...(branch === undefined ? {} : { branch }) }
-  if (commit === undefined) return facts
-  const status = await $.process
-    .run(['git', '-C', dir, 'status', '--porcelain=v1', '-z', '--untracked-files=all'], { timeoutMs: 10_000 })
-    .then(({ exitCode, stdout }) => (exitCode === 0 ? stdout : undefined), () => undefined)
-  const message = messageOf(commit.args)
-  return { ...facts, ...(message === undefined ? {} : { message }), ...(status === undefined ? {} : { files: filesOf(status) }) }
+  return { command, ...(repo === undefined ? {} : { repo }), ...(branch === undefined ? {} : { branch }) }
 }
 
 async function apiWritesIntoDefault($: EngineInterface, writes: readonly ApiWrite[]): Promise<number> {
@@ -1144,9 +1130,10 @@ async function isApprovedLine($: EngineInterface, line: string, request: readonl
 
 async function isApprovedCall($: EngineInterface, call: RequestedCall, request: readonly Action[]): Promise<boolean> {
   if (call.action === 'release' || call.action === 'merge') return (await $.env.get('GH_REPO')) === undefined
+  if (call.action === 'commit') return true
   const dir = call.dir === undefined ? await $.session.cwd() : await projectDirOf($, call.dir)
   if (dir === undefined) return false
-  if (call.action === 'commit' || call.ref === undefined) return true
+  if (call.ref === undefined) return true
   const git = (args: string[]) =>
     $.process
       .run(['git', '-C', dir, ...args], { timeoutMs: 10_000 })
@@ -1176,18 +1163,15 @@ async function projectDirOf($: EngineInterface, path: string): Promise<string | 
   return (await repoOf($, real))?.common === repo.common ? real : undefined
 }
 
-async function treeRefusalOf($: EngineInterface, line: string, commit: Commit | undefined, toolUseId: string | undefined): Promise<string | undefined> {
+async function treeRefusalOf($: EngineInterface, commit: Commit | undefined, toolUseId: string | undefined): Promise<string | undefined> {
   if (commit === undefined || commit.args === null) return UNREAD_TREE_REFUSAL
-  const shape = shapeOf(commit.args)
-  if (shape.isPartial) return PATHSPEC_REFUSAL
-  if (changesIndexBeside(line)) return SHARED_LINE_REFUSAL
   const dir = dirOf(commit.dir, await $.session.cwd(), await $.env.get('HOME'))
   if (dir === undefined) return UNREAD_TREE_REFUSAL
   const status = await $.process
     .run(['git', '-C', dir, 'status', '--porcelain=v1', '-z', '--untracked-files=all'], { timeoutMs: 10_000 })
     .then(({ exitCode, stdout, isStdoutTruncated }) => (exitCode === 0 && !isStdoutTruncated ? stdout : undefined), () => undefined)
   if (status === undefined) return UNREAD_TREE_REFUSAL
-  const leftOut = leftOutOf(status, shape.isAll)
+  const leftOut = leftOutOf(status, isAllOf(commit.args))
   if (leftOut.length === 0) return undefined
   const shown = await $.session.messages({ as: 'api' }).then(messages => shownTextOf(messages, toolUseId), () => undefined)
   const unnamed = unnamedOf(leftOut, shown ?? '')
@@ -1876,20 +1860,6 @@ async function isRealUnit($: EngineInterface, home: string, project: string, uni
   return (await realPathOf($, normalPathOf(path) ?? path)) === `${await realPathOf($, rootOf(home, project))}/${unit}`
 }
 
-async function isLedgerUnitTree($: EngineInterface, dir: string | undefined): Promise<boolean> {
-  const home = await $.env.get('HOME')
-  if (dir === undefined || !home) return false
-  const project = await $.session.root()
-  const read = await ledgerRead($, ledgerPathOf(home))
-  const entry = 'corrupt' in read ? undefined : unitEntryOf(read.entries, home, project, await $.session.id(), dir)
-  if (entry === undefined || entry.worktree === null || (await rootProblemOf($, home, project)) !== undefined || !(await isRealUnit($, home, project, entry.unit, entry.worktree))) return false
-  return (await gitOut($, entry.worktree, ['symbolic-ref', '-q', 'HEAD'])) === `refs/heads/${entry.branch}`
-}
-
-async function isUnitCommitLine($: EngineInterface, command: string): Promise<boolean> {
-  return isLedgerUnitTree($, plainCommitDirOf(parseShell(command)))
-}
-
 async function ledgerCall($: EngineInterface, e: { command: string; agentId?: string; run_in_background?: boolean }, command: LedgerCommand, next: (e: never) => Promise<ToolCallResult>): Promise<ToolCallResult> {
   const lane = await $.workbench.callerLane(e.agentId === undefined ? {} : { agentId: e.agentId }).catch((): WorkbenchCallerLane => 'sub-agent')
   if (lane === 'main' && command.kind === 'branch-delete') return next(e as never)
@@ -2455,7 +2425,7 @@ export const register: Register = on => {
       if (linePick !== undefined) {
         const heads = linePick.kind === 'rewrite' ? await headsAt($) : []
         await update($, commitApproval, held => {
-          const kept = linePick.kind === 'rewrite' && held !== 'none' && held.line === undefined && held.release === undefined && (held.action === 'commit' || held.action === 'merge') ? held.action : undefined
+          const kept = linePick.kind === 'rewrite' && held !== 'none' && held.line === undefined && held.release === undefined && held.action === 'merge' ? held.action : undefined
           return { action: linePick.kind, heads, line: linePick.line, ...(kept === undefined ? {} : { kept }), ...(kept === 'merge' && held !== 'none' && held.names !== undefined ? { names: held.names } : {}) }
         })
         return result
@@ -2477,7 +2447,7 @@ export const register: Register = on => {
       const apiIntoDefault = apiWrites.length === 0 ? 0 : await apiWritesIntoDefault($, apiWrites)
       const runFree = async () => {
         const { writes, commit } = readLine(e.command)
-        const treeRefusal = writes.commits === 1 ? await treeRefusalOf($, e.command, commit, e.tool_use_id) : undefined
+        const treeRefusal = isAgentFree && writes.commits === 1 ? await treeRefusalOf($, commit, e.tool_use_id) : undefined
         if (treeRefusal !== undefined) return { deny: treeRefusal }
         if (subject !== undefined) return { deny: subject }
         const commitDir = writes.commits === 1 ? await freeCommitDirOf($, e.command) : undefined
@@ -2511,7 +2481,7 @@ export const register: Register = on => {
           if (releases > 1) return { deny: ONE_REFUSAL }
           const approval = await read($, commitApproval)
           const picked = await pickedReleaseOf($, approval, e.command)
-          if (approval === 'none' || approval.action !== 'release' || !picksLine(approval, e.command, picked)) return { deny: await askRefusal($, ['release'], e.command, await $.session.cwd(), undefined) }
+          if (approval === 'none' || approval.action !== 'release' || !picksLine(approval, e.command, picked)) return { deny: await askRefusal($, ['release'], e.command, await $.session.cwd()) }
           return next(e).finally(() => update($, commitApproval, () => 'none' as const))
         }
         return withScanRecall($, 'Bash', e.command, e.agentId, await next(e))
@@ -2520,23 +2490,17 @@ export const register: Register = on => {
       const releases = releaseCountOf(e.command)
       const merges = mergesOf(e.command)
       const approval = await read($, commitApproval)
-      const isHeadPick = approval !== 'none' && ['commit', 'push', 'rewrite'].includes(approval.action) && approval.line !== e.command
+      const isHeadPick = approval !== 'none' && ['push', 'rewrite'].includes(approval.action) && approval.line !== e.command
       if (isHeadPick && movesHead(e.command)) return { deny: MOVE_REFUSAL }
-      if (writes.commits + writes.pushes + releases + merges.local.length + merges.pr + rewrites + aliases + apiIntoDefault === 0) {
-        return subject !== undefined ? { deny: subject } : withScanRecall($, 'Bash', e.command, e.agentId, await next(e))
-      }
-      const isUnitOnly = writes.commits === 1 && writes.pushes + releases + merges.local.length + merges.pr + rewrites + aliases + apiIntoDefault === 0
-      if (isUnitOnly && (await isUnitCommitLine($, e.command).catch(() => false))) {
-        const treeRefusal = await treeRefusalOf($, e.command, commit, e.tool_use_id)
-        if (treeRefusal !== undefined) return { deny: treeRefusal }
-        return subject !== undefined ? { deny: subject } : withScanRecall($, 'Bash', e.command, e.agentId, await next(e))
+      if (writes.pushes + releases + merges.local.length + merges.pr + rewrites + aliases + apiIntoDefault === 0) {
+        if (subject !== undefined) return { deny: subject }
+        return writes.commits > 0 ? runFree() : withScanRecall($, 'Bash', e.command, e.agentId, await next(e))
       }
       const isFreeShape = releases + merges.local.length + merges.pr + rewrites + aliases + apiIntoDefault === 0
       const sent: string[] = []
       if (isFreeShape && (await isFreeLine($, e.command, writes, commit, false, sent).catch(() => false))) return runFree()
       const intoDefault = merges.pr + (await mergesIntoDefault($, merges.local)) - (await catchUpsIntoDefault($, catchUpsOf(e.command)))
-      const mergeDirs = await unitLandingDirsOf($, merges.landings)
-      const committed = { commits: writes.commits + mergeDirs.length, pushes: writes.pushes }
+      const committed = { commits: 0, pushes: writes.pushes }
       const rebases = await rebasingPullsOf($, pullRebasesOf(e.command))
       const picked = await pickedReleaseOf($, approval, e.command)
       const counts = { writes: committed, releases, merges: intoDefault, rewrites: rewrites + rebases, aliases, apiWrites: apiIntoDefault, isApart: rebases > 0 }
@@ -2547,11 +2511,8 @@ export const register: Register = on => {
       const gate = gateFor(request)
       const isLinePaid = approval !== 'none' && picksLine(approval, e.command, picked) && !gate.missing.includes(approval.action)
       if (gate.isOne) return { deny: ONE_REFUSAL }
-      const treeRefusal = writes.commits === 1 ? await treeRefusalOf($, e.command, commit, e.tool_use_id) : undefined
-      if (treeRefusal !== undefined) return { deny: treeRefusal }
       if (subject !== undefined) return { deny: subject }
-      const [mergeDir] = mergeDirs
-      const dir = writes.commits + writes.pushes === 0 && mergeDir !== undefined ? mergeDir : dirOf(steps, await $.session.cwd(), await $.env.get('HOME'))
+      const dir = dirOf(steps, await $.session.cwd(), await $.env.get('HOME'))
       const isPaid = approval !== 'none' && isPaidByPick(committed, intoDefault, approval, request)
       if ((isPaid && approval.action === 'merge') || (isLinePaid && approval.kept === 'merge' && intoDefault > 0)) {
         const target = mergeTargetRefusalOf(approval.names, merges.targets)
@@ -2570,7 +2531,7 @@ export const register: Register = on => {
         const canAsk = (await read($, turnAttended)) || (isReleaseOnly && sessionAttended === true)
         const first = gate.missing[0] as Gated
         if (!canAsk) return { deny: first === 'rewrite' ? rewriteRefusalOf([...rewriteKindsOf(e.command), ...(rebases > 0 ? (['history'] as const) : [])]) : GATED_REFUSALS[first] }
-        return { deny: await askRefusal($, gate.missing, e.command, dir ?? (await $.session.cwd()), writes.commits === 1 ? commit : undefined, rebases > 0, sent) }
+        return { deny: await askRefusal($, gate.missing, e.command, dir ?? (await $.session.cwd()), rebases > 0, sent) }
       }
       const before = isPaid && dir !== undefined ? await refsOf($, dir) : undefined
       const result = await (isLinePaid ? next(e).finally(() => update($, commitApproval, () => 'none' as const)) : next(e))
@@ -2781,7 +2742,7 @@ export const register: Register = on => {
       const line = (e.tool_input as { command?: unknown } | null | undefined)?.command
       if (e.tool_name !== 'Bash' || typeof line !== 'string' || !(await isAgentFreeLine($, line, e.agent_id, sessionAttended).catch(() => false))) return result
       const { writes, commit } = readLine(line)
-      const isTreeWhole = writes.commits === 0 || (await treeRefusalOf($, line, commit, undefined).catch(() => GUARD_FAILED)) === undefined
+      const isTreeWhole = writes.commits === 0 || (await treeRefusalOf($, commit, undefined).catch(() => GUARD_FAILED)) === undefined
       return isTreeWhole ? { ...result, decision: { behavior: 'allow' } } : result
     }
     if (e.tool_name === 'Write' || e.tool_name === 'Edit') {
@@ -2793,14 +2754,10 @@ export const register: Register = on => {
     const approval = await read($, commitApproval)
     if (approval !== 'none' && picksLine(approval, command, await pickedReleaseOf($, approval, command))) return { ...result, decision: { behavior: 'allow' } }
     if (!(await isCommitGated($, sessionAttended, undefined))) return result
-    const isUnitCommit = (await isUnitCommitLine($, command).catch(() => false)) && (await treeRefusalOf($, command, readLine(command).commit, undefined).catch(() => GUARD_FAILED)) === undefined
-    if (isUnitCommit) return { ...result, decision: { behavior: 'allow' } }
     const { writes, commit } = readLine(command)
-    const isFree = (await isFreeLine($, command, writes, commit).catch(() => false)) && (writes.commits === 0 || (await treeRefusalOf($, command, commit, undefined).catch(() => GUARD_FAILED)) === undefined)
-    if (isFree) return { ...result, decision: { behavior: 'allow' } }
-    const isOne = writes.commits <= 1 && writes.pushes <= 1
-    const picked: Action[] = !isOne || approval === 'none' || approval.line !== undefined || approval.release !== undefined ? [] : [approval.action as Action]
-    const approved = [...new Set([...(await read($, turnRequest)), ...picked])]
+    if (await isFreeLine($, command, writes, commit).catch(() => false)) return { ...result, decision: { behavior: 'allow' } }
+    const picked: Action[] = writes.pushes > 1 || approval === 'none' || approval.line !== undefined || approval.release !== undefined ? [] : [approval.action as Action]
+    const approved = [...new Set<Action>(['commit', ...(await read($, turnRequest)), ...picked])]
     return (await isApprovedLine($, command, approved)) ? { ...result, decision: { behavior: 'allow' } } : result
   })
 
@@ -2981,9 +2938,6 @@ export const register: Register = on => {
   // Every exit checkpoints the session log, inside what is left of the exit
   // budget: SIGHUP and SIGTERM fire this, where the settings SessionEnd hook
   // may not run. When it did run, it ran first, and this finds nothing new.
-  // A /clear starts the conversation over, so the meters, the reply rows, a
-  // "Commit it" pick, the capture count, recall's dedupe set and the intake
-  // task start over with it.
   on('session.end', async ($, e, next) => {
     const timeoutMs = endTimeoutOf(next.budget.remainingMs)
     if (timeoutMs !== undefined) await checkpointLog($, e.sessionId, 'final', e.reason, timeoutMs).catch(() => undefined)

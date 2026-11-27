@@ -388,7 +388,7 @@ describe("a session removes only the units it recorded, and another session's un
   })
 })
 
-describe('AC4: the commit gate lets a unit branch be made and deleted, and asks before it lands on a feature branch', () => {
+describe('AC4: the commit gate lets a unit branch be made, deleted and landed on a feature branch with no question', () => {
   for (const line of ['git branch unit/b', 'git branch -d unit/a', 'git branch -D unit/a', 'git branch -D other/b', 'git merge origin/main', 'git merge --no-ff main', 'git pull --no-ff . feat/y']) {
     test(`on a feature branch, with unit/a in the ledger, ${JSON.stringify(line)} runs with no question`, async ($, on) => {
       const b = await attended($, on)
@@ -405,13 +405,9 @@ describe('AC4: the commit gate lets a unit branch be made and deleted, and asks 
     'git pull --no-ff . unit/a',
     'git -C /repo merge --no-ff -m "Merge unit/a" unit/a',
   ]) {
-    test(`on a feature branch, with unit/a in the ledger, ${JSON.stringify(line)} asks Mike as a commit, and a commit request runs it`, async ($, on) => {
+    test(`on a feature branch, with unit/a in the ledger, ${JSON.stringify(line)} lands with no question and no request`, async ($, on) => {
       const b = await attended($, on)
       await bash($, b, ADD)
-      const answer = await bash($, b, line)
-      expect(answer.reached).toBe(false)
-      expect(answer.deny).toMatch(ASKS.commit)
-      await $.prompt.submit({ text: 'commit it', wait: false, origin: PERSON })
       expect(await bash($, b, line)).toEqual({ deny: undefined, reached: true, context: [] })
     })
   }
@@ -422,19 +418,17 @@ describe('AC4: the commit gate lets a unit branch be made and deleted, and asks 
     expect(await bash($, b, 'git merge --no-ff unit/a')).toEqual({ deny: undefined, reached: true, context: [] })
   })
 
-  test('a unit branch whose worktree is gone still asks when it lands', async ($, on) => {
+  test('a unit branch whose worktree is gone lands with no question', async ($, on) => {
     const b = await attended($, on)
     seed(b, [entry({ worktree: null })])
-    expect((await bash($, b, 'git merge --no-ff unit/a')).deny).toMatch(ASKS.commit)
+    expect(await bash($, b, 'git merge --no-ff unit/a')).toEqual({ deny: undefined, reached: true, context: [] })
   })
 
-  test('a catch-up merge inside a unit tree runs with no question, and a merge of another unit there asks', async ($, on) => {
+  test('a catch-up merge and a merge of another unit inside a unit tree run with no question', async ($, on) => {
     const b = await inUnit($, on)
     seed(b, [entry({ session: SID }), entry({ unit: 'unit-b', worktree: `${ROOT}/unit-b`, branch: 'unit/b', database: 'wt_repo_unit_b_testing' })])
     expect(await bash($, b, `git -C ${TREE} merge --no-ff feat/x`)).toEqual({ deny: undefined, reached: true, context: [] })
-    const answer = await bash($, b, `git -C ${TREE} merge --no-ff unit/b`)
-    expect(answer.reached).toBe(false)
-    expect(answer.deny).toMatch(ASKS.commit)
+    expect(await bash($, b, `git -C ${TREE} merge --no-ff unit/b`)).toEqual({ deny: undefined, reached: true, context: [] })
     expect(await bash($, b, UNIT_COMMIT)).toEqual({ deny: undefined, reached: true, context: [] })
   })
 
@@ -593,7 +587,7 @@ async function permission($: Engine, command: string, agentId?: string): Promise
   return (result as { decision?: unknown }).decision
 }
 
-describe('AC11: a plain commit in a ledger worktree on its unit branch runs with no question', () => {
+describe('AC11: a main-session commit in or out of a ledger worktree runs with no question', () => {
   for (const line of [UNIT_COMMIT, `git -C ${TREE} commit -F /scratch/msg.txt`]) {
     test(`the main lane runs ${JSON.stringify(line)}, and the permission dialog is answered allow`, async ($, on) => {
       const b = await inUnit($, on)
@@ -602,49 +596,41 @@ describe('AC11: a plain commit in a ledger worktree on its unit branch runs with
     })
   }
 
-  test('the same commit on another branch in that tree asks Mike, and the dialog gets no answer', async ($, on) => {
-    const b = await inUnit($, on, 'feat/x')
-    const answer = await bash($, b, UNIT_COMMIT)
-    expect([answer.reached, ASKS.commit.test(answer.deny ?? '')]).toEqual([false, true])
-    expect(await permission($, UNIT_COMMIT)).toBeUndefined()
-  })
+  for (const [name, branch] of [
+    ['on another branch', 'feat/x'],
+    ['with a detached HEAD', null],
+  ] as const) {
+    test(`the same commit ${name} in that tree runs, and the dialog is answered allow`, async ($, on) => {
+      const b = await inUnit($, on, branch)
+      expect(await bash($, b, UNIT_COMMIT)).toEqual({ deny: undefined, reached: true, context: [] })
+      expect(await permission($, UNIT_COMMIT)).toEqual({ behavior: 'allow' })
+    })
+  }
 
-  test('the same commit with a detached HEAD in that tree asks Mike', async ($, on) => {
-    const b = await inUnit($, on, null)
-    expect((await bash($, b, UNIT_COMMIT)).deny).toMatch(ASKS.commit)
-  })
-
-  test('the same commit in a tree the ledger did not record asks Mike, and the dialog gets no answer', async ($, on) => {
+  test('the same commit in a tree the ledger did not record runs', async ($, on) => {
     const b = await inUnit($, on)
     const tree = `${ROOT}/handmade`
     b.repos[tree] = { head: 'c3', branch: 'unit/a', originHead: 'main' }
     b.trees[tree] = 'M  a.ts\0'
     const line = `git -C ${tree} commit -m "fix: 🐛 X."`
-    const answer = await bash($, b, line)
-    expect([answer.reached, ASKS.commit.test(answer.deny ?? '')]).toEqual([false, true])
-    expect(await permission($, line)).toBeUndefined()
+    expect(await bash($, b, line)).toEqual({ deny: undefined, reached: true, context: [] })
+    expect(await permission($, line)).toEqual({ behavior: 'allow' })
   })
 
-  test("the same commit in a unit tree another session recorded asks Mike, and the dialog gets no answer", async ($, on) => {
+  test('the same commit in a unit tree another session recorded, or with a ledger that does not read, runs', async ($, on) => {
     const b = await inUnit($, on)
     seed(b, [entry()])
-    const answer = await bash($, b, UNIT_COMMIT)
-    expect([answer.reached, ASKS.commit.test(answer.deny ?? '')]).toEqual([false, true])
-    expect(await permission($, UNIT_COMMIT)).toBeUndefined()
+    expect(await bash($, b, UNIT_COMMIT)).toEqual({ deny: undefined, reached: true, context: [] })
+    b.files.set(LEDGER, '{ not json')
+    expect(await bash($, b, UNIT_COMMIT)).toEqual({ deny: undefined, reached: true, context: [] })
   })
 
-  for (const line of [`cd ${TREE} && git commit -m "fix: 🐛 X."`, `git -c core.hooksPath=/dev/null -C ${TREE} commit -m "fix: 🐛 X."`]) {
-    test(`a commit in another form, ${JSON.stringify(line)}, gets no exemption`, async ($, on) => {
-      const b = await inUnit($, on)
-      expect((await bash($, b, line)).reached).toBe(false)
-      expect(await permission($, line)).toBeUndefined()
-    })
-  }
-
-  test('a ledger that does not read gives no exemption, and the commit asks Mike', async ($, on) => {
+  test('a commit through cd runs, and one with a -c option gets no dialog answer', async ($, on) => {
     const b = await inUnit($, on)
-    b.files.set(LEDGER, '{ not json')
-    expect((await bash($, b, UNIT_COMMIT)).deny).toMatch(ASKS.commit)
+    const viaCd = `cd ${TREE} && git commit -m "fix: 🐛 X."`
+    expect((await bash($, b, viaCd)).reached).toBe(true)
+    expect(await permission($, viaCd)).toBeUndefined()
+    expect(await permission($, `git -c core.hooksPath=/dev/null -C ${TREE} commit -m "fix: 🐛 X."`)).toBeUndefined()
   })
 
   test('a sub-agent commit in the ledger worktree is refused as before, and the dialog gets no answer', async ($, on) => {
@@ -654,13 +640,11 @@ describe('AC11: a plain commit in a ledger worktree on its unit branch runs with
     expect(await permission($, UNIT_COMMIT, SUB)).toBeUndefined()
   })
 
-  test('the commit must still take the whole tree, and the dialog gets no answer when it does not', async ($, on) => {
+  test('a main-session commit that leaves a file out runs, and its dialog is answered', async ($, on) => {
     const b = await inUnit($, on)
     b.trees[TREE] = 'M  a.ts\0?? b.ts\0'
-    const answer = await bash($, b, UNIT_COMMIT)
-    expect(answer.reached).toBe(false)
-    expect(answer.deny).toContain('b.ts')
-    expect(await permission($, UNIT_COMMIT)).toBeUndefined()
+    expect(await bash($, b, UNIT_COMMIT)).toEqual({ deny: undefined, reached: true, context: [] })
+    expect(await permission($, UNIT_COMMIT)).toEqual({ behavior: 'allow' })
   })
 })
 
@@ -824,12 +808,11 @@ describe('AC15: only the guard writes the ledger, and a forged entry reaches not
     for (const line of ['createdb crossbible', `psql -c 'DROP DATABASE "crossbible_dev"'`, `psql -c 'DROP DATABASE "wt_repo_unit_b_testing"'`]) expectRefused(await bash($, b, line))
   })
 
-  test('a forged entry frees no removal of a tree outside the root, and no unit commit there', async ($, on) => {
+  test('a forged entry frees no removal of a tree outside the root', async ($, on) => {
     const b = await attended($, on)
     seed(b, [entry({ session: SID, worktree: '/repo', unit: 'repo', branch: 'feat/x' }), entry({ session: SID, worktree: `${ROOT}/x`, unit: 'other', createdAt: 2 })])
     expectRefused(await bash($, b, 'git worktree remove /repo'))
     expectRefused(await bash($, b, `git worktree remove ${ROOT}/x`))
-    expect((await bash($, b, 'git -C /repo commit -m "fix: 🐛 X."')).deny).toMatch(ASKS.commit)
   })
 
   test('a symbolic-link root into the shared worktrees folder is followed, and the unit runs through it', async ($, on) => {
@@ -845,14 +828,12 @@ describe('AC15: only the guard writes the ledger, and a forged entry reaches not
     expect((await bash($, b, `git worktree remove ${TREE}`)).reached).toBe(true)
   })
 
-  test('a recorded tree swapped for a symbolic link is neither removed nor committed in with no question', async ($, on) => {
+  test('a recorded tree swapped for a symbolic link is not removed', async ($, on) => {
     const b = await inUnit($, on)
     b.stat = path => (path === TREE ? { kind: 'dir', isLink: true, realPath: '/repo' } : undefined)
     const answer = await bash($, b, `git worktree remove ${TREE}`)
     expectRefused(answer)
     expect(answer.deny).toContain('a symbolic link stands in its place or above it')
-    expect((await bash($, b, UNIT_COMMIT)).deny).toMatch(ASKS.commit)
-    expect(await permission($, UNIT_COMMIT)).toBeUndefined()
   })
 })
 
@@ -1024,7 +1005,6 @@ describe('AC18: a root link is followed only into an allowed root', () => {
     b.repos[TREE] = { head: 'c2', branch: 'unit/a', originHead: 'main' }
     b.trees[TREE] = 'M  a.ts\0'
     expectRefused(await bash($, b, `git worktree remove ${TREE}`))
-    expect((await bash($, b, UNIT_COMMIT)).deny).toMatch(ASKS.commit)
   })
 
   test('a root linked to the worktrees folder beside the repository, as Herdr groups it, is followed', async ($, on) => {
@@ -1038,31 +1018,23 @@ describe('AC18: a root link is followed only into an allowed root', () => {
   })
 })
 
-describe('AC19: the commit switches the exemption accepts', () => {
-  test('-a with an untracked file is refused by the whole-tree check, and the dialog gets no answer', async ($, on) => {
-    const b = await inUnit($, on)
-    b.trees[TREE] = ' M a.ts\0?? b.ts\0'
-    const line = `git -C ${TREE} commit -a -m "fix: 🐛 X."`
-    const answer = await bash($, b, line)
-    expect([answer.reached, answer.deny?.includes('b.ts')]).toEqual([false, true])
-    expect(await permission($, line)).toBeUndefined()
-  })
-
-  test('-a on a tree whose changes are all tracked runs, and the dialog is answered allow', async ($, on) => {
-    const b = await inUnit($, on)
-    b.trees[TREE] = ' M a.ts\0'
-    const line = `git -C ${TREE} commit -a -q -m "fix: 🐛 X."`
-    expect((await bash($, b, line)).reached).toBe(true)
-    expect(await permission($, line)).toEqual({ behavior: 'allow' })
-  })
-
-  for (const line of [`git -C ${TREE} commit -am "fix: 🐛 X."`, `git -C ${TREE} commit --amend -m "fix: 🐛 X."`]) {
-    test(`${JSON.stringify(line)} gets no exemption and no allow`, async ($, on) => {
+describe('AC19: the commit switches a plain main-session commit takes', () => {
+  for (const line of [`git -C ${TREE} commit -a -m "fix: 🐛 X."`, `git -C ${TREE} commit -a -q -m "fix: 🐛 X."`, `git -C ${TREE} commit -am "fix: 🐛 X."`]) {
+    test(`${JSON.stringify(line)} runs with an untracked file left out, and the dialog is answered allow`, async ($, on) => {
       const b = await inUnit($, on)
-      expect((await bash($, b, line)).reached).toBe(false)
-      expect(await permission($, line)).toBeUndefined()
+      b.trees[TREE] = ' M a.ts\0?? b.ts\0'
+      expect((await bash($, b, line)).reached).toBe(true)
+      expect(await permission($, line)).toEqual({ behavior: 'allow' })
     })
   }
+
+  test('a commit --amend asks as a history rewrite, and its dialog gets no answer', async ($, on) => {
+    const b = await inUnit($, on)
+    const line = `git -C ${TREE} commit --amend -m "fix: 🐛 X."`
+    const answer = await bash($, b, line)
+    expect([answer.reached, ASKS.rewrite.test(answer.deny ?? '')]).toEqual([false, true])
+    expect(await permission($, line)).toBeUndefined()
+  })
 })
 
 describe('the shapes the ledger reads', () => {

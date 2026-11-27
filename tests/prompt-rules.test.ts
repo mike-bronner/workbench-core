@@ -494,31 +494,46 @@ describe('the working rules on commits and code comments', () => {
     expect(RULES).toContain('Never split the work into several commits, never leave a file out because it looks unrelated, and never ask which files to include.')
     expect(RULES).toContain('The one exception is content that must never ship, such as a secret or a stray build artifact. Leave it out, and tell the user about it in one sentence. Never leave a file out silently.')
     expect(RULES).toContain('Stage the whole tree with `git add -A` on a line of its own, then commit with no paths.')
-    expect(RULES).toContain("It lets a never-ship file stay out only when the reply above the commit names that file's path to the user.")
+    expect(RULES).not.toContain("It lets a never-ship file stay out only when the reply above the commit names that file's path to the user.")
     expect(RULES).not.toContain('It does not change who approves a commit or when.')
+  })
+
+  test('a main-session commit, and a merge or pull onto a feature branch, run with no question and no pick', () => {
+    expect(RULES).toContain('In the main session, every `git commit` runs with no question, no request and no pick, on any branch, the default branch included. So does every local `git merge`, and every `git pull` that does not rebase, onto a branch other than the default branch, the landing of a ledger unit branch included. Never ask a commit question, and never wait for a "Commit it" pick.')
+    expect(RULES).toContain('A plain commit line opens no permission prompt: `git commit`, `git commit -m <message>` or `-F <file>`, with `-a` or not, and `git -C <absolute path> commit` in the same forms. Any other form opens the prompt, such as a `-c` option, `--no-verify` or a wrapper. A `commit --amend` is a history rewrite, and it asks as one.')
+    expect(RULES).toContain('In the main session, a local `git merge`, or a `git pull` that does not rebase, onto a feature branch runs with no question, whatever it merges, a ledger unit branch, a fast-forward, `--squash` and `--no-commit` included. So land a unit branch with a plain line, such as `git merge --no-ff unit/<name>`, and ask nothing first.')
+    for (const gone of [
+      'Work the user did not ask to commit',
+      'Ask the commit question alone',
+      'brings back the commit question',
+      'counts as a commit in every tree, so it asks the user first',
+      'a commit pick approves one',
+      'merge or commit pick first',
+      'for a commit the message and every file',
+      'a commit outside a ledger unit worktree',
+      'One commit needs no request and no pick',
+      'Run no checkout, switch, stash or reset between the pick and the commit.',
+    ]) expect([gone, RULES.includes(gone)]).toEqual([gone, false])
   })
 
   test('a branch syncs with its own remote by fetch --all, pull and push, never by a rebase or a hand-run merge', () => {
     expect(RULES).toContain('To bring a branch in sync with its own remote, such as after a rejected push, run `git fetch --all`, then `git pull`, then `git push`, each as a line of its own.')
-    expect(RULES).toContain("Do not ask which way to sync. The fetch runs with no question. A pull that does not rebase and lands no unit branch runs with no question on a feature branch, and on the default branch only when it is the catch-up from that branch's own upstream that the next rule describes. The push runs as the push rules say: a plain push of a feature branch, or of the default branch when every commit it sends came from a green run, with no question, and any other push with a push approval.")
+    expect(RULES).toContain("Do not ask which way to sync. The fetch runs with no question. A pull that does not rebase runs with no question on a feature branch, and on the default branch only when it is the catch-up from that branch's own upstream that the next rule describes. The push runs as the push rules say: a plain push of a feature branch, or of the default branch when every commit it sends came from a green run, with no question, and any other push with a push approval.")
     expect(RULES).not.toContain('The push needs a push approval, as every push does.')
     expect(RULES).not.toContain('The fetch and the pull run with no question')
     expect(RULES).toContain('Never rebase to sync a branch, and never run `git merge origin/<branch>` or any other merge by hand for it.')
-    expect(RULES).toContain('This rule covers only a branch and its own remote. Bringing the default branch into a feature branch stays a merge, such as `git merge origin/main`, and a ledger unit branch lands as the next rule says.')
+    expect(RULES).toContain('This rule covers only a branch and its own remote. Bringing the default branch into a feature branch stays a merge, such as `git merge origin/main`, and it runs as the next rule says.')
     expect(RULES).not.toContain('`git pull origin main` or `git merge origin/main`, with no')
   })
 
-  test('a prompt that asks for a commit, a push, a merge or a release approves those actions for its turn', () => {
-    expect(RULES).toContain('A prompt in which the user asks for a commit, a push, a merge or a release, or any mix of them, approves exactly those actions for the turn that prompt opened, in the user\'s own words')
-    expect(RULES).toContain('The meaning counts, not the phrase: any wording that asks for the action now approves it, such as "go ahead and commit the changes", "ship the new version" or "get this out the door".')
+  test('a prompt that asks for a push, a merge or a release approves those actions for its turn', () => {
+    expect(RULES).toContain('A prompt in which the user asks for a push, a merge or a release, or any mix of them, approves exactly those actions for the turn that prompt opened, in the user\'s own words')
+    expect(RULES).toContain('The meaning counts, not the phrase: any wording that asks for the action now approves it, such as "go ahead and push the changes", "ship the new version" or "get this out the door".')
     expect(RULES).toContain('A model reads that meaning only when such an action reaches the commit gate and the wording alone did not approve it, so a prompt never waits for it.')
-    expect(RULES).toContain('A commit approval approves no push and no merge into the default branch.')
-    expect(RULES).toContain('A commit request approves such merges for its turn, as it approves commits, and a commit pick approves one, on the branch HEAD held when the user picked.')
-    expect(RULES).toContain('A local `git merge` or `git pull` that lands a ledger unit branch counts as a commit in every tree, so it asks the user first.')
-    expect(RULES).toContain('A `git pull` lands one from any source, a remote included. One whose merged refs or the ledger cannot be read asks too.')
-    expect(RULES).toContain("On the default branch, it is a merge, never a rebase, of that branch's own upstream and nothing else, such as `git pull` or `git pull origin main`, with no `-c` option or environment override, on a line whose only other git commands are a plain `git fetch` or a push.")
+    expect(RULES).toContain('A commit request approves no push and no merge into the default branch.')
+    expect(RULES).toContain("On the default branch, only a catch-up runs with no question. A catch-up there is a merge, never a rebase, of that branch's own upstream and nothing else, such as `git pull` or `git pull origin main`, with no `-c` option or environment override, on a line whose only other git commands are a plain `git fetch` or a push.")
     expect(RULES).toContain("A pull that would rebase, through `--rebase`, `-r` or the repository's config, is never a catch-up, because the user never rebases.")
-    expect(RULES).toContain('On any branch, such a pull, one whose rebase config the gate cannot read, and one whose directory it cannot place without `--no-rebase` is a history rewrite and asks. One that also merges into the default branch or lands a unit branch needs a merge or commit pick first and then a pick of its line, each asked alone.')
+    expect(RULES).toContain('On any branch, such a pull, one whose rebase config the gate cannot read, and one whose directory it cannot place without `--no-rebase` is a history rewrite and asks. One that also merges into the default branch needs a merge pick first and then a pick of its line, each asked alone.')
     expect(RULES).toContain('Any other merge or pull into the default branch lands a branch there, such as a feature branch, a unit branch or another remote\'s branch, and needs a merge approval.')
     expect(RULES).not.toContain('stays a merge and needs a merge approval')
     expect(RULES).not.toContain('only from `.` or a path')
@@ -529,22 +544,20 @@ describe('the working rules on commits and code comments', () => {
     expect(RULES).toContain("The user's next prompt ends the approval.")
     expect(RULES).toContain('A prompt that negates, defers, sets a condition or asks approves nothing')
     expect(RULES).toContain('never a peer, channel, scheduled, SDK or plugin turn, and never a sub-agent')
-    expect(RULES).toContain('approves one commit on the branch HEAD held when the user picked, and no push and no merge into the default branch.')
-    expect(RULES).toContain('Run no checkout, switch, stash or reset between the pick and the commit.')
+    expect(RULES).toContain('A push pick approves one push on the branch HEAD held when the user picked. Run no checkout, switch, stash or reset between a push pick and its push.')
     expect(RULES).toContain('Once the commit has landed, run the plain push of a feature branch with no question, and the plain push of the default branch too when every commit it sends came from a green run. Ask about any other push in a question of its own.')
-    expect(RULES).toContain('A commit needs no request and no pick when a green `Final suite run:` saw the exact tree it commits.')
-    expect(RULES).toContain('No run, a red run, or a tree that differs from the one the green run saw brings back the commit question. A sub-agent in a session the user sits at, other than the pipeline\'s, may run the same plain commit of the tree a green run saw. Its plain push, of any branch, runs only when every commit it sends came from a green run, as the next rule says for the default branch. Without a green record, a sub-agent\'s commit and push are refused, and it hands its tree back uncommitted. Never run the full suite just to commit: the final suite run stays the one run at the end of development.')
-    expect(RULES).toContain('The same plain push of the default branch, or of a branch whose remote names no default branch, needs no request and no pick only when every commit it sends was made with no question from a green final suite run\'s tree in this conversation: the remote\'s fetch refspec is the default, no other remote\'s fetch refspec writes under `refs/remotes/<remote>/`, `<remote>/<branch>` is an ancestor of HEAD, and `<remote>/<branch>..HEAD` holds at least one commit and only such commits.')
-    expect(RULES).toContain('A commit made any other way, such as after a pick, a merge commit or an amend, a push with nothing to send, a non-fast-forward or a range the gate cannot read keeps that push asking.')
+    expect(RULES).toContain('A green `Final suite run:` record matters for a sub-agent\'s commit and for a push of the default branch.')
+    expect(RULES).toContain('A commit whose tree is the exact tree a green run saw counts as a green commit. A sub-agent in a session the user sits at, other than the pipeline\'s, may commit that tree: stage the whole tree with `git add -A` on a line of its own, then run the plain `git commit -m <message>` or `-F <file>`, with no `-a`. The commit gate refuses that commit when it leaves any file out, and names the files. Its plain push, of any branch, runs only when every commit it sends came from a green run, as the next rule says for the default branch. Without a green record, a sub-agent\'s commit and push are refused, and it hands its tree back uncommitted. Never run the full suite just to commit: the final suite run stays the one run at the end of development.')
+    expect(RULES).toContain('The same plain push of the default branch, or of a branch whose remote names no default branch, needs no request and no pick only when every commit it sends was made from a green final suite run\'s tree in this conversation: the remote\'s fetch refspec is the default, no other remote\'s fetch refspec writes under `refs/remotes/<remote>/`, `<remote>/<branch>` is an ancestor of HEAD, and `<remote>/<branch>..HEAD` holds at least one commit and only such commits.')
+    expect(RULES).toContain('A commit made any other way, such as one of another tree, a merge commit or an amend, a push with nothing to send, a non-fast-forward or a range the gate cannot read keeps that push asking.')
     expect(RULES).toContain('A green commit and its push may share one line only when the repository runs no commit hook: no `pre-commit`, `prepare-commit-msg`, `commit-msg` or `post-commit` in its hooks path, `core.hooksPath` included, and no `hook.*` setting. Otherwise run the commit, then the push, each as a line of its own. Any other push form, a force push, a merge into the default branch, a release and a history rewrite keep the rules below.')
     expect(RULES).toContain('The push runs as the push rules say: a plain push of a feature branch, or of the default branch when every commit it sends came from a green run, with no question, and any other push with a push approval.')
-    expect(RULES).toContain('a push other than the plain pushes above that need no request, merge into the default branch')
+    expect(RULES).toContain('In the user\'s own turn, a push other than the plain pushes above that need no request, merge into the default branch')
     expect(RULES).toContain('records green only once the same final run has run every declared part as its own plain line, each in the foreground and with no error, all on the same tree. A red, backgrounded or changed-tree part, or a whole-suite run that starts in between, starts the parts over. The declaration, every part script and every file it names under `files` are read from HEAD, so a working-copy change to any of them counts no part until it is committed. While HEAD declares parts, a whole-suite line counts only when it is the declaration\'s `whole` line and those files match HEAD.')
     expect(RULES).toContain('no leading assignment or wrapper, and nothing that narrows it, such as a path below the top or a selection option like `--group` or `--filter`')
     expect(RULES).toContain('every push URL of the remote is the one the session first saw, and no push setting widens it: `push.default` is unset, `simple`, `current` or `upstream`, no `remote.<name>.push` is set, `remote.<name>.mirror` is not on, and `push.recurseSubmodules` and `submodule.recurse` are each unset, `no` or `false`.')
     expect(RULES).toContain('When `push.followTags` is on, the gate asks git, with a dry-run push to that remote, which annotated tags the push would also send, and the push runs free only when git\'s answer names the pushed branch and that list is empty. A push that would send a tag asks, and the deny names each tag. A setting or a dry run the gate cannot read keeps the push asking.')
     expect(RULES).not.toContain('nor `push.followTags` is on')
-    expect(RULES).toContain('Work the user did not ask to commit, and that no green final suite run saw, waits for their review and their pick.')
     expect(RULES).toContain("How a branch lands, a pull request or a local merge into the default branch, is the user's choice")
     expect(RULES).toContain('its question named. Only the user\'s own next prompt ends a pick not yet used.')
     expect(RULES).not.toContain('A pick never approves a release.')

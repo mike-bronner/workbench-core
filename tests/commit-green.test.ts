@@ -3,6 +3,10 @@ import type { Engine } from 'claude-code/testing'
 import type { On, PromptOrigin } from 'claude-code'
 
 import { followedTagsOf } from '../hooks/mods/follow-tags'
+import { UNREAD_TREE_REFUSAL, leftOutRefusal } from '../hooks/mods/commit-approval'
+import { subjectVerdict } from '../hooks/mods/commit-subject'
+import { ID_RECORDER } from './harness'
+import { parseShell } from '../hooks/mods/shell'
 import { FORCE_REFUSAL, SUBAGENT_REFUSAL } from '../hooks/mods/commit-guard'
 import type { Script } from '../hooks/mods/full-suite'
 import { SUITE_PARTS_FILE, isWholeRun, partOf, suitePartsOf } from '../hooks/mods/full-suite'
@@ -15,7 +19,7 @@ const URL = 'git@github.com:o/r.git'
 const SUITE = 'claude plugin test .'
 const COMMIT = 'git commit -m "fix: 🐛 X."'
 const ALLOW = { behavior: 'allow' }
-const ASKED = /^This (line|git commit) was refused/
+const ASKED = /^This (line|git push) was refused/
 
 type World = {
   work: string
@@ -186,6 +190,24 @@ async function spawnWatson($: Engine): Promise<void> {
   expect((await $.agent.spawn({ prompt: brief('Fix the bug.'), subagentType: 'workbench-dev-team:watson', description: 'watson' } as never)).agentId).toBe('watson')
 }
 
+const watsons = new WeakSet<Bench>()
+
+async function watsonFor($: Engine, b: Bench): Promise<void> {
+  if (watsons.has(b)) return
+  watsons.add(b)
+  await spawnWatson($)
+}
+
+async function agentCommit($: Engine, b: Bench, line = COMMIT): Promise<string | undefined> {
+  await watsonFor($, b)
+  return bash($, b, line, 'watson')
+}
+
+async function agentAsked($: Engine, b: Bench, line = COMMIT): Promise<unknown> {
+  await watsonFor($, b)
+  return asked($, line, 'watson')
+}
+
 async function finalRun($: Engine, b: Bench, isRed = false, line = SUITE, extra: Record<string, unknown> = {}): Promise<void> {
   await spawnFinal($)
   b.onBash = command => (command === line && isRed ? { isError: true } : undefined)
@@ -193,13 +215,37 @@ async function finalRun($: Engine, b: Bench, isRed = false, line = SUITE, extra:
   b.onBash = undefined
 }
 
-describe('AC1: a commit of the tree a green final suite run saw runs with no question', () => {
-  test('after a green run, the commit runs and its permission dialog is answered', async ($, on) => {
-    const { b, w } = await session($, on)
+describe('AC1: a sub-agent commit of the tree a green final suite run saw runs with no question', () => {
+  test('a main-session commit runs, and its dialog is answered, with or without a green run', async ($, on) => {
+    const { b } = await session($, on)
+    expect(await asked($, COMMIT)).toEqual(ALLOW)
+    expect(await bash($, b, COMMIT)).toBeUndefined()
     await finalRun($, b)
     expect(await asked($, COMMIT)).toEqual(ALLOW)
-    expect(await asked($, 'git commit -F /repo/message.txt')).toEqual(ALLOW)
     expect(await bash($, b, COMMIT)).toBeUndefined()
+  })
+
+  for (const isRed of [false, true]) {
+    test(`a main-session commit ${isRed ? 'after a red run' : 'with no final run'} lands on main, and its push still asks`, async ($, on) => {
+      const { b, w } = await session($, on)
+      onMain(b, w)
+      if (isRed) await finalRun($, b, true)
+      b.duringBash = async command => {
+        if (command === COMMIT) commitOn(b, w, w.staged)
+      }
+      expect(await bash($, b, COMMIT)).toBeUndefined()
+      b.duringBash = undefined
+      expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+      expect(await bash($, b, 'git push origin main')).toMatch(ASKS.push)
+    })
+  }
+
+  test('after a green run, the sub-agent commit runs and its permission dialog is answered', async ($, on) => {
+    const { b, w } = await session($, on)
+    await finalRun($, b)
+    expect(await agentAsked($, b)).toEqual(ALLOW)
+    expect(await agentAsked($, b, 'git commit -F /repo/message.txt')).toEqual(ALLOW)
+    expect(await agentCommit($, b)).toBeUndefined()
     expect(w.indexEnvs.length).toBeGreaterThan(0)
     expect(w.indexEnvs.every(index => index !== undefined && SCRATCH.test(index.split('/').pop() ?? ''))).toBe(true)
   })
@@ -214,30 +260,30 @@ describe('AC1: a commit of the tree a green final suite run saw runs with no que
     for (const index of indexes) expect(removed).toEqual(expect.arrayContaining([index, `${index}.lock`]))
   })
 
-  test('with no final suite run, the commit asks as today', async ($, on) => {
+  test('with no final suite run, the sub-agent commit is refused', async ($, on) => {
     const { b } = await session($, on)
-    expect(await asked($, COMMIT)).toBeUndefined()
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentAsked($, b)).toBeUndefined()
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 
-  test('after a red run, the commit asks', async ($, on) => {
+  test('after a red run, the sub-agent commit is refused', async ($, on) => {
     const { b } = await session($, on)
     await finalRun($, b, true)
-    expect(await asked($, COMMIT)).toBeUndefined()
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentAsked($, b)).toBeUndefined()
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 
   test('a red run after a green one takes the green back', async ($, on) => {
     const { b } = await session($, on)
     await finalRun($, b)
     await finalRun($, b, true)
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 
   test('a run in the background records no green', async ($, on) => {
     const { b } = await session($, on)
     await finalRun($, b, false, SUITE, { run_in_background: true })
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 
   test('a run whose result carries a background task id records no green', async ($, on) => {
@@ -245,15 +291,15 @@ describe('AC1: a commit of the tree a green final suite run saw runs with no que
     b.replyBeneath = tool => (tool === 'Bash' ? ({ backgroundTaskId: 'bg1' } as never) : undefined)
     await finalRun($, b)
     b.replyBeneath = undefined
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 
   test('a tree staged after the run differs from the green tree, so the commit asks', async ($, on) => {
     const { b, w } = await session($, on)
     await finalRun($, b)
     w.staged = OTHER
-    expect(await asked($, COMMIT)).toBeUndefined()
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentAsked($, b)).toBeUndefined()
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 
   test('a tree that changed during the run records no green', async ($, on) => {
@@ -263,14 +309,14 @@ describe('AC1: a commit of the tree a green final suite run saw runs with no que
     }
     await finalRun($, b)
     w.staged = OTHER
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 
   test('a commit in another repository whose staged tree equals the green tree asks', async ($, on) => {
     const { b } = await session($, on)
     await finalRun($, b)
     b.cwd = '/other'
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 
   test('/clear drops the green record', async ($, on) => {
@@ -278,14 +324,14 @@ describe('AC1: a commit of the tree a green final suite run saw runs with no que
     await finalRun($, b)
     await $.session.end({ reason: 'clear', sessionId: SID } as never)
     await $.prompt.submit({ text: 'look again', wait: false, origin: PERSON })
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 
   for (const line of [`${SUITE} | tail -5`, `${SUITE} || true`, `${SUITE}; true`, `${SUITE} && true`, `WORKBENCH_CHECKS=plugin_json ${SUITE}`]) {
     test(`a run that may not be whole or green, ${JSON.stringify(line)}, records no green`, async ($, on) => {
       const { b } = await session($, on)
       await finalRun($, b, false, line)
-      expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+      expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
     })
   }
 
@@ -293,7 +339,7 @@ describe('AC1: a commit of the tree a green final suite run saw runs with no que
     const { b } = await session($, on)
     await $.agent.spawn({ prompt: brief('Review the uncommitted tree at /repo.'), subagentType: 'workbench-dev-team:holmes', description: 'holmes' } as never)
     expect(await bash($, b, SUITE, 'holmes')).toBeDefined()
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 
   test('with the full-suite gate stood down, a suite run by the main session or a non-runner sub-agent records nothing', async ($, on) => {
@@ -302,7 +348,7 @@ describe('AC1: a commit of the tree a green final suite run saw runs with no que
     expect(await bash($, b, SUITE)).toBeUndefined()
     expect(await bash($, b, SUITE, 'watson')).toBeUndefined()
     expect(w.indexEnvs).toEqual([])
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await bash($, b, COMMIT, 'watson')).toBe(SUBAGENT_REFUSAL.deny)
   })
 
   test('a final run in a session no one sits at records nothing', async ($, on) => {
@@ -311,20 +357,26 @@ describe('AC1: a commit of the tree a green final suite run saw runs with no que
     expect(w.indexEnvs).toEqual([])
   })
 
-  test('a commit with -a, or a second commit on the line, still asks after a green run', async ($, on) => {
+  test('a sub-agent commit with -a, or a second commit on the line, is not answered after a green run', async ($, on) => {
     const { b } = await session($, on)
     await finalRun($, b)
-    expect(await asked($, 'git commit -am "fix: 🐛 X."')).toBeUndefined()
-    expect(await asked($, `${COMMIT} && git commit -m "fix: 🐛 Y."`)).toBeUndefined()
+    expect(await agentAsked($, b, 'git commit -am "fix: 🐛 X."')).toBeUndefined()
+    expect(await agentAsked($, b, `${COMMIT} && git commit -m "fix: 🐛 Y."`)).toBeUndefined()
   })
 
-  test('a free commit still needs the whole tree staged and a valid subject', async ($, on) => {
+  test('a free sub-agent commit still needs the whole tree staged and a valid subject, and a main-session commit only the subject', async ($, on) => {
     const { b } = await session($, on)
     await finalRun($, b)
     b.trees['/repo'] = 'M  README.md\0?? notes.md\0'
-    expect(await bash($, b, COMMIT)).toContain('notes.md')
+    expect(await agentCommit($, b)).toContain('notes.md')
+    expect(await bash($, b, COMMIT)).toBeUndefined()
     b.trees['/repo'] = 'M  README.md\0'
-    expect(await bash($, b, 'git commit -m "fixed things"')).toBeDefined()
+    const line = 'git commit -m "fixed things"'
+    const refusal = subjectVerdict(parseShell(line))?.deny
+    expect(refusal).toBeDefined()
+    expect(await agentCommit($, b, line)).toBe(refusal)
+    expect(await bash($, b, line)).toBe(refusal)
+    expect(b.inputs.some(input => (input as { command?: unknown }).command === line)).toBe(false)
   })
 
   test('after a green run, a commit with a push runs free on a feature branch and asks on main with no remote-tracking ref', async ($, on) => {
@@ -334,7 +386,7 @@ describe('AC1: a commit of the tree a green final suite run saw runs with no que
     w.branch = 'main'
     w.pushTarget = 'origin refs/heads/main'
     b.repos['/repo'] = { ...b.repos['/repo'], branch: 'main' }
-    expect(await bash($, b, `${COMMIT} && git push`)).toMatch(ASKED)
+    expect(await bash($, b, `${COMMIT} && git push`)).toMatch(ASKS.push)
   })
 
   for (const line of [
@@ -782,6 +834,36 @@ describe('AC3: other lanes keep their commit and push behavior', () => {
     expect(await bash($, b, 'git push', 'watson')).toBe(SUBAGENT_REFUSAL.deny)
   })
 
+  test('after a green run, a sub-agent commit that leaves a file out is refused, naming it', async ($, on) => {
+    const { b } = await session($, on)
+    await finalRun($, b)
+    b.trees['/repo'] = 'M  README.md\0?? notes.md\0'
+    expect(await agentCommit($, b)).toBe(leftOutRefusal(['notes.md']))
+  })
+
+  test('after a green run, a sub-agent commit whose tree git cannot read is refused', async ($, on) => {
+    const { b } = await session($, on)
+    await finalRun($, b)
+    b.trees['/repo'] = null
+    expect(await agentCommit($, b)).toBe(UNREAD_TREE_REFUSAL)
+  })
+
+  test('after a green run, a never-ship file named in the reply may stay out of a sub-agent commit', { plugins: [ID_RECORDER] }, async ($, on) => {
+    const { b } = await session($, on)
+    await finalRun($, b)
+    b.trees['/repo'] = 'M  README.md\0?? secret.local\0'
+    b.shown = 'Leaving out secret.local, which holds a token, so it must never ship.'
+    expect(await agentCommit($, b)).toBeUndefined()
+  })
+
+  for (const line of ['git commit -m "fix: 🐛 X." README.md', 'git add -A && git commit -m "fix: 🐛 X."']) {
+    test(`after a green run, a sub-agent commit that names paths or shares its line is no free line, so the guard refuses it: ${JSON.stringify(line)}`, async ($, on) => {
+      const { b } = await session($, on)
+      await finalRun($, b)
+      expect(await agentCommit($, b, line)).toBe(SUBAGENT_REFUSAL.deny)
+    })
+  }
+
   test('after a green run, a sub-agent commit of another tree is refused', async ($, on) => {
     const { b, w } = await session($, on)
     await finalRun($, b)
@@ -954,10 +1036,10 @@ describe('green from declared parts: a long suite records green part by part', (
     declare(w)
     await spawnRunner($, 'holmes')
     await runParts($, b, PARTS.slice(0, 3))
-    expect(await asked($, COMMIT)).toBeUndefined()
+    expect(await agentAsked($, b)).toBeUndefined()
     await runParts($, b, PARTS.slice(3))
-    expect(await asked($, COMMIT)).toEqual(ALLOW)
-    expect(await bash($, b, COMMIT)).toBeUndefined()
+    expect(await agentAsked($, b)).toEqual(ALLOW)
+    expect(await agentCommit($, b)).toBeUndefined()
   })
 
   test('the parts may run in any order', async ($, on) => {
@@ -965,7 +1047,7 @@ describe('green from declared parts: a long suite records green part by part', (
     declare(w)
     await spawnRunner($, 'holmes')
     await runParts($, b, [...PARTS].reverse())
-    expect(await bash($, b, COMMIT)).toBeUndefined()
+    expect(await agentCommit($, b)).toBeUndefined()
   })
 
   test('one part missing records nothing', async ($, on) => {
@@ -973,7 +1055,7 @@ describe('green from declared parts: a long suite records green part by part', (
     declare(w)
     await spawnRunner($, 'holmes')
     await runParts($, b, [PARTS[0], PARTS[1], PARTS[3]] as string[])
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 
   test('one red part records nothing, even when every other part passes', async ($, on) => {
@@ -981,7 +1063,7 @@ describe('green from declared parts: a long suite records green part by part', (
     declare(w)
     await spawnRunner($, 'holmes')
     await runParts($, b, PARTS, 'holmes', PARTS[1])
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 
   test('a tree change between parts records nothing', async ($, on) => {
@@ -992,7 +1074,7 @@ describe('green from declared parts: a long suite records green part by part', (
     w.work = OTHER
     w.staged = OTHER
     await runParts($, b, PARTS.slice(2))
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 
   test('a backgrounded part clears the parts that passed', async ($, on) => {
@@ -1002,7 +1084,7 @@ describe('green from declared parts: a long suite records green part by part', (
     await runParts($, b, PARTS.slice(0, 3))
     expect(await bash($, b, PARTS[3] as string, 'holmes', { run_in_background: true })).toBeUndefined()
     await runParts($, b, PARTS.slice(3))
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 
   test('a new counted run that starts between parts clears the parts that passed', async ($, on) => {
@@ -1013,7 +1095,7 @@ describe('green from declared parts: a long suite records green part by part', (
     b.onBash = command => (command === WHOLE ? { isError: true } : undefined)
     expect(await bash($, b, WHOLE, 'holmes')).toBeUndefined()
     await runParts($, b, PARTS.slice(3))
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 
   test('parts spread across two final runs record nothing', async ($, on) => {
@@ -1024,7 +1106,7 @@ describe('green from declared parts: a long suite records green part by part', (
     await $.classic.SubagentStop({ stop_hook_active: false, last_assistant_message: 'Done.', agent_id: 'holmes', agent_type: 'workbench-dev-team:holmes' } as never)
     await spawnRunner($, 'holmes2')
     await runParts($, b, PARTS.slice(2), 'holmes2')
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 
   test('parts run by a sub-agent that is no final run, with the full-suite gate stood down, record nothing', async ($, on) => {
@@ -1033,16 +1115,16 @@ describe('green from declared parts: a long suite records green part by part', (
     await $.agent.spawn({ prompt: brief('Fix the bug.'), subagentType: 'workbench-dev-team:watson', description: 'watson' } as never)
     await runParts($, b, PARTS, 'watson')
     expect(w.indexEnvs).toEqual([])
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await bash($, b, COMMIT, 'watson')).toBe(SUBAGENT_REFUSAL.deny)
   })
 
   test('with no declaration, the part lines record nothing and one whole-suite line still records green', async ($, on) => {
     const { b } = await session($, on)
     await spawnRunner($, 'holmes')
     await runParts($, b, PARTS)
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
     await runParts($, b, [SUITE])
-    expect(await bash($, b, COMMIT)).toBeUndefined()
+    expect(await agentCommit($, b)).toBeUndefined()
   })
 
   test('with a declaration, a whole-suite line that is not the declared one, such as claude plugin test ., records nothing', async ($, on) => {
@@ -1050,7 +1132,7 @@ describe('green from declared parts: a long suite records green part by part', (
     declare(w)
     await spawnRunner($, 'holmes')
     await runParts($, b, [SUITE, 'vendor/bin/pest'])
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 
   test('with a declaration, the declared whole line records green on its own when every pinned file matches HEAD', async ($, on) => {
@@ -1058,7 +1140,7 @@ describe('green from declared parts: a long suite records green part by part', (
     declare(w)
     await spawnRunner($, 'holmes')
     await runParts($, b, [WHOLE])
-    expect(await bash($, b, COMMIT)).toBeUndefined()
+    expect(await agentCommit($, b)).toBeUndefined()
   })
 
   for (const file of ['scripts/check.sh', SUITE_PARTS_FILE, 'tsconfig.json']) {
@@ -1068,7 +1150,7 @@ describe('green from declared parts: a long suite records green part by part', (
       w.dirty.add(file)
       await spawnRunner($, 'holmes')
       await runParts($, b, [WHOLE, SUITE])
-      expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+      expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
     })
   }
 
@@ -1077,9 +1159,9 @@ describe('green from declared parts: a long suite records green part by part', (
     declare(w, JSON.stringify({ parts: PARTS, files: ['scripts/check.sh'] }))
     await spawnRunner($, 'holmes')
     await runParts($, b, [WHOLE, SUITE])
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
     await runParts($, b, PARTS)
-    expect(await bash($, b, COMMIT)).toBeUndefined()
+    expect(await agentCommit($, b)).toBeUndefined()
   })
 
   test('a declaration that cannot be read as plain parts declares nothing', async ($, on) => {
@@ -1088,7 +1170,7 @@ describe('green from declared parts: a long suite records green part by part', (
     await spawnRunner($, 'holmes')
     await runParts($, b, PARTS.slice(0, 3))
     await runParts($, b, [SUITE, WHOLE])
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 })
 
@@ -1104,7 +1186,7 @@ describe('green from parts reads the declaration and the part scripts from HEAD'
       w.dirty.add(SUITE_PARTS_FILE)
       await spawnRunner($, 'holmes')
       await runParts($, b, [line as string])
-      expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+      expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
     })
   }
 
@@ -1113,7 +1195,7 @@ describe('green from parts reads the declaration and the part scripts from HEAD'
     declare(w)
     await spawnRunner($, 'holmes')
     await runParts($, b, [PARTS[0] as string, 'true'])
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 
   for (const file of [SUITE_PARTS_FILE, 'scripts/check-part-2.sh', 'scripts/check.sh']) {
@@ -1123,7 +1205,7 @@ describe('green from parts reads the declaration and the part scripts from HEAD'
       w.dirty.add(file)
       await spawnRunner($, 'holmes')
       await runParts($, b, PARTS)
-      expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+      expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
     })
   }
 
@@ -1133,7 +1215,7 @@ describe('green from parts reads the declaration and the part scripts from HEAD'
     w.committed.delete('scripts/check.sh')
     await spawnRunner($, 'holmes')
     await runParts($, b, PARTS)
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 
   test('a part whose result carries a background task id, then the same part in the foreground, still asks', async ($, on) => {
@@ -1145,7 +1227,7 @@ describe('green from parts reads the declaration and the part scripts from HEAD'
     await runParts($, b, PARTS.slice(3))
     b.replyBeneath = undefined
     await runParts($, b, PARTS.slice(3))
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 
   test('/clear between parts 3 and 4 drops the parts record', async ($, on) => {
@@ -1156,7 +1238,7 @@ describe('green from parts reads the declaration and the part scripts from HEAD'
     await $.session.end({ reason: 'clear', sessionId: SID } as never)
     await $.prompt.submit({ text: 'look again', wait: false, origin: PERSON })
     await runParts($, b, PARTS.slice(3))
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 
   test('two final runs live at once on one tree do not add up', async ($, on) => {
@@ -1167,7 +1249,7 @@ describe('green from parts reads the declaration and the part scripts from HEAD'
     await runParts($, b, PARTS.slice(0, 2), 'holmes')
     await runParts($, b, PARTS.slice(2, 3), 'holmes2')
     await runParts($, b, PARTS.slice(3), 'holmes')
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 
   test('parts another final run passes while one part runs do not join that part', async ($, on) => {
@@ -1184,7 +1266,7 @@ describe('green from parts reads the declaration and the part scripts from HEAD'
     expect(await bash($, b, PARTS[3] as string, 'holmes')).toBeUndefined()
     b.duringBash = undefined
     expect(isInside).toBe(true)
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await agentCommit($, b)).toBe(SUBAGENT_REFUSAL.deny)
   })
 })
 

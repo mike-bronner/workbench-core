@@ -53,18 +53,18 @@ Before a task that produces work, run the intake routine in
    two sentences name your recommendation, its grade, and its reason. The
    recommendation favours correctness over speed. If Mike must pick, ask
    through `AskUserQuestion` (rule 4). Commits and ordinary pushes are the
-   exception. A commit, a push, a merge into the default branch or a release
-   gets one approval question, not three options. The commit rules in the
+   exception. A commit, and a local merge or a pull that does not rebase onto
+   a feature branch, gets no question at all: run it. A push, a merge into the default branch or a
+   release gets one approval question, not three options. The commit rules in the
    session's system prompt ("Commits and code comments") say when a request
    or a pick approves one, and what to ask. How to sync a branch with its own
    remote is no fork, and the same rules give its steps. Ask each such
    question through `AskUserQuestion`, on its own. A tree a sub-agent hands
-   back commits with no question once a green `Final suite run:` saw that
-   exact tree, and a plain push of a feature branch needs none. A plain push
-   of the default branch needs none either when every commit it sends was
-   such a commit. A sub-agent may run that commit and push itself after the
-   green run, and nobody runs the full suite just to commit. Without that
-   green run, the tree is work Mike did not ask to commit, so you ask him. A
+   back commits with no question, and a plain push of a feature branch needs
+   none. A plain push of the default branch needs none either when every
+   commit it sends was made from the exact tree a green `Final suite run:`
+   saw. A sub-agent may run that commit and push itself after the green run,
+   and nobody runs the full suite just to commit. A
    permission prompt is never the approval, because a prompt that appears
    mid-flow gets answered without a review. An Index pipeline run never asks
    to commit or

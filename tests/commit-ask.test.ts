@@ -8,7 +8,6 @@ import {
   ALIAS_REFUSAL,
   BRANCH_RESET_REFUSAL,
   BUNDLE_REFUSAL,
-  COMMIT_REFUSAL,
   LINES_BUNDLE_REFUSAL,
   MERGE_ASK_REFUSAL,
   MERGE_TARGET_REFUSAL,
@@ -58,7 +57,6 @@ async function attended($: Engine, on: Parameters<typeof bench>[0]): Promise<Ben
 }
 
 const ACTIONS: readonly [string, string, readonly string[]][] = [
-  ['a commit', 'git add -A', ['git commit', '/repo', 'main', '"fix: 🐛 X."', 'a.ts, b.ts']],
   ['a push', 'git push origin main', ['git push', '/repo', 'main', 'git push origin main']],
   ['a merge', 'git merge fix/x', ['merge into the default branch', 'git merge fix/x']],
   ['a pull request merge', 'gh pr merge 12 --squash', ['merge into the default branch', 'gh pr merge 12 --squash']],
@@ -68,15 +66,12 @@ const ACTIONS: readonly [string, string, readonly string[]][] = [
   ['an API write to the default branch', 'gh api -X PUT repos/o/r/contents/f -f branch=main -f message=x', ['GitHub API write to the default branch', 'the repository /repo, and the branch main.']],
 ]
 
-const lineOf = (name: string, first: string): string => (name === 'a commit' ? 'git commit -m "fix: 🐛 X."' : first)
-
 const ask = (question: string, labels: readonly string[]) => ({
   tool: 'AskUserQuestion' as const,
   questions: [{ question, header: 'Approve', options: labels.map(label => ({ label, description: label })), multiSelect: false }],
 })
 
 const QUESTIONS: Readonly<Record<string, readonly [string, string, string]>> = {
-  'a commit': ['Commit "fix: 🐛 X." on main, with a.ts and b.ts?', 'Commit it', 'Not yet'],
   'a push': ['Push main to origin?', 'Push', 'Not yet'],
   'a merge': ['Merge fix/x into main?', 'Merge it', 'Open a PR'],
   'a pull request merge': ['Merge PR 12 into main?', 'Merge it', 'Open a PR'],
@@ -92,11 +87,16 @@ async function picks($: Engine, b: Bench, name: string, line: string, label?: st
 }
 
 describe('AC6: in an attended session an unapproved gated action is denied, with the instruction to ask Mike', () => {
-  for (const [name, first, words] of ACTIONS) {
-    const line = lineOf(name, first)
+  test('a commit is no gated action: it runs with no deny and no dialog, whatever the tree holds', async ($, on) => {
+    const b = await attended($, on)
+    b.pick = 'Yes'
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
+    expect(dialogs(b)).toEqual([])
+  })
+
+  for (const [name, line, words] of ACTIONS) {
     test(`${name}: the deny names the line, the action and its target, and opens no dialog of its own`, async ($, on) => {
       const b = await attended($, on)
-      b.trees['/repo'] = name === 'a commit' ? 'A  a.ts\0A  b.ts\0' : b.trees['/repo'] ?? ''
       b.pick = 'Yes'
       const deny = await bash($, b, line)
       expect(deny).toContain('Ask him through AskUserQuestion, with this question alone in its call.')
@@ -108,7 +108,6 @@ describe('AC6: in an attended session an unapproved gated action is denied, with
 
     test(`${name}: his pick approves it once, and a pick of the other option approves nothing`, async ($, on) => {
       const b = await attended($, on)
-      b.trees['/repo'] = name === 'a commit' ? 'A  a.ts\0A  b.ts\0' : b.trees['/repo'] ?? ''
       const deny = await bash($, b, line)
       await picks($, b, name, line, questionFor(name, line)[2])
       expect(await bash($, b, line)).toBe(deny)
@@ -135,12 +134,11 @@ describe('AC6: in an attended session an unapproved gated action is denied, with
     expect(dialogs(b)).toEqual([])
   })
 
-  test('the deny names the repository and branch, and the commit message and files', () => {
-    const text = askRefusalOf(['commit'], { command: 'git commit -F m.txt', repo: '/repo', branch: 'refs/heads/fix/x', message: 'the text of m.txt', files: ['a.ts'] })
-    expect(text).toContain('name the exact line `git commit -F m.txt`, the action (git commit), the repository /repo, and the branch fix/x.')
-    expect(text).toContain('Name the message, the text of m.txt, and every file git status lists: a.ts.')
-    expect(text).toContain('offer "Commit it" and "Not yet"')
-    expect(askRefusalOf(['commit'], { command: 'git commit -m x', files: [] })).toContain('and that git status lists no files.')
+  test('the deny names the repository and branch, and asks about no commit', () => {
+    const text = askRefusalOf(['push'], { command: 'git push', repo: '/repo', branch: 'refs/heads/fix/x' })
+    expect(text).toContain('name the exact line `git push`, the action (git push), the repository /repo, and the branch fix/x.')
+    expect(text).not.toContain('Commit it')
+    expect(text).not.toContain('Name the message')
     expect(askRefusalOf(['merge'], { command: 'git merge x' })).toContain('the repository a repository the gate cannot read, and the branch a branch the gate cannot read.')
     expect(askRefusalOf(['release'], { command: 'gh release create 1.0.0' })).toContain('offer "Run it" and "Not now". A "Run it" pick approves this one line, once.')
   })
@@ -174,20 +172,21 @@ describe('AC6: in an attended session an unapproved gated action is denied, with
     expect(await bash($, b, 'gh api -X PUT repos/o/r/contents/f -f branch=main -f message=x')).toContain('the repository /repo, and the branch main.')
   })
 
-  test('AC7: a line that is both a commit and a rewrite lists the message and every file', async ($, on) => {
+  test('AC7: a commit --amend asks only as a history rewrite', async ($, on) => {
     const b = await attended($, on)
     b.trees['/repo'] = 'A  a.ts\0A  b.ts\0'
     const deny = await bash($, b, 'git commit --amend -m "fix: 🐛 X."')
-    expect(deny).toMatch(asks('git commit and history rewrite'))
-    expect(deny).toContain('Name the message, "fix: 🐛 X.", and every file git status lists: a.ts, b.ts.')
+    expect(deny).toMatch(asks('history rewrite'))
+    expect(deny).not.toContain('Name the message')
   })
 
-  test('a line that needs two approvals is denied with the instruction to split it', async ($, on) => {
+  test('a line that needs two approvals is denied with the instruction to split it, and a commit beside a push asks only the push', async ($, on) => {
     const b = await attended($, on)
     b.trees['/repo'] = ''
-    const deny = await bash($, b, 'git commit -m "fix: 🐛 X." && git push')
-    expect(deny).toBe(askRefusalOf(['commit', 'push'], { command: '' }))
+    const deny = await bash($, b, 'git push && git merge fix/x')
+    expect(deny).toBe(askRefusalOf(['push', 'merge'], { command: '' }))
     expect(deny).toContain('run each as a line of its own')
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X." && git push')).toMatch(ASKS.push)
   })
 })
 
@@ -435,7 +434,7 @@ describe('AC2: where nobody can answer, the same actions are refused, and no dia
       b.pick = 'Yes'
       await $.session.start(start())
       await $.prompt.submit(prompt('commit and push', origin))
-      expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(COMMIT_REFUSAL)
+      expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
       expect(await bash($, b, 'git push')).toBe(PUSH_REFUSAL)
       expect(await bash($, b, 'git merge fix/x')).toBe(MERGE_ASK_REFUSAL)
       expect(await bash($, b, 'git cherry-pick abc1234')).toBe(REWRITE_REFUSAL)

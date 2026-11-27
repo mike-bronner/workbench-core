@@ -339,7 +339,6 @@ export const asks = (name: string): RegExp => new RegExp(`^This ${escaped(name)}
 export const exactly = (text: string): RegExp => new RegExp(`^${escaped(text)}$`)
 
 export const ASKS = {
-  commit: asks('git commit'),
   push: asks('git push'),
   merge: asks('merge into the default branch'),
   release: asks('release'),

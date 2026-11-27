@@ -4,15 +4,12 @@ import type { PromptOrigin } from 'claude-code'
 
 import {
   BUNDLE_REFUSAL,
-  COMMIT_REFUSAL,
   AGENT_MERGE_REFUSAL,
   MERGE_ASK_REFUSAL,
   MERGE_TARGET_REFUSAL,
   MOVE_REFUSAL,
-  NAMED_BUNDLE_REFUSAL,
   ONE_REFUSAL,
   PUSH_REFUSAL,
-  UNREAD_TREE_REFUSAL,
   bindingRefusalOf,
   bundleRefusalOf,
   catchUpsOf,
@@ -105,163 +102,94 @@ async function session($: Engine, text = 'my review is done'): Promise<void> {
 
 const gitRuns = (b: Bench) => b.runs.filter(argv => argv[0] === 'git')
 
-describe('AC1: one "Commit it" pick allows one commit, and no push', () => {
-  test('with no pick, a commit and a push are refused, with a reason to ask first', async ($, on) => {
+describe('AC1: a main-session commit runs with no question, and a push still needs its own approval', () => {
+  test('with no request and no pick, a commit runs, and a push is refused with a reason to ask first', async ($, on) => {
     const b = bench(on)
     await session($)
-    expect(await bash($, b, 'git commit -m "feat: ✨ Add the gate."')).toMatch(DECLINED.commit)
+    expect(await bash($, b, 'git commit -m "feat: ✨ Add the gate."')).toBeUndefined()
+    expect(await bash($, b, 'git commit -m "fix: 🐛 One more."')).toBeUndefined()
     expect(await bash($, b, 'git push origin main')).toMatch(DECLINED.push)
-    expect(COMMIT_REFUSAL).toContain('Ask first')
-    expect(COMMIT_REFUSAL).toContain('Commit it')
-    expect(COMMIT_REFUSAL).toContain('AskUserQuestion')
-    expect(COMMIT_REFUSAL).toContain('no push and no merge')
     expect(PUSH_REFUSAL).toContain('approves no push')
     expect(PUSH_REFUSAL).toContain('of its own')
-    for (const reason of [COMMIT_REFUSAL, PUSH_REFUSAL]) expect(reason).not.toMatch(/push of that commit/)
+    expect(PUSH_REFUSAL).not.toMatch(/push of that commit/)
   })
 
-  test('after a pick, the commit runs and nothing more: its push is refused', async ($, on) => {
+  for (const line of ['git commit', 'git commit -m "fix: 🐛 X."', 'git commit -F msg.txt', 'git -C /repo commit -m "fix: 🐛 X."', 'git commit -am "fix: 🐛 X."', 'git commit -m "fix: 🐛 X." docs/a.md']) {
+    test(`a commit runs with no question and reads no tree, whatever it leaves out: ${JSON.stringify(line)}`, async ($, on) => {
+      const b = bench(on)
+      b.trees['/repo'] = ' M a.ts\0?? b.ts\0'
+      await session($)
+      b.runs.length = 0
+      expect(await bash($, b, line)).toBeUndefined()
+      expect(gitRuns(b).filter(argv => argv.includes('status'))).toEqual([])
+    })
+  }
+
+  test('a commit on the default branch and on a feature branch both run', async ($, on) => {
     const b = bench(on)
+    b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'main', originHead: 'main' }
     await session($)
-    await pick($, b)
-    expect(await bash($, b, 'git commit -m "feat: ✨ Add the gate."')).toBeUndefined()
-    expect(await bash($, b, 'git commit -m "fix: 🐛 One more."')).toMatch(DECLINED.commit)
-    expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
+    b.repos['/repo'] = { head: 'c2', pushed: 'c1', branch: 'fix/x', originHead: 'main' }
+    expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toBeUndefined()
   })
 
-  test('a push pick allows one push, and no commit', async ($, on) => {
+  test('a push pick allows one push, and a commit runs before and after it', async ($, on) => {
     const b = bench(on)
     await session($)
-    await pick($, b)
     expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
     await pushPick($, b)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toMatch(DECLINED.commit)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toBeUndefined()
     expect(await bash($, b, 'git push')).toBeUndefined()
     expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
   })
 
-  test('a push before the approved commit is refused, and the pick still allows the commit', async ($, on) => {
+  test('a commit and a push on one line ask only about the push', async ($, on) => {
     const b = bench(on)
     await session($)
-    await pick($, b)
-    expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
+    const deny = await bash($, b, 'git commit -m "fix: 🐛 X." && git push')
+    expect(deny).toMatch(DECLINED.push)
+    expect(deny).toContain('the action (git push)')
+    expect(deny).not.toContain('Name the message')
   })
 
-  test('a commit and a push on one line are refused under a commit pick, and the pick stays', async ($, on) => {
+  test('two commits on one line run, and two pushes on one line are refused under a push pick', async ($, on) => {
     const b = bench(on)
     await session($)
-    await pick($, b)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X." && git push')).toMatch(DECLINED.push)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
-  })
-
-  test('two commits or two pushes on one line are refused under any pick', async ($, on) => {
-    const b = bench(on)
-    await session($)
-    await pick($, b)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 A."; git commit -m "fix: 🐛 B."')).toBe(ONE_REFUSAL)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 A."')).toBeUndefined()
+    expect(await bash($, b, 'git commit -m "fix: 🐛 A."; git commit -m "fix: 🐛 B."')).toBeUndefined()
     await pushPick($, b)
     expect(await bash($, b, 'git push && git push --tags')).toBe(ONE_REFUSAL)
   })
 
-  test('a commit that does not move HEAD leaves the pick unused, so it can run again', async ($, on) => {
+  test('a "Commit it" pick approves nothing, so a push after it is still refused', async ($, on) => {
     const b = bench(on)
-    const r = repo(b)
     await session($)
     await pick($, b)
-    r.commitFails = true
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
-    r.commitFails = false
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
-    expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toMatch(DECLINED.commit)
+    expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
+    expect(await bash($, b, 'git switch -c other')).toBeUndefined()
   })
 
-  for (const line of ['git commit -m "fix: 🐛 X." | tail -1', 'git commit -m "fix: 🐛 X."; echo done', 'git commit -m "fix: 🐛 X." || true']) {
-    test(`a failed commit behind a masked exit status uses the pick up, as it cannot be told from one that landed elsewhere: ${line}`, async ($, on) => {
-      const b = bench(on)
-      const r = repo(b)
-      r.commitFails = true
-      r.masks = true
-      await session($)
-      await pick($, b)
-      expect(await bash($, b, line)).toBeUndefined()
-      expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toMatch(DECLINED.commit)
-    })
-  }
-
-  test('a commit that lands in another repository than the one read uses the pick up', async ($, on) => {
-    const b = bench(on)
-    b.repos['/repo'] = { head: 'c1', pushed: 'c1' }
-    const other = { head: 'o1', pushed: 'o1' }
-    b.repos['/other'] = other
-    b.onBash = () => {
-      other.head = 'o2'
-    }
-    b.files.set('/repo/scripts/release.sh', 'echo released\n')
-    await session($)
-    await pick($, b)
-    expect(await bash($, b, './scripts/release.sh && git commit -m "fix: 🐛 X."')).toBeUndefined()
-    expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toMatch(DECLINED.commit)
-  })
-
-  for (const line of [
-    'if cd ../other; then git commit -m "fix: 🐛 X."; fi',
-    '{ cd ../other; git commit -m "fix: 🐛 X."; }',
-    '! cd ../other || git commit -m "fix: 🐛 X."',
-    '. ./env.sh; git commit -m "fix: 🐛 X."; false',
-    'source ./env.sh && git commit -m "fix: 🐛 X."',
-    'command cd ../other && git commit -m "fix: 🐛 X."',
-    "bash -c 'cd ../other'; git commit -m 'fix: 🐛 X.'; false",
-    'cd ../other | true; git commit -m "fix: 🐛 X."; false',
-    'true | cd ../other; git commit -m "fix: 🐛 X."; false',
-    'cd ../other & git commit -m "fix: 🐛 X."; false',
-    'X=1 cd ../other; git commit -m "fix: 🐛 X."; false',
-    'false && cd ../other; git commit -m "fix: 🐛 X."; false',
-    '[ -d x ] || cd ../other; git commit -m "fix: 🐛 X."; false',
-    'eval "true || cd ../other"; git commit -m "fix: 🐛 X."; false',
-    "eval CDP''ATH=/x; cd other; git commit -m 'fix: 🐛 X.'; false",
-    'export CDP\\ATH=/x; cd other; git commit -m "fix: 🐛 X."; false',
-    'cdpath=(/x); cd other; git commit -m "fix: 🐛 X."; false',
-    'declare -x "CDPATH=/x"; cd other; git commit -m "fix: 🐛 X."; false',
-    'cd other; git commit -m "fix: 🐛 X."; false',
-    'sh <<EOF\ncd ../other\nEOF\ngit commit -m x; false',
-  ]) {
-    test(`a commit where the walk did not follow is refused, as its tree cannot be read, and the pick stays: ${JSON.stringify(line)}`, async ($, on) => {
-      const b = bench(on)
-      b.repos['/repo'] = { head: 'c1', pushed: 'c1' }
-      const other = { head: 'o1', pushed: 'o1' }
-      b.repos['/other'] = other
-      b.onBash = command => {
-        if (writesOf(command).commits > 0) other.head = 'o2'
-        return { isError: true }
-      }
-      b.files.set('/repo/env.sh', 'export X=1\n')
-      await session($)
-      await pick($, b)
-      b.runs.length = 0
-      expect(await bash($, b, line)).toBe(UNREAD_TREE_REFUSAL)
-      expect(gitRuns(b)).toEqual([])
-      expect(other.head).toBe('o1')
-      expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toBeUndefined()
-    })
-  }
-
-  test('a commit and a push behind a wrapper are refused under a pick, and asked to run as plain lines', async ($, on) => {
+  test('a commit and a push behind a wrapper are still refused by the commit guard, and asked to run as plain lines', async ($, on) => {
     const b = bench(on)
     await session($)
-    await pick($, b)
-    for (const line of ['HUSKY=0 git commit -m "fix: 🐛 X."', "bash -c 'git commit -m x'"]) {
+    for (const line of ['HUSKY=0 git commit -m "fix: 🐛 X."', "bash -c 'git commit -m x'", 'GIT_DIR=/other/.git git commit -m "fix: 🐛 X."', 'env -C /other git commit -m "fix: 🐛 X."', 'env --chdir=/other git commit -m "fix: 🐛 X."', 'HUSKY=0 git push', "bash -c 'git push'", 'env git push']) {
       expect([line, await bash($, b, line)]).toEqual([line, PLAIN_REFUSAL.deny])
     }
     expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toBeUndefined()
   })
 
+  for (const line of ['eval eval eval eval eval true', "bash -c 'eval eval eval eval true'"]) {
+    test(`a line nested past the reader's depth with no literal op word counts as a commit and a push, so it asks about the push: ${JSON.stringify(line)}`, async ($, on) => {
+      expect(writesOf(line)).toEqual({ commits: 1, pushes: 1 })
+      const b = bench(on)
+      await session($)
+      expect(await bash($, b, line)).toMatch(DECLINED.push)
+    })
+  }
+
   test('a commit behind an eval whose command name is built at run time never runs', async ($, on) => {
     const b = bench(on)
     await session($)
-    await pick($, b)
     expect(await bash($, b, 'n=CDP; eval "${n}ATH=/x"; cd other; git commit -m "fix: 🐛 X."; false')).toContain('the shell reader cannot tell which command this line runs')
   })
 
@@ -272,64 +200,16 @@ describe('AC1: one "Commit it" pick allows one commit, and no push', () => {
     test(`a commit behind printf -v into a name built at run time never runs: ${JSON.stringify(line)}`, async ($, on) => {
       const b = bench(on)
       await session($)
-      await pick($, b)
       expect(await bash($, b, line)).toContain('the shell reader cannot tell which command this line runs')
-      expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toBeUndefined()
     })
   }
 
-  test('an escaped command word is refused beside a real commit, and the pick stays', async ($, on) => {
+  test('an escaped command word beside a real commit counts as a push, so it asks about the push', async ($, on) => {
     const b = bench(on)
     await session($)
-    await pick($, b)
-    expect(await bash($, b, "$'\\x63d' ../other; git commit -m 'fix: 🐛 X.'")).toBe(ONE_REFUSAL)
+    expect(await bash($, b, "$'\\x63d' ../other; git commit -m 'fix: 🐛 X.'")).toMatch(DECLINED.push)
     expect(await bash($, b, "$'\\x67it' push")).toBeDefined()
-    expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toBeUndefined()
   })
-
-  test('a bare relative cd is unknown, and a /, ~ or ./ target is followed', async ($, on) => {
-    const b = bench(on, { env: { HOME } })
-    await session($)
-    const dirs = async (line: string) => {
-      await pick($, b)
-      b.runs.length = 0
-      await bash($, b, line)
-      return [...new Set(gitRuns(b).map(argv => argv[2]))]
-    }
-    expect(await dirs('cd other && git commit -m "fix: 🐛 X."')).toEqual([])
-    expect(await dirs('cd ./other && git commit -m "fix: 🐛 X."')).toEqual(['/repo/./other'])
-    expect(await dirs('cd /abs && git commit -m "fix: 🐛 X."')).toEqual(['/abs'])
-    expect(await dirs('cd ~/code && git commit -m "fix: 🐛 X."')).toEqual([`${HOME}/code`])
-  })
-
-  for (const line of [
-    'cd ./link/../other; git commit -m "fix: 🐛 X."; false',
-    'cd ./link; cd ../other; git commit -m "fix: 🐛 X."; false',
-    'git -C ./link/../other commit -m "fix: 🐛 X."; false',
-    'cd /abs/link/../other; git commit -m "fix: 🐛 X."; false',
-    'cd ../other; git commit -m "fix: 🐛 X."; false',
-    'cd ..; git commit -m "fix: 🐛 X."; false',
-    'git -C .. commit -m "fix: 🐛 X."; false',
-    'cd ~/../other; git commit -m "fix: 🐛 X."; false',
-  ]) {
-    test(`a .. is not followed, as the shell and git resolve it apart through a symlink, so the commit is refused: ${JSON.stringify(line)}`, async ($, on) => {
-      const b = bench(on)
-      const landed = { head: 'r1', pushed: 'r1' }
-      b.repos['/repo/other'] = landed
-      b.repos['/repo/./link/../other'] = { head: 'e1', pushed: 'e1' }
-      b.repos['/repo/./link/./../other'] = { head: 'e1', pushed: 'e1' }
-      b.onBash = command => {
-        if (writesOf(command).commits > 0) landed.head = 'r2'
-        return { isError: true }
-      }
-      await session($)
-      await pick($, b)
-      b.runs.length = 0
-      expect(await bash($, b, line)).toBe(UNREAD_TREE_REFUSAL)
-      expect(gitRuns(b)).toEqual([])
-      expect(landed.head).toBe('r1')
-    })
-  }
 
   test('dirOf leaves any .. unknown, and follows ., absolute and ~ steps', () => {
     for (const steps of [['./link/../other'], ['./link', '../other'], ['/a/../b'], ['../c'], ['..'], ['/', '../c'], ['~/../x'], ['./a/..']]) {
@@ -363,61 +243,10 @@ describe('AC1: one "Commit it" pick allows one commit, and no push', () => {
     expect(readLine('echo "a && b"; cd ./sub; git commit -m x').dir).toBeNull()
   })
 
-  test('a cd the walk records, and words that only look like one, keep the directory known', async ($, on) => {
-    const b = bench(on)
-    await session($)
-    for (const [line, dir] of [
-      ['cd ./sub && git commit -m "fix: 🐛 X."', '/repo/./sub'],
-      ['git add . && git commit -m "fix: 🐛 X."', '/repo'],
-      ['echo cd source . && git commit -m "fix: 🐛 X."', '/repo'],
-      ['eval cd ./sub; git commit -m "fix: 🐛 X."', '/repo/./sub'],
-      ['cd /a; cd ./b && git commit -m "fix: 🐛 X."', '/a/./b'],
-    ] as const) {
-      await pick($, b)
-      b.runs.length = 0
-      await bash($, b, line)
-      expect(new Set(gitRuns(b).map(argv => argv[2]))).toEqual(new Set([dir]))
-    }
-  })
-
-  test('a commit in a directory the reader cannot follow is refused, and reads nothing: GIT_DIR, --git-dir, --work-tree, env -C, popd, and a cd in a subshell', async ($, on) => {
-    const b = bench(on)
-    await session($)
-    for (const line of [
-      'git --git-dir=/other/.git commit -m "fix: 🐛 X."',
-      'git --work-tree /other commit -m "fix: 🐛 X."',
-      'export GIT_WORK_TREE=/other; git commit -m "fix: 🐛 X."',
-      'pushd /a && popd && git commit -m "fix: 🐛 X."',
-      '(cd ../other && make); git commit -m "fix: 🐛 X."',
-      'x=$(cd /other && pwd); git commit -m "fix: 🐛 X."',
-    ]) {
-      await pick($, b)
-      b.runs.length = 0
-      expect([line, await bash($, b, line)]).toEqual([line, UNREAD_TREE_REFUSAL])
-      expect(gitRuns(b)).toEqual([])
-      expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toBeUndefined()
-    }
-    for (const line of ['GIT_DIR=/other/.git git commit -m "fix: 🐛 X."', 'env -C /other git commit -m "fix: 🐛 X."', 'env --chdir=/other git commit -m "fix: 🐛 X."']) {
-      await pick($, b)
-      expect([line, await bash($, b, line)]).toEqual([line, PLAIN_REFUSAL.deny])
-    }
-  })
-
-  test('a commit that lands behind an error status still uses the pick', async ($, on) => {
-    const b = bench(on)
-    const r = repo(b)
-    r.errors = true
-    await session($)
-    await pick($, b)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X." && false')).toBeUndefined()
-    expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toMatch(DECLINED.commit)
-  })
-
   test('a push that fails can be retried under its pick, and one that lands uses the pick up', async ($, on) => {
     const b = bench(on)
     const r = repo(b)
     await session($)
-    await pick($, b)
     await bash($, b, 'git commit -m "fix: 🐛 X."')
     await pushPick($, b)
     r.pushFails = true
@@ -427,146 +256,65 @@ describe('AC1: one "Commit it" pick allows one commit, and no push', () => {
     expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
   })
 
-  test('a background commit cannot be watched, so it uses the pick', async ($, on) => {
-    const b = bench(on)
-    repo(b).commitFails = true
-    await session($)
-    await pick($, b)
-    const result = await $.tool.call({ tool: 'Bash', command: 'git commit -m "fix: 🐛 X."', run_in_background: true } as never)
-    expect(result.deny).toBeUndefined()
-    expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toMatch(DECLINED.commit)
-  })
-
-  test('HEAD is read where the line commits: after its cd, and at its -C', async ($, on) => {
-    const b = bench(on, { env: { HOME } })
-    await session($)
-    const cases: [string, string][] = [
-      ['git commit -m "fix: 🐛 X."', '/repo'],
-      ['git -C /other commit -m "fix: 🐛 X."', '/other'],
-      ['cd ./sub && git commit -m "fix: 🐛 X."', '/repo/./sub'],
-      ['cd ~/code && git -C app commit -m "fix: 🐛 X."', `${HOME}/code/app`],
-      ['cd /a; cd ./b && git commit -m "fix: 🐛 X."', '/a/./b'],
-    ]
-    for (const [line, dir] of cases) {
-      await pick($, b)
-      b.runs.length = 0
-      await bash($, b, line)
-      expect(new Set(gitRuns(b).map(argv => argv[2]))).toEqual(new Set([dir]))
-    }
-  })
-
-  test('a directory the reader cannot follow reads no refs: a commit there is refused, and a picked push there is refused too', async ($, on) => {
+  test('a directory the reader cannot follow reads no refs, so a picked push there is refused', async ($, on) => {
     const b = bench(on)
     await session($)
-    await pick($, b)
-    b.runs.length = 0
-    expect(await bash($, b, 'git -C "$(git rev-parse --show-toplevel)" commit -m "fix: 🐛 X."')).toBe(UNREAD_TREE_REFUSAL)
-    expect(gitRuns(b)).toEqual([])
-    expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toBeUndefined()
     await pushPick($, b)
     b.runs.length = 0
     expect(await bash($, b, 'git -C "$(git rev-parse --show-toplevel)" push')).toContain('a branch the gate cannot read')
     expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
   })
 
-  test('a new pick approves the next commit', async ($, on) => {
-    const b = bench(on)
-    await session($)
-    await pick($, b)
-    await bash($, b, 'git commit -m "fix: 🐛 A."')
-    await pick($, b)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 B."')).toBeUndefined()
-  })
-
-  test('a dismissed dialog approves nothing', async ($, on) => {
-    const b = bench(on)
-    await session($)
-    b.pick = undefined
-    await $.tool.call(ask([COMMIT_QUESTION])).catch(() => undefined)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
-  })
-
-  test('/clear ends the approval', async ($, on) => {
-    const b = bench(on)
-    await session($)
-    await pick($, b)
-    await $.session.end({ reason: 'clear', sessionId: 's' } as never)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
-  })
-
-  test('every caught line of the corpus is refused with no pick, and every read is let through', async ($, on) => {
+  test('every caught push line of the corpus is refused with no pick, and every read is let through', async ($, on) => {
     const b = bench(on)
     b.files.set('/repo/script.sh', 'echo hi\n')
     await session($, 'look around')
-    for (const [line] of CAUGHT) expect(await bash($, b, line)).toBeDefined()
+    for (const [line, expected] of CAUGHT) if (expected.pushes > 0) expect([line, await bash($, b, line)]).not.toEqual([line, undefined])
     for (const line of LET_THROUGH) expect(await bash($, b, line)).toBe(hiddenCommandRefusal(parseShell(line)))
   })
 })
 
-describe('AC2: a pick counts by intent, for exactly one commit', () => {
+describe('AC2: a commit question approves nothing, and its labels never approve a push', () => {
   for (const label of ['Commit it', 'Commit', 'Commit and push', 'Commit it, full message', 'Commit it (Recommended)', 'Yes, commit']) {
-    test(`the label ${JSON.stringify(label)} approves one commit and no push`, async ($, on) => {
+    test(`the label ${JSON.stringify(label)} approves no push, and the commits run with no pick`, async ($, on) => {
       const b = bench(on)
       await session($)
-      await pick($, b, label, [question('Commit "feat: ✨ Add the gate." on main?', ['Not yet', label])])
+      await pick($, b, label, [question('Commit "feat: ✨ Add the gate." on main, and push it?', ['Not yet', label])])
       expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
       expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
-      expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toMatch(DECLINED.commit)
+      expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toBeUndefined()
     })
   }
-
-  for (const label of ['Not yet', "Don't commit", 'Do not commit', 'Commit later', 'Review with Holmes first', 'Review the commit']) {
-    test(`the label ${JSON.stringify(label)} approves nothing`, async ($, on) => {
-      const b = bench(on)
-      await session($)
-      await pick($, b, label, [question('Commit "feat: ✨ Add the gate." on main?', [label, 'Commit it'])])
-      expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
-    })
-  }
-
-  test('typed text, an away dialog and a label from another question approve nothing', async ($, on) => {
-    const b = bench(on)
-    await session($)
-    await pick($, b, 'Commit it', [question('Which approach?', ['Ship', 'Wait'])])
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
-    b.dialog = { response: 'Commit it' }
-    await pick($, b)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
-    b.dialog = { afkTimeoutMs: 60_000 }
-    await pick($, b)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
-  })
 
   test('pickOf reads the pick by the option it chose, and the question it answers', () => {
     const answered = (q: ReturnType<typeof question>, label: string, extra = {}) => pickOf([q], { answers: { [q.question]: label }, ...extra })
-    expect(answered(COMMIT_QUESTION, 'Commit it')).toBe('commit')
-    expect(answered(COMMIT_QUESTION, 'Not yet')).toBeUndefined()
-    expect(answered(COMMIT_QUESTION, 'Commit')).toBeUndefined()
-    expect(answered(COMMIT_QUESTION, 'Commit it', { afkTimeoutMs: 1 })).toBeUndefined()
-    expect(answered(COMMIT_QUESTION, 'Commit it', { response: 'Commit it' })).toBeUndefined()
+    expect(answered(COMMIT_QUESTION, 'Commit it')).toBeUndefined()
+    expect(answered(question('Commit and push main to origin?', ['Commit and push', 'Not yet']), 'Commit and push')).toBeUndefined()
     expect(answered(PUSH_QUESTION, 'Push')).toBe('push')
+    expect(answered(PUSH_QUESTION, 'Push', { afkTimeoutMs: 1 })).toBeUndefined()
+    expect(answered(PUSH_QUESTION, 'Push', { response: 'Push' })).toBeUndefined()
     expect(answered(question('Push main to origin?', ["Don't push", 'Push']), "Don't push")).toBeUndefined()
     expect(answered(question('Which approach?', ['Push', 'Wait']), 'Push')).toBeUndefined()
     expect(answered(MERGE_QUESTION, 'Merge locally')).toBe('merge')
     expect(answered(MERGE_QUESTION, 'Open a PR')).toBeUndefined()
     expect(answered(question('Which approach?', ['Merge', 'Rebase']), 'Merge')).toBeUndefined()
-    expect(pickOf([COMMIT_QUESTION], { answers: { other: 'Commit it' } })).toBeUndefined()
-    expect(pickOf([COMMIT_QUESTION], undefined)).toBeUndefined()
-    expect(pickOf(undefined, { answers: { [COMMIT_QUESTION.question]: 'Commit it' } })).toBeUndefined()
+    expect(pickOf([PUSH_QUESTION], { answers: { other: 'Push' } })).toBeUndefined()
+    expect(pickOf([PUSH_QUESTION], undefined)).toBeUndefined()
+    expect(pickOf(undefined, { answers: { [PUSH_QUESTION.question]: 'Push' } })).toBeUndefined()
   })
 })
 
-describe('AC3: a commit approval approves no push and no merge, and each gets its own', () => {
-  test('a merge into the default branch is refused under a commit or push pick, and a merge pick allows one', async ($, on) => {
+describe('AC3: a commit approves no push and no merge, and each gets its own', () => {
+  test('a merge into the default branch is refused after a commit or under a push pick, and a merge pick allows one', async ($, on) => {
     const b = bench(on)
     await session($)
-    await pick($, b)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 W."')).toBeUndefined()
     expect(await bash($, b, 'git merge fix/x')).toMatch(DECLINED.merge)
     expect(await bash($, b, 'gh pr merge 12 --squash')).toMatch(DECLINED.merge)
     await pushPick($, b)
     expect(await bash($, b, 'git pull')).toMatch(DECLINED.merge)
     await pick($, b, 'Merge locally', [MERGE_QUESTION])
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
     expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
     expect(await bash($, b, 'git merge fix/x')).toBeUndefined()
     expect(await bash($, b, 'git merge fix/y')).toMatch(DECLINED.merge)
@@ -747,16 +495,14 @@ describe('AC3: a commit approval approves no push and no merge, and each gets it
   })
 })
 
-describe('AC4: the commit question is asked alone, and names only the commit', () => {
-  test('a commit option beside another question is refused, with a reason, and never reaches Mike', async ($, on) => {
+describe('AC4: a commit question is no approval question, so it is never refused as a bundle', () => {
+  test('a commit option beside another question reaches Mike, and the commit runs with no pick', async ($, on) => {
     const b = bench(on)
     b.pick = 'Commit it'
     await session($)
-    const result = await $.tool.call(ask([OTHER_QUESTION, COMMIT_QUESTION]))
-    expect(result.deny).toBe(BUNDLE_REFUSAL)
-    expect(BUNDLE_REFUSAL).toContain('alone')
-    expect(b.calls.some(call => call.tool === 'AskUserQuestion')).toBe(false)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
+    expect((await $.tool.call(ask([OTHER_QUESTION, COMMIT_QUESTION]))).deny).toBeUndefined()
+    expect(b.calls.some(call => call.tool === 'AskUserQuestion')).toBe(true)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
   })
 
   for (const text of [
@@ -765,32 +511,17 @@ describe('AC4: the commit question is asked alone, and names only the commit', (
     'Commit the version bump and release 0.51.0?',
     'Commit, then merge?',
   ]) {
-    test(`a commit question whose own text names a push, a merge or a release is refused: ${JSON.stringify(text)}`, async ($, on) => {
+    test(`a commit question whose own text names a push, a merge or a release is let through, and approves none of them: ${JSON.stringify(text)}`, async ($, on) => {
       const b = bench(on)
       b.pick = 'Commit it'
       await session($)
-      expect((await $.tool.call(ask([question(text, ['Not yet', 'Commit it'])]))).deny).toBe(NAMED_BUNDLE_REFUSAL)
-      expect(b.calls.some(call => call.tool === 'AskUserQuestion')).toBe(false)
-      expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
+      expect((await $.tool.call(ask([question(text, ['Not yet', 'Commit it'])]))).deny).toBeUndefined()
+      expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
+      expect(await bash($, b, 'git merge fix/x')).toMatch(DECLINED.merge)
     })
   }
 
-  test('the refusal says to ask about the push and the merge afterwards', () => {
-    expect(NAMED_BUNDLE_REFUSAL).toContain('Once the commit has landed, push a feature branch with a plain line, or ask about any other push')
-    expect(NAMED_BUNDLE_REFUSAL).toContain('how the branch lands')
-  })
-
-  test('a word that only holds the action inside a branch, a path or a quoted message is not a bundle', () => {
-    for (const text of [
-      'Commit "fix: 🐛 Refuse a forced push." on fix/push-guard?',
-      'Commit the change to hooks/mods/merge-reader.ts on main?',
-      'Commit `git push` docs on main?',
-    ]) {
-      expect([text, bundleRefusalOf([question(text, ['Not yet', 'Commit it'])])]).toEqual([text, undefined])
-    }
-  })
-
-  test('the commit, push and merge questions alone, and questions with no approval option, are let through', async ($, on) => {
+  test('the push and merge questions are asked alone, and questions with no approval option are let through', async ($, on) => {
     const b = bench(on)
     b.pick = 'A'
     await session($)
@@ -799,28 +530,30 @@ describe('AC4: the commit question is asked alone, and names only the commit', (
     }
     expect((await $.tool.call(ask([OTHER_QUESTION, PUSH_QUESTION]))).deny).toBe(BUNDLE_REFUSAL)
     expect((await $.tool.call(ask([OTHER_QUESTION, MERGE_QUESTION]))).deny).toBe(BUNDLE_REFUSAL)
+    expect(BUNDLE_REFUSAL).toContain('alone')
+    expect(BUNDLE_REFUSAL).not.toContain('commit')
   })
 
-  test('a commit option is an option label that leads with the word, or that approves a commit', () => {
-    expect(bundleRefusalOf([OTHER_QUESTION, question('Next?', ['Commit and push', 'Wait'])])).toBe(BUNDLE_REFUSAL)
-    expect(bundleRefusalOf([OTHER_QUESTION, question('Next?', ['Yes, commit', 'Wait'])])).toBe(BUNDLE_REFUSAL)
-    expect(bundleRefusalOf([OTHER_QUESTION, question('Next?', ['Recommit later', 'Review the commit'])])).toBeUndefined()
+  test('a label that leads with commit, or that approves a commit, is no approval option', () => {
+    expect(bundleRefusalOf([OTHER_QUESTION, question('Next?', ['Commit and push', 'Wait'])])).toBeUndefined()
+    expect(bundleRefusalOf([OTHER_QUESTION, question('Next?', ['Yes, commit', 'Wait'])])).toBeUndefined()
+    expect(bundleRefusalOf([OTHER_QUESTION, question('Commit it and push to origin?', ['Not yet', 'Commit it'])])).toBeUndefined()
+    expect(bundleRefusalOf([OTHER_QUESTION, question('Push main to origin?', ['Push', 'Wait'])])).toBe(BUNDLE_REFUSAL)
     expect(bundleRefusalOf([COMMIT_QUESTION])).toBeUndefined()
     expect(bundleRefusalOf('not a list')).toBeUndefined()
   })
 })
 
-describe('AC5: a pick is tied to the repository and branch HEAD held when Mike picked', () => {
-  test('a commit on another branch than the one picked is refused, and the pick is used up', async ($, on) => {
+describe('AC5: a push pick is tied to the repository and branch HEAD held when Mike picked', () => {
+  test('a commit runs on any branch, with no pick to bind', async ($, on) => {
     const b = bench(on)
     b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'fix/x' }
     await session($)
-    await pick($, b)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
     b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'main' }
-    const refusal = await bash($, b, 'git commit -m "fix: 🐛 X."')
-    expect(refusal).toMatch(/^This git commit was refused: Mike picked it while HEAD was on fix\/x, and HEAD is now on main\./)
-    b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'fix/x' }
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 Y."')).toBeUndefined()
+    b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: null }
+    expect(await bash($, b, 'git commit -m "fix: 🐛 Z."')).toBeUndefined()
   })
 
   test('a push on another branch than the one picked is refused', async ($, on) => {
@@ -832,49 +565,29 @@ describe('AC5: a pick is tied to the repository and branch HEAD held when Mike p
     expect(await bash($, b, 'git push')).toMatch(/^This git push was refused: Mike picked it while HEAD was on fix\/x, and HEAD is now on main\./)
   })
 
-  test('a commit in another worktree is tied to the branch that worktree held, and a repository not read at the pick is refused', async ($, on) => {
-    const b = bench(on)
-    b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'main' }
-    b.repos['/wt'] = { head: 'w1', pushed: 'w1', branch: 'feat/y' }
-    await session($)
-    await pick($, b)
-    b.trees['/wt'] = ''
-    expect(await bash($, b, 'git -C /wt commit -m "fix: 🐛 X."')).toBeUndefined()
-    await pick($, b)
-    delete b.repos['/wt']
-    b.repos['/elsewhere'] = { head: 'e1', pushed: 'e1' }
-    expect(await bash($, b, 'git -C /elsewhere commit -m "fix: 🐛 X."')).toContain('a branch the gate could not read')
-  })
-
-  test('a detached HEAD binds to its commit', async ($, on) => {
-    const b = bench(on)
-    b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: null }
-    await session($)
-    await pick($, b)
-    b.repos['/repo'] = { head: 'c2', pushed: 'c1', branch: null }
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toContain('detached at c1')
-  })
-
   for (const line of ['git switch -c other', 'git switch main', 'git stash', 'git stash push -m wip', 'git reset -q', 'git -c core.pager=cat reset']) {
-    test(`a checkout, switch, stash or reset between the pick and its commit is refused: ${JSON.stringify(line)}`, async ($, on) => {
+    test(`a checkout, switch, stash or reset between a push pick and its push is refused: ${JSON.stringify(line)}`, async ($, on) => {
       const b = bench(on)
       await session($)
-      await pick($, b)
+      await pushPick($, b)
       expect(await bash($, b, line)).toBe(MOVE_REFUSAL)
-      expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
+      expect(await bash($, b, 'git push')).toBeUndefined()
       expect(await bash($, b, line)).toBeUndefined()
     })
   }
 
-  test('a switch is refused under an unused push pick too, and not under a merge pick or no pick', async ($, on) => {
+  test('a switch is refused under an unused push pick, and not under a commit question, a merge pick or no pick', async ($, on) => {
     const b = bench(on)
     await session($)
+    expect(await bash($, b, 'git switch main')).toBeUndefined()
+    await pick($, b)
     expect(await bash($, b, 'git switch main')).toBeUndefined()
     await pushPick($, b)
     expect(await bash($, b, 'git switch main')).toBe(MOVE_REFUSAL)
     expect(await bash($, b, 'git stash list')).toBeUndefined()
     await pick($, b, 'Merge locally', [MERGE_QUESTION])
     expect(await bash($, b, 'git switch main')).toBeUndefined()
+    expect(MOVE_REFUSAL).not.toContain('commit')
   })
 
   test('the readers behind the binding', () => {
@@ -883,7 +596,7 @@ describe('AC5: a pick is tied to the repository and branch HEAD held when Mike p
       { top: '/wt', ref: 'detached at w1' },
     ])
     expect(headsOf('')).toEqual([])
-    const pick = { action: 'commit' as const, heads: [{ top: '/repo', ref: 'refs/heads/main' }] }
+    const pick = { action: 'push' as const, heads: [{ top: '/repo', ref: 'refs/heads/main' }] }
     expect(bindingRefusalOf(pick, '/repo', 'refs/heads/main')).toBeUndefined()
     expect(bindingRefusalOf(pick, '/repo', 'refs/heads/x')).toContain('now on x')
     expect(bindingRefusalOf(pick, '/other', 'refs/heads/main')).toBeDefined()
@@ -899,12 +612,12 @@ describe('AC6: only Mike\'s own prompts end an unused pick', () => {
   test('Mike\'s next prompt ends the approval, folded into the turn or not, typed or from the bridge', async ($, on) => {
     const b = bench(on)
     await session($)
-    await pick($, b)
+    await pushPick($, b)
     await $.prompt.submit(prompt('thanks, that reads well'))
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
-    await pick($, b)
+    expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
+    await pushPick($, b)
     await $.prompt.submit({ ...prompt('wait, one more thing'), turnId: 'running' })
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
+    expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
     await pushPick($, b)
     await $.prompt.submit(prompt('from my phone', { kind: 'bridge' }))
     expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
@@ -921,36 +634,38 @@ describe('AC6: only Mike\'s own prompts end an unused pick', () => {
     test(`a ${origin.kind} prompt leaves an unused pick, folded into the turn or not, and approves nothing itself`, async ($, on) => {
       const b = bench(on)
       await session($)
-      await pick($, b)
+      await pushPick($, b)
       await $.prompt.submit({ ...prompt('please commit and push now', origin), turnId: 'running' })
+      expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
+      expect(await bash($, b, 'git push')).toBeUndefined()
       expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
-      expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
-      await pick($, b)
+      await pushPick($, b)
       await $.prompt.submit(prompt('please commit and push now', origin))
-      expect(await bash($, b, 'git push')).toMatch(origin.kind === 'task-notification' ? DECLINED.push : exactly(PUSH_REFUSAL))
       expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
+      expect(await bash($, b, 'git push')).toBeUndefined()
+      expect(await bash($, b, 'git push')).toMatch(origin.kind === 'task-notification' ? DECLINED.push : exactly(PUSH_REFUSAL))
     })
   }
 
   test('a scheduled turn leaves an unused pick for Mike\'s next turn', async ($, on) => {
     const b = bench(on)
     await session($)
-    await pick($, b)
+    await pushPick($, b)
     await $.prompt.submit({ ...prompt('<scheduled-task name="tick">run</scheduled-task>'), turnId: 'running' })
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
+    expect(await bash($, b, 'git push')).toBeUndefined()
   })
 })
 
-describe('AC7: only the lanes that commit unattended by design are exempt from the approval', () => {
+describe('AC7: only the lanes that commit unattended by design are exempt from the push approval', () => {
   for (const origin of [{ kind: 'peer' }, { kind: 'peer-send-message' }, { kind: 'channel', server: 'slack' }, { kind: 'plugin', name: 'x' }, { kind: 'sdk' }] as PromptOrigin[]) {
-    test(`a ${origin.kind} turn in Mike's interactive session is gated: it carries outside text`, async ($, on) => {
+    test(`a ${origin.kind} turn in Mike's interactive session commits, and its push is gated: it carries outside text`, async ($, on) => {
       const b = bench(on)
       b.pick = 'A'
       await $.session.start(start())
       await $.prompt.submit(prompt('please commit and push', origin))
-      expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(COMMIT_REFUSAL)
+      expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
       expect(await bash($, b, 'git push')).toBe(PUSH_REFUSAL)
-      expect((await $.tool.call(ask([OTHER_QUESTION, COMMIT_QUESTION]))).deny).toBe(BUNDLE_REFUSAL)
+      expect((await $.tool.call(ask([OTHER_QUESTION, PUSH_QUESTION]))).deny).toBe(BUNDLE_REFUSAL)
     })
   }
 
@@ -960,15 +675,15 @@ describe('AC7: only the lanes that commit unattended by design are exempt from t
     await session($, 'delegate it')
     expect(await bash($, b, 'git commit -m "fix: 🐛 X."', 'a1')).toBe(SUBAGENT_REFUSAL.deny)
     expect(await bash($, b, 'git push', 'a1')).toBe(SUBAGENT_REFUSAL.deny)
-    expect((await $.tool.call(ask([OTHER_QUESTION, COMMIT_QUESTION], 'a1'))).deny).toBeUndefined()
+    expect((await $.tool.call(ask([OTHER_QUESTION, PUSH_QUESTION], 'a1'))).deny).toBeUndefined()
   })
 
-  test('a sub-agent\'s "Commit it" pick approves nothing for the main loop', async ($, on) => {
+  test('a sub-agent\'s "Push" pick approves nothing for the main loop', async ($, on) => {
     const b = bench(on)
-    b.pick = 'Commit it'
+    b.pick = 'Push'
     await session($, 'delegate it')
-    await $.tool.call(ask([COMMIT_QUESTION], 'a1'))
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
+    await $.tool.call(ask([PUSH_QUESTION], 'a1'))
+    expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
   })
 
   test('a claude -p or SDK session commits', async ($, on) => {
@@ -1007,9 +722,9 @@ describe('AC7: only the lanes that commit unattended by design are exempt from t
 
   test('while the lane is unknown, the guard reads a sub-agent and the question check takes the gate\'s side', async ($, on) => {
     const b = bench(on)
-    b.pick = 'Commit it'
+    b.pick = 'Push'
     expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(SUBAGENT_REFUSAL.deny)
-    expect((await $.tool.call(ask([OTHER_QUESTION, COMMIT_QUESTION]))).deny).toBe(BUNDLE_REFUSAL)
+    expect((await $.tool.call(ask([OTHER_QUESTION, PUSH_QUESTION]))).deny).toBe(BUNDLE_REFUSAL)
   })
 })
 
@@ -1036,7 +751,7 @@ describe('the shell reader, against the hostile-input corpus', () => {
   })
 })
 
-describe('a local merge or pull that lands a ledger unit branch is gated as a commit', () => {
+describe('a local merge or pull that lands a ledger unit branch on a feature branch runs with no question', () => {
   const FEATURE = { head: 'c1', pushed: 'c1', branch: 'fix/x', originHead: 'main', upstream: 'refs/remotes/origin/fix/x', remote: 'origin' }
   const LEDGER = `${HOME}/.claude-workbench/provisioning/ledger.json`
   const UNIT = { project: '/repo', session: 's0', createdAt: 1, unit: 'unit-a', worktree: null, branch: 'unit/a', database: 'wt_repo_unit_a_testing', connection: '', isDatabaseCreated: false }
@@ -1187,25 +902,21 @@ describe('a local merge or pull that lands a ledger unit branch is gated as a co
     'git merge fetch_head',
     'echo unit/a | xargs git merge feat/y',
   ]) {
-    test(`with no approval, a unit landing asks Mike as a commit and names its line: ${JSON.stringify(line)}`, async ($, on) => {
+    test(`with no approval, a unit landing on a feature branch runs with no question: ${JSON.stringify(line)}`, async ($, on) => {
       const b = withLedger(on)
       await session($)
-      const refusal = await bash($, b, line)
-      expect(refusal).toMatch(DECLINED.commit)
-      expect(refusal).toContain(`\`${line}\``)
-      expect(refusal).toContain('the branch fix/x')
+      expect(await bash($, b, line)).toBeUndefined()
     })
   }
 
-  test('a pull behind xargs, whose rebase config the gate cannot read, asks as a unit landing and a history rewrite', async ($, on) => {
+  test('a pull behind xargs, whose rebase config the gate cannot read, asks only as a history rewrite', async ($, on) => {
     const line = 'echo unit/a | xargs git pull origin main'
     const b = withLedger(on)
     await session($)
     expect(pullRebasesOf(line)).toEqual([{ dir: '', rebase: 'unread' }])
-    expect(await bash($, b, line)).toBe(
-      'This line was refused: it runs a git commit and history rewrite, and Mike has approved none of them. ' +
-        'One pick approves one action, so run each as a line of its own, and ask him about each one through AskUserQuestion, alone.',
-    )
+    const refusal = await bash($, b, line)
+    expect(refusal).toMatch(DECLINED.rewrite)
+    expect(refusal).not.toContain('git commit')
   })
 
   for (const line of ['git merge origin/main', 'git merge --no-ff main', 'git merge --no-ff unit/c', 'git merge -m "unit/a" feat/y', 'git pull', 'git pull origin', 'git pull origin main', 'git pull --no-ff . feat/y', 'git merge --abort']) {
@@ -1216,34 +927,24 @@ describe('a local merge or pull that lands a ledger unit branch is gated as a co
     })
   }
 
-  test('a merge or pull that names no branch reads the upstream, and asks when it is a unit branch or cannot be read', async ($, on) => {
+  test('a merge or pull that names no branch runs on a feature branch, whatever its upstream', async ($, on) => {
     const b = withLedger(on)
     await session($)
-    b.repos['/repo'] = { ...FEATURE, upstream: 'refs/heads/unit/a' }
-    expect(await bash($, b, 'git pull')).toMatch(DECLINED.commit)
-    expect(await bash($, b, 'git merge')).toMatch(DECLINED.commit)
-    b.repos['/repo'] = { ...FEATURE, upstream: 'refs/remotes/origin/unit/a' }
-    expect(await bash($, b, 'git pull')).toMatch(DECLINED.commit)
-    expect(await bash($, b, 'git pull origin')).toMatch(DECLINED.commit)
-    expect(await bash($, b, 'git merge')).toMatch(DECLINED.commit)
-    b.repos['/repo'] = { ...FEATURE, upstream: 'refs/heads/feat/y' }
-    expect(await bash($, b, 'git pull')).toBeUndefined()
-    b.repos['/repo'] = { ...FEATURE, upstream: 'refs/remotes/origin/feat-x' }
-    expect(await bash($, b, 'git pull')).toBeUndefined()
+    for (const upstream of ['refs/heads/unit/a', 'refs/remotes/origin/unit/a', 'refs/heads/feat/y', 'refs/remotes/origin/feat-x']) {
+      b.repos['/repo'] = { ...FEATURE, upstream }
+      for (const line of ['git pull', 'git pull origin', 'git merge']) expect([upstream, line, await bash($, b, line)]).toEqual([upstream, line, undefined])
+    }
     b.repos['/repo'] = { head: 'c1', pushed: 'c1', branch: 'fix/x', originHead: 'main' }
-    expect(await bash($, b, 'git pull')).toMatch(DECLINED.commit)
-    expect(await bash($, b, 'git merge')).toMatch(DECLINED.commit)
+    for (const line of ['git pull', 'git merge']) expect([line, await bash($, b, line)]).toEqual([line, undefined])
   })
 
   for (const line of ['git pull /tmp/unit-tree', 'git pull file:///tmp/r', 'git pull ../unit-tree', 'git pull upstream', 'git pull .', 'git pull "$S"']) {
-    test(`a pull that names a source other than the branch's remote, with no refspec, asks as a commit: ${JSON.stringify(line)}`, async ($, on) => {
+    test(`a pull that names a source other than the branch's remote runs on a feature branch: ${JSON.stringify(line)}`, async ($, on) => {
       const b = withLedger(on)
       await session($)
-      expect(await bash($, b, line)).toMatch(DECLINED.commit)
+      expect(await bash($, b, line)).toBeUndefined()
     })
   }
-
-  const BOTH = asks('git commit and history rewrite')
 
   for (const [line, fixture] of [
     ['git pull --rebase /tmp/unit-tree', {}],
@@ -1254,134 +955,66 @@ describe('a local merge or pull that lands a ledger unit branch is gated as a co
     ['git pull origin unit/a', { pullRebase: null }],
     ['git -c pull.rebase=true pull origin unit/a', {}],
   ] as const) {
-    test(`a unit-landing pull that would rebase asks the commit and the rewrite: ${JSON.stringify([line, fixture])}`, async ($, on) => {
+    test(`a unit-landing pull that would rebase asks only the rewrite, in one pick: ${JSON.stringify([line, fixture])}`, async ($, on) => {
       const b = withLedger(on)
       b.repos['/repo'] = { ...FEATURE, ...fixture }
       await session($)
       const refusal = await bash($, b, line)
-      expect(refusal).toMatch(BOTH)
-      expect(refusal).toContain('This pull would rebase, so it needs two picks, each asked alone. First ask the commit question')
+      expect(refusal).toMatch(DECLINED.rewrite)
+      expect(refusal).not.toContain('two picks')
     })
   }
-
-  test('a unit-landing rebase pull runs only after a commit pick and then a pick of its line', async ($, on) => {
-    const line = 'git pull --rebase origin unit/a'
-    const b = withLedger(on)
-    await session($)
-    expect(await bash($, b, line)).toMatch(BOTH)
-    await pick($, b)
-    expect(await bash($, b, line)).toMatch(DECLINED.rewrite)
-    await pick($, b, 'Run it', [question(`Run \`${line}\` in /repo, on fix/x?`, ['Run it', 'Not now'])])
-    expect(await bash($, b, line)).toBeUndefined()
-    expect(await bash($, b, line)).toMatch(BOTH)
-  })
-
-  test('a commit pick alone does not let a unit-landing rebase pull run', async ($, on) => {
-    const b = withLedger(on)
-    await session($)
-    await pick($, b)
-    expect(await bash($, b, 'git pull --rebase origin unit/a')).toMatch(DECLINED.rewrite)
-  })
-
-  test('a typed commit request alone does not let a unit-landing rebase pull run', async ($, on) => {
-    const b = withLedger(on)
-    await session($, 'commit it')
-    expect(await bash($, b, 'git pull --rebase origin unit/a')).toMatch(DECLINED.rewrite)
-    expect(await bash($, b, 'git pull origin unit/a')).toBeUndefined()
-  })
-
-  test('a pick of the line alone does not let a unit-landing rebase pull run, and it asks the commit', async ($, on) => {
-    const line = 'git pull --rebase origin unit/a'
-    const b = withLedger(on)
-    await session($)
-    expect(await bash($, b, line)).toMatch(BOTH)
-    await pick($, b, 'Run it', [question(`Run \`${line}\` in /repo, on fix/x?`, ['Run it', 'Not now'])])
-    expect(await bash($, b, line)).toMatch(DECLINED.commit)
-  })
 
   const A = 'git pull --rebase origin unit/a'
   const runIt = (line: string) => [question(`Run \`${line}\` in /repo, on fix/x?`, ['Run it', 'Not now'])]
 
-  test('a "Run it" pick of the line before the "Commit it" pick does not let the rebase pull run', async ($, on) => {
+  test('a unit-landing rebase pull runs after a pick of its line alone, once', async ($, on) => {
     const b = withLedger(on)
     await session($)
-    expect(await bash($, b, A)).toMatch(BOTH)
+    expect(await bash($, b, A)).toMatch(DECLINED.rewrite)
     await pick($, b, 'Run it', runIt(A))
-    await pick($, b)
+    expect(await bash($, b, 'git pull --rebase origin unit/b')).toMatch(DECLINED.rewrite)
+    expect(await bash($, b, A)).toBeUndefined()
     expect(await bash($, b, A)).toMatch(DECLINED.rewrite)
   })
 
-  test('a commit pick kept by a pick of the line approves that line alone', async ($, on) => {
-    const b = withLedger(on)
-    await session($)
-    expect(await bash($, b, A)).toMatch(BOTH)
-    await pick($, b)
-    await pick($, b, 'Run it', runIt(A))
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
-    expect(await bash($, b, 'git pull --rebase origin unit/b')).toMatch(BOTH)
-    expect(await bash($, b, A)).toBeUndefined()
-  })
-
-  test("Mike's next prompt ends a commit pick kept by a pick of the line", async ($, on) => {
-    const b = withLedger(on)
-    await session($)
-    expect(await bash($, b, A)).toMatch(BOTH)
-    await pick($, b)
-    await pick($, b, 'Run it', runIt(A))
-    await $.prompt.submit(prompt('and then?'))
-    expect(await bash($, b, A)).toMatch(BOTH)
-  })
-
-  test('a commit pick kept by a pick of another line does not pass on to the rebase pull', async ($, on) => {
-    const other = 'git cherry-pick abc1234'
-    const b = withLedger(on)
-    await session($)
-    expect(await bash($, b, A)).toMatch(BOTH)
-    await pick($, b)
-    expect(await bash($, b, other)).toMatch(DECLINED.rewrite)
-    await pick($, b, 'Run it', runIt(other))
-    await pick($, b, 'Run it', runIt(A))
-    expect(await bash($, b, A)).toMatch(DECLINED.commit)
-  })
-
-  test('a typed commit request and a pick of the line let the rebase pull run', async ($, on) => {
+  test('a commit question or a typed commit request does not let a unit-landing rebase pull run', async ($, on) => {
     const b = withLedger(on)
     await session($, 'commit it')
-    expect(await bash($, b, A)).toMatch(DECLINED.rewrite)
-    await pick($, b, 'Run it', runIt(A))
-    expect(await bash($, b, A)).toBeUndefined()
-  })
-
-  test('a merge-style unit-landing pull keeps its commit question alone, and a commit pick lets it run', async ($, on) => {
-    const b = withLedger(on)
-    await session($)
-    for (const line of ['git pull origin unit/a', 'git pull --no-rebase origin unit/a']) {
-      expect([line, DECLINED.commit.test((await bash($, b, line)) ?? '')]).toEqual([line, true])
-    }
     await pick($, b)
+    expect(await bash($, b, A)).toMatch(DECLINED.rewrite)
     expect(await bash($, b, 'git pull origin unit/a')).toBeUndefined()
   })
 
-  test("a pull that names the branch's own remote reads the upstream, and one whose branch or remote cannot be read asks", async ($, on) => {
+  test("Mike's next prompt ends a pick of the rebase pull's line", async ($, on) => {
+    const b = withLedger(on)
+    await session($)
+    expect(await bash($, b, A)).toMatch(DECLINED.rewrite)
+    await pick($, b, 'Run it', runIt(A))
+    await $.prompt.submit(prompt('and then?'))
+    expect(await bash($, b, A)).toMatch(DECLINED.rewrite)
+  })
+
+  test("a pull that names the branch's own remote runs on a feature branch, and one whose branch cannot be read asks as a merge", async ($, on) => {
     const b = withLedger(on)
     await session($)
     expect(await bash($, b, 'git pull origin')).toBeUndefined()
     b.repos['/repo'] = { ...FEATURE, upstream: 'refs/heads/feat/y', remote: '.' }
     expect(await bash($, b, 'git pull .')).toBeUndefined()
     b.repos['/repo'] = { ...FEATURE, upstream: 'refs/heads/unit/a', remote: '.' }
-    expect(await bash($, b, 'git pull .')).toMatch(DECLINED.commit)
+    expect(await bash($, b, 'git pull .')).toBeUndefined()
     b.repos['/repo'] = { ...FEATURE, remote: undefined }
-    expect(await bash($, b, 'git pull origin')).toMatch(DECLINED.commit)
+    expect(await bash($, b, 'git pull origin')).toBeUndefined()
     expect(await bash($, b, 'git pull')).toBeUndefined()
     b.repos['/repo'] = { ...FEATURE, branch: null }
     expect(await bash($, b, 'git pull origin')).toMatch(DECLINED.merge)
   })
 
   for (const line of ['git merge "$B"', 'git merge 1a2b3c4', 'git merge --continue', 'git -c alias.m=merge m feat/y', 'git pull /tmp/tree HEAD', 'git merge a1b2c3', 'git merge fetch_head', 'git merge aaaaaaaa0123456789abcdef0123456789abcdef0123456789abcdefbbbbbbbb']) {
-    test(`a merge whose merged refs cannot be read asks as a commit: ${JSON.stringify(line)}`, async ($, on) => {
+    test(`a merge whose merged refs cannot be read runs on a feature branch: ${JSON.stringify(line)}`, async ($, on) => {
       const b = withLedger(on)
       await session($)
-      expect(await bash($, b, line)).toMatch(DECLINED.commit)
+      expect(await bash($, b, line)).toBeUndefined()
     })
   }
 
@@ -1389,12 +1022,12 @@ describe('a local merge or pull that lands a ledger unit branch is gated as a co
     ['a ledger that is not JSON', '{'],
     ['a ledger of another shape', '{"version":2,"entries":[]}'],
   ] as const) {
-    test(`with ${name}, every merge or pull on a feature branch asks`, async ($, on) => {
+    test(`with ${name}, every merge or pull on a feature branch runs`, async ($, on) => {
       const b = withLedger(on, text)
       await session($)
-      expect(await bash($, b, 'git merge origin/main')).toMatch(DECLINED.commit)
-      expect(await bash($, b, 'git pull')).toMatch(DECLINED.commit)
-      expect(await bash($, b, 'git pull origin main')).toMatch(DECLINED.commit)
+      expect(await bash($, b, 'git merge origin/main')).toBeUndefined()
+      expect(await bash($, b, 'git pull')).toBeUndefined()
+      expect(await bash($, b, 'git pull origin main')).toBeUndefined()
     })
 
     test(`with ${name}, a sub-agent's merge that makes no commit is refused as a commit`, async ($, on) => {
@@ -1405,12 +1038,12 @@ describe('a local merge or pull that lands a ledger unit branch is gated as a co
     })
   }
 
-  test('with no HOME to find the ledger, a merge on a feature branch asks', async ($, on) => {
+  test('with no HOME to find the ledger, a merge on a feature branch runs', async ($, on) => {
     const b = bench(on, { env: {} })
     b.repos['/repo'] = { ...FEATURE }
     await session($)
-    expect(await bash($, b, 'git merge origin/main')).toMatch(DECLINED.commit)
-    expect(await bash($, b, 'git pull')).toMatch(DECLINED.commit)
+    expect(await bash($, b, 'git merge origin/main')).toBeUndefined()
+    expect(await bash($, b, 'git pull')).toBeUndefined()
   })
 
   test('with no ledger file, nothing is a unit branch, so a merge runs', async ($, on) => {
@@ -1420,58 +1053,30 @@ describe('a local merge or pull that lands a ledger unit branch is gated as a co
     expect(await bash($, b, 'git merge --no-ff unit/a')).toBeUndefined()
   })
 
-  test('a commit pick approves one landing, and nothing after it', async ($, on) => {
+  test('landings run one after another with no pick, beside commits, and a push request changes nothing', async ($, on) => {
     const b = withLedger(on)
     await session($)
-    await pick($, b)
     expect(await bash($, b, 'git merge --no-ff unit/a')).toBeUndefined()
-    expect(await bash($, b, 'git merge --no-ff unit/b')).toMatch(DECLINED.commit)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
-  })
-
-  test('a commit pick used by a commit approves no landing after it', async ($, on) => {
-    const b = withLedger(on)
-    await session($)
-    await pick($, b)
+    expect(await bash($, b, 'git merge --no-ff unit/b')).toBeUndefined()
     expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
-    expect(await bash($, b, 'git merge --no-ff unit/a')).toMatch(DECLINED.commit)
+    expect(await bash($, b, 'git -C /repo pull . unit/b')).toBeUndefined()
+    await $.prompt.submit(prompt('push it'))
+    expect(await bash($, b, 'git merge --no-ff unit/a')).toBeUndefined()
   })
 
-  test('the pick is tied to the branch HEAD held when Mike picked', async ($, on) => {
+  test('a landing runs on any feature branch, whatever branch HEAD held at an earlier pick', async ($, on) => {
     const b = withLedger(on)
     await session($)
     await pick($, b)
     b.repos['/repo'] = { ...FEATURE, branch: 'feat/y' }
-    const refusal = await bash($, b, 'git -C /repo merge --no-ff unit/a')
-    expect(refusal).toContain('HEAD was on fix/x')
-    expect(refusal).toContain('HEAD is now on feat/y')
-    b.repos['/repo'] = { ...FEATURE }
-    expect(await bash($, b, 'git -C /repo merge --no-ff unit/a')).toMatch(DECLINED.commit)
+    expect(await bash($, b, 'git -C /repo merge --no-ff unit/a')).toBeUndefined()
   })
 
-  test('a typed commit request approves landings for its turn, and a push request approves none', async ($, on) => {
-    const b = withLedger(on)
-    await session($, 'commit it')
-    expect(await bash($, b, 'git merge --no-ff unit/a')).toBeUndefined()
-    expect(await bash($, b, 'git -C /repo pull . unit/b')).toBeUndefined()
-    await $.prompt.submit(prompt('push it'))
-    expect(await bash($, b, 'git merge --no-ff unit/a')).toMatch(DECLINED.commit)
-  })
-
-  test('a merge pick or a typed merge request approves no landing on a feature branch', async ($, on) => {
+  test('two landings, or a landing and a commit, on one line run on a feature branch', async ($, on) => {
     const b = withLedger(on)
     await session($)
-    await pick($, b, 'Merge locally', [MERGE_QUESTION])
-    expect(await bash($, b, 'git merge --no-ff unit/a')).toMatch(DECLINED.commit)
-    await $.prompt.submit(prompt('merge it locally'))
-    expect(await bash($, b, 'git merge --no-ff unit/a')).toMatch(DECLINED.commit)
-  })
-
-  test('two landings, or a landing and a commit, on one line are refused under any approval', async ($, on) => {
-    const b = withLedger(on)
-    await session($, 'commit it')
-    expect(await bash($, b, 'git merge --no-ff unit/a && git commit -m "fix: 🐛 X."')).toBe(ONE_REFUSAL)
-    expect(await bash($, b, 'git merge --no-ff unit/a; git pull . unit/b')).toBe(ONE_REFUSAL)
+    expect(await bash($, b, 'git merge --no-ff unit/a && git commit -m "fix: 🐛 X."')).toBeUndefined()
+    expect(await bash($, b, 'git merge --no-ff unit/a; git pull . unit/b')).toBeUndefined()
   })
 
   test('on the default branch a landing stays a merge: a commit request approves none, and a merge pick does', async ($, on) => {
@@ -1483,6 +1088,17 @@ describe('a local merge or pull that lands a ledger unit branch is gated as a co
     await pick($, b, 'Merge locally', [question('How should unit/a land on main: merge it locally, or open a pull request?', ['Open a PR', 'Merge locally', 'Leave it'])])
     expect(await bash($, b, 'git merge --no-ff unit/a')).toBeUndefined()
   })
+
+  for (const hasLedger of [false, true]) {
+    test(`on the default branch, a commit beside a merge asks the merge, ${hasLedger ? 'with' : 'with no'} unit branch in the ledger`, async ($, on) => {
+      const b = hasLedger ? withLedger(on) : bench(on, { env: { HOME } })
+      b.repos['/repo'] = { ...FEATURE, branch: 'main' }
+      await session($)
+      for (const line of ['git commit -m "fix: 🐛 X." && git merge fix/x', 'git commit -m "fix: 🐛 X." && git merge unit/a']) {
+        expect([line, DECLINED.merge.test((await bash($, b, line)) ?? '')]).toEqual([line, true])
+      }
+    })
+  }
 
   test('a landing whose branch the gate cannot read is a merge into the default branch', async ($, on) => {
     const b = withLedger(on)

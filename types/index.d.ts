@@ -337,6 +337,7 @@ declare module 'claude-code' {
       turnAttended: boolean
       // Whether the question rule already re-prompted in the current turn.
       reprompted: boolean
+      teardownReminded: boolean
       commitApproval:
         | 'none'
         | {

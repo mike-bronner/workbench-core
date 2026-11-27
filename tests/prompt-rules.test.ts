@@ -30,6 +30,8 @@ import {
   withShared,
   withoutSplice,
 } from '../hooks/mods/prompt-rules'
+import { leftoverBlockOf } from '../hooks/mods/ledger'
+import type { LedgerEntry } from '../hooks/mods/ledger'
 import { caller } from './bench'
 import { start } from './harness'
 
@@ -448,6 +450,39 @@ describe('AC2: the harness memory section is dropped, and memory routing is stat
     expect(RULES).toContain('a `$variable`, a glob, `bash -c`, `ssh`, `xargs`, `find -delete`, or a loop body')
     expect(RULES).toContain('`git stash clear`/`drop`')
     expect(RULES).toContain('they run it with the `!` prefix')
+  })
+})
+
+describe('the working rules on tearing down provisioned units', () => {
+  test('the main session tears down its own units once their work lands, with no question, and reports it in one line', () => {
+    const row = RULES.split('\n').find(line => line.startsWith('| Provisioning guard |')) ?? ''
+    expect(row).toContain('The main session tears down its own units once their work lands, as the rules below say.')
+    const teardown = RULES.split('\n').find(line => line.startsWith('- Tear down every unit')) ?? ''
+    expect(teardown).toContain('Tear down every unit this session recorded in the provisioning ledger once its work has landed or been handed back.')
+    expect(teardown).toContain('A unit is its worktree, its unit branch and the unit test database it created, if any.')
+    expect(teardown).toContain('Do not ask Mike first.')
+    expect(teardown).toContain('Never remove a unit that is still in use, or one with unmerged or uncommitted work.')
+    expect(teardown).toContain('Report the teardown in one line.')
+  })
+
+  test('landed and handed back are each a condition that can be checked', () => {
+    const teardown = RULES.split('\n').find(line => line.startsWith('- Tear down every unit')) ?? ''
+    expect(teardown).toContain('Its work has landed when the unit branch is merged into the branch it was cut from and its tree is clean.')
+    expect(teardown).toContain('Its work was handed back when a sub-agent handed it back, its tree is clean, and the unit branch holds no unmerged commit.')
+    expect(teardown).not.toContain('handed back and taken')
+  })
+
+  test('the tree and the branch are removed from the project folder, and a database is dropped only when the unit created one', () => {
+    const teardown = RULES.split('\n').find(line => line.startsWith('- Tear down every unit')) ?? ''
+    expect(teardown).toContain('Run `git -C <project folder> worktree remove <path>`, then `git -C <project folder> branch -d <branch>`, each as a line of its own.')
+    expect(teardown).toContain('If the unit created a test database, then run `psql -c \'DROP DATABASE "<name>"\'` with the same `-h`, `-p` and `-U` as the create, as a line of its own.')
+    expect(teardown).toContain('A unit that created no test database has none to drop.')
+  })
+
+  test('the units other sessions recorded are left for Mike, and the leftover report keeps its words', () => {
+    expect(RULES).toContain('- Units that other sessions recorded are left for Mike. Remove none of them, and report them to Mike as the leftover list says.')
+    const entry: LedgerEntry = { project: '/p', session: 's', createdAt: 0, unit: 'u', worktree: '/w', branch: 'b', database: 'd', connection: '', isDatabaseCreated: false }
+    expect(leftoverBlockOf([{ entry, hasTree: true, hasBranch: false }])).toContain('Other sessions recorded these units, and their trees, branches or databases still exist. Each unit belongs to the session that recorded it, so remove nothing and run none of these commands. Report the list to Mike. He decides when a unit is no longer in use, and cleans it up himself with the ! prefix.')
   })
 })
 

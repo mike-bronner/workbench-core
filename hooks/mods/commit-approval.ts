@@ -586,7 +586,7 @@ const codeOf = (char: string): string => {
 
 export const shownOf = (text: string): string => text.replace(HIDDEN, char => (char === ' ' ? char : (SHOWN_ESCAPES[char] ?? codeOf(char))))
 
-export type AskFacts = { command: string; repo?: string; branch?: string; message?: string; files?: readonly string[]; release?: ReleaseId; isApart?: true; rewrites?: readonly RewriteKind[] }
+export type AskFacts = { command: string; repo?: string; branch?: string; message?: string; files?: readonly string[]; release?: ReleaseId; isApart?: true; rewrites?: readonly RewriteKind[]; tags?: readonly string[] }
 
 const apartHowOf = (kind: 'commit' | 'merge'): string =>
   'This pull would rebase, so it needs two picks, each asked alone. ' +
@@ -646,6 +646,8 @@ export function askRefusalOf(missing: readonly Gated[], facts: AskFacts): string
     const listed = files === undefined ? 'every file git status lists' : files.length === 0 ? 'that git status lists no files' : `every file git status lists: ${files.join(', ')}`
     parts.push(`Name the message, ${facts.message === undefined ? 'as the line gives it' : shownOf(facts.message)}, and ${listed}.`)
   }
+  const tags = missing.includes('push') ? (facts.tags ?? []).map(shownOf) : []
+  if (tags.length > 0) parts.push(`With push.followTags on, this push also sends the annotated ${tags.length === 1 ? 'tag' : 'tags'} ${tags.join(', ')}. Name ${tags.length === 1 ? 'that tag' : 'each tag'} in the question.`)
   if (missing.includes('rewrite')) parts.push(...kindsShown(facts.rewrites ?? []).flatMap(kind => REWRITE_NOTES[kind] ?? []))
   const apart = facts.isApart === true ? (['commit', 'merge'] as const).find(gated => missing.includes(gated)) : undefined
   parts.push(missing.length === 1 ? ASK_HOW[kind] : apart !== undefined ? apartHowOf(apart) : LINE_HOW, 'After he picks, run the line again, unchanged.')

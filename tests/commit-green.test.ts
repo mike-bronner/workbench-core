@@ -2,6 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On, PromptOrigin } from 'claude-code'
 
+import { followedTagsOf } from '../hooks/mods/follow-tags'
 import { FORCE_REFUSAL, SUBAGENT_REFUSAL } from '../hooks/mods/commit-guard'
 import type { Script } from '../hooks/mods/full-suite'
 import { SUITE_PARTS_FILE, isWholeRun, partOf, suitePartsOf } from '../hooks/mods/full-suite'
@@ -34,13 +35,20 @@ type World = {
   otherFetch: string[]
   hooksPath: string | undefined
   hookConfig: string
+  unreadable: Set<string>
+  dryRun: { exitCode: number; stdout: string } | 'reject'
+  dryRuns: { argv: readonly string[]; env: Readonly<Record<string, string>> | undefined }[]
 }
 
 const ok = (stdout: string) => ({ exitCode: 0, stdout })
 const SCRATCH = /^workbench-tree-index-[A-Za-z0-9-]+$/
 const PUSH_KEYS: ReadonlySet<string> = new Set(['push.default', 'remote.origin.push', 'remote.origin.mirror', 'push.followTags', 'push.recurseSubmodules', 'submodule.recurse'])
 
-const world = (): World => ({ work: TREE, staged: TREE, scratch: new Map(), branch: 'feat', pushTarget: 'origin refs/heads/feat', pushUrls: [URL], config: {}, indexEnvs: [], committed: new Map(), dirty: new Set(), tracked: undefined, fetchSpec: '+refs/heads/*:refs/remotes/origin/*', parents: new Map(), trees: new Map(), otherFetch: [], hooksPath: undefined, hookConfig: '' })
+const world = (): World => ({ work: TREE, staged: TREE, scratch: new Map(), branch: 'feat', pushTarget: 'origin refs/heads/feat', pushUrls: [URL], config: {}, indexEnvs: [], committed: new Map(), dirty: new Set(), tracked: undefined, fetchSpec: '+refs/heads/*:refs/remotes/origin/*', parents: new Map(), trees: new Map(), otherFetch: [], hooksPath: undefined, hookConfig: '', unreadable: new Set(), dryRun: { exitCode: 0, stdout: '' }, dryRuns: [] })
+
+const pushedLine = (branch: string, flag = '*'): string => `${flag}\trefs/heads/${branch}:refs/heads/${branch}\t[new branch]`
+const tagLine = (tag: string): string => `*\trefs/tags/${tag}:refs/tags/${tag}\t[new tag]`
+const porcelain = (...lines: string[]): string => [`To ${URL}`, ...lines, 'Done', ''].join('\n')
 
 function ancestorsOf(w: World, from: string | undefined): Set<string> {
   const seen = new Set<string>()
@@ -100,6 +108,12 @@ function modelGit(b: Bench, worlds: Record<string, World>): void {
     if (verb === 'symbolic-ref --short -q HEAD') return ok(`${w.branch}\n`)
     if (verb === `for-each-ref --format=%(push:remotename) %(push:remoteref) refs/heads/${w.branch}`) return ok(`${w.pushTarget}\n`)
     if (verb === 'remote get-url --push --all origin') return ok(w.pushUrls.map(url => `${url}\n`).join(''))
+    if (verb === `push --dry-run --porcelain --no-verify --follow-tags --recurse-submodules=no -- origin refs/heads/${w.branch}:refs/heads/${w.branch}`) {
+      w.dryRuns.push({ argv, env: init?.env })
+      if (w.dryRun === 'reject') throw new Error('timed out')
+      return w.dryRun
+    }
+    if (argv[3] === 'config' && argv[4] === '--get' && argv.length === 6 && w.unreadable.has(argv[5] ?? '')) return { exitCode: 128, stdout: '' }
     if (argv[3] === 'config' && (argv[4] === '--get' || argv[4] === '--get-all') && argv.length === 6 && PUSH_KEYS.has(argv[5] ?? '')) {
       const value = w.config[argv[5] ?? '']
       return value === undefined ? { exitCode: 1, stdout: '' } : ok(`${value}\n`)
@@ -372,7 +386,6 @@ describe('AC2: a plain push of a feature branch runs free, and a push to the def
     ['push.default', 'matching'],
     ['remote.origin.push', '+refs/heads/*:refs/heads/*'],
     ['remote.origin.mirror', 'true'],
-    ['push.followTags', 'true'],
   ] as const) {
     test(`a push with ${key}=${value} asks, in both forms`, async ($, on) => {
       const { b, w } = await session($, on)
@@ -387,6 +400,7 @@ describe('AC2: a plain push of a feature branch runs free, and a push to the def
     const { b, w } = await session($, on)
     w.config = { 'push.default': 'simple', 'remote.origin.mirror': 'false', 'push.followTags': 'false' }
     expect(await bash($, b, 'git push')).toBeUndefined()
+    expect(w.dryRuns).toEqual([])
   })
 
   test('a force push is refused as today', async ($, on) => {
@@ -596,7 +610,6 @@ describe('a plain push of the default branch runs free when every commit it send
     ['push.default', 'matching'],
     ['remote.origin.push', '+refs/heads/*:refs/heads/*'],
     ['remote.origin.mirror', 'true'],
-    ['push.followTags', 'true'],
   ] as const) {
     test(`a push of main with ${key}=${value} asks, in both forms`, async ($, on) => {
       const { b, w } = await session($, on)
@@ -1211,4 +1224,151 @@ describe('suitePartsOf and partOf read the declaration and the part lines', () =
       expect(suitePartsOf(text, '/repo')).toBeUndefined()
     })
   }
+})
+
+describe('push.followTags: a plain push runs free only when it would send no annotated tag', () => {
+  test('AC1: with push.followTags on, a feature push that sends no tag runs with no question, in both forms', async ($, on) => {
+    const { b, w } = await session($, on)
+    w.config['push.followTags'] = 'true'
+    w.dryRun = { exitCode: 0, stdout: porcelain(pushedLine('feat')) }
+    expect(await asked($, 'git push')).toEqual(ALLOW)
+    expect(await bash($, b, 'git push')).toBeUndefined()
+    expect(await bash($, b, 'git push origin feat')).toBeUndefined()
+    expect(w.dryRuns.length).toBeGreaterThan(0)
+    expect(w.dryRuns.every(run => run.env?.GIT_TERMINAL_PROMPT === '0')).toBe(true)
+  })
+
+  test('AC2: a feature push that would send an annotated tag asks, in both forms, and the deny names the tag', async ($, on) => {
+    const { b, w } = await session($, on)
+    w.config['push.followTags'] = 'true'
+    w.dryRun = { exitCode: 0, stdout: porcelain(pushedLine('feat'), tagLine('v1.2.0')) }
+    expect(await asked($, 'git push')).toBeUndefined()
+    for (const line of ['git push', 'git push origin feat']) {
+      const deny = await bash($, b, line)
+      expect(deny).toMatch(ASKS.push)
+      expect(deny).toContain('With push.followTags on, this push also sends the annotated tag v1.2.0. Name that tag in the question.')
+    }
+  })
+
+  test('AC2: a push that would send two annotated tags names each of them', async ($, on) => {
+    const { b, w } = await session($, on)
+    w.config['push.followTags'] = 'true'
+    w.dryRun = { exitCode: 0, stdout: porcelain(pushedLine('feat'), tagLine('v1.2.0'), tagLine('v1.3.0')) }
+    expect(await bash($, b, 'git push')).toContain('also sends the annotated tags v1.2.0, v1.3.0. Name each tag in the question.')
+  })
+
+  test('AC3: a dry run that fails keeps the push asking', async ($, on) => {
+    const { b, w } = await session($, on)
+    w.config['push.followTags'] = 'true'
+    w.dryRun = { exitCode: 128, stdout: '' }
+    expect(await asked($, 'git push')).toBeUndefined()
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+    expect(w.dryRuns.length).toBeGreaterThan(0)
+  })
+
+  test('AC3: a dry run that rejects or times out keeps the push asking, in both forms', async ($, on) => {
+    const { b, w } = await session($, on)
+    w.config['push.followTags'] = 'true'
+    w.dryRun = 'reject'
+    expect(await asked($, 'git push')).toBeUndefined()
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+    expect(await bash($, b, 'git push origin feat')).toMatch(ASKS.push)
+    expect(w.dryRuns.length).toBeGreaterThan(0)
+  })
+
+  for (const [name, stdout] of [
+    ['prints no ref line at all', ['To git@github.com:o/r.git', 'Done', ''].join('\n')],
+    ['names only another branch', porcelain(pushedLine('other'))],
+    ['prints its ref line with spaces for tabs', porcelain(pushedLine('feat').replace(/\t/g, ' '))],
+  ] as const) {
+    test(`AC3: a dry run that exits 0 but ${name} keeps the push asking`, async ($, on) => {
+      const { b, w } = await session($, on)
+      w.config['push.followTags'] = 'true'
+      w.dryRun = { exitCode: 0, stdout }
+      expect(await asked($, 'git push')).toBeUndefined()
+      expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+      expect(w.dryRuns.length).toBeGreaterThan(0)
+    })
+  }
+
+  test('AC3: a push.followTags the gate cannot read keeps the push asking, with no dry run', async ($, on) => {
+    const { b, w } = await session($, on)
+    w.unreadable.add('push.followTags')
+    w.dryRun = { exitCode: 0, stdout: porcelain(pushedLine('feat')) }
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+    expect(w.dryRuns).toEqual([])
+  })
+
+  test('a push URL the session never saw asks before any dry run reaches it', async ($, on) => {
+    const { b, w } = await session($, on)
+    w.config['push.followTags'] = 'true'
+    w.pushUrls = ['git@evil.example:o/r.git']
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+    expect(w.dryRuns).toEqual([])
+  })
+
+  test('AC4: after a free green commit on main, push.followTags on and no tag keeps both forms free', async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
+    await greenCommit($, b, w)
+    w.config['push.followTags'] = 'true'
+    w.dryRun = { exitCode: 0, stdout: porcelain(pushedLine('main', ' ')) }
+    expect(await bash($, b, 'git push')).toBeUndefined()
+    expect(await bash($, b, 'git push origin main')).toBeUndefined()
+    expect(w.dryRuns.length).toBeGreaterThan(0)
+  })
+
+  test('AC4: a green push of main that would send an annotated tag asks and names it', async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
+    await greenCommit($, b, w)
+    w.config['push.followTags'] = 'true'
+    w.dryRun = { exitCode: 0, stdout: porcelain(pushedLine('main', ' '), tagLine('0.67.0')) }
+    const deny = await bash($, b, 'git push')
+    expect(deny).toMatch(ASKS.push)
+    expect(deny).toContain('also sends the annotated tag 0.67.0.')
+  })
+
+  test('AC4: a green push of main whose dry run fails asks', async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
+    await greenCommit($, b, w)
+    w.config['push.followTags'] = 'true'
+    w.dryRun = { exitCode: 1, stdout: '' }
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+  })
+
+  test('AC4: with no green commit on main, push.followTags on and no tag still asks', async ($, on) => {
+    const { b, w } = await session($, on)
+    onMain(b, w)
+    commitOn(b, w, OTHER)
+    w.config['push.followTags'] = 'true'
+    w.dryRun = { exitCode: 0, stdout: porcelain(pushedLine('main', ' ')) }
+    expect(await bash($, b, 'git push')).toMatch(ASKS.push)
+    expect(w.dryRuns).toEqual([])
+  })
+
+  test('the porcelain reader counts each tag line that would be sent, once, and nothing else', () => {
+    const text = [
+      `To ${URL}`,
+      pushedLine('feat'),
+      tagLine('v1'),
+      '=\trefs/tags/v0:refs/tags/v0\t[up to date]',
+      '!\trefs/tags/v2:refs/tags/v2\t[rejected] (already exists)',
+      'Done',
+      `To git@github.com:o/mirror.git`,
+      tagLine('v1'),
+      'Done',
+    ].join('\n')
+    expect(followedTagsOf(text, 'feat')).toEqual(['v1', 'v2'])
+    expect(followedTagsOf(porcelain(pushedLine('feat', ' ')), 'feat')).toEqual([])
+    expect(followedTagsOf(porcelain(pushedLine('feat', '=')), 'feat')).toEqual([])
+  })
+
+  test('the porcelain reader recognises nothing without the pushed branch line', () => {
+    expect(followedTagsOf('', 'feat')).toBeUndefined()
+    expect(followedTagsOf(porcelain(tagLine('v1')), 'feat')).toBeUndefined()
+    expect(followedTagsOf(porcelain(pushedLine('feature')), 'feat')).toBeUndefined()
+    expect(followedTagsOf(porcelain(pushedLine('feat')), 'feature')).toBeUndefined()
+  })
 })

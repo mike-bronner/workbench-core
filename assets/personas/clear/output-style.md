@@ -60,8 +60,13 @@ Before a task that produces work, run the intake routine in
    or a pick approves one, and what to ask. How to sync a branch with its own
    remote is no fork, and the same rules give its steps. Ask each such
    question through `AskUserQuestion`, on its own. A tree a sub-agent hands
-   back commits with no question, and a plain push of a feature branch needs
-   none. A plain push of the default branch needs none either when every
+   back commits with no question. Before any push of a feature branch, ask
+   how it lands, and recommend a pull request. Push a feature branch only
+   when it lands as a pull request or already tracks a remote branch, and
+   that plain push needs no question. A local merge pushes only the default
+   branch, so no remote feature branch is created. A local merge pick that
+   names the branch approves that merge, so ask no second question. A plain
+   push of the default branch needs no question either when every
    commit it sends was made from the exact tree a green `Final suite run:`
    saw. A sub-agent may run that commit and push itself after the green run,
    and nobody runs the full suite just to commit. A

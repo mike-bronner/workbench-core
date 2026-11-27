@@ -63,10 +63,12 @@ export const PUSH_REFUSAL =
 export const MERGE_ASK_REFUSAL =
   'This merge was refused: Mike has not approved a merge into the default ' +
   'branch. How a branch lands, a pull request or a local merge, is his ' +
-  'choice. A commit request or a push approval approves no merge. Ask him in an ' +
-  'AskUserQuestion call of its own about the merge, once the commit and the ' +
-  'push have landed, and recommend a pull request. A prompt of his own that ' +
-  'asks for the merge approves it too, for the turn it opened.'
+  'choice. A commit request or a push approval approves no merge. Once the ' +
+  'commit has landed, and before any push of the branch, ask him in an ' +
+  'AskUserQuestion call of its own how the branch lands, name the branch, and ' +
+  'recommend a pull request. A local merge pick approves one merge of the ' +
+  'branch its question named. A pull request pick approves no merge. A prompt ' +
+  'of his own that asks for the merge approves it too, for the turn it opened.'
 
 export const MERGE_TARGET_REFUSAL =
   'This merge was refused: it does not merge the pull request or branch Mike\'s ' +
@@ -1721,14 +1723,22 @@ const textOf = (value: unknown): string => (typeof value === 'string' ? value : 
 const labelsOf = (question: Question): string[] =>
   Array.isArray(question?.options) ? question.options.map(option => option?.label).filter((label): label is string => typeof label === 'string') : []
 
-export function namedActionsOf(question: Question): Set<'push' | 'merge' | 'release'> {
-  const text = `${textOf(question?.question)} ${textOf(question?.header)}`
+const spokenOf = (question: Question): string =>
+  `${textOf(question?.question)} ${textOf(question?.header)}`
     .replace(/```[\s\S]*?(```|$)/g, ' ')
     .replace(/"[^"\n]*"|“[^”\n]*”|`[^`\n]*`/g, ' ')
     .toLowerCase()
-  const words = (text.match(/[a-z0-9_./-]+/g) ?? []).map(word => word.replace(/\.+$/, '')).filter(word => NAMED_ACTION.test(word))
+
+export function namedActionsOf(question: Question): Set<'push' | 'merge' | 'release'> {
+  const words = (spokenOf(question).match(/[a-z0-9_./-]+/g) ?? []).map(word => word.replace(/\.+$/, '')).filter(word => NAMED_ACTION.test(word))
   return new Set(words.map(word => (word.startsWith('push') ? 'push' : word.startsWith('merg') ? 'merge' : 'release')))
 }
+
+const LANDING_WORD = /\bland(s|ing)?\b/
+const PULL_REQUEST_WORD = /\b(prs?|pull requests?)\b/i
+const SPEAKER = /^\s*i\s+/i
+
+const isLandingQuestion = (question: Question): boolean => LANDING_WORD.test(spokenOf(question))
 
 const isCommitQuestion = (question: Question): boolean => labelsOf(question).some(label => COMMIT_OPTION.test(label) || requestedOf(label).includes('commit'))
 
@@ -1736,7 +1746,10 @@ export function approvalOf(question: Question, label: string): PickAction | unde
   const actions = requestedOf(label)
   if (isCommitQuestion(question)) return undefined
   const named = namedActionsOf(question)
-  if (actions.includes('merge') && named.has('merge')) return 'merge'
+  const isLanding = isLandingQuestion(question)
+  const isPullRequest = isLanding && PULL_REQUEST_WORD.test(label)
+  const merges = isLanding ? requestedOf(label.replace(SPEAKER, '')).includes('merge') : actions.includes('merge') && named.has('merge')
+  if (!isPullRequest && merges) return 'merge'
   return actions.includes('push') && named.has('push') ? 'push' : undefined
 }
 

@@ -53,6 +53,7 @@ const question = (text: string, labels: string[]) => ({
 const COMMIT_QUESTION = question('Commit "feat: ✨ Add the gate." on main?', ['Not yet', 'Commit it'])
 const PUSH_QUESTION = question('Push main to origin, with the one new commit?', ['Push', 'Not yet'])
 const MERGE_QUESTION = question('How should fix/x land on main: merge it locally, or open a pull request?', ['Open a PR', 'Merge locally', 'Leave it'])
+const LANDING_QUESTION = question('How should fix/x land on main?', ['Open a pull request', 'I merge locally into main'])
 const OTHER_QUESTION = question('Which approach?', ['A', 'B'])
 
 const ask = (questions: unknown[], agentId?: string) => ({ tool: 'AskUserQuestion' as const, questions, ...(agentId ? { agentId } : {}) }) as never
@@ -298,6 +299,21 @@ describe('AC2: a commit question approves nothing, and its labels never approve 
     expect(answered(MERGE_QUESTION, 'Merge locally')).toBe('merge')
     expect(answered(MERGE_QUESTION, 'Open a PR')).toBeUndefined()
     expect(answered(question('Which approach?', ['Merge', 'Rebase']), 'Merge')).toBeUndefined()
+    expect(answered(LANDING_QUESTION, 'I merge locally into main')).toBe('merge')
+    const landing = (label: string) => question('How should fix/x land on main?', [label, 'Leave it'])
+    expect(answered(landing('Merge locally (Recommended)'), 'Merge locally (Recommended)')).toBe('merge')
+    expect(answered(LANDING_QUESTION, 'Open a pull request')).toBeUndefined()
+    expect(answered(landing('Leave it'), 'Leave it')).toBeUndefined()
+    for (const label of ['Merge it through a PR', "Don't merge yet", 'Skip the merge', 'Cancel the merge', 'Avoid merging', 'Merge locally?', 'Squash and merge on GitHub']) expect([label, answered(landing(label), label)]).toEqual([label, undefined])
+    expect(answered(question('How should this land?', ['Merge locally', 'Leave it']), 'Merge locally')).toBe('merge')
+    expect(answered({ ...question('Which way for fix/x?', ['Merge locally', 'Leave it']), header: 'Landing' }, 'Merge locally')).toBe('merge')
+    expect(answered(question('Which way for fix/x, "land it"?', ['Merge locally', 'Leave it']), 'Merge locally')).toBeUndefined()
+    expect(answered(question('Which way for fix/x, `land`?', ['Merge locally', 'Leave it']), 'Merge locally')).toBeUndefined()
+    expect(answered(question('Has fix/x landed on main?', ['Merge locally', 'Leave it']), 'Merge locally')).toBeUndefined()
+    expect(bundleRefusalOf([OTHER_QUESTION, LANDING_QUESTION])).toBe(BUNDLE_REFUSAL)
+    expect(bundleRefusalOf([OTHER_QUESTION, question('Which way for fix/x?', ['Merge locally', 'Leave it'])])).toBeUndefined()
+    expect(answered(question('Should fix/x stay as it is?', ['I merge locally into main', 'Leave it']), 'I merge locally into main')).toBeUndefined()
+    expect(answered(question('Merge PR 12 into main?', ['Merge PR 12', 'Not yet']), 'Merge PR 12')).toBe('merge')
     expect(pickOf([PUSH_QUESTION], { answers: { other: 'Push' } })).toBeUndefined()
     expect(pickOf([PUSH_QUESTION], undefined)).toBeUndefined()
     expect(pickOf(undefined, { answers: { [PUSH_QUESTION.question]: 'Push' } })).toBeUndefined()
@@ -319,6 +335,34 @@ describe('AC3: a commit approves no push and no merge, and each gets its own', (
     expect(await bash($, b, 'git merge fix/x')).toBeUndefined()
     expect(await bash($, b, 'git merge fix/y')).toMatch(DECLINED.merge)
     expect(MERGE_ASK_REFUSAL).toContain('his choice')
+    expect(MERGE_ASK_REFUSAL).toContain('before any push of the branch')
+    expect(MERGE_ASK_REFUSAL).toContain('A pull request pick approves no merge.')
+  })
+
+  test('a local merge pick on the landing question runs that one merge of the named branch with no second question', async ($, on) => {
+    const b = bench(on)
+    await session($)
+    expect(await bash($, b, 'git merge --no-ff fix/x')).toMatch(DECLINED.merge)
+    await pick($, b, 'I merge locally into main', [LANDING_QUESTION])
+    expect(await bash($, b, 'git merge --no-ff fix/y')).toMatch(MERGE_TARGET_REFUSAL)
+    expect(await bash($, b, 'gh pr merge 12')).toMatch(MERGE_TARGET_REFUSAL)
+    expect(await bash($, b, 'git merge --no-ff fix/x')).toBeUndefined()
+    expect(await bash($, b, 'git merge --no-ff fix/x')).toMatch(DECLINED.merge)
+  })
+
+  test('a local merge pick on a landing question that names no branch approves no merge of any branch', async ($, on) => {
+    const b = bench(on)
+    await session($)
+    await pick($, b, 'Merge locally', [question('How should this land?', ['Merge locally', 'Leave it'])])
+    expect(await bash($, b, 'git merge feature-y')).toMatch(MERGE_TARGET_REFUSAL)
+  })
+
+  test('a pull request pick on the landing question approves no merge', async ($, on) => {
+    const b = bench(on)
+    await session($)
+    await pick($, b, 'Open a pull request', [LANDING_QUESTION])
+    expect(await bash($, b, 'git merge --no-ff fix/x')).toMatch(DECLINED.merge)
+    expect(await bash($, b, 'gh pr merge 12')).toMatch(DECLINED.merge)
   })
 
   for (const line of [

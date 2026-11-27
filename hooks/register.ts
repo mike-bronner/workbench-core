@@ -1921,13 +1921,21 @@ async function leftoverBlock($: EngineInterface): Promise<string | undefined> {
 const gitExitOf = ($: EngineInterface, dir: string, args: readonly string[]): Promise<{ exitCode: number; stdout: string } | undefined> =>
   $.process.run(['git', '-C', dir, ...args], { timeoutMs: 5_000 }).then(({ exitCode, stdout }) => ({ exitCode, stdout }), () => undefined)
 
+async function isSquashLanded($: EngineInterface, project: string, start: string, tip: string): Promise<boolean> {
+  const changed = await gitExitOf($, project, ['diff', '--name-only', '-z', '--no-renames', start, tip])
+  const files = changed?.exitCode === 0 ? changed.stdout.split('\0').filter(Boolean) : []
+  if (files.length === 0) return false
+  return (await gitExitOf($, project, ['diff', '--quiet', '--no-ext-diff', '--no-textconv', '--no-renames', tip, 'HEAD', '--', ...files.map(file => `:(top,literal)${file}`)]))?.exitCode === 0
+}
+
 async function isLanded($: EngineInterface, project: string, entry: LedgerEntry): Promise<Landed | undefined> {
   const tip = await gitOut($, project, ['rev-parse', '--verify', '-q', `refs/heads/${entry.branch}`])
   if (tip === undefined || tip === entry.start) return undefined
   const isMergedInto = async (target: string): Promise<boolean> => (await gitExitOf($, project, ['merge-base', '--is-ancestor', tip, target]))?.exitCode === 0
-  if (!(await isMergedInto('HEAD'))) return undefined
-  const upstream = await gitExitOf($, project, ['rev-parse', '--verify', '-q', `${entry.branch}@{upstream}`])
-  if (upstream === undefined || (upstream.exitCode === 0 && !(await isMergedInto(upstream.stdout.trim())))) return undefined
+  if (await isMergedInto('HEAD')) {
+    const upstream = await gitExitOf($, project, ['rev-parse', '--verify', '-q', `${entry.branch}@{upstream}`])
+    if (upstream === undefined || (upstream.exitCode === 0 && !(await isMergedInto(upstream.stdout.trim())))) return undefined
+  } else if (entry.start === undefined || !(await isSquashLanded($, project, entry.start, tip))) return undefined
   if (entry.worktree === null || !(await $.fs.exists(entry.worktree).catch(() => true))) return { entry, hasTree: false }
   const status = await gitExitOf($, entry.worktree, ['status', '--porcelain'])
   return status?.exitCode === 0 && status.stdout.trim() === '' ? { entry, hasTree: true } : undefined

@@ -58,7 +58,8 @@ export const LEDGER_RULES =
   'A database line may also carry -h, -p, -U and -w, and psql -d. A drop must carry the same -h, -p and -U as the create. ' +
   'Create the worktree first: its unit database name is reserved with it. ' +
   'A session creates a unit database, removes a unit worktree or drops a unit database only for a unit it recorded itself in the provisioning ledger. Mike cleans up the units of other sessions. ' +
-  'Once a unit a session recorded has landed, that session tears it down itself, without asking Mike: it removes the worktree, deletes the branch with git branch -d, then drops the database if it created one. ' +
+  'Once a unit a session recorded has landed, that session tears it down itself, without asking Mike: it removes the worktree, deletes the branch with git branch -D, then drops the database if it created one. ' +
+  'A unit has landed only when its tree is clean and its branch is merged into HEAD, or squash-landed: every file the branch changed matches the tree HEAD has committed, so a squash that waits for its commit has not landed. Never delete a unit branch that has not landed. ' +
   'The main session deletes a branch with git branch -d or -D, and a sub-agent may not delete a unit branch. ' +
   'A sub-agent provisions nothing: it reports the need to its orchestrator. ' +
   'For anything else, stop and ask Mike, who runs the command himself with the ! prefix. ' +
@@ -262,10 +263,10 @@ export const isUnitForm = (entry: LedgerEntry, home: string | undefined, project
   entry.project === project && entry.worktree !== null && unitOf(entry.worktree, home, project) === entry.unit
 
 const treeLineOf = (entry: LedgerEntry): string => `git -C ${entry.project} worktree remove ${entry.worktree}`
-const branchLineOf = (entry: LedgerEntry): string => `git -C ${entry.project} branch -d ${entry.branch}`
+const branchLineOf = (entry: LedgerEntry): string => `git -C ${entry.project} branch -D ${entry.branch}`
 const databaseLineOf = (entry: LedgerEntry): string => ['psql', entry.connection, `-c 'DROP DATABASE "${entry.database}"'`].filter(Boolean).join(' ')
 const treeCleanupOf = (entry: LedgerEntry): string => `! ${treeLineOf(entry)}`
-const branchCleanupOf = (entry: LedgerEntry): string => `! ${branchLineOf(entry)}`
+const branchCleanupOf = (entry: LedgerEntry): string => `! git -C ${entry.project} branch -d ${entry.branch}`
 const databaseCleanupOf = (entry: LedgerEntry): string => `! ${databaseLineOf(entry)}`
 
 const otherSessionRefusal = (what: string, entry: LedgerEntry, advice: string): { deny: string } =>
@@ -318,7 +319,7 @@ export function ledgerPlanOf(command: LedgerCommand, facts: LedgerFacts, read: L
     return {
       before: current => [...current, entry],
       failed: current => without(current, isThis),
-      advise: `Provisioning ledger: recorded the worktree ${worktree} on the unit branch ${command.branch}. Its unit test database name is ${facts.database}. Create it with createdb ${facts.database} when the unit needs one. Once the unit has landed, tear it down yourself, without asking Mike: git -C ${facts.project} worktree remove ${worktree}, then git -C ${facts.project} branch -d ${command.branch}, then psql -c 'DROP DATABASE "${facts.database}"' with the create's -h, -p and -U, if you created it.`,
+      advise: `Provisioning ledger: recorded the worktree ${worktree} on the unit branch ${command.branch}. Its unit test database name is ${facts.database}. Create it with createdb ${facts.database} when the unit needs one. Once the unit has landed, tear it down yourself, without asking Mike: git -C ${facts.project} worktree remove ${worktree}, then git -C ${facts.project} branch -D ${command.branch}, then psql -c 'DROP DATABASE "${facts.database}"' with the create's -h, -p and -U, if you created it.`,
       stale: `git failed, so ${worktree} does not exist, yet its entry stays in the ledger. It holds no tree, so the session-start leftover check drops it after ten minutes`,
     }
   }
@@ -432,7 +433,7 @@ export function teardownReasonOf(landed: readonly Landed[]): string | undefined 
     return [`- ${parts.join(', ')} (unit ${entry.unit}). Run:`, ...cleanups.map(line => `  - \`${line}\``)].join('\n')
   })
   return [
-    'Provisioning ledger (workbench-core): this session recorded these units, and each one has landed. Each branch is merged, and each tree holds no change.',
+    'Provisioning ledger (workbench-core): this session recorded these units, and each one has landed. Each branch is merged into HEAD or squash-landed, with every file it changed matching the tree HEAD has committed, and each tree holds no change. Delete each branch with git branch -D, because git branch -d refuses a squash-landed branch.',
     'Tear each unit down now, without asking Mike. Run each line alone, in the order shown. Then report the teardown in one line.',
     '',
     ...lines,

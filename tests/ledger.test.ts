@@ -1119,7 +1119,7 @@ describe('AC2: the guard texts say a session tears down its own units once they 
 describe('AC3: a Stop blocks once per turn while a unit this session recorded has landed', () => {
   type Git = { tip?: string; upstream?: string; merged?: readonly string[]; status?: string | null; isBroken?: boolean }
 
-  async function landedWorld($: Engine, on: Parameters<typeof bench>[0], list: readonly LedgerEntry[], git: Git = {}, isInteractive = true): Promise<World> {
+  async function landedWorld($: Engine, on: Parameters<typeof bench>[0], list: readonly LedgerEntry[], git: Git = {}, isInteractive = true, stopBeneath: { block?: string } = {}): Promise<World> {
     const b = world(on, argv => {
       const verb = argv.slice(3)
       if (git.isBroken && argv[0] === 'git') throw new Error('git timed out')
@@ -1129,6 +1129,7 @@ describe('AC3: a Stop blocks once per turn while a unit this session recorded ha
       if (argv[2] === TREE && verb.join(' ') === 'status --porcelain') return git.status === null ? { exitCode: 128, stdout: '' } : { exitCode: 0, stdout: git.status ?? '' }
       return undefined
     })
+    on('classic.Stop', () => stopBeneath)
     b.files.set(TREE, '')
     seed(b, list)
     await $.session.start(start(isInteractive))
@@ -1239,8 +1240,7 @@ describe('AC3: a Stop blocks once per turn while a unit this session recorded ha
   })
 
   test("a block from a Stop hook beneath stands alone", async ($, on) => {
-    on('classic.Stop', () => ({ block: 'another plugin' }))
-    await landedWorld($, on, [mine()], { tip: 'c2' })
+    await landedWorld($, on, [mine()], { tip: 'c2' }, true, { block: 'another plugin' })
     expect((await stopped($)).block).toBe('another plugin')
   })
 })

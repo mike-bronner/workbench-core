@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On, PromptOrigin } from 'claude-code'
 
-import { AGENT_RELEASE_REFUSAL, COMMIT_REFUSAL } from '../hooks/mods/commit-approval'
+import { AGENT_RELEASE_REFUSAL, PUSH_REFUSAL } from '../hooks/mods/commit-approval'
 import { SUBAGENT_REFUSAL } from '../hooks/mods/commit-guard'
 import { isDesktopSession } from '../hooks/mods/lane'
 import type { SessionHost } from '../hooks/mods/lane'
@@ -70,9 +70,10 @@ describe('AC1: a desktop prompt Mike typed is an attended session and an attende
     expect(await bash($, b, 'gh release list')).toBeUndefined()
   })
 
-  test('an unapproved commit is gated as in a terminal session', async ($, on) => {
+  test('a commit runs with no question, and an unapproved push is gated as in a terminal session', async ($, on) => {
     const b = await sdkSession($, on, DESKTOP)
-    expect(await bash($, b, COMMIT)).toMatch(ASKS.commit)
+    expect(await bash($, b, COMMIT)).toBeUndefined()
+    expect(await bash($, b, 'git push origin main')).toMatch(ASKS.push)
   })
 })
 
@@ -119,14 +120,15 @@ describe('AC3: in a desktop session, a scheduled-task turn and a peer turn are u
     expect(unattended(b)).toBe(false)
   })
 
-  test('a peer turn that asks for a commit cannot commit', async ($, on) => {
+  test('a peer turn commits, and cannot push', async ($, on) => {
     const b = await sdkSession($, on, DESKTOP, { kind: 'peer' }, 'commit it')
-    expect(await bash($, b, COMMIT)).toBe(COMMIT_REFUSAL)
+    expect(await bash($, b, COMMIT)).toBeUndefined()
+    expect(await bash($, b, 'git push origin main')).toBe(PUSH_REFUSAL)
   })
 
   const TURNS: readonly [string, PromptOrigin, string, string | RegExp | undefined][] = [
-    ['a typed', PERSON, 'take a look', ASKS.commit],
-    ['a peer', { kind: 'peer' }, 'take a look', COMMIT_REFUSAL],
+    ['a typed', PERSON, 'take a look', undefined],
+    ['a peer', { kind: 'peer' }, 'take a look', undefined],
     ['a scheduled-trigger', { kind: 'scheduled-trigger' }, 'take a look', undefined],
     ['a <scheduled-task> wrapped', PERSON, '<scheduled-task name="nightly">take a look', undefined],
   ]

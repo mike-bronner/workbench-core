@@ -309,7 +309,7 @@
     { "rule": "Bash(gh api *repos/*/merges*)",
       "why": "A branch merge through the REST API: POST repos/<owner>/<repo>/merges merges head into base on the server, with no pull request." },
     { "rule": "Bash(git commit *)",
-      "why": "The mechanical backstop for every commit no typed request, pick or green final suite run covers. workbench-core's PermissionRequest hook answers it for the plain shapes Mike approved." },
+      "why": "The mechanical backstop for a commit in a shape the hooks do not read as plain. workbench-core's PermissionRequest hook answers it for every plain main-session commit, and for a sub-agent's commit of a green tree." },
     { "rule": "Bash(git * commit *)",
       "why": "A commit with a global option before it, such as git -C <dir> commit or git -c <key>=<value> commit." },
     { "rule": "Bash(git * commit)",

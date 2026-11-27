@@ -269,13 +269,11 @@ describe('finding 4: the dialog escapes every invisible character, by category',
     expect(shownOf('a\u{e0041}b')).toBe('a\\u{e0041}b')
   })
 
-  test('hostile repository, branch, message and file values reach the deny escaped', () => {
-    const text = askRefusalOf(['commit'], {
-      command: 'git commit -m x',
+  test('hostile command, repository and branch values reach the deny escaped', () => {
+    const text = askRefusalOf(['push'], {
+      command: 'git push \u{e0001}aㅤb­',
       repo: '/repo‮/x',
       branch: 'refs/heads/feat⁦\r',
-      message: '"x\u{e0001}"',
-      files: ['aㅤ.ts', 'b­.ts'],
     })
     for (const char of ['‮', '⁦', '\r', '\u{e0001}', 'ㅤ', '­']) expect([char.codePointAt(0), text.includes(char)]).toEqual([char.codePointAt(0), false])
     expect(text).toContain('/repo\\u202e/x')

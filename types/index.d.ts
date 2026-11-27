@@ -341,12 +341,12 @@ declare module 'claude-code' {
       commitApproval:
         | 'none'
         | {
-            action: 'commit' | 'push' | 'merge' | 'release' | 'rewrite' | 'alias' | 'api'
+            action: 'push' | 'merge' | 'release' | 'rewrite' | 'alias' | 'api'
             heads: readonly { top: string; ref: string }[]
             names?: { prs: readonly string[]; words: readonly string[]; bases?: readonly string[] }
             line?: string
             release?: { repo: string; tag: string; target: string }
-            kept?: 'commit' | 'merge'
+            kept?: 'merge'
           }
       turnRequest: readonly ('commit' | 'push' | 'merge' | 'release')[]
       turnIntent: { id: number; text: string } | null

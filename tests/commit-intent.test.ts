@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On, PromptOrigin } from 'claude-code'
 
-import { COMMIT_REFUSAL, INTENT_LABELS, NO_INTENT, PUSH_REFUSAL, intentText, mayAskIntent, requestedOf, withIntent } from '../hooks/mods/commit-approval'
+import { INTENT_LABELS, NO_INTENT, PUSH_REFUSAL, intentText, mayAskIntent, requestedOf, withIntent } from '../hooks/mods/commit-approval'
 import type { Bench } from './bench'
 import { ASKS as DECLINED, PERSON, bench, exactly, start } from './bench'
 
@@ -73,7 +73,6 @@ const ALLOW = { behavior: 'allow' }
 
 async function approvals($: Engine): Promise<string[]> {
   const found: string[] = []
-  if ((await bash($, COMMIT)) === undefined) found.push('commit')
   if ((await bash($, PUSH)) === undefined) found.push('push')
   if ((await bash($, RELEASE)) === undefined) found.push('release')
   if (JSON.stringify(await asked($, MERGE)) === JSON.stringify(ALLOW)) found.push('merge')
@@ -113,17 +112,16 @@ describe('AC1: a release asked for in any wording is approved when the model say
     test(`${JSON.stringify(text)} approves the release, and the grammar alone does not`, async ($, on) => {
       expect(requestedOf(text)).toEqual([])
       await typed($, on, text, 'release')
-      expect(await approvals($)).toEqual(['commit', 'push', 'release'])
+      expect(await approvals($)).toEqual(['push', 'release'])
     })
   }
 })
 
-describe('AC2: a commit, push or merge asked for in any wording is approved when the model says so', () => {
+describe('AC2: a push or merge asked for in any wording is approved when the model says so', () => {
   for (const [text, label, expected] of [
-    ['save my work into git', 'commit', ['commit']],
     ['send it up to github', 'push', ['push']],
     ['land the PR', 'merge', ['merge']],
-    ['check it in and send it upstream', 'commit+push', ['commit', 'push']],
+    ['check it in and send it upstream', 'commit+push', ['push']],
   ] as const) {
     test(`${JSON.stringify(text)} approves ${expected.join(' and ')}, and the grammar alone does not`, async ($, on) => {
       expect(requestedOf(text)).toEqual([])
@@ -177,7 +175,8 @@ describe('AC4: a model that fails, runs late or answers unclearly leaves the gra
       expect(withIntent('commit it, then ship 0.59.0', label instanceof Error ? undefined : label)).toEqual(['commit'])
       expect(await bash($, PUSH)).toMatch(DECLINED.push)
       expect(model.texts.length).toBe(1)
-      expect(await approvals($)).toEqual(['commit'])
+      expect(await approvals($)).toEqual([])
+      expect(await bash($, COMMIT)).toBeUndefined()
     })
   }
 
@@ -190,7 +189,7 @@ describe('AC4: a model that fails, runs late or answers unclearly leaves the gra
     expect(await pushed).toMatch(DECLINED.push)
     expect(model.texts.length).toBe(1)
     await b.clock.advance(5000)
-    expect(await approvals($)).toEqual(['commit'])
+    expect(await approvals($)).toEqual([])
   })
 
   test("a late answer to one prompt never reaches Mike's next prompt", async ($, on) => {
@@ -246,7 +245,7 @@ describe('AC4: a clear ends a pending answer', () => {
     await $.session.end({ reason: 'clear', sessionId: 's', resume: {} as never })
     await b.clock.advance(1000)
     expect(await released).toBeDefined()
-    expect(await bash($, COMMIT)).toBeDefined()
+    expect(await bash($, PUSH)).toBeDefined()
   })
 })
 
@@ -262,7 +261,7 @@ describe('AC5: no other turn and no sub-agent gains an approval from the model',
       await $.session.start(start())
       await $.prompt.submit(prompt('ship 0.59.0', origin))
       expect(model.texts).toEqual([])
-      expect(await bash($, COMMIT)).toMatch(exactly(COMMIT_REFUSAL))
+      expect(await bash($, COMMIT)).toBeUndefined()
       expect(await bash($, PUSH)).toMatch(exactly(PUSH_REFUSAL))
       expect(await bash($, RELEASE)).toMatch(DECLINED.release)
     })
@@ -351,7 +350,7 @@ describe('AC10: the model is asked once per prompt, and only when the gate would
 
   test("Mike's call widens the request, and a sub-agent's commit and release stay refused", async ($, on) => {
     const { model } = await typed($, on, 'ship 0.59.0', 'commit+release')
-    expect(await bash($, COMMIT)).toBeUndefined()
+    expect(await bash($, RELEASE)).toBeUndefined()
     expect(await bash($, COMMIT, 'a1')).toBeDefined()
     expect(await bash($, RELEASE, 'a1')).toBeDefined()
     expect(model.texts.length).toBe(1)

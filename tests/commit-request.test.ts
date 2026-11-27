@@ -4,22 +4,16 @@ import type { On, PromptOrigin } from 'claude-code'
 
 import {
   AGENT_RELEASE_REFUSAL,
-  COMMIT_REFUSAL,
   ONE_REFUSAL,
-  PATHSPEC_REFUSAL,
   PUSH_REFUSAL,
   RELEASE_REFUSAL,
-  SHARED_LINE_REFUSAL,
-  UNREAD_TREE_REFUSAL,
   UNREAD_LINE_REFUSAL,
   agentReleaseRefusalOf,
-  changesIndexBeside,
+  isAllOf,
   leftOutOf,
-  leftOutRefusal,
   releasesOf,
   requestedCallsOf,
   requestedOf,
-  shapeOf,
   unnamedOf,
   unreadReleasesOf,
 } from '../hooks/mods/commit-approval'
@@ -27,7 +21,6 @@ import {
 import { PLAIN_REFUSAL, SUBAGENT_REFUSAL } from '../hooks/mods/commit-guard'
 import type { Bench } from './bench'
 import { ASKS as DECLINED, HOME, PERSON, bench, exactly, start } from './bench'
-import { ID_RECORDER } from './harness'
 
 const DIRS: Record<string, string> = { '/': '/', '/repo': '/repo', '/repo/sub': '/repo/sub', '/repo/link': '/other', '/wt': '/wt', '/other': '/other', '/repo/.git': '/repo/.git', '/other/.git': '/other/.git' }
 const REPOS: Record<string, { top: string; common: string }> = {
@@ -117,94 +110,27 @@ async function typed($: Engine, on: On, text: string, options: Parameters<typeof
 
 const entry = (xy: string, path: string): string => `${xy} ${path}\0`
 
-describe('AC1: a commit that leaves files out of the tree is refused, and names them', () => {
-  test('an untracked file and an unstaged change are named, and the commit runs once they are staged', async ($, on) => {
-    const b = await typed($, on, 'commit it')
-    b.trees['/repo'] = entry('A ', 'hooks/new.ts') + entry('??', 'notes/draft.md') + entry(' M', 'README.md')
-    const refusal = await bash($, b, 'git commit -m "fix: 🐛 X."')
-    expect(refusal).toBe(leftOutRefusal(['notes/draft.md', 'README.md']))
-    expect(refusal).toContain('notes/draft.md')
-    expect(refusal).toContain('README.md')
-    expect(refusal).not.toContain('hooks/new.ts')
-    b.trees['/repo'] = entry('A ', 'hooks/new.ts') + entry('A ', 'notes/draft.md') + entry('M ', 'README.md')
+describe('AC1: a main-session commit reads no tree, so it runs whatever it leaves out', () => {
+  test('a commit with an untracked file, an unstaged change or a file staged in part runs, and reads no status', async ($, on) => {
+    const b = await typed($, on, 'look this over')
+    b.trees['/repo'] = entry('A ', 'hooks/new.ts') + entry('??', 'notes/draft.md') + entry(' M', 'README.md') + entry('MM', 'a.ts')
     expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
+    expect(await bash($, b, 'git -C /other commit -m "fix: 🐛 X."')).toBeUndefined()
+    expect(await bash($, b, 'git commit -a -m "fix: 🐛 X."')).toBeUndefined()
+    expect(b.runs.filter(argv => argv[3] === 'status')).toEqual([])
   })
 
-  test('a file staged in part is left out in part, so it is named', async ($, on) => {
-    const b = await typed($, on, 'commit it')
-    b.trees['/repo'] = entry('MM', 'a.ts') + entry('M ', 'b.ts')
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(leftOutRefusal(['a.ts']))
-  })
-
-  test('a pick approves the commit, and the tree is still checked', async ($, on) => {
-    const b = await typed($, on, 'my review is done')
-    await pick($, b)
-    b.trees['/repo'] = entry('??', 'stray.txt')
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(leftOutRefusal(['stray.txt']))
-    b.trees['/repo'] = entry('A ', 'stray.txt')
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
-  })
-
-  test('the tree is read in the repository the commit runs in', async ($, on) => {
-    const b = await typed($, on, 'commit it', { env: { HOME } })
-    b.trees['/other'] = entry('??', 'left.txt')
-    expect(await bash($, b, 'git -C /other commit -m "fix: 🐛 X."')).toBe(leftOutRefusal(['left.txt']))
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
-    expect(b.runs.filter(argv => argv[3] === 'status').map(argv => argv[2])).toEqual(['/other', '/repo'])
-  })
-
-  test('git commit -a takes the tracked changes, and still leaves an untracked file out', async ($, on) => {
-    const b = await typed($, on, 'commit it')
-    b.trees['/repo'] = entry(' M', 'a.ts') + entry(' D', 'gone.ts')
-    expect(await bash($, b, 'git commit -am "fix: 🐛 X."')).toBeUndefined()
-    b.trees['/repo'] = entry(' M', 'a.ts') + entry('??', 'new.ts')
-    expect(await bash($, b, 'git commit -a -m "fix: 🐛 X."')).toBe(leftOutRefusal(['new.ts']))
-  })
-
-  for (const line of [
-    'git reset -q HEAD f && git commit -m "fix: 🐛 X."',
-    'git restore --staged f && git commit -m "fix: 🐛 X."',
-    'git rm --cached f; git commit -m "fix: 🐛 X."',
-    'git commit -m "fix: 🐛 X."; git reset HEAD~1',
-    'git stash && git commit -m "fix: 🐛 X."',
-    'git update-index --assume-unchanged f && git commit -m "fix: 🐛 X."',
-  ]) {
-    test(`a fully staged tree is still refused when the line can change the index beside the commit: ${line}`, async ($, on) => {
-      const b = await typed($, on, 'commit it')
-      b.trees['/repo'] = entry('M ', 'f') + entry('A ', 'g')
-      expect(await bash($, b, line)).toBe(SHARED_LINE_REFUSAL)
+  for (const line of ['git commit -m "fix: 🐛 X." a.ts', 'git commit -m "fix: 🐛 X." -- a.ts', 'git commit --only -m "fix: 🐛 X."', 'git commit -p', 'git commit -i a.ts']) {
+    test(`a commit that names paths or picks hunks runs: ${line}`, async ($, on) => {
+      const b = await typed($, on, 'look this over')
+      expect(await bash($, b, line)).toBeUndefined()
     })
   }
 
-  test('staging, reads and a push beside the commit leave the line alone', () => {
-    for (const line of ['git add -A && git commit -m "fix: 🐛 X."', 'git status && git commit -m "fix: 🐛 X."', 'git commit -m "fix: 🐛 X." && git push', 'git diff --cached; git commit -m "fix: 🐛 X."']) {
-      expect(changesIndexBeside(line)).toBe(false)
-    }
-  })
-
-  for (const line of [
-    'git commit -m "fix: 🐛 X." a.ts',
-    'git commit -m "fix: 🐛 X." -- a.ts',
-    'git commit --only -m "fix: 🐛 X."',
-    'git commit -p',
-    'git commit -i a.ts',
-    'git commit --pathspec-from-file=list -m x',
-    'git commit --pathspec-from=list -m x',
-    'git commit --onl -m "fix: 🐛 X."',
-    'git commit --inter',
-    'git commit --incl -m "fix: 🐛 X."',
-    'git commit --pat',
-  ]) {
-    test(`a commit that names paths or picks hunks is refused: ${line}`, async ($, on) => {
-      const b = await typed($, on, 'commit it')
-      expect(await bash($, b, line)).toBe(PATHSPEC_REFUSAL)
-    })
-  }
-
-  test('a tree git cannot read refuses the commit', async ($, on) => {
-    const b = await typed($, on, 'commit it')
+  test('a tree git cannot read refuses nothing', async ($, on) => {
+    const b = await typed($, on, 'look this over')
     b.trees['/repo'] = null
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(UNREAD_TREE_REFUSAL)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
   })
 
   test('a commit spelled through an alias is refused, and asked to run as a plain line', async ($, on) => {
@@ -227,46 +153,15 @@ describe('AC1: a commit that leaves files out of the tree is refused, and names 
     expect(leftOutOf('', false)).toEqual([])
   })
 
-  test('the commit shape reader finds -a and paths past every value option', () => {
-    expect(shapeOf(['-m', 'a.ts'])).toEqual({ isAll: false, isPartial: false })
-    expect(shapeOf(['-am', 'msg'])).toEqual({ isAll: true, isPartial: false })
-    expect(shapeOf(['-mmsg', 'a.ts'])).toEqual({ isAll: false, isPartial: true })
-    expect(shapeOf(['-F', '/tmp/m', '--author', 'A <a@b>', '--all'])).toEqual({ isAll: true, isPartial: false })
-    expect(shapeOf(['--message=x', '--no-verify'])).toEqual({ isAll: false, isPartial: false })
-    expect(shapeOf(['-S', '-m', 'x', '--'])).toEqual({ isAll: false, isPartial: false })
-    expect(shapeOf(['-m', 'x', '--', 'a.ts'])).toEqual({ isAll: false, isPartial: true })
-  })
-})
-
-describe('AC2: a never-ship file Mike is told about can stay out', () => {
-  const nameTest = (name: string, body: ($: Engine, on: On) => Promise<void>): void => test(name, { plugins: [ID_RECORDER] }, body)
-
-  nameTest('a left-out path named in the reply lets the commit run', async ($, on) => {
-    const b = await typed($, on, 'commit it')
-    b.trees['/repo'] = entry('M ', 'a.ts') + entry('??', '.env.local')
-    b.shown = 'I staged everything but `.env.local`, which holds an API token, so it must never ship.'
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
-  })
-
-  nameTest('a folder named with its slash covers the files in it', async ($, on) => {
-    const b = await typed($, on, 'commit it')
-    b.trees['/repo'] = entry('M ', 'a.ts') + entry('??', 'dist/app.js') + entry('??', 'dist/app.css')
-    b.shown = 'Leaving out dist/, a stray build artifact.'
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
-  })
-
-  nameTest('only the named file may stay out: an unnamed one is still refused, and named alone', async ($, on) => {
-    const b = await typed($, on, 'commit it')
-    b.trees['/repo'] = entry('??', '.env.local') + entry('??', 'notes.md')
-    b.shown = 'Leaving out .env.local, which holds a secret.'
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(leftOutRefusal(['notes.md']))
-  })
-
-  nameTest('a reply that does not name the file lets nothing through', async ($, on) => {
-    const b = await typed($, on, 'commit it')
-    b.trees['/repo'] = entry('??', '.env')
-    b.shown = 'Committing the whole tree now.'
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(leftOutRefusal(['.env']))
+  test('the -a reader finds -a and --all past every value option', () => {
+    expect(isAllOf(['-m', 'a.ts'])).toBe(false)
+    expect(isAllOf(['-am', 'msg'])).toBe(true)
+    expect(isAllOf(['-a', '-m', 'msg'])).toBe(true)
+    expect(isAllOf(['-m', '-a'])).toBe(false)
+    expect(isAllOf(['-F', '/tmp/m', '--author', 'A <a@b>', '--all'])).toBe(true)
+    expect(isAllOf(['--message=x', '--no-verify'])).toBe(false)
+    expect(isAllOf(['-S', '-m', 'x', '--'])).toBe(false)
+    expect(isAllOf(['-m', 'x', '--', '-a'])).toBe(false)
   })
 
   test('a name counts only as a whole path, never inside a longer one', () => {
@@ -274,6 +169,18 @@ describe('AC2: a never-ship file Mike is told about can stay out', () => {
     expect(unnamedOf(['a/b.ts'], 'Leaving out "a/b.ts".')).toEqual([])
     expect(unnamedOf(['a/b/c.ts'], 'Leaving out (a/b/).')).toEqual([])
     expect(unnamedOf(['a/b/c.ts'], 'Leaving out a/b.')).toEqual(['a/b/c.ts'])
+  })
+})
+
+describe('AC2: the permission dialog of a plain main-session commit is answered with no request', () => {
+  test('a plain commit in any repository is answered, and a push, a commit beside a push and a commit in another form are not', async ($, on) => {
+    project(await typed($, on, 'look this over'))
+    for (const line of ['git commit', 'git commit -F /tmp/msg', 'git commit -m "fix: 🐛 M."', 'git commit -am "fix: 🐛 M."', 'git -C /repo commit -m "fix: 🐛 X."', 'git -C /wt commit -m "fix: 🐛 X."', 'git -C /other commit -m "fix: 🐛 X."']) {
+      expect({ line, decision: await asked($, line) }).toEqual({ line, decision: ALLOW })
+    }
+    for (const line of ['git push', 'git commit -m "fix: 🐛 X." && git push', 'git commit --amend -m "fix: 🐛 X."', 'git -c core.hooksPath=/x commit -m m', 'git -C relative commit -m "fix: 🐛 X."', 'HUSKY=0 git commit -m "fix: 🐛 X."']) {
+      expect({ line, decision: await asked($, line) }).toEqual({ line, decision: undefined })
+    }
   })
 })
 
@@ -427,10 +334,10 @@ describe('AC4: an action the prompt did not name is still refused, and the appro
     expect(await asked($, 'gh release create 1.0.0')).toBeUndefined()
   })
 
-  test('"push" approves no commit', async ($, on) => {
+  test('a commit needs no request: under "push" it runs, and its dialog is answered', async ($, on) => {
     const b = await typed($, on, 'push')
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
-    expect(await asked($, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
+    expect(await asked($, 'git commit -m "fix: 🐛 X."')).toEqual(ALLOW)
   })
 
   test('a release needs a typed request: a pick does not approve one', async ($, on) => {
@@ -442,9 +349,9 @@ describe('AC4: an action the prompt did not name is still refused, and the appro
     expect(await bash($, b, 'gh api repos/o/r/releases/latest')).toBeUndefined()
   })
 
-  test('two commits, pushes or releases on one line are refused under a request', async ($, on) => {
+  test('two pushes or releases on one line are refused under a request, and two commits run', async ($, on) => {
     const b = await typed($, on, 'commit, push and release')
-    expect(await bash($, b, 'git commit -m "fix: 🐛 A."; git commit -m "fix: 🐛 B."')).toBe(ONE_REFUSAL)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 A."; git commit -m "fix: 🐛 B."')).toBeUndefined()
     expect(await bash($, b, 'git push && git push --tags')).toBe(ONE_REFUSAL)
     expect(await bash($, b, 'gh release create 1 && gh release create 2')).toBe(ONE_REFUSAL)
   })
@@ -498,9 +405,9 @@ describe('AC4: an action the prompt did not name is still refused, and the appro
     test(`a negated, deferred or question-form prompt approves nothing: ${JSON.stringify(text)}`, async ($, on) => {
       expect(requestedOf(text)).toEqual([])
       const b = await typed($, on, text)
-      expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
       expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
-      expect(await asked($, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
+      expect(await asked($, 'git push')).toBeUndefined()
+      expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
     })
   }
 
@@ -532,8 +439,8 @@ describe('AC4: an action the prompt did not name is still refused, and the appro
   test("Mike's next prompt ends the approval, folded into the turn or not", async ($, on) => {
     const b = await typed($, on, 'commit and push')
     await $.prompt.submit(prompt('thanks'))
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
-    expect(await asked($, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
+    expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
+    expect(await asked($, 'git push')).toBeUndefined()
     await $.prompt.submit(prompt('commit and push'))
     await $.prompt.submit(prompt('one more thing', PERSON, 'running'))
     expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
@@ -548,9 +455,9 @@ describe('AC4: an action the prompt did not name is still refused, and the appro
   })
 
   test('/clear ends it', async ($, on) => {
-    const b = await typed($, on, 'commit it')
+    const b = await typed($, on, 'push it')
     await $.session.end({ reason: 'clear', sessionId: 's' } as never)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(DECLINED.commit)
+    expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
   })
 
   for (const line of [
@@ -594,8 +501,6 @@ describe('AC4: an action the prompt did not name is still refused, and the appro
     'gh release create 1.0.0 -R other/repo',
     'gh release create 1.0.0 --repo=other/repo',
     'gh -R other/repo release create 1.0.0',
-    'git -C /other commit -m "fix: 🐛 X."',
-    'git -C /repo/link commit -m "fix: 🐛 X."',
     'git -C /repo/../other commit -m "fix: 🐛 X."',
     'git -C relative commit -m "fix: 🐛 X."',
     'git -C /repo -C /other commit -m x',
@@ -647,10 +552,10 @@ describe('AC5: no other turn and no sub-agent gains an approval', () => {
       const b = bench(on)
       await $.session.start(start())
       await $.prompt.submit(prompt('commit and push and release', origin))
-      expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toMatch(origin.kind === 'task-notification' ? DECLINED.commit : exactly(COMMIT_REFUSAL))
+      expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
       expect(await bash($, b, 'git push')).toMatch(origin.kind === 'task-notification' ? DECLINED.push : exactly(PUSH_REFUSAL))
       expect(await bash($, b, 'gh release create 1.0.0')).toMatch(DECLINED.release)
-      expect(await asked($, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
+      expect(await asked($, 'git push')).toBeUndefined()
     })
   }
 
@@ -660,7 +565,8 @@ describe('AC5: no other turn and no sub-agent gains an approval', () => {
     await $.prompt.submit(prompt('<scheduled-task name="tick">commit and push</scheduled-task>'))
     expect(await asked($, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
     await $.prompt.submit(prompt('back at the desk', { kind: 'peer' }))
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(COMMIT_REFUSAL)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
+    expect(await bash($, b, 'git push')).toBe(PUSH_REFUSAL)
   })
 
   test("a sub-agent's permission dialog is never answered, even inside Mike's request", async ($, on) => {
@@ -1057,56 +963,49 @@ describe("AC6: Mike's main session keeps the release rule", () => {
   })
 })
 
-describe('AC8: a "Commit it" pick lets its commit run with no permission dialog, and a push needs its own pick', () => {
-  test('the plain commit gets allow, the push never does under it, and a push pick allows the push', async ($, on) => {
+describe('AC8: a plain commit runs with no permission dialog and no pick, and a push needs its own pick', () => {
+  test('the plain commit gets allow before and after any pick, and a push pick allows the push', async ($, on) => {
     const b = project(await typed($, on, 'review done'))
-    await pick($, b)
     expect(await asked($, 'git commit -m "fix: 🐛 X."')).toEqual(ALLOW)
     expect(await asked($, 'git -C /repo commit -F /tmp/message.txt')).toEqual(ALLOW)
     expect(await asked($, 'git push')).toBeUndefined()
     expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
-    expect(await asked($, 'git push')).toBeUndefined()
     expect(await bash($, b, 'git push')).toMatch(DECLINED.push)
     await pick($, b, PUSH_QUESTION, 'Push')
     expect(await asked($, 'git push')).toEqual(ALLOW)
     expect(await asked($, 'git push origin main')).toEqual(ALLOW)
-    expect(await asked($, 'git commit -m "fix: 🐛 Y."')).toBeUndefined()
+    expect(await asked($, 'git commit -m "fix: 🐛 Y."')).toEqual(ALLOW)
   })
 })
 
-describe('AC9: a pick approves one plain commit, and nothing more', () => {
+describe('AC9: the dialog is answered only for plain commits and the pushes a pick or request covers', () => {
   for (const line of [
     'git commit --amend -m "fix: 🐛 X."',
     'git commit --no-verify -m "fix: 🐛 X."',
-    'git -C /other commit -m "fix: 🐛 X."',
-    'git commit -m "fix: 🐛 X." && git commit -m "fix: 🐛 Y."',
     'git push origin --tags',
     'gh release create 1.0.0',
   ]) {
-    test(`a line a pick does not cover gets the dialog: ${JSON.stringify(line)}`, async ($, on) => {
+    test(`a line no pick covers gets the dialog: ${JSON.stringify(line)}`, async ($, on) => {
       const b = project(await typed($, on, 'review done'))
       await pick($, b)
       expect(await asked($, line)).toBeUndefined()
     })
   }
 
-  test('a second commit after the pick was used gets the dialog, and so does a second push', async ($, on) => {
+  test('two plain commits on one line get allow, and a second push after a push pick was used gets the dialog', async ($, on) => {
     const b = project(await typed($, on, 'review done'))
-    await pick($, b)
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
-    expect(await asked($, 'git commit -m "fix: 🐛 Y."')).toBeUndefined()
+    expect(await asked($, 'git commit -m "fix: 🐛 X." && git commit -m "fix: 🐛 Y."')).toEqual(ALLOW)
     await pick($, b, PUSH_QUESTION, 'Push')
     expect(await bash($, b, 'git push')).toBeUndefined()
     expect(await asked($, 'git push')).toBeUndefined()
   })
 
-  test('a commit and its push on one line get the dialog, before and after the commit lands', async ($, on) => {
+  test('a commit and its push on one line get the dialog when no push is approved', async ($, on) => {
     const b = project(await typed($, on, 'review done'))
     await pick($, b)
     expect(await asked($, 'git commit -m "fix: 🐛 X." && git push')).toBeUndefined()
     expect(await bash($, b, 'git commit -m "fix: 🐛 X." && git push')).toMatch(DECLINED.push)
     expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
-    expect(await asked($, 'git commit -m "fix: 🐛 X." && git push')).toBeUndefined()
     expect(await asked($, 'git push')).toBeUndefined()
   })
 
@@ -1120,11 +1019,10 @@ describe('AC9: a pick approves one plain commit, and nothing more', () => {
     expect(await asked($, 'gh pr merge --merge --delete-branch')).toEqual(ALLOW)
   })
 
-  test("a sub-agent's call and a call after Mike's next prompt get the dialog", async ($, on) => {
-    const b = project(await typed($, on, 'review done'))
-    await pick($, b)
+  test("a sub-agent's commit gets the dialog, and the main session's commit keeps its allow after Mike's next prompt", async ($, on) => {
+    project(await typed($, on, 'review done'))
     expect(await asked($, 'git commit -m "fix: 🐛 X."', 'a1')).toBeUndefined()
     await $.prompt.submit(prompt('wait, one more change'))
-    expect(await asked($, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
+    expect(await asked($, 'git commit -m "fix: 🐛 X."')).toEqual(ALLOW)
   })
 })

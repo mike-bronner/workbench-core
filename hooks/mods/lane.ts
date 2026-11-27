@@ -12,9 +12,6 @@
 //             `<scheduled-task ` wrapper a scheduled fire carries, since a
 //             desktop scheduled task can run in a session that looks
 //             interactive.
-//             A task notification counts as attended: in an interactive
-//             session it is where a commit question or a relayed result is
-//             asked, and stop_hook_active already caps its re-prompt at one.
 //   loop      A sub-agent's tool.call carries agentId, and its Stop is a
 //             SubagentStop. A Stop from a top-level --agent run carries
 //             agent_type.

@@ -9,12 +9,10 @@ import {
   API_WRITE_REFUSAL,
   BRANCH_RESET_REFUSAL,
   MOVE_REFUSAL,
-  ONE_REFUSAL,
   REWRITE_REFUSAL,
   apiWritesOf,
   askRefusalOf,
   configuredMergesOf,
-  leftOutRefusal,
   mergesOf,
   movesHead,
   rewritesAt,
@@ -105,11 +103,11 @@ describe('finding 2: every verb that writes HEAD or a branch ref makes the branc
   }
 
   for (const verb of ['git symbolic-ref HEAD refs/heads/main', 'git branch -M main', 'git update-ref HEAD abc1234', 'git fetch . feat:main']) {
-    test(`under a commit pick, a commit after it is refused as a head move: ${verb}`, async ($, on) => {
+    test(`under a push pick, a push after it is refused as a head move: ${verb}`, async ($, on) => {
       const b = await mike($, on)
-      b.pick = 'Commit it'
-      expect((await $.tool.call({ tool: 'AskUserQuestion', questions: [{ question: 'Commit "fix: 🐛 X." on feat?', header: 'Q', options: [{ label: 'Commit it', description: 'x' }, { label: 'Not yet', description: 'y' }], multiSelect: false }] } as never)).deny).toBeUndefined()
-      expect(await bash($, b, `${verb} && git commit -m "fix: 🐛 X."`)).toBe(MOVE_REFUSAL)
+      b.pick = 'Push'
+      expect((await $.tool.call({ tool: 'AskUserQuestion', questions: [{ question: 'Push feat to origin?', header: 'Q', options: [{ label: 'Push', description: 'x' }, { label: 'Not yet', description: 'y' }], multiSelect: false }] } as never)).deny).toBeUndefined()
+      expect(await bash($, b, `${verb} && git push`)).toBe(MOVE_REFUSAL)
     })
   }
 })
@@ -346,22 +344,22 @@ describe('finding 7: the deny shows the line that runs, with every hidden charac
     expect(shownOf('a\u001bb')).toBe('a\\u001bb')
     expect(shownOf('a‮b')).toBe('a\\u202eb')
     expect(shownOf('a`b\\c')).toBe('a\\`b\\\\c')
-    const text = askRefusalOf(['commit'], { command: 'git commit -m "x‮"\rgit push', repo: '/repo', branch: 'refs/heads/main', message: '"x\u001b"', files: ['a\nb.ts'] })
+    const text = askRefusalOf(['push'], { command: 'git commit -m "x‮"\rgit push', repo: '/repo\u001b\nx', branch: 'refs/heads/main' })
     expect(text).toContain('`git commit -m "x\\u202e"\\rgit push`')
-    expect(text).toContain('Name the message, "x\\u001b",')
-    expect(text).toContain('a\\nb.ts')
+    expect(text).toContain('the repository /repo\\u001b\\nx,')
     expect(/[\r\n\u001b‮]/.test(text)).toBe(false)
   })
 })
 
 describe('a commit and its push on one line', () => {
-  test('with no approval the line is denied, naming both, with the instruction to run each on a line of its own', async ($, on) => {
+  test('with no approval the line asks only about the push, and the commit alone runs', async ($, on) => {
     const b = await mike($, on)
     b.pick = 'Yes, run it'
-    const deny = await bash($, b, 'git commit -m "fix: 🐛 X." && git push')
-    expect(deny).toContain('it runs a git commit and git push, and Mike has approved none of them')
-    expect(deny).toContain('run each as a line of its own')
+    const deny = await bash($, b, 'git commit -m "fix: 🐛 X." && git push origin main')
+    expect(deny).toMatch(ASKS.push)
+    expect(deny).not.toContain('git commit and git push')
     expect(dialogs(b)).toEqual([])
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
   })
 })
 
@@ -410,26 +408,26 @@ describe('finding 6: the permission prompt is answered only for the line Mike pi
 })
 
 describe('ruling D: the refusals no answer can fix open no dialog in Mike\'s turn', () => {
-  test('a tree that leaves a file out, two commits on a line, a force push', async ($, on) => {
+  test('a commit that leaves a file out and two commits on a line run, and a force push is refused', async ($, on) => {
     const b = await mike($, on)
     b.pick = 'Yes, run it'
     b.trees['/repo'] = '?? stray.txt\0'
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBe(leftOutRefusal(['stray.txt']))
+    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toBeUndefined()
     b.trees['/repo'] = ''
-    expect(await bash($, b, 'git commit -m "fix: 🐛 A."; git commit -m "fix: 🐛 B."')).toBe(ONE_REFUSAL)
+    expect(await bash($, b, 'git commit -m "fix: 🐛 A."; git commit -m "fix: 🐛 B."')).toBeUndefined()
     expect(await bash($, b, 'git push --force')).toBe(FORCE_REFUSAL.deny)
     expect(dialogs(b)).toEqual([])
   })
 
-  test('a pick used on another branch, and a switch while a pick is held', async ($, on) => {
+  test('a push pick used on another branch, and a switch while a pick is held', async ($, on) => {
     const b = await mike($, on)
-    b.pick = 'Commit it'
-    const question = { question: 'Commit "fix: 🐛 X." on feat?', header: 'Q', options: [{ label: 'Commit it', description: 'x' }, { label: 'Not yet', description: 'y' }], multiSelect: false }
+    b.pick = 'Push'
+    const question = { question: 'Push feat to origin?', header: 'Q', options: [{ label: 'Push', description: 'x' }, { label: 'Not yet', description: 'y' }], multiSelect: false }
     await $.tool.call({ tool: 'AskUserQuestion', questions: [question] } as never)
     const before = dialogs(b).length
     expect(await bash($, b, 'git switch main')).toBe(MOVE_REFUSAL)
     b.repos['/repo'] = { ...FEATURE, branch: 'main' }
-    expect(await bash($, b, 'git commit -m "fix: 🐛 X."')).toContain('HEAD is now on main')
+    expect(await bash($, b, 'git push origin main')).toContain('HEAD is now on main')
     expect(dialogs(b).length).toBe(before)
   })
 })

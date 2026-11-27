@@ -82,10 +82,10 @@ has "rule 6 asks one approval question"             'one approval question, not 
 has "rule 6 points at the session commit rules"     'The commit rules in the session.s system prompt \("Commits and code comments"\) say when a request or a pick approves one, and what to ask'
 has "rule 6 makes a branch sync no fork"            'How to sync a branch with its own remote is no fork, and the same rules give its steps'
 has "rule 6 asks each approval alone"               'Ask each such question through `AskUserQuestion`, on its own'
-has "rule 6 commits a sub-agent's tree a green run saw" 'A tree a sub-agent hands back commits with no question once a green `Final suite run:` saw that exact tree, and a plain push of a feature branch needs none'
-has "rule 6 frees a default-branch push of green commits" 'A plain push of the default branch needs none either when every commit it sends was such a commit'
+has "rule 6 runs a commit and a feature-branch merge with no question" 'A commit, and a local merge or a pull that does not rebase onto a feature branch, gets no question at all: run it'
+has "rule 6 commits a sub-agent's tree with no question" 'A tree a sub-agent hands back commits with no question, and a plain push of a feature branch needs none'
+has "rule 6 frees a default-branch push of green commits" 'A plain push of the default branch needs none either when every commit it sends was made from the exact tree a green `Final suite run:` saw'
 has "rule 6 lets a sub-agent commit and push after green" 'A sub-agent may run that commit and push itself after the green run, and nobody runs the full suite just to commit'
-has "rule 6 asks about a sub-agent's tree otherwise" 'Without that green run, the tree is work Mike did not ask to commit, so you ask him'
 has "rule 6 never takes a prompt as the approval"    'A permission prompt is never the approval, because a prompt that appears mid-flow gets answered without a review'
 has "rule 6 keeps the Index pipeline silent"        'An Index pipeline run never asks to commit or push'
 if grep -qF '## Commits and code comments' "$ROOT/hooks/mods/prompt-rules.ts"; then
@@ -384,40 +384,25 @@ routes "a peer session is not a store"                    "A peer session's cont
 routes "a message coordinates and the vault stores"       'A message coordinates, and the vault stores.'
 
 echo
-echo "every statement of the commit approval rule names the ledger unit-commit exemption and the unit landing:"
+echo "every statement of the commit approval rule leaves commits and feature-branch merges free:"
 DENIED='nothing approved is denied|no request or pick approved is denied|no typed request and no pick is denied'
 for source in "$ROOT/README.md" "$ROOT/hooks/mods/prompt-rules.ts"; do
   stated="$(grep -cE "$DENIED" "$source")"
-  bare="$(grep -E "$DENIED" "$source" | grep -cvE 'outside a ledger unit worktree, a local merge or pull that lands a unit branch')"
-  if [ "$stated" -gt 0 ] && [ "$bare" -eq 0 ]; then
-    ok "${source#"$ROOT"/} names the exemption and the unit landing in each of its $stated statements"
+  gated="$(grep -E "$DENIED" "$source" | grep -cE 'a commit outside a ledger unit worktree|a local merge or pull that lands a unit branch')"
+  if [ "$stated" -gt 0 ] && [ "$gated" -eq 0 ]; then
+    ok "${source#"$ROOT"/} denies no commit and no unit landing in any of its $stated statements"
   else
-    no "${source#"$ROOT"/} names the exemption and the unit landing in each statement" "$bare of $stated statements leave them out"
+    no "${source#"$ROOT"/} denies no commit and no unit landing in any statement" "$gated of $stated statements still deny one"
   fi
-  if grep -qE "ledger branch,? (and the whole tree staged, )?whatever the repository's remotes" "$source" && ! grep -qiE 'origin\\?` remote now|had one at the add|records at the add whether|remote named \\?`origin\\?`' "$source"; then
-    ok "${source#"$ROOT"/} says a unit commit runs free whatever the remotes, and keeps no origin condition"
+  if grep -qE '[Ee]very (main-session )?\\?`git commit\\?` runs with no question' "$source" && ! grep -qE 'counts as a commit in every tree|Ask the commit question alone|brings back the commit question' "$source"; then
+    ok "${source#"$ROOT"/} says every main-session commit runs with no question, and asks no commit question"
   else
-    no "${source#"$ROOT"/} says a unit commit runs free whatever the remotes, and keeps no origin condition" "no statement of the free commit, or a stale origin condition"
+    no "${source#"$ROOT"/} says every main-session commit runs with no question, and asks no commit question" "no statement of the free commit, or a stale commit question"
   fi
-  if grep -qE 'A local \\?`git merge\\?` or \\?`git pull\\?` that lands a ledger unit branch counts as a commit in every tree' "$source"; then
-    ok "${source#"$ROOT"/} says a local merge or pull that lands a unit branch counts as a commit"
+  if grep -qE 'onto a feature branch runs with no question, whatever it merges' "$source"; then
+    ok "${source#"$ROOT"/} says a local merge or pull onto a feature branch runs with no question, a unit landing included"
   else
-    no "${source#"$ROOT"/} says a local merge or pull that lands a unit branch counts as a commit" "no statement of the landing rule"
-  fi
-  if grep -qE 'A \\?`git pull\\?` lands (one|a unit) from any source, a remote included' "$source" && ! grep -qE 'only from \\?`\.\\?` or a path' "$source"; then
-    ok "${source#"$ROOT"/} says a pull lands a unit from any source"
-  else
-    no "${source#"$ROOT"/} says a pull lands a unit from any source" "no statement of the pull source, or a stale . or path limit"
-  fi
-  if grep -qE 'merged refs or the ledger cannot be read asks too|asks when it cannot read the merged refs or the ledger' "$source"; then
-    ok "${source#"$ROOT"/} says unreadable merged refs or ledger ask"
-  else
-    no "${source#"$ROOT"/} says unreadable merged refs or ledger ask" "no statement of the closed default"
-  fi
-  if grep -qE 'catch-up.{0,60}of any other branch, such as \\?`git merge origin/main\\?`' "$source"; then
-    ok "${source#"$ROOT"/} says a catch-up merge runs with no question"
-  else
-    no "${source#"$ROOT"/} says a catch-up merge runs with no question" "no statement of the catch-up merge"
+    no "${source#"$ROOT"/} says a local merge or pull onto a feature branch runs with no question, a unit landing included" "no statement of the free feature-branch merge"
   fi
   if grep -qE 'own upstream.{0,250}\\?`git pull origin main\\?`' "$source" && ! grep -qF 'stays a merge and needs a merge approval' "$source"; then
     ok "${source#"$ROOT"/} says a catch-up of the default branch from its own upstream runs with no question"
@@ -432,7 +417,7 @@ for source in "$ROOT/README.md" "$ROOT/hooks/mods/prompt-rules.ts"; do
   else
     no "${source#"$ROOT"/} says a branch syncs with its own remote by fetch --all, pull and push, never a rebase or a hand-run merge" "no statement of the three sync steps, the no-question rule, the rebase and merge ban, or its scope"
   fi
-  if grep -qE 'pull\\?`? that does not rebase and lands no unit branch runs with no question on a feature branch, and on the default branch only when it is the catch-up' "$source" \
+  if grep -qE 'pull\\?`? that does not rebase runs with no question on a feature branch, and on the default branch only when it is the catch-up' "$source" \
     && ! grep -qE 'The fetch and the pull run with no question|\\?`git pull\\?` runs with no question on a feature branch' "$source"; then
     ok "${source#"$ROOT"/} frees only a sync pull that does not rebase, and on the default branch only the catch-up"
   else
@@ -451,17 +436,17 @@ else
   no "README.md says a pull that would rebase is never a catch-up" "no statement that a rebasing pull, by option or by config, is no catch-up"
 fi
 if grep -qF "On any branch, such a pull, one whose rebase config the gate cannot read, and one whose directory it cannot place without \\\`--no-rebase\\\` is a history rewrite and asks." "$ROOT/hooks/mods/prompt-rules.ts" \
-  && grep -qF 'One that also merges into the default branch or lands a unit branch needs a merge or commit pick first and then a pick of its line, each asked alone.' "$ROOT/hooks/mods/prompt-rules.ts" \
+  && grep -qF 'One that also merges into the default branch needs a merge pick first and then a pick of its line, each asked alone.' "$ROOT/hooks/mods/prompt-rules.ts" \
   && grep -qF '**A pull that would rebase is a history rewrite.**' "$ROOT/README.md" \
   && grep -qF 'A config it cannot read counts as a rebase too' "$ROOT/README.md" \
   && grep -qF 'counts as a rebase unless it carries `--no-rebase`' "$ROOT/README.md" \
   && grep -qF 'A pull into the default branch that would rebase is never the catch-up, so it asks both the merge and the history rewrite.' "$ROOT/README.md" \
-  && grep -qF 'asks both the commit and the history rewrite' "$ROOT/README.md" \
+  && grep -qF 'A unit-landing pull that would rebase asks only the history rewrite.' "$ROOT/README.md" \
   && grep -qF 'a `git pull` that would rebase, in Mike' "$ROOT/README.md" \
   && ! grep -qE 'keeps that question alone|keeps its merge question alone|On a feature branch, a pull that would rebase is a history rewrite' "$ROOT/README.md"; then
-  ok "README.md and the commit rules say a pull that would rebase, on any branch or in an unplaced directory, asks as a history rewrite beside its merge or commit"
+  ok "README.md and the commit rules say a pull that would rebase, on any branch or in an unplaced directory, asks as a history rewrite beside its merge"
 else
-  no "README.md and the commit rules say a pull that would rebase, on any branch or in an unplaced directory, asks as a history rewrite beside its merge or commit" "no statement of the rebase pull on every branch, the unplaced directory, the two picks, or its place in the rewrite list"
+  no "README.md and the commit rules say a pull that would rebase, on any branch or in an unplaced directory, asks as a history rewrite beside its merge" "no statement of the rebase pull on every branch, the unplaced directory, the two picks, or its place in the rewrite list"
 fi
 if grep -qF '**The merge gate guards against mistakes, not against evasion**' "$ROOT/README.md" \
   && grep -qF 'a second name for a unit tip, made with `git branch x unit/a` or `git tag t unit/a`, and a merge of that name' "$ROOT/README.md" \
@@ -485,6 +470,7 @@ else
   no "README.md, the commit rules and the gate call a history rewrite, a branch reset and a remote-tracking ref update each by its own name" "a term is missing, or the old wording that calls a ref move a history rewrite is back"
 fi
 lacks "rule 6 leaves the approval policy to the system prompt" 'ledger|catch-up merge|history rewrite|gh alias set|approves the actions it names|His answer is the approval|A plan file needs no question'
+lacks "rule 6 asks no commit question" 'Without that green run, the tree is work Mike did not ask to commit|A commit, a push, a merge into the default branch or a release gets one approval question'
 
 echo
 echo "$PASS passed, $FAIL failed"

@@ -193,6 +193,7 @@ import {
   unnamedOf,
 } from './mods/commit-approval'
 import { FAILED_REFUSAL, SUBAGENT_REFUSAL, commitVerdict } from './mods/commit-guard'
+import { dryRunArgvOf, followedTagsOf } from './mods/follow-tags'
 import { subjectVerdict } from './mods/commit-subject'
 import { isAttendedPrompt, isAttendedSession, isDesktopSession, isScheduledFire, laneOf } from './mods/lane'
 import { bareSetRefusal, repairedNotice, runsGit } from './mods/false-bare'
@@ -703,13 +704,13 @@ async function pendingReleaseOf($: EngineInterface, command: string): Promise<Pe
   return { ...release, names: top === undefined ? [release.repo] : [release.repo, top] }
 }
 
-async function askRefusal($: EngineInterface, missing: readonly Gated[], command: string, dir: string, commit: Commit | undefined, isApart = false): Promise<string> {
+async function askRefusal($: EngineInterface, missing: readonly Gated[], command: string, dir: string, commit: Commit | undefined, isApart = false, tags: readonly string[] = []): Promise<string> {
   const release = missing.length === 1 && missing[0] === 'release' ? await pendingReleaseOf($, command) : undefined
   if (release !== undefined) await update($, pendingReleases, releases => [...releases.filter(each => !sameRelease(each, release)), release])
   const kind = release === undefined ? lineKindOf(missing, command) : undefined
   if (kind !== undefined) await update($, pendingLines, lines => ({ ...lines, [command]: kind }))
   const rewrites = [...rewriteKindsOf(command), ...(isApart ? (['history'] as const) : [])]
-  const facts = { ...(await askFactsOf($, command, dir, commit)), rewrites, ...(isApart ? { isApart: true as const } : {}) }
+  const facts = { ...(await askFactsOf($, command, dir, commit)), rewrites, ...(isApart ? { isApart: true as const } : {}), ...(tags.length === 0 ? {} : { tags }) }
   return askRefusalOf(missing, release === undefined ? facts : { ...facts, release })
 }
 
@@ -796,7 +797,7 @@ async function isGreenAt($: EngineInterface, dir: string): Promise<boolean> {
   return staged !== undefined && staged.top === green.top && staged.tree === green.tree
 }
 
-async function isFreePushAt($: EngineInterface, dir: string, remote: string | undefined, ref: string | undefined, isAfterCommit: boolean, isGreenOnly: boolean): Promise<boolean> {
+async function isFreePushAt($: EngineInterface, dir: string, remote: string | undefined, ref: string | undefined, isAfterCommit: boolean, isGreenOnly: boolean, sent: string[]): Promise<boolean> {
   const branch = await gitOut($, dir, ['symbolic-ref', '--short', '-q', 'HEAD'])
   if (branch === undefined) return false
   const pushed = remote === undefined ? await gitOut($, dir, ['for-each-ref', '--format=%(push:remotename) %(push:remoteref)', `refs/heads/${branch}`]) : undefined
@@ -809,7 +810,17 @@ async function isFreePushAt($: EngineInterface, dir: string, remote: string | un
   const urls = (await gitOut($, dir, ['remote', 'get-url', '--push', '--all', name]))?.split('\n').map(url => url.trim())
   const pinned = repo === undefined ? undefined : (await read($, remoteUrls))[remoteKeyOf(repo, name)]
   if (pinned === undefined || urls === undefined || urls.length === 0 || urls.some(url => url !== pinned)) return false
-  return (!isDefault && !isGreenOnly) || (await isGreenRangeAt($, dir, name, branch, isAfterCommit))
+  return ((!isDefault && !isGreenOnly) || (await isGreenRangeAt($, dir, name, branch, isAfterCommit))) && (await sendsNoTagAt($, dir, name, branch, sent))
+}
+
+async function sendsNoTagAt($: EngineInterface, dir: string, remote: string, branch: string, sent: string[]): Promise<boolean> {
+  const followTags = await configValueOf($, dir, 'push.followTags')
+  if (followTags === null || (followTags !== undefined && REBASE_OFF_VALUES.has(followTags.toLowerCase()))) return true
+  if (followTags === undefined) return false
+  const dry = await $.process.run(dryRunArgvOf(dir, remote, branch), { env: { GIT_TERMINAL_PROMPT: '0' }, timeoutMs: 30_000 }).catch(() => undefined)
+  const tags = dry === undefined || dry.exitCode !== 0 ? undefined : followedTagsOf(dry.stdout, branch)
+  sent.push(...(tags ?? []))
+  return tags !== undefined && tags.length === 0
 }
 
 const writesUnder = (spec: string, prefix: string): boolean => {
@@ -882,7 +893,7 @@ async function isPlainPushConfig($: EngineInterface, dir: string, remote: string
   if (pushDefault === undefined || (pushDefault !== null && !PUSH_DEFAULTS.has(pushDefault.toLowerCase()))) return false
   if (refspecs !== '') return false
   if (!(await isNoRecursion($, dir, 'push.recurseSubmodules')) || !(await isNoRecursion($, dir, 'submodule.recurse'))) return false
-  return isOff(await configValueOf($, dir, `remote.${remote}.mirror`)) && isOff(await configValueOf($, dir, 'push.followTags'))
+  return isOff(await configValueOf($, dir, `remote.${remote}.mirror`))
 }
 
 const NO_RECURSION: ReadonlySet<string> = new Set(['no', 'false'])
@@ -892,7 +903,7 @@ async function isNoRecursion($: EngineInterface, dir: string, key: string): Prom
   return value === null || (value !== undefined && NO_RECURSION.has(value.toLowerCase()))
 }
 
-async function isFreeLine($: EngineInterface, line: string, writes: Writes, commit: Commit | undefined, isGreenOnly = false): Promise<boolean> {
+async function isFreeLine($: EngineInterface, line: string, writes: Writes, commit: Commit | undefined, isGreenOnly = false, sent: string[] = []): Promise<boolean> {
   if (writes.commits > 1 || (writes.commits === 1 && (commit === undefined || commit.args === null || shapeOf(commit.args).isAll))) return false
   const calls = requestedCallsOf(line, ['commit', 'push'])
   if (calls === undefined || (writes.commits > 0 && (await read($, greenTree)) === null)) return false
@@ -905,7 +916,7 @@ async function isFreeLine($: EngineInterface, line: string, writes: Writes, comm
     if (call.action === 'commit') {
       if (!(await isGreenAt($, dir)) || (isCombined && (await hasCommitHooks($, dir)))) return false
       isAfterCommit = true
-    } else if (!(await isFreePushAt($, dir, call.remote, call.ref, isAfterCommit, isGreenOnly))) return false
+    } else if (!(await isFreePushAt($, dir, call.remote, call.ref, isAfterCommit, isGreenOnly, sent))) return false
   }
   return true
 }
@@ -2479,7 +2490,8 @@ export const register: Register = on => {
         return subject !== undefined ? { deny: subject } : withScanRecall($, 'Bash', e.command, e.agentId, await next(e))
       }
       const isFreeShape = releases + merges.local.length + merges.pr + rewrites + aliases + apiIntoDefault === 0
-      if (isFreeShape && (await isFreeLine($, e.command, writes, commit).catch(() => false))) return runFree()
+      const sent: string[] = []
+      if (isFreeShape && (await isFreeLine($, e.command, writes, commit, false, sent).catch(() => false))) return runFree()
       const intoDefault = merges.pr + (await mergesIntoDefault($, merges.local)) - (await catchUpsIntoDefault($, catchUpsOf(e.command)))
       const mergeDirs = await unitLandingDirsOf($, merges.landings)
       const committed = { commits: writes.commits + mergeDirs.length, pushes: writes.pushes }
@@ -2516,7 +2528,7 @@ export const register: Register = on => {
         const canAsk = (await read($, turnAttended)) || (isReleaseOnly && sessionAttended === true)
         const first = gate.missing[0] as Gated
         if (!canAsk) return { deny: first === 'rewrite' ? rewriteRefusalOf([...rewriteKindsOf(e.command), ...(rebases > 0 ? (['history'] as const) : [])]) : GATED_REFUSALS[first] }
-        return { deny: await askRefusal($, gate.missing, e.command, dir ?? (await $.session.cwd()), writes.commits === 1 ? commit : undefined, rebases > 0) }
+        return { deny: await askRefusal($, gate.missing, e.command, dir ?? (await $.session.cwd()), writes.commits === 1 ? commit : undefined, rebases > 0, sent) }
       }
       const before = isPaid && dir !== undefined ? await refsOf($, dir) : undefined
       const result = await (isLinePaid ? next(e).finally(() => update($, commitApproval, () => 'none' as const)) : next(e))

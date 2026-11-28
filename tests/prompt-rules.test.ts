@@ -467,14 +467,15 @@ describe('the working rules on tearing down provisioned units', () => {
 
   test('landed and handed back are each a condition that can be checked', () => {
     const teardown = RULES.split('\n').find(line => line.startsWith('- Tear down every unit')) ?? ''
-    expect(teardown).toContain('Its work has landed when the unit branch is merged into the branch it was cut from and its tree is clean.')
+    expect(teardown).toContain('Its work has landed when its tree is clean and the unit branch is merged into the branch it was cut from, or squash-landed there: every file the unit branch changed matches the tree HEAD has committed. A squash landing that still waits for its commit has not landed.')
+    expect(teardown).toContain('Use `-D`, because `git branch -d` refuses a squash-landed branch. Delete only a unit that has landed or was handed back by these checks.')
     expect(teardown).toContain('Its work was handed back when a sub-agent handed it back, its tree is clean, and the unit branch holds no unmerged commit.')
     expect(teardown).not.toContain('handed back and taken')
   })
 
   test('the tree and the branch are removed from the project folder, and a database is dropped only when the unit created one', () => {
     const teardown = RULES.split('\n').find(line => line.startsWith('- Tear down every unit')) ?? ''
-    expect(teardown).toContain('Run `git -C <project folder> worktree remove <path>`, then `git -C <project folder> branch -d <branch>`, each as a line of its own.')
+    expect(teardown).toContain('Run `git -C <project folder> worktree remove <path>`, then `git -C <project folder> branch -D <branch>`, each as a line of its own.')
     expect(teardown).toContain('If the unit created a test database, then run `psql -c \'DROP DATABASE "<name>"\'` with the same `-h`, `-p` and `-U` as the create, as a line of its own.')
     expect(teardown).toContain('A unit that created no test database has none to drop.')
   })
@@ -501,7 +502,7 @@ describe('the working rules on commits and code comments', () => {
   test('a main-session commit, and a merge or pull onto a feature branch, run with no question and no pick', () => {
     expect(RULES).toContain('In the main session, every `git commit` runs with no question, no request and no pick, on any branch, the default branch included. So does every local `git merge`, and every `git pull` that does not rebase, onto a branch other than the default branch, the landing of a ledger unit branch included. Never ask a commit question, and never wait for a "Commit it" pick.')
     expect(RULES).toContain('A plain commit line opens no permission prompt: `git commit`, `git commit -m <message>` or `-F <file>`, with `-a` or not, and `git -C <absolute path> commit` in the same forms. Any other form opens the prompt, such as a `-c` option, `--no-verify` or a wrapper. A `commit --amend` is a history rewrite, and it asks as one.')
-    expect(RULES).toContain('In the main session, a local `git merge`, or a `git pull` that does not rebase, onto a feature branch runs with no question, whatever it merges, a ledger unit branch, a fast-forward, `--squash` and `--no-commit` included. So land a unit branch with a plain line, such as `git merge --no-ff unit/<name>`, and ask nothing first.')
+    expect(RULES).toContain('In the main session, a local `git merge`, or a `git pull` that does not rebase, onto a feature branch runs with no question, whatever it merges, a ledger unit branch, a fast-forward, `--squash` and `--no-commit` included. So land a unit branch with a plain line, such as `git merge --squash unit/<name>`, and ask nothing first. A squash landing makes no commit, and the one commit of the task follows the green final suite run.')
     for (const gone of [
       'Work the user did not ask to commit',
       'Ask the commit question alone',
@@ -545,7 +546,12 @@ describe('the working rules on commits and code comments', () => {
     expect(RULES).toContain('A prompt that negates, defers, sets a condition or asks approves nothing')
     expect(RULES).toContain('never a peer, channel, scheduled, SDK or plugin turn, and never a sub-agent')
     expect(RULES).toContain('A push pick approves one push on the branch HEAD held when the user picked. Run no checkout, switch, stash or reset between a push pick and its push.')
-    expect(RULES).toContain('Once the commit has landed, run the plain push of a feature branch with no question, and the plain push of the default branch too when every commit it sends came from a green run. Ask about any other push in a question of its own.')
+    expect(RULES).toContain('Once the commit has landed, ask how a feature branch lands before any push of it.')
+    expect(RULES).toContain('Push a feature branch only when it lands as a pull request or already tracks a remote branch, and run that plain push with no question.')
+    expect(RULES).toContain('When it lands as a local merge, push only the default branch, so no remote feature branch is created.')
+    expect(RULES).toContain('Run the plain push of the default branch with no question when every commit it sends came from a green run. Ask about any other push in a question of its own.')
+    expect(RULES).toContain('A local merge pick approves one `git merge` of the branch its question named into the default branch, so run that merge with no second question. A pull request pick approves no merge.')
+    expect(RULES).not.toContain('Once the commit has landed, run the plain push of a feature branch with no question')
     expect(RULES).toContain('A green `Final suite run:` record matters for a sub-agent\'s commit and for a push of the default branch.')
     expect(RULES).toContain('A commit whose tree is the exact tree a green run saw counts as a green commit. A sub-agent in a session the user sits at, other than the pipeline\'s, may commit that tree: stage the whole tree with `git add -A` on a line of its own, then run the plain `git commit -m <message>` or `-F <file>`, with no `-a`. The commit gate refuses that commit when it leaves any file out, and names the files. Its plain push, of any branch, runs only when every commit it sends came from a green run, as the next rule says for the default branch. Without a green record, a sub-agent\'s commit and push are refused, and it hands its tree back uncommitted. Never run the full suite just to commit: the final suite run stays the one run at the end of development.')
     expect(RULES).toContain('The same plain push of the default branch, or of a branch whose remote names no default branch, needs no request and no pick only when every commit it sends was made from a green final suite run\'s tree in this conversation: the remote\'s fetch refspec is the default, no other remote\'s fetch refspec writes under `refs/remotes/<remote>/`, `<remote>/<branch>` is an ancestor of HEAD, and `<remote>/<branch>..HEAD` holds at least one commit and only such commits.')

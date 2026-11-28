@@ -1057,12 +1057,14 @@ describe('the shapes the ledger reads', () => {
 describe('AC2: the guard texts say a session tears down its own units once they land, without asking', () => {
   test('the rules and the note after an accepted add name the teardown', async ($, on) => {
     const b = await attended($, on)
-    const rule = 'Once a unit a session recorded has landed, that session tears it down itself, without asking Mike: it removes the worktree, deletes the branch with git branch -d, then drops the database if it created one.'
+    const rule = 'Once a unit a session recorded has landed, that session tears it down itself, without asking Mike: it removes the worktree, deletes the branch with git branch -D, then drops the database if it created one.'
     expect(LEDGER_RULES).toContain(rule)
+    expect(LEDGER_RULES).toContain('A unit has landed only when its tree is clean and its branch is merged into HEAD, or squash-landed: every file the branch changed matches the tree HEAD has committed, so a squash that waits for its commit has not landed. Never delete a unit branch that has not landed.')
+    expect(LEDGER_RULES).not.toContain('deletes the branch with git branch -d,')
     expect(provisioningRefusal('git worktree prune')).toContain(rule)
     const answer = await bash($, b, ADD)
     expect(answer.context.join('\n')).toContain(
-      `Once the unit has landed, tear it down yourself, without asking Mike: git -C /repo worktree remove ${TREE}, then git -C /repo branch -d unit/a, then psql -c 'DROP DATABASE "${DB}"' with the create's -h, -p and -U, if you created it.`,
+      `Once the unit has landed, tear it down yourself, without asking Mike: git -C /repo worktree remove ${TREE}, then git -C /repo branch -D unit/a, then psql -c 'DROP DATABASE "${DB}"' with the create's -h, -p and -U, if you created it.`,
     )
   })
 
@@ -1089,7 +1091,7 @@ describe('AC2: the guard texts say a session tears down its own units once they 
 })
 
 describe('AC3: a Stop blocks once per turn while a unit this session recorded has landed', () => {
-  type Git = { tip?: string; upstream?: string; merged?: readonly string[]; status?: string | null; isBroken?: boolean }
+  type Git = { tip?: string; upstream?: string; merged?: readonly string[]; status?: string | null; isBroken?: boolean; changed?: readonly string[]; differs?: boolean; checked?: string[][] }
 
   async function landedWorld($: Engine, on: Parameters<typeof bench>[0], list: readonly LedgerEntry[], git: Git = {}, isInteractive = true, stopBeneath: { block?: string } = {}): Promise<World> {
     const b = world(on, argv => {
@@ -1098,6 +1100,11 @@ describe('AC3: a Stop blocks once per turn while a unit this session recorded ha
       if (verb.slice(0, 3).join(' ') === 'rev-parse --verify -q' && (verb[3] ?? '').startsWith('refs/heads/')) return git.tip === undefined ? { exitCode: 1, stdout: '' } : { exitCode: 0, stdout: `${git.tip}\n` }
       if (verb.join(' ') === 'rev-parse --verify -q unit/a@{upstream}') return git.upstream === undefined ? { exitCode: 128, stdout: '' } : { exitCode: 0, stdout: `${git.upstream}\n` }
       if (verb[0] === 'merge-base' && verb[1] === '--is-ancestor') return { exitCode: (git.merged ?? ['HEAD']).includes(verb[3] ?? '') ? 0 : 1, stdout: '' }
+      if (argv[2] === '/repo' && verb.join(' ') === `diff --name-only -z --no-renames c0 ${git.tip}`) return { exitCode: 0, stdout: (git.changed ?? []).map(file => `${file}\0`).join('') }
+      if (argv[2] === '/repo' && verb.slice(0, 5).join(' ') === 'diff --quiet --no-ext-diff --no-textconv --no-renames') {
+        git.checked?.push(verb.slice(5))
+        return { exitCode: verb[6] === 'HEAD' && git.differs ? 1 : 0, stdout: '' }
+      }
       if (argv[2] === TREE && verb.join(' ') === 'status --porcelain') return git.status === null ? { exitCode: 128, stdout: '' } : { exitCode: 0, stdout: git.status ?? '' }
       return undefined
     })
@@ -1121,7 +1128,7 @@ describe('AC3: a Stop blocks once per turn while a unit this session recorded ha
       [
         `- worktree ${TREE}, branch unit/a, database ${DB} (unit unit-a). Run:`,
         `  - \`git -C /repo worktree remove ${TREE}\``,
-        '  - `git -C /repo branch -d unit/a`',
+        '  - `git -C /repo branch -D unit/a`',
         `  - \`psql -h db -p 5433 -c 'DROP DATABASE "${DB}"'\``,
       ].join('\n'),
     )
@@ -1148,10 +1155,25 @@ describe('AC3: a Stop blocks once per turn while a unit this session recorded ha
     expect((await stopped($)).block).toContain('branch unit/a')
   })
 
+  test('a committed squash landing, whose changed files match the tree HEAD has committed, blocks with a git branch -D line', async ($, on) => {
+    const git: Git = { tip: 'c2', merged: [], changed: ['a.ts', 'dir/b c.ts'], checked: [] }
+    await landedWorld($, on, [mine()], git)
+    const block = (await stopped($)).block ?? ''
+    expect(block).toContain(`- worktree ${TREE}, branch unit/a (unit unit-a). Run:\n  - \`git -C /repo worktree remove ${TREE}\`\n  - \`git -C /repo branch -D unit/a\``)
+    expect(block).toContain('git branch -d refuses a squash-landed branch')
+    expect(block).toContain('with every file it changed matching the tree HEAD has committed')
+    expect(git.checked).toEqual([['c2', 'HEAD', '--', ':(top,literal)a.ts', ':(top,literal)dir/b c.ts']])
+  })
+
+  test('a squash-landed unit with an upstream its tip is not merged into still blocks', async ($, on) => {
+    await landedWorld($, on, [mine()], { tip: 'c2', merged: [], upstream: 'u1', changed: ['a.ts'] })
+    expect((await stopped($)).block).toContain('branch -D unit/a')
+  })
+
   test('a unit whose tree the ledger marks removed names only its branch', async ($, on) => {
     await landedWorld($, on, [mine({ worktree: null })], { tip: 'c2' })
     const block = (await stopped($)).block ?? ''
-    expect(block).toContain('- branch unit/a (unit unit-a). Run:\n  - `git -C /repo branch -d unit/a`')
+    expect(block).toContain('- branch unit/a (unit unit-a). Run:\n  - `git -C /repo branch -D unit/a`')
     expect(block).not.toContain('worktree remove')
   })
 
@@ -1159,13 +1181,16 @@ describe('AC3: a Stop blocks once per turn while a unit this session recorded ha
     const b = await landedWorld($, on, [mine()], { tip: 'c2' })
     b.files.delete(TREE)
     const block = (await stopped($)).block ?? ''
-    expect(block).toContain('- branch unit/a (unit unit-a). Run:\n  - `git -C /repo branch -d unit/a`')
+    expect(block).toContain('- branch unit/a (unit unit-a). Run:\n  - `git -C /repo branch -D unit/a`')
     expect(block).not.toContain('worktree')
   })
 
   for (const [name, list, git] of [
     ['a unit with no commit of its own', [mine()], { tip: 'c0' }],
     ['a unit whose branch is not merged', [mine()], { tip: 'c2', merged: [] }],
+    ['a squash landing not yet committed, whose files match only the working tree, not HEAD', [mine()], { tip: 'c2', merged: [], changed: ['a.ts'], differs: true }],
+    ['a squash-landed unit whose tree holds a change', [mine()], { tip: 'c2', merged: [], changed: ['a.ts'], status: ' M a.ts\n' }],
+    ['a unit recorded before the ledger kept its start, whose files match', [entry({ session: SID })], { tip: 'c2', merged: [], changed: ['a.ts'] }],
     ['a unit merged into another branch but not into the main checkout HEAD', [mine()], { tip: 'c2', merged: ['feat/x'] }],
     ['a unit merged into HEAD but not into the upstream its branch tracks', [mine()], { tip: 'c2', upstream: 'u1' }],
     ['a removed-tree entry whose database is not the naming form', [mine({ worktree: null, database: 'app' })], { tip: 'c2' }],
